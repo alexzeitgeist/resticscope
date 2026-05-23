@@ -1,9 +1,9 @@
 // Command resticscope is a local, on-demand overview of restic repositories on
 // S3-compatible storage.
 //
-// It ships the Bubble Tea `tui` (the default), the cache-only `status`, and the
-// `check` validator, all thin callers of the internal/app core. The `exec`
-// subcommand is built on the same core in a later phase.
+// It ships the Bubble Tea `tui` (the default), the cache-only `status`, the
+// `check` validator, and `exec` (a repo-scoped shell or one-shot command), all
+// thin callers of the internal/app core.
 package main
 
 import (
@@ -39,8 +39,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	case "exec":
-		fmt.Fprintf(stderr, "resticscope %s: not implemented yet (planned for a later phase)\n", cmd)
-		return 2
+		return cmdExec(ctx, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
 		usage(stderr)
@@ -55,12 +54,13 @@ Usage:
   resticscope [tui] [--config PATH]                launch the interactive TUI (default)
   resticscope status [--config PATH] [--refresh]   one line per repo from cache
   resticscope check [--config PATH]                validate config, secrets, restic, and repo reachability
+  resticscope exec [--config PATH] <repo>          open a shell scoped to <repo> (RESTIC_*/AWS_* preloaded)
+  resticscope exec [--config PATH] <repo> -- cmd   run cmd in that environment instead of a shell
   resticscope version                              print resticscope and restic versions
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
 check  exit codes: 0 all passed, 1 problems found, 2 could not run the check.
-
-The exec subcommand is planned but not yet implemented.
+exec   exit codes: the command's own exit code; 2 on setup failure.
 `)
 }
 

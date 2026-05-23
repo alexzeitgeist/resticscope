@@ -12,3 +12,11 @@ type repoRefreshedMsg struct {
 	row  app.RepoStatus
 	err  error
 }
+
+// shellExitedMsg is delivered after an interactive shell-out returns (via
+// tea.ExecProcess) or after the session could not be prepared at all. err is the
+// shell's exit error or the preparation failure; it never carries a secret
+// (app.ShellSession resolves secrets without embedding their values).
+type shellExitedMsg struct {
+	err error
+}

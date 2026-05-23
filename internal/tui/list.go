@@ -46,13 +46,21 @@ func (m Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
 	}
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		m.headerView(),
-		"",
-		m.listView(),
-		"",
-		m.footerView(),
-	)
+	var body string
+	if m.view == detailView && len(m.rows) > 0 {
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.detailHeaderView(),
+			"",
+			m.detailBody(),
+		)
+	} else {
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.headerView(),
+			"",
+			m.listView(),
+		)
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, body, "", m.footerView())
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
@@ -134,7 +142,7 @@ func (m Model) summary(row app.RepoStatus) string {
 }
 
 func (m Model) footerView() string {
-	helpView := m.help.View(m.keys)
+	helpView := m.help.View(viewHelp{keys: m.keys, detail: m.view == detailView})
 	if m.statusMsg != "" {
 		return m.styles.errText.Render(m.statusMsg) + "\n" + helpView
 	}

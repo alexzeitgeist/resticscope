@@ -320,6 +320,155 @@ func TestHelpToggle(t *testing.T) {
 	}
 }
 
+// --- detail view ---
+
+// detailApp seeds repo-a with three snapshots and observed coverage data. It
+// uses env password mode so building a shell session in tests never writes a
+// temp password file to disk.
+func detailApp(t *testing.T) *app.App {
+	t.Helper()
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name:          "repo-a",
+			RefreshedAt:   testNow,
+			LastSnapshot:  testNow.Add(-time.Hour),
+			TotalSize:     442000000000,
+			PackCount:     31204,
+			SnapshotCount: 3,
+			Hosts:         []string{"homeserver"},
+			Paths:         []string{"/etc", "/var/lib"},
+			Tags:          []string{"daily"},
+			Snapshots: []model.Snapshot{
+				{ID: "id-oldest", ShortID: "s1", Time: testNow.Add(-3 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
+				{ID: "id-middle", ShortID: "s2", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
+				{ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
+			},
+		},
+	})
+	a.Cfg.Global.ShellPasswordMode = "env"
+	return a
+}
+
+func TestEnterOpensDetailView(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	if m.view != detailView {
+		t.Fatalf("view = %d, want detailView", m.view)
+	}
+	view := m.View().Content
+	for _, want := range []string{
+		"repo-a",           // detail header
+		"Endpoint",         // metadata block
+		"412 GiB",          // humanized size
+		"Coverage",         // coverage section
+		"Snapshots",        // snapshot table heading
+		"2026-05-23 13:00", // newest snapshot (testNow - 1h)
+		"homeserver",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("detail view missing %q\n---\n%s", want, view)
+		}
+	}
+}
+
+func TestDetailBackReturnsToList(t *testing.T) {
+	for _, k := range []string{"b", "esc"} {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter"))
+		if m.view != detailView {
+			t.Fatal("expected detail view after enter")
+		}
+		m = update(t, m, press(k))
+		if m.view != listView {
+			t.Errorf("%q did not return to the list view", k)
+		}
+	}
+}
+
+func TestDetailSnapshotCursorNavigatesAndClamps(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	if m.snapCursor != 0 {
+		t.Fatalf("snapCursor starts at %d, want 0", m.snapCursor)
+	}
+	m = update(t, m, press("j"))
+	if m.snapCursor != 1 {
+		t.Errorf("after down, snapCursor = %d, want 1", m.snapCursor)
+	}
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j")) // only three snapshots; must clamp at 2
+	if m.snapCursor != 2 {
+		t.Errorf("snapCursor = %d, want 2 (clamped)", m.snapCursor)
+	}
+	// The selected snapshot tracks the cursor in newest-first order.
+	if snap := m.selectedSnapshot(); snap == nil || snap.ID != "id-oldest" {
+		t.Errorf("selectedSnapshot = %+v, want the oldest", snap)
+	}
+}
+
+func TestCoverageReportsGaps(t *testing.T) {
+	a := detailApp(t)
+	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver", "laptop"} // laptop never observed
+	a.Cfg.Repos[0].ExpectedTags = []string{"daily", "weekly"}       // weekly never observed
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	view := m.View().Content
+	if !strings.Contains(view, "missing hosts: laptop") {
+		t.Errorf("coverage missing the host gap\n---\n%s", view)
+	}
+	if !strings.Contains(view, "missing tags: weekly") {
+		t.Errorf("coverage missing the tag gap\n---\n%s", view)
+	}
+}
+
+func TestCoverageAllMet(t *testing.T) {
+	a := detailApp(t)
+	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver"}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	if view := m.View().Content; !strings.Contains(view, "all expectations met") {
+		t.Errorf("expected a satisfied coverage line\n---\n%s", view)
+	}
+}
+
+func TestShellKeyReturnsCommand(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	_, cmd := m.Update(press("s"))
+	if cmd == nil {
+		t.Fatal("pressing s should produce a shell command")
+	}
+}
+
+// When the session cannot be prepared (e.g. secrets fail), the shell key must
+// surface the failure in the footer rather than crash or silently no-op.
+func TestShellPrepFailureSurfacesError(t *testing.T) {
+	a := detailApp(t)
+	a.Secrets = failingSecrets{}
+	m := newTestModel(t, a)
+
+	_, cmd := m.Update(press("s"))
+	if cmd == nil {
+		t.Fatal("expected a command even on prep failure")
+	}
+	msg, ok := cmd().(shellExitedMsg)
+	if !ok {
+		t.Fatalf("command produced %T, want shellExitedMsg", cmd())
+	}
+	if msg.err == nil {
+		t.Fatal("expected a preparation error")
+	}
+	nm := update(t, m, msg)
+	if !strings.Contains(nm.statusMsg, "shell:") {
+		t.Errorf("statusMsg = %q, want a shell error notice", nm.statusMsg)
+	}
+}
+
+type failingSecrets struct{}
+
+func (failingSecrets) Resolve(_, _ string) (secrets.Material, error) {
+	return secrets.Material{}, errors.New("secrets: no repo \"repo-a\"")
+}
+
 func findRow(m Model, name string) app.RepoStatus {
 	for _, r := range m.rows {
 		if r.Name == name {

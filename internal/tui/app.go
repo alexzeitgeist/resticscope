@@ -7,6 +7,7 @@ package tui
 
 import (
 	"context"
+	"os/exec"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -15,26 +16,38 @@ import (
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
+	"resticscope/internal/model"
 )
 
-// Model is the root Bubble Tea model for the list view.
+// view selects which screen the Model renders.
+type view int
+
+const (
+	listView view = iota
+	detailView
+)
+
+// Model is the root Bubble Tea model. It drives both the list view and the
+// per-repo detail view; view selects which one is showing.
 type Model struct {
-	app       *app.App
-	ctx       context.Context    // scopes in-flight refreshes; cancelled on quit
-	cancel    context.CancelFunc // cancels ctx so quitting kills any running restic
-	keys      keyMap
-	styles    styles
-	help      help.Model
-	spinner   spinner.Model
-	rows      []app.RepoStatus
-	meta      map[string]rowMeta
-	cursor    int
-	pending   map[string]bool // repo name -> a refresh is in flight
-	sem       chan struct{}   // bounds concurrent refreshes to parallelism
-	resticVer string
-	width     int
-	statusMsg string // transient footer notice (e.g. a cache-save warning)
-	quitting  bool
+	app        *app.App
+	ctx        context.Context    // scopes in-flight refreshes; cancelled on quit
+	cancel     context.CancelFunc // cancels ctx so quitting kills any running restic
+	keys       keyMap
+	styles     styles
+	help       help.Model
+	spinner    spinner.Model
+	rows       []app.RepoStatus
+	meta       map[string]rowMeta
+	view       view
+	cursor     int             // selected repo in the list
+	snapCursor int             // selected snapshot in the detail view
+	pending    map[string]bool // repo name -> a refresh is in flight
+	sem        chan struct{}   // bounds concurrent refreshes to parallelism
+	resticVer  string
+	width      int
+	statusMsg  string // transient footer notice (e.g. a cache-save warning)
+	quitting   bool
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -118,6 +131,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case repoRefreshedMsg:
 		return m.applyRefresh(msg), nil
+	case shellExitedMsg:
+		return m.applyShellExit(msg), nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -126,27 +141,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleKey dispatches a keypress. The keys that mean the same thing everywhere
+// (quit, help, shell, refresh) are handled first; anything else is routed to the
+// active view's handler, where ↑/↓ and enter carry view-specific meaning.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
 		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
-	case key.Matches(msg, m.keys.Up):
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case key.Matches(msg, m.keys.Down):
-		if m.cursor < len(m.rows)-1 {
-			m.cursor++
-		}
 	case key.Matches(msg, m.keys.Help):
 		m.help.ShowAll = !m.help.ShowAll
+		return m, nil
+	case key.Matches(msg, m.keys.Shell):
+		// `s` shells into the current repo with no snapshot context.
+		if cmd := m.openShellCmd(nil); cmd != nil {
+			m.statusMsg = ""
+			return m, cmd
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
 		if len(m.rows) > 0 {
 			m.statusMsg = ""
 			return m, m.startRefresh(m.rows[m.cursor].Name)
 		}
+		return m, nil
 	case key.Matches(msg, m.keys.RefreshAll):
 		m.statusMsg = ""
 		var cmds []tea.Cmd
@@ -157,7 +176,87 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 	}
+
+	if m.view == detailView {
+		return m.handleDetailKey(msg)
+	}
+	return m.handleListKey(msg)
+}
+
+func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case key.Matches(msg, m.keys.Down):
+		if m.cursor < len(m.rows)-1 {
+			m.cursor++
+		}
+	case key.Matches(msg, m.keys.Enter):
+		if len(m.rows) > 0 {
+			m.view = detailView
+			m.snapCursor = 0
+		}
+	}
 	return m, nil
+}
+
+func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Back):
+		m.view = listView
+	case key.Matches(msg, m.keys.Up):
+		if m.snapCursor > 0 {
+			m.snapCursor--
+		}
+	case key.Matches(msg, m.keys.Down):
+		if m.snapCursor < m.snapCount()-1 {
+			m.snapCursor++
+		}
+	case key.Matches(msg, m.keys.Enter):
+		// Enter on a snapshot shells in with that snapshot's context.
+		if snap := m.selectedSnapshot(); snap != nil {
+			if cmd := m.openShellCmd(snap); cmd != nil {
+				m.statusMsg = ""
+				return m, cmd
+			}
+		}
+	}
+	return m, nil
+}
+
+// openShellCmd builds the command that drops the user into a shell scoped to the
+// currently selected repo (and snap, when non-nil). It returns nil only when
+// there is no repo to act on. A failure to prepare the session is reported
+// asynchronously as a shellExitedMsg so the error surfaces in the footer rather
+// than being swallowed.
+func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
+	if len(m.rows) == 0 {
+		return nil
+	}
+	name := m.rows[m.cursor].Name
+	sess, err := m.app.ShellSession(name, snap)
+	if err != nil {
+		return func() tea.Msg { return shellExitedMsg{err: err} }
+	}
+	args := sess.InteractiveArgs()
+	c := exec.Command(args[0], args[1:]...)
+	c.Env = sess.Env
+	// tea.ExecProcess drops out of the alt-screen, attaches the child to the
+	// real terminal, and restores the TUI on exit. Cleanup removes the temp
+	// password file once the shell is gone.
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		_ = sess.Cleanup()
+		return shellExitedMsg{err: err}
+	})
+}
+
+func (m Model) applyShellExit(msg shellExitedMsg) Model {
+	if msg.err != nil {
+		m.statusMsg = "shell: " + firstLine(msg.err.Error())
+	}
+	return m
 }
 
 // startRefresh marks a repo pending and returns its refresh command, or nil if a

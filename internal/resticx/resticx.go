@@ -143,7 +143,7 @@ func (c *Client) buildEnv(t Target, creds Creds) []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-		"RESTIC_REPOSITORY=" + repoURL(t),
+		"RESTIC_REPOSITORY=" + RepoURL(t),
 		"RESTIC_CACHE_DIR=" + c.repoCacheDir(t),
 		"AWS_ACCESS_KEY_ID=" + creds.AccessKey,
 		"AWS_SECRET_ACCESS_KEY=" + creds.SecretKey,
@@ -163,10 +163,11 @@ func (c *Client) repoCacheDir(t Target) string {
 	return filepath.Join(c.CacheDir, "restic-cache", sanitize(t.Name))
 }
 
-// repoURL builds restic's S3-compatible repository URL. The endpoint scheme is
+// RepoURL builds restic's S3-compatible repository URL. The endpoint scheme is
 // preserved — restic needs https:// to talk to non-AWS endpoints like Hetzner
-// (plan §7). Form: s3:https://host[:port]/bucket[/path].
-func repoURL(t Target) string {
+// (plan §7). Form: s3:https://host[:port]/bucket[/path]. It is exported so the
+// shell-out (internal/app) can set RESTIC_REPOSITORY identically.
+func RepoURL(t Target) string {
 	endpoint := strings.TrimRight(t.Endpoint, "/")
 	u := "s3:" + endpoint + "/" + t.Bucket
 	if p := strings.Trim(t.Path, "/"); p != "" {

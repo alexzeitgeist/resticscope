@@ -16,6 +16,10 @@ type styles struct {
 	selected lipgloss.Style
 	meta     lipgloss.Style
 	errText  lipgloss.Style
+	heading  lipgloss.Style // detail-view section titles
+	label    lipgloss.Style // detail-view field labels
+	good     lipgloss.Style // a satisfied coverage line
+	bad      lipgloss.Style // a coverage gap
 	glyph    map[model.Status]lipgloss.Style
 }
 
@@ -33,6 +37,10 @@ func newStyles() styles {
 		selected: lipgloss.NewStyle().Bold(true),
 		meta:     lipgloss.NewStyle().Foreground(grey),
 		errText:  lipgloss.NewStyle().Foreground(red),
+		heading:  lipgloss.NewStyle().Bold(true),
+		label:    lipgloss.NewStyle().Foreground(grey).Width(labelWidth),
+		good:     lipgloss.NewStyle().Foreground(green),
+		bad:      lipgloss.NewStyle().Foreground(red),
 		glyph: map[model.Status]lipgloss.Style{
 			model.StatusGreen: lipgloss.NewStyle().Foreground(green),
 			model.StatusAmber: lipgloss.NewStyle().Foreground(amber),
@@ -43,8 +51,12 @@ func newStyles() styles {
 	}
 }
 
-// nameWidth is the fixed column width for repo names in the list.
-const nameWidth = 24
+// nameWidth is the fixed column width for repo names in the list; labelWidth is
+// the fixed column width for field labels in the detail view.
+const (
+	nameWidth  = 24
+	labelWidth = 10
+)
 
 // statusGlyph maps a status to its one-cell list glyph (plan §5).
 func statusGlyph(s model.Status) string {
