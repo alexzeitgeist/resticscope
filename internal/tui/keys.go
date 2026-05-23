@@ -13,6 +13,7 @@ type keyMap struct {
 	Shell      key.Binding
 	Refresh    key.Binding
 	RefreshAll key.Binding
+	Coverage   key.Binding
 	Help       key.Binding
 	Quit       key.Binding
 }
@@ -26,41 +27,53 @@ func defaultKeys() keyMap {
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
+		Coverage:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "coverage")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
 }
 
-// viewHelp adapts a keyMap to help.KeyMap for one view: the list shows
-// navigation + refresh-all + help; the detail view swaps in back and drops
-// refresh-all. Enter is present in both but means "open" in the list and
-// "shell here" in the detail view (its generic help text covers both).
+// viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
+// navigation, coverage, refresh-all, and help; the detail view swaps in back
+// and the snapshot-scoped keys; the coverage view shows only back and
+// refresh-all. Enter means "open" in the list and "shell here" in the detail
+// view (its generic help text covers both).
 type viewHelp struct {
-	keys   keyMap
-	detail bool
+	keys keyMap
+	view view
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
 	k := h.keys
-	if h.detail {
+	switch h.view {
+	case detailView:
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back, k.Quit}
+	case coverageView:
+		return []key.Binding{k.RefreshAll, k.Back, k.Quit}
+	default: // listView
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Coverage, k.Help, k.Quit}
 	}
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.RefreshAll, k.Help, k.Quit}
 }
 
 func (h viewHelp) FullHelp() [][]key.Binding {
 	k := h.keys
-	if h.detail {
+	switch h.view {
+	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down},
 			{k.Enter, k.Shell},
 			{k.Refresh, k.Back, k.Quit},
 		}
-	}
-	return [][]key.Binding{
-		{k.Up, k.Down},
-		{k.Enter, k.Shell},
-		{k.Refresh, k.RefreshAll},
-		{k.Help, k.Quit},
+	case coverageView:
+		return [][]key.Binding{
+			{k.RefreshAll, k.Back, k.Quit},
+		}
+	default: // listView
+		return [][]key.Binding{
+			{k.Up, k.Down},
+			{k.Enter, k.Shell},
+			{k.Refresh, k.RefreshAll, k.Coverage},
+			{k.Help, k.Quit},
+		}
 	}
 }

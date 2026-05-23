@@ -42,6 +42,23 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 	tw.Flush()
 }
 
+// formatCoverageRollup writes the cross-repo coverage aggregate: a headline
+// count plus one line per repo with an unmet expectation. It is appended to
+// `resticscope status --coverage` after the per-repo table, and stays plain
+// text so it remains scriptable (plan §9, §11).
+func formatCoverageRollup(w io.Writer, r app.CoverageRollup) {
+	fmt.Fprintf(w, "coverage: %d of %d repos fully covered\n", r.Covered, r.Total)
+	if r.FullyCovered() {
+		return
+	}
+	fmt.Fprintln(w)
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	for _, g := range r.Gaps {
+		fmt.Fprintf(tw, "  %s\t%s\n", g.Repo, g.Coverage.Summary())
+	}
+	tw.Flush()
+}
+
 // checkLine writes one aligned stage line for `resticscope check`, e.g.
 //
 //	config   ok      3 repos, 2 credentials

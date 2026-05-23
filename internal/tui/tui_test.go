@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -428,6 +429,41 @@ func TestCoverageAllMet(t *testing.T) {
 	m = update(t, m, press("enter"))
 	if view := m.View().Content; !strings.Contains(view, "all expectations met") {
 		t.Errorf("expected a satisfied coverage line\n---\n%s", view)
+	}
+}
+
+// --- coverage view ---
+
+// `c` opens the cross-repo coverage view; it lists repos with unmet
+// expectations across all repos, and `b` returns to the list.
+func TestCoverageViewListsGapsAndReturns(t *testing.T) {
+	a := detailApp(t)
+	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver", "laptop"} // laptop never observed -> gap
+	// repo-b has no cache, so it is stale -> also a gap.
+	m := newTestModel(t, a)
+
+	m = update(t, m, press("c"))
+	if m.view != coverageView {
+		t.Fatalf("view = %d, want coverageView", m.view)
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "0 of 2 repos fully covered") { // both repos have gaps
+		t.Errorf("coverage view missing headline count\n---\n%s", view)
+	}
+	// Each gap row keeps the repo name and its summary on one line, separated by
+	// whitespace — not concatenated into "repo-amissing hosts".
+	for _, want := range []*regexp.Regexp{
+		regexp.MustCompile(`repo-a +missing hosts: laptop`), // observed-host gap
+		regexp.MustCompile(`repo-b +stale`),                 // cold repo is stale
+	} {
+		if !want.MatchString(view) {
+			t.Errorf("coverage row not composed as %q\n---\n%s", want, view)
+		}
+	}
+
+	m = update(t, m, press("b"))
+	if m.view != listView {
+		t.Errorf("b did not return to the list view (view = %d)", m.view)
 	}
 }
 

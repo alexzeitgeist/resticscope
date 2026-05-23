@@ -77,3 +77,24 @@ func TestComputeCoverage(t *testing.T) {
 		}
 	})
 }
+
+func TestCoverageSummary(t *testing.T) {
+	if got := (Coverage{}).Summary(); got != "" {
+		t.Errorf("covered Summary = %q, want empty", got)
+	}
+
+	c := Coverage{
+		MissingHosts: []string{"laptop"},
+		MissingPaths: []string{"/srv"},
+		MissingTags:  []string{"weekly"},
+		Stale:        true,
+	}
+	want := "missing hosts: laptop; missing paths: /srv; missing tags: weekly; stale"
+	if got := c.Summary(); got != want {
+		t.Errorf("Summary = %q, want %q", got, want)
+	}
+
+	if got := (Coverage{Stale: true}).Summary(); got != "stale" {
+		t.Errorf("stale-only Summary = %q, want %q", got, "stale")
+	}
+}

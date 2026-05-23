@@ -25,6 +25,7 @@ type view int
 const (
 	listView view = iota
 	detailView
+	coverageView
 )
 
 // Model is the root Bubble Tea model. It drives both the list view and the
@@ -145,6 +146,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // (quit, help, shell, refresh) are handled first; anything else is routed to the
 // active view's handler, where ↑/↓ and enter carry view-specific meaning.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Keys that mean the same thing in every view: quit, help, and refresh-all
+	// (which acts on all repos, so it needs no per-view cursor).
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
@@ -153,6 +156,24 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Help):
 		m.help.ShowAll = !m.help.ShowAll
 		return m, nil
+	case key.Matches(msg, m.keys.RefreshAll):
+		m.statusMsg = ""
+		var cmds []tea.Cmd
+		for _, r := range m.rows {
+			if cmd := m.startRefresh(r.Name); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		return m, tea.Batch(cmds...)
+	}
+
+	// The coverage view has no per-repo cursor, so the repo-scoped keys below
+	// (shell, refresh-current) do not apply there.
+	if m.view == coverageView {
+		return m.handleCoverageKey(msg)
+	}
+
+	switch {
 	case key.Matches(msg, m.keys.Shell):
 		// `s` shells into the current repo with no snapshot context.
 		if cmd := m.openShellCmd(nil); cmd != nil {
@@ -166,21 +187,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.startRefresh(m.rows[m.cursor].Name)
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.RefreshAll):
-		m.statusMsg = ""
-		var cmds []tea.Cmd
-		for _, r := range m.rows {
-			if cmd := m.startRefresh(r.Name); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-		return m, tea.Batch(cmds...)
 	}
 
 	if m.view == detailView {
 		return m.handleDetailKey(msg)
 	}
 	return m.handleListKey(msg)
+}
+
+// handleCoverageKey handles input while the cross-repo coverage view is showing.
+// Only navigation back to the list is meaningful; quit, help, and refresh-all
+// are handled globally before this is reached.
+func (m Model) handleCoverageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Back) {
+		m.view = listView
+	}
+	return m, nil
 }
 
 func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -198,6 +220,8 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = detailView
 			m.snapCursor = 0
 		}
+	case key.Matches(msg, m.keys.Coverage):
+		m.view = coverageView
 	}
 	return m, nil
 }

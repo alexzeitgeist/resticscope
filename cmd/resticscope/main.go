@@ -53,6 +53,7 @@ func usage(w io.Writer) {
 Usage:
   resticscope [tui] [--config PATH]                launch the interactive TUI (default)
   resticscope status [--config PATH] [--refresh]   one line per repo from cache
+  resticscope status --coverage                    add a cross-repo coverage rollup
   resticscope check [--config PATH]                validate config, secrets, restic, and repo reachability
   resticscope exec [--config PATH] <repo>          open a shell scoped to <repo> (RESTIC_*/AWS_* preloaded)
   resticscope exec [--config PATH] <repo> -- cmd   run cmd in that environment instead of a shell

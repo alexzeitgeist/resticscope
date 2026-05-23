@@ -47,13 +47,21 @@ func (m Model) View() tea.View {
 		return tea.NewView("")
 	}
 	var body string
-	if m.view == detailView && len(m.rows) > 0 {
+	switch {
+	case m.view == coverageView:
+		r := app.Rollup(m.rows)
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.coverageHeaderView(r),
+			"",
+			m.coverageBody(r),
+		)
+	case m.view == detailView && len(m.rows) > 0:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),
 			"",
 			m.detailBody(),
 		)
-	} else {
+	default:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.headerView(),
 			"",
@@ -142,7 +150,7 @@ func (m Model) summary(row app.RepoStatus) string {
 }
 
 func (m Model) footerView() string {
-	helpView := m.help.View(viewHelp{keys: m.keys, detail: m.view == detailView})
+	helpView := m.help.View(viewHelp{keys: m.keys, view: m.view})
 	if m.statusMsg != "" {
 		return m.styles.errText.Render(m.statusMsg) + "\n" + helpView
 	}

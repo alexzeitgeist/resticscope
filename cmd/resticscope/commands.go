@@ -35,6 +35,7 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
 	refresh := fs.Bool("refresh", false, "refresh from S3/restic before printing (slow; hits the network)")
+	coverage := fs.Bool("coverage", false, "also print a cross-repo coverage rollup (missing hosts/paths/tags, stale repos)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -70,6 +71,10 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		rows := a.RowsFromStates(states)
 		formatStatusTable(stdout, rows, a.Clock.Now())
+		if *coverage {
+			fmt.Fprintln(stdout)
+			formatCoverageRollup(stdout, app.Rollup(rows))
+		}
 		return refreshExitCode(rows, err)
 	}
 
@@ -79,6 +84,10 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 	formatStatusTable(stdout, rows, a.Clock.Now())
+	if *coverage {
+		fmt.Fprintln(stdout)
+		formatCoverageRollup(stdout, app.Rollup(rows))
+	}
 	return app.WorstExitCode(rows)
 }
 

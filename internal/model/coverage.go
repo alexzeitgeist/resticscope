@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Expectation is a repo's declared coverage contract, derived from the
 // config's expected_* fields. It is the input to ComputeCoverage.
@@ -26,6 +29,31 @@ type Coverage struct {
 func (c Coverage) Covered() bool {
 	return len(c.MissingHosts) == 0 && len(c.MissingPaths) == 0 &&
 		len(c.MissingTags) == 0 && !c.Stale
+}
+
+// Summary is a one-line, plain-text description of the unmet expectations, or ""
+// when coverage is fully met. Parts are ordered hosts, paths, tags, then
+// staleness, so the output is stable. It is shared by the cross-repo rollup in
+// `resticscope status` and the TUI coverage view; the detail view styles each
+// gap separately and does not use it.
+func (c Coverage) Summary() string {
+	if c.Covered() {
+		return ""
+	}
+	var parts []string
+	if len(c.MissingHosts) > 0 {
+		parts = append(parts, "missing hosts: "+strings.Join(c.MissingHosts, ", "))
+	}
+	if len(c.MissingPaths) > 0 {
+		parts = append(parts, "missing paths: "+strings.Join(c.MissingPaths, ", "))
+	}
+	if len(c.MissingTags) > 0 {
+		parts = append(parts, "missing tags: "+strings.Join(c.MissingTags, ", "))
+	}
+	if c.Stale {
+		parts = append(parts, "stale")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // ComputeCoverage diffs declared expectations against observed state. The
