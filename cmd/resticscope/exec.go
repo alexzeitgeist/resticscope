@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"slices"
+	"strings"
 
 	"resticscope/internal/app"
 	"resticscope/internal/cache"
@@ -68,6 +69,9 @@ func cmdExec(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // parseExecArgs splits the exec arguments into flags, the repo name, and an
 // optional command following `--`. Everything after the first `--` is the
 // command to run verbatim; the rest is parsed for flags and the positional repo.
+// Exactly one positional repo may precede `--`: extra bare words are rejected
+// (almost always a forgotten `--`) rather than silently dropped, since opening a
+// shell for the first word and discarding the rest is hard to diagnose.
 func parseExecArgs(args []string, errOut io.Writer) (cfgPath, repo string, cmdArgs []string, ok bool) {
 	if i := slices.Index(args, "--"); i >= 0 {
 		cmdArgs = args[i+1:]
@@ -80,8 +84,18 @@ func parseExecArgs(args []string, errOut io.Writer) (cfgPath, repo string, cmdAr
 	if err := fs.Parse(args); err != nil {
 		return "", "", nil, false
 	}
-	if fs.NArg() < 1 {
+	switch {
+	case fs.NArg() == 0:
 		fmt.Fprintln(errOut, "usage: resticscope exec [--config PATH] <repo> [-- command args...]")
+		return "", "", nil, false
+	case fs.NArg() > 1:
+		// Extra positional args almost always mean a forgotten `--`: the user
+		// typed `exec repo restic snapshots` meaning to run a command. Reject it
+		// and show exactly how to express that intent rather than discarding the
+		// tail and dropping into an interactive shell for the first word.
+		extra := strings.Join(fs.Args()[1:], " ")
+		fmt.Fprintf(errOut, "exec: unexpected arguments after repo %q: %s\n", fs.Arg(0), extra)
+		fmt.Fprintf(errOut, "to run a command in the repo shell, separate it with --:\n  resticscope exec %s -- %s\n", fs.Arg(0), extra)
 		return "", "", nil, false
 	}
 	return *cfg, fs.Arg(0), cmdArgs, true

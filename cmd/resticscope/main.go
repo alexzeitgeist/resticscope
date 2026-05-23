@@ -60,7 +60,7 @@ Usage:
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
 check  exit codes: 0 all passed, 1 problems found, 2 could not run the check.
-exec   exit codes: the command's own exit code; 2 on setup failure.
+exec   exit codes: the command's own exit code; 1 if it cannot be launched; 2 on setup failure.
 `)
 }
 

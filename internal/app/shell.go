@@ -124,7 +124,13 @@ func resolveShell(configured, envShell string) string {
 // ownedShellVars are the environment keys the shell-out sets itself. Any
 // inherited copy is stripped from the base so the child sees exactly one,
 // unambiguous value for each — in particular so a stale RESTIC_PASSWORD in the
-// parent can't override file mode's RESTIC_PASSWORD_FILE.
+// parent can't override file mode's RESTIC_PASSWORD_FILE. AWS_SESSION_TOKEN is
+// stripped even though we never set one: restic's S3 credential chain reads it
+// from the environment alongside the access/secret keys, so a leftover token
+// from some other AWS context would be paired with our fresh static keys and
+// break authentication. (AWS_PROFILE/AWS_CONFIG_FILE are intentionally left
+// alone: explicit env keys take precedence over the profile/file provider, so
+// they don't affect restic, and the user may want them for other tooling.)
 var ownedShellVars = map[string]bool{
 	"RESTIC_REPOSITORY":       true,
 	"RESTIC_PASSWORD":         true,
@@ -132,6 +138,7 @@ var ownedShellVars = map[string]bool{
 	"RESTIC_PASSWORD_COMMAND": true,
 	"AWS_ACCESS_KEY_ID":       true,
 	"AWS_SECRET_ACCESS_KEY":   true,
+	"AWS_SESSION_TOKEN":       true,
 	"AWS_DEFAULT_REGION":      true,
 	"RESTICSCOPE_REPO":        true,
 	"RESTICSCOPE_SNAPSHOT_ID": true,

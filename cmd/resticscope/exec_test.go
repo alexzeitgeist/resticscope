@@ -63,6 +63,16 @@ func TestParseExecArgs(t *testing.T) {
 			args:   []string{"--", "echo", "hi"},
 			wantOK: false,
 		},
+		{
+			name:   "extra bare args (forgotten --) are rejected",
+			args:   []string{"repo-a", "restic", "snapshots"},
+			wantOK: false,
+		},
+		{
+			name:   "extra bare args before a real command are rejected",
+			args:   []string{"repo-a", "typo", "--", "restic", "snapshots"},
+			wantOK: false,
+		},
 	}
 
 	for _, tt := range tests {

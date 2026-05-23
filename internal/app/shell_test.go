@@ -97,6 +97,7 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 		"TERM=xterm",
 		"RESTIC_PASSWORD=stale-leftover", // a stale value must not survive
 		"AWS_ACCESS_KEY_ID=old-key",
+		"AWS_SESSION_TOKEN=stale-session-token", // never paired with our static keys
 		"RESTIC_REPOSITORY=s3:old",
 	}
 	env := buildShellEnv(base, shellTarget, shellCreds, nil, "file", "/tmp/pw")
@@ -107,6 +108,9 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	}
 	if strings.Contains(joined, "old-key") || strings.Contains(joined, "s3:old") {
 		t.Error("inherited owned vars must be replaced, not duplicated")
+	}
+	if _, ok := envValue(env, "AWS_SESSION_TOKEN"); ok {
+		t.Error("inherited AWS_SESSION_TOKEN must be stripped: pairing it with our static keys breaks S3 auth")
 	}
 	// Exactly one RESTIC_REPOSITORY / AWS_ACCESS_KEY_ID, holding our value.
 	if n := strings.Count(joined, "RESTIC_REPOSITORY="); n != 1 {
