@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -27,12 +28,19 @@ func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error)
 
 // RefreshAll refreshes every configured repo concurrently, bounded by
 // global.parallelism, and persists each result. Results are returned in config
-// order. Per-repo failures are captured in their states, not returned as an
-// error; the returned error is non-nil only if the context is cancelled.
+// order and are always the live refresh outcome. Per-repo restic/secrets
+// failures are captured in their states, not returned as an error. The returned
+// error is non-nil if the context is cancelled or any result could not be
+// persisted — a save failure must be surfaced, never swallowed, so callers do
+// not mistake stale cache for a fresh refresh.
 func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 	results := make([]model.RepoState, len(a.Cfg.Repos))
 	sem := make(chan struct{}, a.parallelism())
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		saveErrs []error
+	)
 
 	for i := range a.Cfg.Repos {
 		wg.Add(1)
@@ -51,12 +59,16 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 			state := a.refreshOne(ctx, r)
 			if err := a.Cache.Save(ctx, r.Name, state); err != nil {
 				a.logger().Warn("cache save failed", "repo", r.Name, "err", err)
+				mu.Lock()
+				saveErrs = append(saveErrs, fmt.Errorf("persist %q: %w", r.Name, err))
+				mu.Unlock()
 			}
 			results[i] = state
 		}(i, a.Cfg.Repos[i])
 	}
 	wg.Wait()
-	return results, ctx.Err()
+
+	return results, errors.Join(append([]error{ctx.Err()}, saveErrs...)...)
 }
 
 // refreshOne does the actual work for a repo and returns its new state. It never
@@ -88,6 +100,11 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 
 	snaps, err := a.Restic.Snapshots(ctx, target, creds)
 	if err != nil {
+		// Phase 0: any restic failure (including a lock) is recorded as an
+		// error. The lock-age branch in EvaluateStatus stays unit-tested but
+		// dormant here; wiring it needs LockedSince carry-forward from the
+		// prior cached state, which belongs with a deliberate history-
+		// preserving refresh rather than this path.
 		state.LastError = err.Error()
 		state.Status = model.EvaluateStatus(now, params, state)
 		return state

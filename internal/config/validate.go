@@ -3,9 +3,16 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
+
+// validRepoName restricts repo names to characters that survive unchanged
+// through cache-file and restic-cache-dir sanitization. Without this, distinct
+// names like "foo/bar" and "foo:bar" would both collapse to "foo_bar" and share
+// (and clobber) each other's on-disk state.
+var validRepoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Validate checks the normalized config for structural problems: missing
 // required fields, duplicate or dangling names, and bad enum values. It does
@@ -50,6 +57,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("duplicate repo name %q", r.Name))
 		default:
 			repoNames[r.Name] = true
+		}
+		if r.Name != "" && !validRepoName.MatchString(r.Name) {
+			errs = append(errs, fmt.Errorf("repo %q: name may contain only letters, digits, '.', '_' and '-' (it becomes a cache filename)", r.Name))
 		}
 		if r.Bucket == "" {
 			errs = append(errs, fmt.Errorf("repo %q: bucket is required", r.Name))

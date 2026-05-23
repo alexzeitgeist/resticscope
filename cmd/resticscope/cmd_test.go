@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"resticscope/internal/app"
 	"resticscope/internal/cache"
 	"resticscope/internal/model"
 )
@@ -169,6 +171,27 @@ func TestNoArgsShowsUsage(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "Usage:") {
 		t.Errorf("expected usage, got %q", errBuf.String())
+	}
+}
+
+// A refresh whose repos are all healthy but whose results could not be
+// persisted must still exit 2 ("...or a failure"), not 0 — otherwise cron
+// callers miss that the cache is now stale. The end-to-end --refresh path needs
+// a real restic and a save-erroring cache, so the policy is tested directly.
+func TestRefreshExitCodeFloorsOnFailure(t *testing.T) {
+	green := []app.RepoStatus{{Status: model.StatusGreen}, {Status: model.StatusGreen}}
+	if got := refreshExitCode(green, nil); got != 0 {
+		t.Errorf("all green, no failure = %d, want 0", got)
+	}
+	if got := refreshExitCode(green, errors.New(`persist "repo-a": disk full`)); got != 2 {
+		t.Errorf("all green but save failed = %d, want 2", got)
+	}
+	amber := []app.RepoStatus{{Status: model.StatusAmber}}
+	if got := refreshExitCode(amber, errors.New("boom")); got != 2 {
+		t.Errorf("amber + failure = %d, want 2", got)
+	}
+	if got := refreshExitCode(amber, nil); got != 1 {
+		t.Errorf("amber, no failure = %d, want 1", got)
 	}
 }
 

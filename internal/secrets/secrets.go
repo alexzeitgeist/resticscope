@@ -44,15 +44,15 @@ type Store struct {
 type RunFunc func(ctx context.Context, shell, command string) (stdout, stderr []byte, err error)
 
 // Load runs the secrets_command and parses its output into a Store. On a
-// non-zero exit it surfaces stderr but never stdout, because stdout carries the
-// secret JSON.
+// non-zero exit it surfaces neither stdout (the secret JSON) nor stderr: no
+// Store — and therefore no Redactor — exists yet on this path, and a failing
+// secrets provider can print secret fragments to stderr (shell tracing, a
+// decrypt error echoing its input, a CLI dumping the item). Only the
+// payload-free exit error is reported.
 func Load(ctx context.Context, run RunFunc, shell, command string) (*Store, error) {
-	stdout, stderr, err := run(ctx, shell, command)
+	stdout, _, err := run(ctx, shell, command)
 	if err != nil {
-		if len(stderr) > 0 {
-			return nil, fmt.Errorf("secrets_command failed: %w (stderr: %s)", err, stderr)
-		}
-		return nil, fmt.Errorf("secrets_command failed: %w", err)
+		return nil, fmt.Errorf("secrets_command failed: %w (stderr suppressed; it may contain secrets — run the command manually to diagnose)", err)
 	}
 	return Parse(stdout)
 }

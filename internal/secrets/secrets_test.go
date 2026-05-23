@@ -122,19 +122,31 @@ func TestParseErrorOmitsPayload(t *testing.T) {
 }
 
 func TestLoadNonZeroExit(t *testing.T) {
-	const secretStdout = "should-never-appear"
+	const (
+		secretStdout = "should-never-appear"
+		// A realistic failing provider can spill secret fragments to stderr.
+		secretStderr = "gpg: decryption failed using key AK-LEAKED-123 (restic_password=hunter2)"
+	)
 	run := func(ctx context.Context, shell, command string) ([]byte, []byte, error) {
-		return []byte(secretStdout), []byte("gpg: decryption failed"), errors.New("exit status 2")
+		return []byte(secretStdout), []byte(secretStderr), errors.New("exit status 2")
 	}
 	_, err := Load(context.Background(), run, "/bin/sh", "pass show x")
 	if err == nil {
 		t.Fatal("expected error from non-zero exit")
 	}
+	// Neither stdout (the secret payload) nor stderr (which can carry secret
+	// fragments) may appear: no Redactor exists on this failure path.
 	if strings.Contains(err.Error(), secretStdout) {
 		t.Errorf("error leaked stdout (secret payload): %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), "gpg: decryption failed") {
-		t.Errorf("error should surface stderr, got %q", err.Error())
+	for _, leak := range []string{"AK-LEAKED-123", "hunter2", "gpg: decryption failed"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error leaked secrets_command stderr (%q): %q", leak, err.Error())
+		}
+	}
+	// The payload-free exit error must still be reported so the user can debug.
+	if !strings.Contains(err.Error(), "exit status 2") {
+		t.Errorf("error should report the exit failure, got %q", err.Error())
 	}
 }
 

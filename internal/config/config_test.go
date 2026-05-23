@@ -171,6 +171,22 @@ expected_frequency = "24h"
 			wantSub: "bucket_lookup must be",
 		},
 		{
+			name: "repo name with path-unsafe characters",
+			toml: `
+[global]
+secrets_command = "x"
+[[credentials]]
+name = "cred-a"
+endpoint = "https://e"
+[[repos]]
+name = "foo/bar"
+credential = "cred-a"
+bucket = "b"
+expected_frequency = "24h"
+`,
+			wantSub: "name may contain only",
+		},
+		{
 			name: "zero expected_frequency",
 			toml: `
 [global]

@@ -59,10 +59,16 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		a.Secrets = store
 		a.Restic = client
-		if _, err := a.RefreshAll(ctx); err != nil {
+		states, err := a.RefreshAll(ctx)
+		if err != nil {
+			// The live states are still valid. A persistence failure must not
+			// silently downgrade us to stale cache, so warn and render the
+			// fresh results directly; the exit code reflects live health.
 			fmt.Fprintf(stderr, "refresh: %v\n", err)
-			return 2
 		}
+		rows := a.RowsFromStates(states)
+		formatStatusTable(stdout, rows, a.Clock.Now())
+		return refreshExitCode(rows, err)
 	}
 
 	rows, err := a.Statuses(ctx)
@@ -72,6 +78,19 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	formatStatusTable(stdout, rows, a.Clock.Now())
 	return app.WorstExitCode(rows)
+}
+
+// refreshExitCode maps the live rows plus any refresh-level failure to a process
+// exit code. A refresh failure (e.g. the cache could not be persisted) floors
+// the code at 2 even when every repo is green, honoring the documented
+// "...or a failure" contract: a successful-looking refresh whose result could
+// not be saved must not exit 0 and mislead cron/shell callers.
+func refreshExitCode(rows []app.RepoStatus, refreshErr error) int {
+	code := app.WorstExitCode(rows)
+	if refreshErr != nil && code < 2 {
+		code = 2
+	}
+	return code
 }
 
 // refreshDeps runs the secrets_command, validates the resolved secrets against

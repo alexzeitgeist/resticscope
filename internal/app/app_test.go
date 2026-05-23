@@ -25,6 +25,7 @@ type fakeCache struct {
 	states  map[string]model.RepoState
 	loadErr map[string]error
 	saved   map[string]model.RepoState
+	saveErr error // if set, every Save fails with it
 }
 
 func newFakeCache() *fakeCache {
@@ -47,6 +48,9 @@ func (f *fakeCache) Load(ctx context.Context, name string) (model.RepoState, err
 func (f *fakeCache) Save(ctx context.Context, name string, state model.RepoState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.saveErr != nil {
+		return f.saveErr
+	}
 	f.saved[name] = state
 	return nil
 }
@@ -262,6 +266,35 @@ func TestRefreshAll(t *testing.T) {
 		if _, ok := fc.saved[name]; !ok {
 			t.Errorf("%q not persisted", name)
 		}
+	}
+}
+
+// A failed cache write must surface as an error AND the returned states must be
+// the live refresh, never the (possibly green) stale cache. This guards the
+// `status --refresh` contract: refresh means live state, even when the disk is
+// unwritable.
+func TestRefreshAllSurfacesSaveFailureWithLiveState(t *testing.T) {
+	fc := newFakeCache()
+	// An old green cache entry that must NOT be what we report after refresh.
+	fc.states["repo-a"] = model.RepoState{Name: "repo-a", RefreshedAt: now.Add(-time.Hour), LastSnapshot: now.Add(-2 * time.Hour)}
+	fc.saveErr = errors.New("disk full")
+
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository is locked (exit 11)")},
+	}
+	states, err := a.RefreshAll(context.Background())
+	if err == nil {
+		t.Fatal("expected RefreshAll to surface the cache save failure")
+	}
+	if states[0].Status != model.StatusError {
+		t.Errorf("status = %v, want error (live), not stale green", states[0].Status)
+	}
+	if rows := a.RowsFromStates(states); WorstExitCode(rows) != 2 {
+		t.Errorf("exit code from live rows = %d, want 2 despite the save failure", WorstExitCode(a.RowsFromStates(states)))
 	}
 }
 
