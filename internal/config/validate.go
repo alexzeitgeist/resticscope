@@ -1,0 +1,68 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+)
+
+var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
+
+// Validate checks the normalized config for structural problems: missing
+// required fields, duplicate or dangling names, and bad enum values. It does
+// not contact S3, restic, or the secrets_command.
+func (c *Config) Validate() error {
+	var errs []error
+
+	if c.Global.SecretsCommand == "" {
+		errs = append(errs, errors.New("global.secrets_command is required"))
+	}
+	if m := c.Global.ShellPasswordMode; m != "file" && m != "env" {
+		errs = append(errs, fmt.Errorf("global.shell_password_mode must be \"file\" or \"env\", got %q", m))
+	}
+
+	credNames := map[string]bool{}
+	for i, cr := range c.Credentials {
+		switch {
+		case cr.Name == "":
+			errs = append(errs, fmt.Errorf("credentials[%d]: name is required", i))
+		case credNames[cr.Name]:
+			errs = append(errs, fmt.Errorf("duplicate credential name %q", cr.Name))
+		default:
+			credNames[cr.Name] = true
+		}
+		if cr.Endpoint == "" {
+			errs = append(errs, fmt.Errorf("credential %q: endpoint is required", cr.Name))
+		}
+		if !validBucketLookup[cr.BucketLookup] {
+			errs = append(errs, fmt.Errorf("credential %q: bucket_lookup must be auto|dns|path, got %q", cr.Name, cr.BucketLookup))
+		}
+	}
+
+	if len(c.Repos) == 0 {
+		errs = append(errs, errors.New("no repos configured"))
+	}
+	repoNames := map[string]bool{}
+	for i, r := range c.Repos {
+		switch {
+		case r.Name == "":
+			errs = append(errs, fmt.Errorf("repos[%d]: name is required", i))
+		case repoNames[r.Name]:
+			errs = append(errs, fmt.Errorf("duplicate repo name %q", r.Name))
+		default:
+			repoNames[r.Name] = true
+		}
+		if r.Bucket == "" {
+			errs = append(errs, fmt.Errorf("repo %q: bucket is required", r.Name))
+		}
+		if r.Credential == "" {
+			errs = append(errs, fmt.Errorf("repo %q: credential is required", r.Name))
+		} else if !credNames[r.Credential] {
+			errs = append(errs, fmt.Errorf("repo %q: credential %q does not match any [[credentials]] block", r.Name, r.Credential))
+		}
+		if r.ExpectedFrequency <= 0 {
+			errs = append(errs, fmt.Errorf("repo %q: expected_frequency must be a positive duration (e.g. \"24h\")", r.Name))
+		}
+	}
+
+	return errors.Join(errs...)
+}

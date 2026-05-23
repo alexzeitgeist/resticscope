@@ -1,0 +1,12 @@
+# Build output
+/resticscope
+
+# Vendored restic reference source (nested module)
+/upstream/
+
+# Local dev secrets and config
+/test-secrets.json
+*.local.toml
+
+# Go test binaries
+*.test
