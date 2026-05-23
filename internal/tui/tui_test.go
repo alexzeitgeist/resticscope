@@ -513,3 +513,300 @@ func findRow(m Model, name string) app.RepoStatus {
 	}
 	return app.RepoStatus{}
 }
+
+// --- filter & sort ---
+
+func names(rows []app.RepoStatus) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Name
+	}
+	return out
+}
+
+func visNames(m Model) string { return strings.Join(names(m.visibleRows()), ",") }
+
+func typeFilter(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	for _, r := range s {
+		m = update(t, m, press(string(r)))
+	}
+	return m
+}
+
+func TestSortRowsOrders(t *testing.T) {
+	base := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	src := []app.RepoStatus{
+		{Name: "a", State: model.RepoState{LastSnapshot: base.Add(-1 * time.Hour), TotalSize: 100}},
+		{Name: "b", State: model.RepoState{LastSnapshot: base.Add(-5 * time.Hour), TotalSize: 300}},
+		{Name: "c", State: model.RepoState{}}, // never refreshed: zero time, zero size
+	}
+	clone := func() []app.RepoStatus { return append([]app.RepoStatus(nil), src...) }
+
+	for _, tc := range []struct {
+		mode sortMode
+		want string
+	}{
+		{sortConfig, "a,b,c"}, // untouched
+		{sortStale, "c,b,a"},  // oldest/never first
+		{sortSize, "b,a,c"},   // largest first
+	} {
+		rows := clone()
+		sortRows(rows, tc.mode)
+		if got := strings.Join(names(rows), ","); got != tc.want {
+			t.Errorf("sortRows(%v) = %q, want %q", tc.mode, got, tc.want)
+		}
+	}
+	// sortConfig must not reorder the caller's slice contents.
+	if got := strings.Join(names(src), ","); got != "a,b,c" {
+		t.Errorf("source slice mutated by sortConfig: %q", got)
+	}
+}
+
+func TestMatchRepo(t *testing.T) {
+	meta := rowMeta{region: "fsn1", labels: []string{"high", "home"}}
+	for _, tc := range []struct {
+		name, q string
+		want    bool
+	}{
+		{"homeserver", "", true},     // empty query matches everything
+		{"homeserver", "serv", true}, // name substring
+		{"Homeserver", "home", true}, // case-insensitive name
+		{"laptop", "fsn1", true},     // region
+		{"laptop", "high", true},     // label value
+		{"laptop", "prod", false},    // no field matches
+	} {
+		if got := matchRepo(tc.name, meta, tc.q); got != tc.want {
+			t.Errorf("matchRepo(%q, %q) = %v, want %v", tc.name, tc.q, got, tc.want)
+		}
+	}
+}
+
+// `/` opens the filter input, typing narrows the list to matching repos, and the
+// header reflects the narrowed count.
+func TestFilterNarrowsByName(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	if !m.filtering {
+		t.Fatal("/ should open the filter input")
+	}
+	m = typeFilter(t, m, "repo-b")
+	if got := visNames(m); got != "repo-b" {
+		t.Fatalf("visible rows = %q, want repo-b", got)
+	}
+	v := m.View().Content
+	if !strings.Contains(v, "1 of 2 repos") {
+		t.Errorf("header missing narrowed count\n---\n%s", v)
+	}
+	if !strings.Contains(v, "/repo-b") {
+		t.Errorf("footer missing the filter prompt\n---\n%s", v)
+	}
+}
+
+// Filtering also matches a repo's labels, not just its name.
+func TestFilterMatchesLabel(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	m = typeFilter(t, m, "home") // repo-a has label env=home; repo-b has no labels
+	if got := visNames(m); got != "repo-a" {
+		t.Fatalf("filter 'home' -> %q, want repo-a", got)
+	}
+}
+
+// While the filter input is open every key is literal text — "q" must not quit,
+// "r" must not refresh — and backspace edits the query.
+func TestFilterCapturesKeysAndBackspace(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+
+	next, cmd := m.Update(press("q"))
+	m = next.(Model)
+	if m.quitting || cmd != nil {
+		t.Fatal("q while filtering should not quit")
+	}
+	m = typeFilter(t, m, "rb") // now filter == "qrb"
+	if m.filter != "qrb" {
+		t.Fatalf("filter = %q, want qrb", m.filter)
+	}
+	if len(m.pending) != 0 {
+		t.Errorf("a refresh was triggered while typing: %v", m.pending)
+	}
+	m = update(t, m, press("backspace"))
+	m = update(t, m, press("backspace"))
+	if m.filter != "q" {
+		t.Errorf("after two backspaces filter = %q, want q", m.filter)
+	}
+}
+
+// Enter applies the filter (keeps the query, leaves input mode); esc clears it.
+func TestFilterApplyAndClear(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	m = typeFilter(t, m, "repo-a")
+	m = update(t, m, press("enter"))
+	if m.filtering {
+		t.Error("enter should leave the filter input mode")
+	}
+	if m.filter != "repo-a" {
+		t.Errorf("enter should keep the query, got %q", m.filter)
+	}
+	if got := visNames(m); got != "repo-a" {
+		t.Errorf("applied filter visible = %q, want repo-a", got)
+	}
+
+	m = update(t, m, press("/")) // reopen with the query still set
+	m = update(t, m, press("esc"))
+	if m.filtering {
+		t.Error("esc should leave the filter input mode")
+	}
+	if m.filter != "" {
+		t.Errorf("esc should clear the query, got %q", m.filter)
+	}
+	if got := visNames(m); got != "repo-a,repo-b" {
+		t.Errorf("after clearing, visible = %q, want both repos", got)
+	}
+}
+
+// ctrl+c quits even while the filter input is open.
+func TestFilterCtrlCStillQuits(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if !next.(Model).quitting {
+		t.Error("ctrl+c should quit while filtering")
+	}
+	if cmd == nil {
+		t.Fatal("expected a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c did not produce tea.QuitMsg")
+	}
+}
+
+// A filter that matches nothing shows a message and leaves no row selectable.
+func TestFilterNoMatch(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	m = typeFilter(t, m, "zzz")
+	if _, ok := m.currentRow(); ok {
+		t.Error("currentRow should report no selection when nothing matches")
+	}
+	if v := m.View().Content; !strings.Contains(v, "no repositories match") {
+		t.Errorf("expected an empty-match notice\n---\n%s", v)
+	}
+}
+
+// `o` cycles config -> staleness -> size -> config, reorders accordingly, and
+// keeps the cursor on the same repo across the reorder. The header names the
+// active sort.
+func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour), TotalSize: 100},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour), TotalSize: 900},
+	})
+	m := newTestModel(t, a)
+	if got := visNames(m); got != "repo-a,repo-b" {
+		t.Fatalf("default order = %q, want config order", got)
+	}
+	m = update(t, m, press("j")) // select repo-b
+	if r, _ := m.currentRow(); r.Name != "repo-b" {
+		t.Fatalf("cursor should be on repo-b")
+	}
+
+	m = update(t, m, press("o")) // staleness: repo-b (-9h) before repo-a (-1h)
+	if m.sortMode != sortStale {
+		t.Fatalf("sortMode = %v, want staleness", m.sortMode)
+	}
+	if got := visNames(m); got != "repo-b,repo-a" {
+		t.Errorf("staleness order = %q, want repo-b,repo-a", got)
+	}
+	if r, _ := m.currentRow(); r.Name != "repo-b" || m.cursor != 0 {
+		t.Errorf("sort lost the selection (cursor=%d, row=%s)", m.cursor, r.Name)
+	}
+	if !strings.Contains(m.View().Content, "sort: staleness") {
+		t.Errorf("header should name the active sort")
+	}
+
+	m = update(t, m, press("o")) // size: repo-b (900) before repo-a (100)
+	if m.sortMode != sortSize || visNames(m) != "repo-b,repo-a" {
+		t.Errorf("size sort wrong: mode=%v order=%q", m.sortMode, visNames(m))
+	}
+
+	m = update(t, m, press("o")) // back to config order
+	if m.sortMode != sortConfig || visNames(m) != "repo-a,repo-b" {
+		t.Errorf("cycle did not return to config order: mode=%v order=%q", m.sortMode, visNames(m))
+	}
+}
+
+// Under a non-config sort, a background refresh that reorders the list must not
+// move the selection: the cursor stays on the same repo by name, the same way
+// cycleSort anchors it. Regression for the applyRefresh cursor-drift bug.
+func TestSortedSelectionSurvivesRefreshReorder(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 900},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 100},
+	})
+	m := newTestModel(t, a)
+	m.sortMode = sortSize // repo-a (900) sorts first, so cursor 0 is repo-a
+	if r, _ := m.currentRow(); r.Name != "repo-a" {
+		t.Fatalf("precondition: cursor should be on repo-a, got %s", r.Name)
+	}
+
+	// repo-b grows past repo-a; the visible order flips to repo-b, repo-a.
+	bigger := app.RepoStatus{Name: "repo-b", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 9000}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: bigger})
+
+	if got := visNames(m); got != "repo-b,repo-a" {
+		t.Fatalf("order after refresh = %q, want repo-b,repo-a", got)
+	}
+	if r, ok := m.currentRow(); !ok || r.Name != "repo-a" {
+		t.Errorf("selection drifted to %q after reorder, want repo-a (cursor=%d)", r.Name, m.cursor)
+	}
+}
+
+// Repo-scoped actions follow the filtered selection: with only repo-b visible,
+// enter opens the detail view pinned to repo-b and refresh acts on repo-b.
+func TestFilteredSelectionDrivesActions(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("/"))
+	m = typeFilter(t, m, "repo-b")
+	m = update(t, m, press("enter")) // applies and... in filter mode enter only applies
+	if m.filtering {
+		t.Fatal("enter should have applied the filter")
+	}
+	// A second enter (now in normal list mode) opens the detail view.
+	m = update(t, m, press("enter"))
+	if m.view != detailView {
+		t.Fatalf("enter should open the detail view, got %d", m.view)
+	}
+	if m.detailName != "repo-b" {
+		t.Errorf("detail pinned to %q, want repo-b", m.detailName)
+	}
+	if name, ok := m.actionRepo(); !ok || name != "repo-b" {
+		t.Errorf("actionRepo = (%q,%v), want repo-b", name, ok)
+	}
+}
+
+// The detail view stays pinned to the repo it was opened on, even when a sort by
+// size reorders the list underneath it (e.g. after a background refresh).
+func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 900},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 100},
+	})
+	m := newTestModel(t, a)
+	m.sortMode = sortSize // repo-a (900) is first
+	m = update(t, m, press("enter"))
+	if m.detailName != "repo-a" {
+		t.Fatalf("opened detail on %q, want repo-a", m.detailName)
+	}
+	// repo-a shrinks below repo-b; under size sort repo-b would now sort first,
+	// so a cursor-based detail view would jump to repo-b.
+	grown := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 1}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: grown})
+	if row, ok := m.detailRow(); !ok || row.Name != "repo-a" {
+		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
+	}
+}

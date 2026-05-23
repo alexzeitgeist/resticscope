@@ -28,11 +28,24 @@ func (m Model) repoConfig(name string) (config.Repo, bool) {
 	return config.Repo{}, false
 }
 
-// detailSnapshots returns the current repo's snapshots ordered newest-first (the
+// detailRow returns the repo the detail view is pinned to (by name, set on
+// enter). Resolving by name rather than cursor keeps the detail view stable when
+// a size/staleness sort reorders the list after a background refresh.
+func (m Model) detailRow() (app.RepoStatus, bool) {
+	for _, r := range m.rows {
+		if r.Name == m.detailName {
+			return r, true
+		}
+	}
+	return app.RepoStatus{}, false
+}
+
+// detailSnapshots returns the detail repo's snapshots ordered newest-first (the
 // order the detail view and snapCursor both use). It copies before sorting so
 // the cached state's slice order is left untouched.
 func (m Model) detailSnapshots() []model.Snapshot {
-	src := m.rows[m.cursor].State.Snapshots
+	row, _ := m.detailRow()
+	src := row.State.Snapshots
 	snaps := make([]model.Snapshot, len(src))
 	copy(snaps, src)
 	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].Time.After(snaps[j].Time) })
@@ -40,7 +53,8 @@ func (m Model) detailSnapshots() []model.Snapshot {
 }
 
 func (m Model) snapCount() int {
-	return len(m.rows[m.cursor].State.Snapshots)
+	row, _ := m.detailRow()
+	return len(row.State.Snapshots)
 }
 
 // selectedSnapshot returns the snapshot under the detail cursor, or nil when the
@@ -59,7 +73,7 @@ func (m Model) selectedSnapshot() *model.Snapshot {
 }
 
 func (m Model) detailHeaderView() string {
-	row := m.rows[m.cursor]
+	row, _ := m.detailRow()
 	left := m.styles.title.Render(row.Name) + "  " +
 		m.styles.glyph[row.Status].Render(statusGlyph(row.Status)+" "+string(row.Status))
 	right := m.styles.dim.Render("b back")
@@ -74,7 +88,7 @@ func (m Model) detailHeaderView() string {
 }
 
 func (m Model) detailBody() string {
-	row := m.rows[m.cursor]
+	row, _ := m.detailRow()
 	repo, _ := m.repoConfig(row.Name)
 
 	sections := []string{

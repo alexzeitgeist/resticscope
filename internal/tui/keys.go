@@ -14,8 +14,17 @@ type keyMap struct {
 	Refresh    key.Binding
 	RefreshAll key.Binding
 	Coverage   key.Binding
+	Filter     key.Binding
+	Sort       key.Binding
 	Help       key.Binding
 	Quit       key.Binding
+
+	// Filter-input-mode bindings. They are matched only while the user is typing
+	// a filter (m.filtering), so they may safely reuse keys like enter and esc
+	// that mean something else in the normal list view.
+	FilterAccept key.Binding
+	FilterCancel key.Binding
+	FilterDelete key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -28,35 +37,51 @@ func defaultKeys() keyMap {
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
 		Coverage:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "coverage")),
+		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+
+		FilterAccept: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
+		FilterCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
+		FilterDelete: key.NewBinding(key.WithKeys("backspace")),
 	}
 }
 
 // viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
-// navigation, coverage, refresh-all, and help; the detail view swaps in back
-// and the snapshot-scoped keys; the coverage view shows only back and
-// refresh-all. Enter means "open" in the list and "shell here" in the detail
-// view (its generic help text covers both).
+// navigation, filter/sort, coverage, refresh-all, and help; the detail view
+// swaps in back and the snapshot-scoped keys; the coverage view shows only back
+// and refresh-all. While the user is typing a filter (filtering), it shows the
+// apply/clear bindings instead. Enter means "open" in the list and "shell here"
+// in the detail view (its generic help text covers both).
 type viewHelp struct {
-	keys keyMap
-	view view
+	keys      keyMap
+	view      view
+	filtering bool
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
 	k := h.keys
+	if h.filtering {
+		return []key.Binding{k.FilterAccept, k.FilterCancel}
+	}
 	switch h.view {
 	case detailView:
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back, k.Quit}
 	case coverageView:
 		return []key.Binding{k.RefreshAll, k.Back, k.Quit}
 	default: // listView
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Coverage, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Coverage, k.Help, k.Quit}
 	}
 }
 
 func (h viewHelp) FullHelp() [][]key.Binding {
 	k := h.keys
+	if h.filtering {
+		return [][]key.Binding{
+			{k.FilterAccept, k.FilterCancel},
+		}
+	}
 	switch h.view {
 	case detailView:
 		return [][]key.Binding{
@@ -73,6 +98,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Up, k.Down},
 			{k.Enter, k.Shell},
 			{k.Refresh, k.RefreshAll, k.Coverage},
+			{k.Filter, k.Sort},
 			{k.Help, k.Quit},
 		}
 	}

@@ -41,8 +41,12 @@ type Model struct {
 	rows       []app.RepoStatus
 	meta       map[string]rowMeta
 	view       view
-	cursor     int             // selected repo in the list
+	cursor     int             // selected repo in the visible (filtered/sorted) list
 	snapCursor int             // selected snapshot in the detail view
+	detailName string          // repo the detail view is pinned to (set on enter)
+	sortMode   sortMode        // order applied to the list view
+	filter     string          // active filter query (name/region/label substring)
+	filtering  bool            // true while the user is typing a filter
 	pending    map[string]bool // repo name -> a refresh is in flight
 	sem        chan struct{}   // bounds concurrent refreshes to parallelism
 	resticVer  string
@@ -146,6 +150,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // (quit, help, shell, refresh) are handled first; anything else is routed to the
 // active view's handler, where ↑/↓ and enter carry view-specific meaning.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// While typing a filter, every key feeds the query (so "q", "r", etc. are
+	// literal text); only apply/clear and ctrl+c escape it.
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
+
 	// Keys that mean the same thing in every view: quit, help, and refresh-all
 	// (which acts on all repos, so it needs no per-view cursor).
 	switch {
@@ -175,16 +185,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Shell):
-		// `s` shells into the current repo with no snapshot context.
+		// `s` shells into the active repo with no snapshot context.
 		if cmd := m.openShellCmd(nil); cmd != nil {
 			m.statusMsg = ""
 			return m, cmd
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Refresh):
-		if len(m.rows) > 0 {
+		if name, ok := m.actionRepo(); ok {
 			m.statusMsg = ""
-			return m, m.startRefresh(m.rows[m.cursor].Name)
+			return m, m.startRefresh(name)
 		}
 		return m, nil
 	}
@@ -212,18 +222,84 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case key.Matches(msg, m.keys.Down):
-		if m.cursor < len(m.rows)-1 {
+		if m.cursor < len(m.visibleRows())-1 {
 			m.cursor++
 		}
 	case key.Matches(msg, m.keys.Enter):
-		if len(m.rows) > 0 {
+		// Pin the detail view to the selected repo by name so a later refresh
+		// (which can reorder a size/staleness sort) can't swap it out.
+		if row, ok := m.currentRow(); ok {
+			m.detailName = row.Name
 			m.view = detailView
 			m.snapCursor = 0
 		}
+	case key.Matches(msg, m.keys.Filter):
+		m.filtering = true
+	case key.Matches(msg, m.keys.Sort):
+		m = m.cycleSort()
 	case key.Matches(msg, m.keys.Coverage):
 		m.view = coverageView
 	}
 	return m, nil
+}
+
+// handleFilterKey consumes keys while the filter input is open. Apply keeps the
+// query and returns to normal navigation; clear (esc) drops the query entirely;
+// ctrl+c still quits. Every other key edits the query text. The cursor resets to
+// the top whenever the query changes so it never points past the matches.
+func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.String() == "ctrl+c":
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.FilterAccept):
+		m.filtering = false
+	case key.Matches(msg, m.keys.FilterCancel):
+		m.filtering = false
+		m.filter = ""
+		m.cursor = 0
+	case key.Matches(msg, m.keys.FilterDelete):
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+			m.cursor = 0
+		}
+	default:
+		// Text is non-empty only for printable keys, so this ignores stray
+		// control keys (arrows, etc.) rather than inserting garbage.
+		if msg.Text != "" {
+			m.filter += msg.Text
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+// cycleSort advances to the next sort mode, keeping the cursor on the same repo
+// across the reorder.
+func (m Model) cycleSort() Model {
+	var sel string
+	if row, ok := m.currentRow(); ok {
+		sel = row.Name
+	}
+	m.sortMode = (m.sortMode + 1) % sortModeCount
+	m.cursor = m.indexOf(sel)
+	return m
+}
+
+// actionRepo names the repo that repo-scoped keys (shell, refresh) act on: the
+// pinned repo in the detail view, otherwise the selected row in the list.
+func (m Model) actionRepo() (string, bool) {
+	if m.view == detailView {
+		if row, ok := m.detailRow(); ok {
+			return row.Name, true
+		}
+		return "", false
+	}
+	if row, ok := m.currentRow(); ok {
+		return row.Name, true
+	}
+	return "", false
 }
 
 func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -256,10 +332,10 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // asynchronously as a shellExitedMsg so the error surfaces in the footer rather
 // than being swallowed.
 func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
-	if len(m.rows) == 0 {
+	name, ok := m.actionRepo()
+	if !ok {
 		return nil
 	}
-	name := m.rows[m.cursor].Name
 	sess, err := m.app.ShellSession(name, snap)
 	if err != nil {
 		return func() tea.Msg { return shellExitedMsg{err: err} }
@@ -310,6 +386,14 @@ func (m Model) refreshCmd(name string) tea.Cmd {
 }
 
 func (m Model) applyRefresh(msg repoRefreshedMsg) Model {
+	// A refresh can change LastSnapshot/TotalSize and thus reorder the visible
+	// list under a staleness/size sort. Anchor the cursor to the repo it was on
+	// (by name) so the selection — and the repo r/s/enter act on — never silently
+	// jumps, matching cycleSort's behavior.
+	var selected string
+	if row, ok := m.currentRow(); ok {
+		selected = row.Name
+	}
 	delete(m.pending, msg.name)
 	for i := range m.rows {
 		if m.rows[i].Name == msg.name {
@@ -317,6 +401,7 @@ func (m Model) applyRefresh(msg repoRefreshedMsg) Model {
 			break
 		}
 	}
+	m.cursor = m.indexOf(selected)
 	if msg.err != nil {
 		// RefreshRow's error is a cache-persistence failure only; it carries no
 		// secrets (it comes from the filesystem, not restic or secrets_command).

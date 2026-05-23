@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -46,6 +47,7 @@ func (m Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
 	}
+	_, hasDetail := m.detailRow()
 	var body string
 	switch {
 	case m.view == coverageView:
@@ -55,7 +57,7 @@ func (m Model) View() tea.View {
 			"",
 			m.coverageBody(r),
 		)
-	case m.view == detailView && len(m.rows) > 0:
+	case m.view == detailView && hasDetail:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),
 			"",
@@ -75,9 +77,12 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) headerView() string {
-	left := "resticscope · " + repoCount(len(m.rows))
+	left := "resticscope · " + m.countLabel()
 	if m.resticVer != "" {
 		left += " · restic " + m.resticVer
+	}
+	if m.sortMode != sortConfig {
+		left += " · sort: " + m.sortMode.label()
 	}
 	right := m.app.Clock.Now().Format("15:04:05")
 
@@ -94,11 +99,25 @@ func (m Model) listView() string {
 	if len(m.rows) == 0 {
 		return m.styles.meta.Render("no repositories configured")
 	}
-	lines := make([]string, 0, len(m.rows))
-	for i, row := range m.rows {
+	rows := m.visibleRows()
+	if len(rows) == 0 {
+		return m.styles.meta.Render("no repositories match " + strconv.Quote(strings.TrimSpace(m.filter)))
+	}
+	lines := make([]string, 0, len(rows))
+	for i, row := range rows {
 		lines = append(lines, m.renderRow(i, row))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// countLabel describes how many repos the list is showing: the total normally,
+// or "N of M" while a filter narrows the set.
+func (m Model) countLabel() string {
+	total := len(m.rows)
+	if strings.TrimSpace(m.filter) == "" {
+		return repoCount(total)
+	}
+	return fmt.Sprintf("%d of %d repos", len(m.visibleRows()), total)
 }
 
 func (m Model) renderRow(i int, row app.RepoStatus) string {
@@ -150,8 +169,13 @@ func (m Model) summary(row app.RepoStatus) string {
 }
 
 func (m Model) footerView() string {
-	helpView := m.help.View(viewHelp{keys: m.keys, view: m.view})
-	if m.statusMsg != "" {
+	helpView := m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering})
+	switch {
+	case m.filtering:
+		// Show the live query (vim-style) with a block cursor so the input mode
+		// is obvious. The "/<query>" stays unstyled so it reads as one token.
+		return "/" + m.filter + m.styles.dim.Render("▏") + "\n" + helpView
+	case m.statusMsg != "":
 		return m.styles.errText.Render(m.statusMsg) + "\n" + helpView
 	}
 	return helpView
