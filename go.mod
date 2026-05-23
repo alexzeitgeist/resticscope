@@ -2,6 +2,8 @@ module resticscope
 
 go 1.25.0
 
+toolchain go1.25.8
+
 require (
 	charm.land/bubbles/v2 v2.1.0
 	charm.land/bubbletea/v2 v2.0.6
