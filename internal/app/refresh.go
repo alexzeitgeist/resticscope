@@ -92,23 +92,46 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 // cache and display it. Error strings stored here come from secrets.Resolve
 // (which never embeds secret values) and resticx (which redacts stderr), so the
 // cache stays free of credentials.
+//
+// A failed refresh preserves the last-known-good observation rather than blanking
+// the repo: a single transient restic failure (e.g. an intermittent "repository
+// does not exist") must not erase the snapshots, size, and coverage data we last
+// saw. The failing attempt is recorded in LastError — which makes EvaluateStatus
+// classify the repo as StatusError regardless of the carried-over data — so the
+// health verdict stays live while the detail data stays useful until the next
+// successful refresh replaces it.
 func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	now := a.Clock.Now()
-	state := model.RepoState{Name: r.Name, RefreshedAt: now}
 	params := a.statusParams(r)
 
-	cred, ok := a.Cfg.Credential(r.Credential)
-	if !ok { // unreachable after config validation, but stay defensive
-		state.LastError = fmt.Sprintf("credential %q not found", r.Credential)
+	// The prior cache entry is the last-known-good state to fall back on. A
+	// miss/corrupt entry (or any load error) just means there is nothing to
+	// preserve: prior stays the zero value and fail() degrades to the original
+	// "empty error state" behavior.
+	prior, _ := a.Cache.Load(ctx, r.Name)
+
+	// fail builds the state for an unsuccessful refresh. It keeps prior's observed
+	// data and its RefreshedAt — the time of the last *successful* observation,
+	// which stays zero when there was never one — and records the new failure in
+	// LastError. The stale PartialErr (which described the prior stats run) is
+	// dropped so it cannot be confused with the current failure.
+	fail := func(msg string) model.RepoState {
+		state := prior
+		state.Name = r.Name
+		state.PartialErr = ""
+		state.LastError = msg
 		state.Status = model.EvaluateStatus(now, params, state)
 		return state
 	}
 
+	cred, ok := a.Cfg.Credential(r.Credential)
+	if !ok { // unreachable after config validation, but stay defensive
+		return fail(fmt.Sprintf("credential %q not found", r.Credential))
+	}
+
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
-		state.LastError = err.Error()
-		state.Status = model.EvaluateStatus(now, params, state)
-		return state
+		return fail(err.Error())
 	}
 
 	target := targetOf(r, cred)
@@ -116,16 +139,16 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 
 	snaps, err := a.Restic.Snapshots(ctx, target, creds)
 	if err != nil {
-		// Phase 0: any restic failure (including a lock) is recorded as an
-		// error. The lock-age branch in EvaluateStatus stays unit-tested but
-		// dormant here; wiring it needs LockedSince carry-forward from the
-		// prior cached state, which belongs with a deliberate history-
-		// preserving refresh rather than this path.
-		state.LastError = err.Error()
-		state.Status = model.EvaluateStatus(now, params, state)
-		return state
+		// Any restic failure (including a lock) is recorded as an error against
+		// the preserved data. The lock-age branch in EvaluateStatus stays
+		// unit-tested but dormant here; populating LockedSince for it remains
+		// future work.
+		return fail(err.Error())
 	}
 
+	// A successful snapshots call defines a fresh, fully live state: RefreshedAt
+	// advances to now and the prior LastError (if any) is gone.
+	state := model.RepoState{Name: r.Name, RefreshedAt: now}
 	state.Snapshots = snaps
 	state.SnapshotCount = len(snaps)
 	state.Hosts, state.Paths, state.Tags = model.Observed(snaps)

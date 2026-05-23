@@ -202,6 +202,124 @@ func TestRefreshResticErrorRecorded(t *testing.T) {
 	}
 }
 
+// A transient snapshots failure must not erase the last-known-good observation:
+// the repo reports StatusError (live verdict) but keeps the snapshots, size,
+// last-snapshot time, and observed coverage from the prior successful refresh,
+// and keeps that refresh's RefreshedAt rather than advancing it.
+func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
+	fc := newFakeCache()
+	good := model.RepoState{
+		Name:          "repo-a",
+		RefreshedAt:   now.Add(-2 * time.Hour),
+		Status:        model.StatusGreen,
+		TotalSize:     1000,
+		PackCount:     42,
+		SnapshotCount: 2,
+		LastSnapshot:  now.Add(-3 * time.Hour),
+		Snapshots:     []model.Snapshot{{Hostname: "homeserver"}, {Hostname: "homeserver"}},
+		Hosts:         []string{"homeserver"},
+		Paths:         []string{"/etc"},
+		Tags:          []string{"daily"},
+	}
+	fc.states["repo-a"] = good
+
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
+	}
+	state, err := a.Refresh(context.Background(), "repo-a")
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if state.Status != model.StatusError || state.LastError == "" {
+		t.Errorf("want live error verdict, got status=%v lastErr=%q", state.Status, state.LastError)
+	}
+	if state.SnapshotCount != 2 || len(state.Snapshots) != 2 {
+		t.Errorf("snapshots not preserved: count=%d len=%d", state.SnapshotCount, len(state.Snapshots))
+	}
+	if !state.LastSnapshot.Equal(good.LastSnapshot) {
+		t.Errorf("LastSnapshot = %v, want preserved %v", state.LastSnapshot, good.LastSnapshot)
+	}
+	if state.TotalSize != 1000 || state.PackCount != 42 {
+		t.Errorf("size/packs not preserved: size=%d packs=%d", state.TotalSize, state.PackCount)
+	}
+	if len(state.Hosts) != 1 || len(state.Paths) != 1 || len(state.Tags) != 1 {
+		t.Errorf("observed coverage not preserved: hosts=%v paths=%v tags=%v", state.Hosts, state.Paths, state.Tags)
+	}
+	if !state.RefreshedAt.Equal(good.RefreshedAt) {
+		t.Errorf("RefreshedAt = %v, want preserved last-success %v", state.RefreshedAt, good.RefreshedAt)
+	}
+	if got := fc.saved["repo-a"]; got.Status != model.StatusError || got.SnapshotCount != 2 {
+		t.Errorf("preserved state not persisted: %+v", got)
+	}
+}
+
+// With no prior good state, a failed refresh stays an empty error state and —
+// per the RefreshedAt = "last successful observation" semantics — leaves
+// RefreshedAt zero so it reads as "last refresh failed", not "refreshed now".
+func TestRefreshFailureWithNoPriorLeavesUnrefreshed(t *testing.T) {
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   newFakeCache(), // cold: no prior entry
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
+	}
+	state, err := a.Refresh(context.Background(), "repo-a")
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if state.Status != model.StatusError || state.LastError == "" {
+		t.Errorf("expected recorded error, got %+v", state)
+	}
+	if state.SnapshotCount != 0 || len(state.Snapshots) != 0 {
+		t.Errorf("expected no snapshots with no prior good state, got %+v", state)
+	}
+	if !state.RefreshedAt.IsZero() {
+		t.Errorf("RefreshedAt = %v, want zero (never successfully refreshed)", state.RefreshedAt)
+	}
+}
+
+// RefreshAll honors the same preservation: a per-repo snapshots failure keeps
+// that repo's last-known-good data while reporting it as an error.
+func TestRefreshAllPreservesLastGoodOnFailure(t *testing.T) {
+	fc := newFakeCache()
+	fc.states["repo-a"] = model.RepoState{
+		Name:          "repo-a",
+		RefreshedAt:   now.Add(-2 * time.Hour),
+		Status:        model.StatusGreen,
+		SnapshotCount: 3,
+		TotalSize:     5000,
+		LastSnapshot:  now.Add(-90 * time.Minute),
+		Snapshots:     []model.Snapshot{{Hostname: "homeserver"}, {Hostname: "homeserver"}, {Hostname: "homeserver"}},
+		Hosts:         []string{"homeserver"},
+	}
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
+	}
+	results, err := a.RefreshAll(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshAll: %v", err)
+	}
+	got := results[0]
+	if got.Status != model.StatusError || got.LastError == "" {
+		t.Errorf("want live error verdict, got %+v", got)
+	}
+	if got.SnapshotCount != 3 || got.TotalSize != 5000 || !got.LastSnapshot.Equal(now.Add(-90*time.Minute)) {
+		t.Errorf("last-known-good not preserved through RefreshAll: %+v", got)
+	}
+	if saved := fc.saved["repo-a"]; saved.SnapshotCount != 3 || saved.Status != model.StatusError {
+		t.Errorf("preserved state not persisted: %+v", saved)
+	}
+}
+
 func TestRefreshSecretsErrorRecorded(t *testing.T) {
 	a := &App{
 		Cfg:     testConfig(),
