@@ -67,6 +67,27 @@ func TestDefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestRefreshOnOpenDefaultsTrue(t *testing.T) {
+	cfg, err := load(t, minimalTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Global.RefreshOnOpen {
+		t.Error("refresh_on_open should default to true when the key is omitted")
+	}
+}
+
+func TestRefreshOnOpenHonorsExplicitFalse(t *testing.T) {
+	data := strings.Replace(minimalTOML, "secrets_command", "refresh_on_open = false\nsecrets_command", 1)
+	cfg, err := load(t, data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Global.RefreshOnOpen {
+		t.Error("explicit refresh_on_open = false must be honored, got true")
+	}
+}
+
 func TestExpandsHomePaths(t *testing.T) {
 	cfg, err := load(t, minimalTOML+`
 `)

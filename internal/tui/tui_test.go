@@ -53,6 +53,21 @@ func (stubRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (m
 	return model.Stats{}, nil
 }
 
+// blockingRestic stalls in Snapshots until its context is cancelled, modeling a
+// restic call still running when the user quits. It closes started once so a
+// test can wait until the refresh has actually reached restic.
+type blockingRestic struct{ started chan struct{} }
+
+func (b blockingRestic) Snapshots(ctx context.Context, _ resticx.Target, _ resticx.Creds) ([]model.Snapshot, error) {
+	close(b.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (blockingRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (model.Stats, error) {
+	return model.Stats{}, nil
+}
+
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
 
 func testApp(states map[string]model.RepoState) *app.App {
@@ -85,7 +100,9 @@ func newTestModel(t *testing.T, a *app.App) Model {
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
-	return newModel(a, rows, "0.18.1")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return newModel(ctx, cancel, a, rows, "0.18.1")
 }
 
 // press builds a KeyPressMsg for a single printable key. Key.String() returns
@@ -238,6 +255,50 @@ func TestRefreshCommandRunsLiveRefresh(t *testing.T) {
 	}
 	if msg.row.Status != model.StatusGreen { // stub restic returns a 1h-old snapshot
 		t.Errorf("status = %v, want green", msg.row.Status)
+	}
+}
+
+// Pressing q while a refresh is in flight must cancel the refresh context so the
+// restic subprocess does not outlive the UI (Rule 10). The refresh command runs
+// the real RefreshRow path against a restic that blocks until cancelled.
+func TestQuitCancelsInFlightRefresh(t *testing.T) {
+	a := testApp(nil)
+	started := make(chan struct{})
+	a.Restic = blockingRestic{started: started}
+	m := newTestModel(t, a)
+
+	_, cmd := m.Update(press("r"))
+	if cmd == nil {
+		t.Fatal("expected a refresh command")
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh never reached restic")
+	}
+
+	m.Update(press("q")) // quits and cancels the shared refresh context
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh did not unblock after quit cancelled the context")
+	}
+}
+
+// With refresh_on_open enabled, opening the TUI must schedule a refresh for cold
+// rows. Both repos here have no cache, so both should be pending on open.
+func TestRefreshOnOpenSchedulesColdRepos(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.RefreshOnOpen = true
+	m := newTestModel(t, a)
+	for _, r := range m.rows {
+		if !m.pending[r.Name] {
+			t.Errorf("%q not marked pending on open when refresh_on_open is set", r.Name)
+		}
 	}
 }
 

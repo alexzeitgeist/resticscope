@@ -20,6 +20,8 @@ import (
 // Model is the root Bubble Tea model for the list view.
 type Model struct {
 	app       *app.App
+	ctx       context.Context    // scopes in-flight refreshes; cancelled on quit
+	cancel    context.CancelFunc // cancels ctx so quitting kills any running restic
 	keys      keyMap
 	styles    styles
 	help      help.Model
@@ -40,17 +42,25 @@ type Model struct {
 // have wired the App's Secrets and Restic (i.e. run secrets_command) so any GPG
 // passphrase prompt happens before the alt-screen is entered (plan §12).
 func Run(ctx context.Context, a *app.App, resticVer string) error {
+	// A cancellable child scopes the refresh goroutines: defer cancel guarantees
+	// they're torn down on every exit path, and the Model holds cancel so
+	// quitting kills any in-flight restic immediately rather than orphaning it.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	rows, err := a.Statuses(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(newModel(a, rows, resticVer), tea.WithContext(ctx)).Run()
+	_, err = tea.NewProgram(newModel(ctx, cancel, a, rows, resticVer), tea.WithContext(ctx)).Run()
 	return err
 }
 
-func newModel(a *app.App, rows []app.RepoStatus, resticVer string) Model {
+func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows []app.RepoStatus, resticVer string) Model {
 	m := Model{
 		app:       a,
+		ctx:       ctx,
+		cancel:    cancel,
 		keys:      defaultKeys(),
 		styles:    newStyles(),
 		help:      help.New(),
@@ -120,6 +130,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
+		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Up):
 		if m.cursor > 0 {
@@ -162,10 +173,15 @@ func (m Model) startRefresh(name string) tea.Cmd {
 func (m Model) refreshCmd(name string) tea.Cmd {
 	return func() tea.Msg {
 		// Bound concurrency so a refresh-all doesn't spawn one restic process
-		// per repo at once and trip Hetzner's 503 throttling (plan §10).
-		m.sem <- struct{}{}
+		// per repo at once and trip Hetzner's 503 throttling (plan §10). Never
+		// block past quit: a cancelled ctx abandons the queued slot.
+		select {
+		case m.sem <- struct{}{}:
+		case <-m.ctx.Done():
+			return nil
+		}
 		defer func() { <-m.sem }()
-		row, err := m.app.RefreshRow(context.Background(), name)
+		row, err := m.app.RefreshRow(m.ctx, name)
 		return repoRefreshedMsg{name: name, row: row, err: err}
 	}
 }

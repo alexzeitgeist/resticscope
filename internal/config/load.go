@@ -44,11 +44,14 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Decode parses TOML into a Config without applying defaults or validating.
-// It rejects unknown keys so typos in config surface as errors rather than
-// being silently ignored.
+// Decode parses TOML into a Config. Value-normalization defaults live in
+// Normalize, not here; the sole exception is refresh_on_open, which must be
+// seeded before decoding because a plain bool cannot tell an absent key from an
+// explicit `false` afterward (so its default-true belongs pre-decode). It
+// rejects unknown keys so typos in config surface as errors rather than being
+// silently ignored.
 func Decode(data []byte) (*Config, error) {
-	var cfg Config
+	cfg := Config{Global: Global{RefreshOnOpen: true}}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
