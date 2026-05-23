@@ -226,6 +226,86 @@ func TestCheckFailsAtSecretsStage(t *testing.T) {
 	}
 }
 
+// The restic version is a hard gate: against an unsupported or unparseable
+// restic the probe results are untrustworthy, so checkRestic must print the
+// failed stage and return without reaching any repository.
+func TestCheckResticGateSkipsProbes(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		verErr  error
+		want    int
+	}{
+		{"too old", "0.16.0", nil, 1},
+		{"unparseable", "not-a-version", nil, 1},
+		{"binary missing", "", errors.New("restic binary not found on PATH"), 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			probed := false
+			version := func(context.Context) (string, error) { return tt.version, tt.verErr }
+			probe := func(context.Context) ([]app.RepoCheck, error) { probed = true; return nil, nil }
+
+			var out, errBuf bytes.Buffer
+			code := checkRestic(context.Background(), &out, &errBuf, version, probe)
+			if code != tt.want {
+				t.Errorf("exit = %d, want %d (stdout=%q stderr=%q)", code, tt.want, out.String(), errBuf.String())
+			}
+			if probed {
+				t.Error("repositories must not be probed against an unsupported restic")
+			}
+			if !strings.Contains(out.String(), "restic") || !strings.Contains(out.String(), "FAILED") {
+				t.Errorf("expected a failed restic stage, got %q", out.String())
+			}
+		})
+	}
+}
+
+// A non-nil probe error means the check could not complete. Even though every
+// per-repo row here looks OK, checkRestic must report the stage as unfinished
+// and exit 2 — never "all checks passed".
+func TestCheckResticCancelledProbeIsExit2(t *testing.T) {
+	version := func(context.Context) (string, error) { return "0.18.1", nil }
+	probe := func(context.Context) ([]app.RepoCheck, error) {
+		return []app.RepoCheck{{Name: "repo-a"}}, context.Canceled
+	}
+	var out, errBuf bytes.Buffer
+	code := checkRestic(context.Background(), &out, &errBuf, version, probe)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stdout=%q)", code, out.String())
+	}
+	if strings.Contains(out.String(), "all checks passed") {
+		t.Errorf("a cancelled check must not report success, got %q", out.String())
+	}
+}
+
+func TestCheckResticVerdicts(t *testing.T) {
+	version := func(context.Context) (string, error) { return "0.18.1", nil }
+
+	allOK := func(context.Context) ([]app.RepoCheck, error) {
+		return []app.RepoCheck{{Name: "repo-a"}, {Name: "repo-b"}}, nil
+	}
+	var out, errBuf bytes.Buffer
+	if code := checkRestic(context.Background(), &out, &errBuf, version, allOK); code != 0 {
+		t.Fatalf("all reachable: exit = %d, want 0 (stderr=%q)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "all checks passed") {
+		t.Errorf("expected success message, got %q", out.String())
+	}
+
+	oneFails := func(context.Context) ([]app.RepoCheck, error) {
+		return []app.RepoCheck{
+			{Name: "repo-a"},
+			{Name: "repo-b", Err: errors.New("restic cat: repository does not exist (exit 10)")},
+		}, nil
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := checkRestic(context.Background(), &out, &errBuf, version, oneFails); code != 1 {
+		t.Errorf("one unreachable: exit = %d, want 1", code)
+	}
+}
+
 // A refresh whose repos are all healthy but whose results could not be
 // persisted must still exit 2 ("...or a failure"), not 0 — otherwise cron
 // callers miss that the cache is now stale. The end-to-end --refresh path needs

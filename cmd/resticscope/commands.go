@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/tabwriter"
 
 	"resticscope/internal/app"
@@ -138,8 +137,9 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // command (plan §9, recommendation 3) and never reads or writes the cache.
 //
 // Exit codes: 0 everything passed; 1 the check ran but found problems (restic
-// too old, or one or more repos unreachable); 2 the check could not run at all
-// (bad config, secrets unavailable, or no usable restic binary).
+// too old or unparseable, or one or more repos unreachable); 2 the check could
+// not run or complete (bad config, secrets unavailable, no usable restic
+// binary, or the run was interrupted).
 func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -165,26 +165,6 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	checkLine(stdout, "secrets", "ok", "all credentials and repos resolved")
 
-	// Gate on restic's version. A version we cannot determine at all (binary
-	// missing, timeout) is fatal: the per-repo probes would only repeat the
-	// same failure, so stop here rather than print it once per repo.
-	resticVer, err := (&resticx.Client{Runner: resticx.ExecRunner{}}).Version(ctx)
-	if err != nil {
-		checkLine(stdout, "restic", "FAILED", err.Error())
-		return 2
-	}
-	versionOK := true
-	switch ok, perr := resticx.AtLeastMinVersion(resticVer); {
-	case perr != nil:
-		versionOK = false
-		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("could not parse version %q: %v", resticVer, perr))
-	case !ok:
-		versionOK = false
-		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("%s is older than the minimum supported %s", resticVer, resticx.MinVersion))
-	default:
-		checkLine(stdout, "restic", "ok", resticVer)
-	}
-
 	a := &app.App{
 		Cfg:     cfg,
 		Cache:   cache.New(cfg.Global.CacheDir),
@@ -193,7 +173,55 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		Secrets: store,
 		Restic:  client,
 	}
-	checks, _ := a.Check(ctx) // per-repo failures live on each RepoCheck
+	verClient := &resticx.Client{Runner: resticx.ExecRunner{}}
+	return checkRestic(ctx, stdout, stderr, verClient.Version, a.Check)
+}
+
+// checkRestic runs the restic-version gate and the per-repo reachability stages
+// of `check`, printing each and returning the exit code. The version is a hard
+// gate: against an unsupported or unparseable restic, exit-code and JSON
+// behavior are unreliable (see resticx.MinVersion), so the probe results would
+// be untrustworthy — it prints the failed stage and returns without reaching
+// any repository. A non-nil probe error (e.g. the context was cancelled) means
+// the check could not complete, so the partial verdict is not trusted and the
+// stage fails with exit 2 rather than risk reporting success.
+//
+// version and probe are injected so the gating and cancellation paths are
+// testable without spawning a real restic.
+func checkRestic(
+	ctx context.Context,
+	stdout, stderr io.Writer,
+	version func(context.Context) (string, error),
+	probe func(context.Context) ([]app.RepoCheck, error),
+) int {
+	ver, err := version(ctx)
+	if err != nil {
+		// No usable restic binary; probing would only repeat this per repo.
+		checkLine(stdout, "restic", "FAILED", err.Error())
+		return 2
+	}
+	switch ok, perr := resticx.AtLeastMinVersion(ver); {
+	case perr != nil:
+		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("could not parse version %q: %v", ver, perr))
+		fmt.Fprintln(stderr, "check failed: restic version unsupported")
+		return 1
+	case !ok:
+		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("%s is older than the minimum supported %s", ver, resticx.MinVersion))
+		fmt.Fprintln(stderr, "check failed: restic version unsupported")
+		return 1
+	default:
+		checkLine(stdout, "restic", "ok", ver)
+	}
+
+	checks, err := probe(ctx)
+	if err != nil {
+		// Cancelled or otherwise unable to finish: the per-repo rows are not a
+		// trustworthy verdict, so report the stage as unfinished rather than
+		// mistake incomplete probing for success.
+		checkLine(stdout, "repositories", "FAILED", err.Error())
+		fmt.Fprintf(stderr, "check failed: %v\n", err)
+		return 2
+	}
 
 	fmt.Fprintln(stdout, "repositories")
 	tw := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
@@ -208,15 +236,8 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	tw.Flush()
 
-	if !versionOK || failures > 0 {
-		var problems []string
-		if !versionOK {
-			problems = append(problems, "restic version unsupported")
-		}
-		if failures > 0 {
-			problems = append(problems, fmt.Sprintf("%d of %d repositories unreachable", failures, len(checks)))
-		}
-		fmt.Fprintf(stderr, "\ncheck failed: %s\n", strings.Join(problems, "; "))
+	if failures > 0 {
+		fmt.Fprintf(stderr, "\ncheck failed: %d of %d repositories unreachable\n", failures, len(checks))
 		return 1
 	}
 	fmt.Fprintln(stdout, "\nall checks passed")
