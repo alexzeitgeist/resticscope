@@ -26,6 +26,22 @@ func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error)
 	return state, nil
 }
 
+// RefreshRow refreshes one repo (persisting the result) and returns its
+// evaluated status row, ready for the TUI to render. The returned error reports
+// only a cache-persistence failure; a restic/secrets failure is captured in the
+// row's State and Status, never returned as an error. The row is returned even
+// when the save fails, so the UI can show live data alongside the warning — the
+// same "refresh means live state" contract RefreshAll honors.
+func (a *App) RefreshRow(ctx context.Context, name string) (RepoStatus, error) {
+	r, ok := a.repo(name)
+	if !ok {
+		return RepoStatus{}, fmt.Errorf("no repo %q in config", name)
+	}
+	state, err := a.Refresh(ctx, name)
+	row := a.statusRow(a.Clock.Now(), r, state, a.Cfg.Global.StaleAfter.Std())
+	return row, err
+}
+
 // RefreshAll refreshes every configured repo concurrently, bounded by
 // global.parallelism, and persists each result. Results are returned in config
 // order and are always the live refresh outcome. Per-repo restic/secrets

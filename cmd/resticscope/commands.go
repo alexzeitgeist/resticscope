@@ -14,6 +14,7 @@ import (
 	"resticscope/internal/config"
 	"resticscope/internal/resticx"
 	"resticscope/internal/secrets"
+	"resticscope/internal/tui"
 	"resticscope/internal/version"
 )
 
@@ -78,6 +79,54 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	formatStatusTable(stdout, rows, a.Clock.Now())
 	return app.WorstExitCode(rows)
+}
+
+// cmdTUI launches the Bubble Tea list view. It runs secrets_command and wires
+// restic up front — before tea.NewProgram — so any GPG passphrase prompt
+// happens at the normal terminal instead of fighting the alt-screen (plan §12).
+// If secrets cannot be resolved, the TUI cannot refresh, so we fail fast with a
+// clear message rather than launching a screen that can only show stale cache;
+// `resticscope status` covers the cache-only, no-secrets case.
+func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	logger := newLogger(cfg)
+	store, client, err := refreshDeps(ctx, cfg, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "startup failed: %v\n", err)
+		return 2
+	}
+
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   cache.New(cfg.Global.CacheDir),
+		Clock:   realClock{},
+		Log:     logger,
+		Secrets: store,
+		Restic:  client,
+	}
+
+	var resticVer string
+	if v, err := (&resticx.Client{Runner: resticx.ExecRunner{}}).Version(ctx); err == nil {
+		resticVer = v
+	}
+
+	if err := tui.Run(ctx, a, resticVer); err != nil {
+		fmt.Fprintf(stderr, "tui: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // refreshExitCode maps the live rows plus any refresh-level failure to a process

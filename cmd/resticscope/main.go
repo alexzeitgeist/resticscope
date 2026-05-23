@@ -22,11 +22,13 @@ func main() {
 // testable entry point: all I/O goes through the passed writers.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		usage(stderr)
-		return 2
+		// Bare `resticscope` launches the TUI (plan §9).
+		return cmdTUI(ctx, nil, stdout, stderr)
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "tui":
+		return cmdTUI(ctx, rest, stdout, stderr)
 	case "status":
 		return cmdStatus(ctx, rest, stdout, stderr)
 	case "version":
@@ -34,8 +36,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		usage(stdout)
 		return 0
-	case "tui", "check", "exec":
-		fmt.Fprintf(stderr, "resticscope %s: not implemented yet (Phase 0 ships `status` and `version`)\n", cmd)
+	case "check", "exec":
+		fmt.Fprintf(stderr, "resticscope %s: not implemented yet (planned for a later phase)\n", cmd)
 		return 2
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
@@ -48,12 +50,13 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `resticscope — overview of restic repositories
 
 Usage:
+  resticscope [tui] [--config PATH]                launch the interactive TUI (default)
   resticscope status [--config PATH] [--refresh]   one line per repo from cache
   resticscope version                              print resticscope and restic versions
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
 
-The TUI, check, and exec subcommands are planned but not yet implemented.
+The check and exec subcommands are planned but not yet implemented.
 `)
 }
 

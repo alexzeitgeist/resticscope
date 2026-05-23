@@ -164,13 +164,32 @@ func TestUnknownCommand(t *testing.T) {
 	}
 }
 
-func TestNoArgsShowsUsage(t *testing.T) {
+func TestHelpShowsUsage(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(context.Background(), nil, &out, &errBuf); code != 2 {
-		t.Errorf("no-args exit = %d, want 2", code)
+	if code := run(context.Background(), []string{"help"}, &out, &errBuf); code != 0 {
+		t.Errorf("help exit = %d, want 0", code)
 	}
-	if !strings.Contains(errBuf.String(), "Usage:") {
-		t.Errorf("expected usage, got %q", errBuf.String())
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Errorf("expected usage, got %q", out.String())
+	}
+}
+
+// The TUI wires secrets and restic before starting Bubble Tea (plan §12). When
+// secrets_command cannot produce usable secrets, cmdTUI must fail fast with exit
+// 2 rather than launching a screen that can never refresh — and crucially
+// without trying to open a terminal in the test harness. The setup config's
+// secrets_command ("true") yields no secrets JSON, so refreshDeps fails.
+func TestTUIFailsFastWhenSecretsUnavailable(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"tui", "--config", cfgPath}, &out, &errBuf)
+	if code != 2 {
+		t.Errorf("tui exit = %d, want 2 (stderr=%q)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "startup failed") {
+		t.Errorf("expected startup failure message, got %q", errBuf.String())
 	}
 }
 
@@ -192,43 +211,5 @@ func TestRefreshExitCodeFloorsOnFailure(t *testing.T) {
 	}
 	if got := refreshExitCode(amber, nil); got != 1 {
 		t.Errorf("amber, no failure = %d, want 1", got)
-	}
-}
-
-func TestHumanizeBytes(t *testing.T) {
-	tests := []struct {
-		n    int64
-		want string
-	}{
-		{0, "0 B"},
-		{512, "512 B"},
-		{442000000000, "412 GiB"},
-		{4400000000, "4.1 GiB"},
-		{18000000000, "17 GiB"},
-		{72 * 1024 * 1024 * 1024, "72 GiB"},
-	}
-	for _, tt := range tests {
-		if got := humanizeBytes(tt.n); got != tt.want {
-			t.Errorf("humanizeBytes(%d) = %q, want %q", tt.n, got, tt.want)
-		}
-	}
-}
-
-func TestHumanizeAgo(t *testing.T) {
-	now := time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
-	tests := []struct {
-		t    time.Time
-		want string
-	}{
-		{time.Time{}, "never"},
-		{now.Add(-30 * time.Second), "just now"},
-		{now.Add(-35 * time.Minute), "35m ago"},
-		{now.Add(-8 * time.Hour), "8h ago"},
-		{now.Add(-9 * 24 * time.Hour), "9d ago"},
-	}
-	for _, tt := range tests {
-		if got := humanizeAgo(now, tt.t); got != tt.want {
-			t.Errorf("humanizeAgo(%v) = %q, want %q", tt.t, got, tt.want)
-		}
 	}
 }

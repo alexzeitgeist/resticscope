@@ -298,6 +298,58 @@ func TestRefreshAllSurfacesSaveFailureWithLiveState(t *testing.T) {
 	}
 }
 
+func TestRefreshRow(t *testing.T) {
+	fc := newFakeCache()
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic: fakeRestic{
+			snaps: []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-2 * time.Hour)}},
+			stats: model.Stats{TotalSize: 1000, SnapshotsCount: 1},
+		},
+	}
+	row, err := a.RefreshRow(context.Background(), "repo-a")
+	if err != nil {
+		t.Fatalf("RefreshRow: %v", err)
+	}
+	if row.Name != "repo-a" || row.Status != model.StatusGreen {
+		t.Errorf("row = %+v, want green repo-a", row)
+	}
+	if row.State.SnapshotCount != 1 {
+		t.Errorf("row.State not the live refresh: %+v", row.State)
+	}
+}
+
+// A save failure must surface as an error but still return the live row, so the
+// TUI shows fresh state with a warning rather than falling back to stale cache.
+func TestRefreshRowSurfacesSaveFailureWithLiveRow(t *testing.T) {
+	fc := newFakeCache()
+	fc.saveErr = errors.New("disk full")
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{snaps: []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-2 * time.Hour)}}},
+	}
+	row, err := a.RefreshRow(context.Background(), "repo-a")
+	if err == nil {
+		t.Fatal("expected the save failure to be surfaced")
+	}
+	if row.Status != model.StatusGreen {
+		t.Errorf("status = %v, want live green despite save failure", row.Status)
+	}
+}
+
+func TestRefreshRowUnknownRepo(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
+	if _, err := a.RefreshRow(context.Background(), "nope"); err == nil {
+		t.Fatal("expected error for unknown repo")
+	}
+}
+
 func TestWorstExitCode(t *testing.T) {
 	tests := []struct {
 		name     string
