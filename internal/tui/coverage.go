@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/app"
 )
 
@@ -15,14 +13,7 @@ func (m Model) coverageHeaderView(r app.CoverageRollup) string {
 	left := m.styles.title.Render("resticscope · coverage") + "  " +
 		m.styles.dim.Render(fmt.Sprintf("%d of %d repos fully covered", r.Covered, r.Total))
 	right := m.styles.dim.Render("b back")
-
-	gap := "  "
-	if m.width > 0 {
-		if n := m.width - lipgloss.Width(left) - lipgloss.Width(right); n > 2 {
-			gap = strings.Repeat(" ", n)
-		}
-	}
-	return left + gap + right
+	return m.spread(left, right)
 }
 
 // coverageBody lists every repo with an unmet expectation, or a single

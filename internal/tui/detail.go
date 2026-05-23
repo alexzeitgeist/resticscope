@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
@@ -77,14 +75,7 @@ func (m Model) detailHeaderView() string {
 	left := m.styles.title.Render(row.Name) + "  " +
 		m.styles.glyph[row.Status].Render(statusGlyph(row.Status)+" "+string(row.Status))
 	right := m.styles.dim.Render("b back")
-
-	gap := "  "
-	if m.width > 0 {
-		if n := m.width - lipgloss.Width(left) - lipgloss.Width(right); n > 2 {
-			gap = strings.Repeat(" ", n)
-		}
-	}
-	return left + gap + right
+	return m.spread(left, right)
 }
 
 func (m Model) detailBody() string {

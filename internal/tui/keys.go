@@ -51,9 +51,10 @@ func defaultKeys() keyMap {
 // viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
 // navigation, filter/sort, coverage, refresh-all, and help; the detail view
 // swaps in back and the snapshot-scoped keys; the coverage view shows only back
-// and refresh-all. While the user is typing a filter (filtering), it shows the
-// apply/clear bindings instead. Enter means "open" in the list and "shell here"
-// in the detail view (its generic help text covers both).
+// and refresh-all; the help overlay shows only back and quit (the overlay itself
+// is the full reference). While the user is typing a filter (filtering), it shows
+// the apply/clear bindings instead. Enter means "open" in the list and "shell
+// here" in the detail view (its generic help text covers both).
 type viewHelp struct {
 	keys      keyMap
 	view      view
@@ -70,6 +71,8 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back, k.Quit}
 	case coverageView:
 		return []key.Binding{k.RefreshAll, k.Back, k.Quit}
+	case helpView:
+		return []key.Binding{k.Back, k.Quit}
 	default: // listView
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Coverage, k.Help, k.Quit}
 	}
@@ -92,6 +95,10 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case coverageView:
 		return [][]key.Binding{
 			{k.RefreshAll, k.Back, k.Quit},
+		}
+	case helpView:
+		return [][]key.Binding{
+			{k.Back, k.Quit},
 		}
 	default: // listView
 		return [][]key.Binding{

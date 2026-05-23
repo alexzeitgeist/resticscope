@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"resticscope/internal/app"
@@ -311,13 +312,89 @@ func TestRefreshOnOpenSchedulesColdRepos(t *testing.T) {
 	}
 }
 
-func TestHelpToggle(t *testing.T) {
+// `?` opens the full-screen help overlay, which lists the keybindings grouped by
+// context plus a status-glyph legend; `?` again closes it back to the list.
+func TestHelpOverlayToggle(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
-	if m.help.ShowAll {
-		t.Fatal("help should start collapsed")
+	if m.view != listView {
+		t.Fatalf("view starts at %d, want listView", m.view)
 	}
-	if nm := update(t, m, press("?")); !nm.help.ShowAll {
-		t.Error("? should expand the help view")
+	m = update(t, m, press("?"))
+	if m.view != helpView {
+		t.Fatalf("? should open the help overlay, view = %d", m.view)
+	}
+	view := m.View().Content
+	for _, want := range []string{
+		"keybindings",                                              // overlay title
+		"Global", "List", "Detail", "Coverage", "Filter", "Status", // section headings
+		"refresh all repos", // the genuinely-global action
+		"move repo cursor",  // cursor movement lives under List, not Global
+		"coverage rollup",   // a list action
+		"shell at snapshot", // a detail-only action
+		"never refreshed",   // glyph legend entry
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("help overlay missing %q\n---\n%s", want, view)
+		}
+	}
+	m = update(t, m, press("?"))
+	if m.view != listView {
+		t.Errorf("? should close the overlay back to the list, view = %d", m.view)
+	}
+}
+
+// The overlay returns to the view it was opened from, and `esc` closes it too.
+func TestHelpOverlayReturnsToOrigin(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter")) // open detail
+	if m.view != detailView {
+		t.Fatalf("expected detail view, got %d", m.view)
+	}
+	m = update(t, m, press("?"))
+	if m.view != helpView {
+		t.Fatalf("? should open the overlay, got %d", m.view)
+	}
+	m = update(t, m, press("esc"))
+	if m.view != detailView {
+		t.Errorf("esc from help should return to the detail view, got %d", m.view)
+	}
+}
+
+// The overlay is modal: action keys behind it (here refresh-all) do nothing.
+func TestHelpOverlayIsModal(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("?"))
+	next, cmd := m.Update(press("R"))
+	nm := next.(Model)
+	if len(nm.pending) != 0 {
+		t.Errorf("refresh-all should not run behind the help overlay: %v", nm.pending)
+	}
+	if cmd != nil {
+		t.Error("R behind the help overlay should emit no command")
+	}
+	if nm.view != helpView {
+		t.Errorf("R should not leave the help overlay, view = %d", nm.view)
+	}
+}
+
+// keyLabel renders a binding's keys with arrow/symbol substitutions and all its
+// alternates, so the overlay can't drift from the keys the handlers match.
+func TestKeyLabel(t *testing.T) {
+	k := defaultKeys()
+	for _, tc := range []struct {
+		b    key.Binding
+		want string
+	}{
+		{k.Up, "↑/k"},
+		{k.Down, "↓/j"},
+		{k.Back, "b/esc"},
+		{k.Quit, "q/ctrl+c"},
+		{k.Enter, "enter"},
+		{k.FilterDelete, "⌫"},
+	} {
+		if got := keyLabel(tc.b); got != tc.want {
+			t.Errorf("keyLabel(%v) = %q, want %q", tc.b.Keys(), got, tc.want)
+		}
 	}
 }
 

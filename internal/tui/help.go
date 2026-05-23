@@ -1,0 +1,173 @@
+package tui
+
+import (
+	"strings"
+
+	"charm.land/bubbles/v2/key"
+	"charm.land/lipgloss/v2"
+
+	"resticscope/internal/model"
+)
+
+// help.go renders the full-screen help overlay (key `?`): a complete keybinding
+// reference grouped by the context each key acts in, plus a legend for the list
+// status glyphs. It is reached via the helpView value and closed with `?`, `b`,
+// or `esc`; the View() switch and handleKey route to it.
+
+// helpEntry is one row of the reference: a key label and what it does.
+type helpEntry struct {
+	keys string
+	desc string
+}
+
+// helpSection groups the entries that apply in a single context.
+type helpSection struct {
+	title   string
+	entries []helpEntry
+}
+
+// keyLabel renders a binding's keys for the overlay, mapping the raw key names
+// to the arrow/symbol forms used elsewhere in the UI and joining alternates with
+// "/". Deriving the label from the binding (rather than hardcoding it) keeps the
+// overlay in step with the keys the handlers actually match.
+func keyLabel(b key.Binding) string {
+	repl := map[string]string{
+		"up": "↑", "down": "↓", "left": "←", "right": "→", "backspace": "⌫",
+	}
+	keys := b.Keys()
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if sym, ok := repl[k]; ok {
+			k = sym
+		}
+		parts = append(parts, k)
+	}
+	return strings.Join(parts, "/")
+}
+
+// helpColumns returns the reference split into two balanced columns so the whole
+// overlay fits a standard terminal without scrolling. The glyph legend is added
+// to the left column by helpBody.
+func (m Model) helpColumns() (left, right []helpSection) {
+	k := m.keys
+	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
+	// Global holds only keys that act in every view; the per-view sections list
+	// what each adds on top. Cursor movement is *not* global — it does nothing in
+	// the coverage or help views — so it lives under List/Detail, not here.
+	left = []helpSection{
+		{"Global", []helpEntry{
+			{keyLabel(k.RefreshAll), "refresh all repos"},
+			{keyLabel(k.Help), "toggle this help"},
+			{keyLabel(k.Quit), "quit"},
+		}},
+		{"List", []helpEntry{
+			{move, "move repo cursor"},
+			{keyLabel(k.Enter), "open repo detail"},
+			{keyLabel(k.Shell), "shell with repo env"},
+			{keyLabel(k.Refresh), "refresh this repo"},
+			{keyLabel(k.Coverage), "coverage rollup"},
+			{keyLabel(k.Filter), "filter by name/label"},
+			{keyLabel(k.Sort), "cycle sort order"},
+		}},
+	}
+	right = []helpSection{
+		{"Detail", []helpEntry{
+			{move, "select snapshot"},
+			{keyLabel(k.Enter), "shell at snapshot"},
+			{keyLabel(k.Shell), "shell with repo env"},
+			{keyLabel(k.Refresh), "refresh this repo"},
+			{keyLabel(k.Back), "back to the list"},
+		}},
+		{"Filter", []helpEntry{
+			{keyLabel(k.FilterAccept), "apply filter"},
+			{keyLabel(k.FilterCancel), "clear filter"},
+			{keyLabel(k.FilterDelete), "delete a character"},
+		}},
+		{"Coverage", []helpEntry{
+			{keyLabel(k.Back), "back to the list"},
+		}},
+	}
+	return left, right
+}
+
+func (m Model) helpHeaderView() string {
+	return m.spread(
+		m.styles.title.Render("resticscope · keybindings"),
+		m.styles.dim.Render("? close"),
+	)
+}
+
+func (m Model) helpBody() string {
+	left, right := m.helpColumns()
+
+	// One key column width across both columns keeps the descriptions aligned.
+	w := helpKeyWidth(append(append([]helpSection{}, left...), right...))
+
+	leftBlocks := make([]string, 0, len(left)+1)
+	for _, s := range left {
+		leftBlocks = append(leftBlocks, m.renderHelpSection(s, w))
+	}
+	leftBlocks = append(leftBlocks, m.glyphLegend())
+
+	rightBlocks := make([]string, 0, len(right))
+	for _, s := range right {
+		rightBlocks = append(rightBlocks, m.renderHelpSection(s, w))
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		strings.Join(leftBlocks, "\n\n"),
+		"      ",
+		strings.Join(rightBlocks, "\n\n"),
+	)
+}
+
+func helpKeyWidth(secs []helpSection) int {
+	w := 0
+	for _, s := range secs {
+		for _, e := range s.entries {
+			if n := lipgloss.Width(e.keys); n > w {
+				w = n
+			}
+		}
+	}
+	return w
+}
+
+func (m Model) renderHelpSection(s helpSection, keyWidth int) string {
+	lines := make([]string, 0, len(s.entries)+1)
+	lines = append(lines, m.styles.heading.Render(s.title))
+	for _, e := range s.entries {
+		lines = append(lines, "  "+padRight(e.keys, keyWidth)+"  "+m.styles.meta.Render(e.desc))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// glyphLegend explains the list view's status glyphs, rendered in their own
+// colors so the legend matches what the list shows.
+func (m Model) glyphLegend() string {
+	items := []struct {
+		status model.Status
+		desc   string
+	}{
+		{model.StatusGreen, "within expected window"},
+		{model.StatusAmber, "in the grace period"},
+		{model.StatusRed, "overdue or failed"},
+		{model.StatusGrey, "never refreshed"},
+	}
+	lines := make([]string, 0, len(items)+1)
+	lines = append(lines, m.styles.heading.Render("Status"))
+	for _, it := range items {
+		glyph := m.styles.glyph[it.status].Render(statusGlyph(it.status))
+		lines = append(lines, "  "+glyph+"  "+m.styles.meta.Render(it.desc))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// padRight pads s with spaces to a visible width of w (a no-op if already wider),
+// using lipgloss.Width so multi-cell runes line up.
+func padRight(s string, w int) string {
+	if n := w - lipgloss.Width(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
+}

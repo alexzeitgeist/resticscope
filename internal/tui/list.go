@@ -50,6 +50,12 @@ func (m Model) View() tea.View {
 	_, hasDetail := m.detailRow()
 	var body string
 	switch {
+	case m.view == helpView:
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.helpHeaderView(),
+			"",
+			m.helpBody(),
+		)
 	case m.view == coverageView:
 		r := app.Rollup(m.rows)
 		body = lipgloss.JoinVertical(lipgloss.Left,
@@ -85,14 +91,21 @@ func (m Model) headerView() string {
 		left += " · sort: " + m.sortMode.label()
 	}
 	right := m.app.Clock.Now().Format("15:04:05")
+	return m.spread(m.styles.title.Render(left), m.styles.dim.Render(right))
+}
 
+// spread lays left and right on one line, padding the gap so right sits flush
+// against the terminal's right edge once the width is known. It expects already
+// styled strings: lipgloss.Width discounts the styling escapes. Shared by every
+// view's header bar.
+func (m Model) spread(left, right string) string {
 	gap := "  "
 	if m.width > 0 {
 		if n := m.width - lipgloss.Width(left) - lipgloss.Width(right); n > 2 {
 			gap = strings.Repeat(" ", n)
 		}
 	}
-	return m.styles.title.Render(left) + gap + m.styles.dim.Render(right)
+	return left + gap + right
 }
 
 func (m Model) listView() string {

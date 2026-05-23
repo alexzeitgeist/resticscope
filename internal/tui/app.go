@@ -26,6 +26,7 @@ const (
 	listView view = iota
 	detailView
 	coverageView
+	helpView
 )
 
 // Model is the root Bubble Tea model. It drives both the list view and the
@@ -41,6 +42,7 @@ type Model struct {
 	rows       []app.RepoStatus
 	meta       map[string]rowMeta
 	view       view
+	prevView   view            // view to restore when the help overlay closes
 	cursor     int             // selected repo in the visible (filtered/sorted) list
 	snapCursor int             // selected snapshot in the detail view
 	detailName string          // repo the detail view is pinned to (set on enter)
@@ -156,17 +158,29 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
-	// Keys that mean the same thing in every view: quit, help, and refresh-all
-	// (which acts on all repos, so it needs no per-view cursor).
+	// Quit and the help overlay toggle work from every view, including the
+	// overlay itself.
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
 		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Help):
-		m.help.ShowAll = !m.help.ShowAll
+		return m.toggleHelp(), nil
+	}
+
+	// The help overlay is modal: behind it only Back closes the overlay (quit
+	// and the help toggle are handled above); action keys do nothing.
+	if m.view == helpView {
+		if key.Matches(msg, m.keys.Back) {
+			m.view = m.prevView
+		}
 		return m, nil
-	case key.Matches(msg, m.keys.RefreshAll):
+	}
+
+	// Refresh-all acts on every repo, so it needs no per-view cursor and works
+	// from the list, detail, and coverage views alike.
+	if key.Matches(msg, m.keys.RefreshAll) {
 		m.statusMsg = ""
 		var cmds []tea.Cmd
 		for _, r := range m.rows {
@@ -213,6 +227,19 @@ func (m Model) handleCoverageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.view = listView
 	}
 	return m, nil
+}
+
+// toggleHelp opens the help overlay from the current view, or closes it back to
+// the view it was opened from. Remembering the origin lets `?` from the detail
+// or coverage view return there rather than dumping the user on the list.
+func (m Model) toggleHelp() Model {
+	if m.view == helpView {
+		m.view = m.prevView
+		return m
+	}
+	m.prevView = m.view
+	m.view = helpView
+	return m
 }
 
 func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
