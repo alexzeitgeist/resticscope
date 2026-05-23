@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -252,6 +253,29 @@ func TestStderrRedactedInError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "[REDACTED]") {
 		t.Errorf("expected redacted stderr in error, got %q", err.Error())
+	}
+}
+
+// The exported cache-layout helpers must agree with the RESTIC_CACHE_DIR that
+// real runs set, so `cache prune` maps configured repos to the right directory.
+func TestCacheLayoutHelpers(t *testing.T) {
+	if got := CacheRoot(""); got != "" {
+		t.Errorf("CacheRoot(\"\") = %q, want empty", got)
+	}
+	root := CacheRoot("/cache")
+	if want := "/cache/restic-cache"; root != want {
+		t.Errorf("CacheRoot = %q, want %q", root, want)
+	}
+	// A name with path-unsafe characters is sanitized into one element.
+	if got := RepoCacheName("home/server:1"); got != "home_server_1" {
+		t.Errorf("RepoCacheName = %q, want home_server_1", got)
+	}
+
+	// The composed path must equal what buildEnv hands restic as RESTIC_CACHE_DIR.
+	c := &Client{CacheDir: "/cache"}
+	want := filepath.Join(root, RepoCacheName(testTarget.Name))
+	if got := c.repoCacheDir(testTarget); got != want {
+		t.Errorf("repoCacheDir = %q, want %q", got, want)
 	}
 }
 

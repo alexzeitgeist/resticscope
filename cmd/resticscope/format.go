@@ -59,6 +59,63 @@ func formatCoverageRollup(w io.Writer, r app.CoverageRollup) {
 	tw.Flush()
 }
 
+// formatPruneResult writes the outcome of `resticscope cache prune`: the scanned
+// directory, one aligned line per per-repo cache (its size and whether it is
+// kept or pruned), and a closing summary. Wording shifts to the conditional for
+// a dry run. It stays plain text and uncolored, consistent with `status`.
+func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
+	if res.Root == "" {
+		fmt.Fprintln(w, "no cache directory configured; nothing to prune")
+		return
+	}
+	if len(res.Entries) == 0 {
+		fmt.Fprintf(w, "restic cache: %s\n\nno restic caches found; nothing to prune\n", res.Root)
+		return
+	}
+
+	pruneVerb := "pruned"
+	if dryRun {
+		pruneVerb = "would prune"
+	}
+
+	fmt.Fprintf(w, "restic cache: %s\n\n", res.Root)
+	var total int64
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	for _, e := range res.Entries {
+		total += e.Size
+		action := "keep"
+		if e.Pruned {
+			action = pruneVerb
+			if e.Orphan {
+				action += " (orphan)"
+			}
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.Name, humanize.Bytes(e.Size), action)
+	}
+	tw.Flush()
+
+	fmt.Fprintln(w)
+	switch n := res.Pruned(); {
+	case n == 0:
+		fmt.Fprintf(w, "nothing to prune (%s in %s); use --all to clear active caches too\n",
+			humanize.Bytes(total), caches(len(res.Entries)))
+	case dryRun:
+		fmt.Fprintf(w, "would free %s across %d of %s\n",
+			humanize.Bytes(res.Freed), n, caches(len(res.Entries)))
+	default:
+		fmt.Fprintf(w, "freed %s across %d of %s\n",
+			humanize.Bytes(res.Freed), n, caches(len(res.Entries)))
+	}
+}
+
+// caches renders a count with the correctly pluralized noun ("1 cache", "3 caches").
+func caches(n int) string {
+	if n == 1 {
+		return "1 cache"
+	}
+	return fmt.Sprintf("%d caches", n)
+}
+
 // checkLine writes one aligned stage line for `resticscope check`, e.g.
 //
 //	config   ok      3 repos, 2 credentials

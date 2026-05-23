@@ -157,11 +157,29 @@ func minimalEnv() []string {
 }
 
 func (c *Client) repoCacheDir(t Target) string {
-	if c.CacheDir == "" {
+	root := CacheRoot(c.CacheDir)
+	if root == "" {
 		return ""
 	}
-	return filepath.Join(c.CacheDir, "restic-cache", sanitize(t.Name))
+	return filepath.Join(root, RepoCacheName(t.Name))
 }
+
+// CacheRoot returns the directory under which resticscope keeps restic's own
+// per-repo caches (RESTIC_CACHE_DIR for each repo is a subdirectory named by
+// RepoCacheName). It returns "" when cacheDir is empty. This is the layout
+// `resticscope cache prune` scans, so the path lives here, with the runner that
+// sets RESTIC_CACHE_DIR, as the single source of truth.
+func CacheRoot(cacheDir string) string {
+	if cacheDir == "" {
+		return ""
+	}
+	return filepath.Join(cacheDir, "restic-cache")
+}
+
+// RepoCacheName returns the single path element under CacheRoot that holds a
+// repo's restic cache. It matches the directory restic actually writes to under
+// ExecRunner, so prune can map configured repos to their caches on disk.
+func RepoCacheName(repoName string) string { return sanitize(repoName) }
 
 // RepoURL builds restic's S3-compatible repository URL. The endpoint scheme is
 // preserved — restic needs https:// to talk to non-AWS endpoints like Hetzner

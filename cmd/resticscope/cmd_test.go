@@ -177,6 +177,82 @@ func TestStatusCoverageRollup(t *testing.T) {
 	}
 }
 
+// cache prune removes restic caches for repos no longer in config and keeps the
+// caches backing live repos. The cache dir from setup() is also the restic-cache
+// root, so seed both an orphaned and a live cache subdirectory under it.
+func TestCachePruneRemovesOrphans(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"live-repo": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	cacheDir := filepath.Dir(cfgPath) + "/cache"
+	liveDir := seedResticCache(t, cacheDir, "live-repo")
+	orphanDir := seedResticCache(t, cacheDir, "removed-repo")
+
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"cache", "prune", "--config", cfgPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("cache prune exit = %d, want 0 (stderr=%q)", code, errBuf.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "removed-repo") || !strings.Contains(s, "orphan") {
+		t.Errorf("expected orphan reported as pruned, got %q", s)
+	}
+	if !strings.Contains(s, "freed") {
+		t.Errorf("expected a freed summary, got %q", s)
+	}
+	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+		t.Errorf("orphan cache should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Errorf("live cache should be kept, stat err = %v", err)
+	}
+}
+
+// --dry-run reports what would go but deletes nothing.
+func TestCachePruneDryRun(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"live-repo": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	cacheDir := filepath.Dir(cfgPath) + "/cache"
+	orphanDir := seedResticCache(t, cacheDir, "removed-repo")
+
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"cache", "prune", "--dry-run", "--config", cfgPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("cache prune --dry-run exit = %d, want 0 (stderr=%q)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "would free") {
+		t.Errorf("expected conditional wording in dry run, got %q", out.String())
+	}
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Errorf("dry run must not delete the orphan cache, stat err = %v", err)
+	}
+}
+
+func TestCacheUnknownSubcommand(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run(context.Background(), []string{"cache", "frobnicate"}, &out, &errBuf); code != 2 {
+		t.Errorf("unknown cache subcommand exit = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "unknown cache subcommand") {
+		t.Errorf("expected error message, got %q", errBuf.String())
+	}
+}
+
+// seedResticCache creates a per-repo restic cache subdirectory with one file in
+// it, named exactly as a real run would, and returns its path.
+func seedResticCache(t *testing.T, cacheDir, repoName string) string {
+	t.Helper()
+	dir := filepath.Join(cacheDir, "restic-cache", repoName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pack"), []byte("cached"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestUnknownCommand(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	if code := run(context.Background(), []string{"frobnicate"}, &out, &errBuf); code != 2 {

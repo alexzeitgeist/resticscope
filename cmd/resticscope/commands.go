@@ -91,6 +91,57 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return app.WorstExitCode(rows)
 }
 
+// cmdCache dispatches the `cache` subcommands. Only `prune` exists today; it is
+// kept as its own command group so future cache operations have a home.
+func cmdCache(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: resticscope cache prune [--config PATH] [--all] [--dry-run]")
+		return 2
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "prune":
+		return cmdCachePrune(ctx, rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown cache subcommand %q\n", sub)
+		fmt.Fprintln(stderr, "usage: resticscope cache prune [--config PATH] [--all] [--dry-run]")
+		return 2
+	}
+}
+
+// cmdCachePrune reclaims disk space from restic's own per-repo caches under
+// <cache_dir>/restic-cache/ (plan §7, §11). By default it removes only orphaned
+// caches — those left behind by a repo that is no longer in the config — so the
+// caches backing live repos survive. `--all` removes every cache (restic rebuilds
+// it on next access), and `--dry-run` reports what would go without deleting it.
+// It reads no secrets and makes no network or restic calls. Exit codes: 0 on
+// success (including nothing to prune), 2 on a setup or filesystem failure.
+func cmdCachePrune(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("cache prune", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
+	all := fs.Bool("all", false, "remove every repo's restic cache, not just orphaned ones")
+	dryRun := fs.Bool("dry-run", false, "report what would be removed without deleting anything")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	a := &app.App{Cfg: cfg, Log: newLogger(cfg)}
+	res, err := a.PruneCache(ctx, *all, *dryRun)
+	if err != nil {
+		fmt.Fprintf(stderr, "cache prune: %v\n", err)
+		return 2
+	}
+	formatPruneResult(stdout, res, *dryRun)
+	return 0
+}
+
 // cmdTUI launches the Bubble Tea list view. It runs secrets_command and wires
 // restic up front — before tea.NewProgram — so any GPG passphrase prompt
 // happens at the normal terminal instead of fighting the alt-screen (plan §12).
