@@ -69,6 +69,7 @@ type fakeRestic struct {
 	snapErr error
 	stats   model.Stats
 	statErr error
+	catErr  error // returned by CatConfig
 }
 
 func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
@@ -77,6 +78,10 @@ func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.C
 
 func (f fakeRestic) Stats(ctx context.Context, t resticx.Target, c resticx.Creds) (model.Stats, error) {
 	return f.stats, f.statErr
+}
+
+func (f fakeRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
+	return f.catErr
 }
 
 // --- helpers ---

@@ -1,0 +1,49 @@
+# resticscope configuration — copy to ~/.config/resticscope/config.toml and edit.
+#
+# This file describes which repos exist and what is expected of them. It holds
+# NO secrets: S3 keys and restic passwords come from secrets_command at runtime
+# (see [global].secrets_command below).
+
+[global]
+# secrets_command prints a single JSON document with your S3 keys and restic
+# passwords to stdout. It is run through $SHELL -c, so pipes and flags work.
+# For local development point it at a plaintext file; for real use point it at
+# a secret manager (pass, age, SOPS, 1Password).
+secrets_command = "pass show resticscope/credentials"
+
+parallelism         = 4                       # max concurrent restic processes (Hetzner throttles; keep <= 4)
+cache_dir           = "~/.cache/resticscope"  # per-repo state JSON + restic's own cache live here
+refresh_on_open     = true                    # auto-refresh stale entries when the TUI launches
+stale_after         = "10m"                   # cache entries older than this are refreshed on open
+stale_grace         = "12h"                   # amber band added on top of each repo's expected_frequency
+shell               = ""                       # empty -> use $SHELL for the snapshot-browsing shell
+shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWORD_FILE (default); env = RESTIC_PASSWORD
+
+# --- S3 credentials -----------------------------------------------------------
+# On Hetzner an access-key/secret-key pair is project-bound and reaches every
+# bucket in that project, so endpoint/region/bucket_lookup live here, not per
+# repo. Each name must be unique and match a key under "credentials" in the
+# secrets JSON.
+
+[[credentials]]
+name          = "hetzner-home-fsn1"
+endpoint      = "https://fsn1.your-objectstorage.com"
+region        = "fsn1"
+bucket_lookup = "auto"                         # auto | dns | path (use dns only if a bucket requires it)
+
+# --- repositories -------------------------------------------------------------
+# Each repo references a credential by name and adds the bucket/path. The name
+# must be unique, match a key under "repos" in the secrets JSON, and contain
+# only letters, digits, '.', '_' and '-' (it becomes a cache filename).
+
+[[repos]]
+name               = "homeserver-system"
+description        = "Daily system backup of homeserver"
+credential         = "hetzner-home-fsn1"
+bucket             = "homeserver-backups"
+path               = ""                         # optional sub-prefix within the bucket
+expected_frequency = "24h"                      # older than this (+ stale_grace) turns the repo amber/red
+expected_hosts     = ["homeserver"]             # coverage expectations, compared against observed snapshots
+expected_paths     = ["/etc", "/var/lib"]
+expected_tags      = ["daily", "system"]
+labels             = { env = "home", criticality = "high" }

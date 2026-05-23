@@ -42,6 +42,14 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 	tw.Flush()
 }
 
+// checkLine writes one aligned stage line for `resticscope check`, e.g.
+//
+//	config   ok      3 repos, 2 credentials
+//	restic   FAILED  0.16.0 is older than the minimum supported 0.17.0
+func checkLine(w io.Writer, stage, status, detail string) {
+	fmt.Fprintf(w, "%-9s%-8s%s\n", stage, status, detail)
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]

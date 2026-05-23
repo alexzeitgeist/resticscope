@@ -82,6 +82,18 @@ func (c *Client) Stats(ctx context.Context, t Target, creds Creds) (model.Stats,
 	return s, nil
 }
 
+// CatConfig reaches the repository by reading and decrypting its config file
+// (`restic cat config`). It is the cheapest end-to-end probe: it exercises the
+// S3 credentials, confirms the repository exists (exit 10 otherwise), and
+// verifies the password decrypts it (exit 12 otherwise) — all without taking a
+// lock. It returns a classified *Error on failure and nil when the repo is
+// reachable; the decrypted config (stdout) is intentionally discarded, as it
+// is not secret-free and `check` needs only the reachability verdict.
+func (c *Client) CatConfig(ctx context.Context, t Target, creds Creds) error {
+	_, err := c.run(ctx, t, creds, "cat", "config")
+	return err
+}
+
 // Version returns restic's version string (e.g. "0.18.1"). It parses the plain
 // `restic version` output, which is stable across the supported range.
 func (c *Client) Version(ctx context.Context) (string, error) {

@@ -146,6 +146,45 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 	}
 }
 
+func TestCatConfigReachable(t *testing.T) {
+	fr := &fakeRunner{stdout: []byte(`{"version":2}`)}
+	c := &Client{Runner: fr}
+	if err := c.CatConfig(context.Background(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
+		t.Fatalf("CatConfig: %v", err)
+	}
+	if got := strings.Join(fr.gotArgs, " "); got != "cat config" {
+		t.Errorf("args = %q, want %q", got, "cat config")
+	}
+	if fr.gotPassword != "pw" {
+		t.Errorf("password not passed out-of-band, got %q", fr.gotPassword)
+	}
+}
+
+func TestCatConfigClassifiesFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		exit fakeExit
+		want ErrorKind
+	}{
+		{"missing repo", fakeExit(10), KindRepoNotFound},
+		{"wrong password", fakeExit(12), KindWrongPassword},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fr := &fakeRunner{err: tt.exit}
+			c := &Client{Runner: fr}
+			err := c.CatConfig(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+			var re *Error
+			if !asResticError(err, &re) {
+				t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
+			}
+			if re.Kind != tt.want {
+				t.Errorf("Kind = %v, want %v", re.Kind, tt.want)
+			}
+		})
+	}
+}
+
 func TestBucketLookupOption(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}

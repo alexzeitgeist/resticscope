@@ -36,6 +36,7 @@ type CacheStore interface {
 type Restic interface {
 	Snapshots(ctx context.Context, t resticx.Target, creds resticx.Creds) ([]model.Snapshot, error)
 	Stats(ctx context.Context, t resticx.Target, creds resticx.Creds) (model.Stats, error)
+	CatConfig(ctx context.Context, t resticx.Target, creds resticx.Creds) error
 }
 
 // Secrets resolves a repo's runtime credentials. Satisfied by *secrets.Store.

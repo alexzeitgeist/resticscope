@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"text/tabwriter"
 
 	"resticscope/internal/app"
 	"resticscope/internal/cache"
@@ -126,6 +128,98 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tui: %v\n", err)
 		return 1
 	}
+	return 0
+}
+
+// cmdCheck validates the wiring end to end: it loads and validates the config,
+// runs secrets_command and confirms every credential and repo resolves, checks
+// that restic meets the minimum supported version, then reaches each repo with
+// `restic cat config`. It is the one-shot "is everything set up correctly?"
+// command (plan §9, recommendation 3) and never reads or writes the cache.
+//
+// Exit codes: 0 everything passed; 1 the check ran but found problems (restic
+// too old, or one or more repos unreachable); 2 the check could not run at all
+// (bad config, secrets unavailable, or no usable restic binary).
+func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		checkLine(stdout, "config", "FAILED", err.Error())
+		return 2
+	}
+	checkLine(stdout, "config", "ok", fmt.Sprintf("%d repos, %d credentials", len(cfg.Repos), len(cfg.Credentials)))
+
+	logger := newLogger(cfg)
+	store, client, err := refreshDeps(ctx, cfg, logger)
+	if err != nil {
+		// refreshDeps runs secrets_command and validates the resolved secrets
+		// against config; its error is already secret-free.
+		checkLine(stdout, "secrets", "FAILED", err.Error())
+		return 2
+	}
+	checkLine(stdout, "secrets", "ok", "all credentials and repos resolved")
+
+	// Gate on restic's version. A version we cannot determine at all (binary
+	// missing, timeout) is fatal: the per-repo probes would only repeat the
+	// same failure, so stop here rather than print it once per repo.
+	resticVer, err := (&resticx.Client{Runner: resticx.ExecRunner{}}).Version(ctx)
+	if err != nil {
+		checkLine(stdout, "restic", "FAILED", err.Error())
+		return 2
+	}
+	versionOK := true
+	switch ok, perr := resticx.AtLeastMinVersion(resticVer); {
+	case perr != nil:
+		versionOK = false
+		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("could not parse version %q: %v", resticVer, perr))
+	case !ok:
+		versionOK = false
+		checkLine(stdout, "restic", "FAILED", fmt.Sprintf("%s is older than the minimum supported %s", resticVer, resticx.MinVersion))
+	default:
+		checkLine(stdout, "restic", "ok", resticVer)
+	}
+
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   cache.New(cfg.Global.CacheDir),
+		Clock:   realClock{},
+		Log:     logger,
+		Secrets: store,
+		Restic:  client,
+	}
+	checks, _ := a.Check(ctx) // per-repo failures live on each RepoCheck
+
+	fmt.Fprintln(stdout, "repositories")
+	tw := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
+	failures := 0
+	for _, rc := range checks {
+		if rc.OK() {
+			fmt.Fprintf(tw, "  %s\tok\n", rc.Name)
+			continue
+		}
+		failures++
+		fmt.Fprintf(tw, "  %s\tFAILED: %s\n", rc.Name, firstLine(rc.Err.Error()))
+	}
+	tw.Flush()
+
+	if !versionOK || failures > 0 {
+		var problems []string
+		if !versionOK {
+			problems = append(problems, "restic version unsupported")
+		}
+		if failures > 0 {
+			problems = append(problems, fmt.Sprintf("%d of %d repositories unreachable", failures, len(checks)))
+		}
+		fmt.Fprintf(stderr, "\ncheck failed: %s\n", strings.Join(problems, "; "))
+		return 1
+	}
+	fmt.Fprintln(stdout, "\nall checks passed")
 	return 0
 }
 

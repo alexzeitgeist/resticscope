@@ -1,9 +1,9 @@
 // Command resticscope is a local, on-demand overview of restic repositories on
 // S3-compatible storage.
 //
-// Phase 0 ships the headless `status` and `version` commands; the Bubble Tea
-// TUI and the `check`/`exec` subcommands are built on the same internal/app
-// core in later phases.
+// It ships the Bubble Tea `tui` (the default), the cache-only `status`, and the
+// `check` validator, all thin callers of the internal/app core. The `exec`
+// subcommand is built on the same core in a later phase.
 package main
 
 import (
@@ -33,10 +33,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdStatus(ctx, rest, stdout, stderr)
 	case "version":
 		return cmdVersion(ctx, rest, stdout, stderr)
+	case "check":
+		return cmdCheck(ctx, rest, stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return 0
-	case "check", "exec":
+	case "exec":
 		fmt.Fprintf(stderr, "resticscope %s: not implemented yet (planned for a later phase)\n", cmd)
 		return 2
 	default:
@@ -52,11 +54,13 @@ func usage(w io.Writer) {
 Usage:
   resticscope [tui] [--config PATH]                launch the interactive TUI (default)
   resticscope status [--config PATH] [--refresh]   one line per repo from cache
+  resticscope check [--config PATH]                validate config, secrets, restic, and repo reachability
   resticscope version                              print resticscope and restic versions
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
+check  exit codes: 0 all passed, 1 problems found, 2 could not run the check.
 
-The check and exec subcommands are planned but not yet implemented.
+The exec subcommand is planned but not yet implemented.
 `)
 }
 

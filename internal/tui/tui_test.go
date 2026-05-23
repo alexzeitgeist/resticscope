@@ -53,6 +53,10 @@ func (stubRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (m
 	return model.Stats{}, nil
 }
 
+func (stubRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
+	return nil
+}
+
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
 // restic call still running when the user quits. It closes started once so a
 // test can wait until the refresh has actually reached restic.
@@ -66,6 +70,10 @@ func (b blockingRestic) Snapshots(ctx context.Context, _ resticx.Target, _ resti
 
 func (blockingRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (model.Stats, error) {
 	return model.Stats{}, nil
+}
+
+func (blockingRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
+	return nil
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)

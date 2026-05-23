@@ -193,6 +193,39 @@ func TestTUIFailsFastWhenSecretsUnavailable(t *testing.T) {
 	}
 }
 
+func TestCheckBadConfig(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"check", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("check exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "config") || !strings.Contains(out.String(), "FAILED") {
+		t.Errorf("expected a failed config stage, got %q", out.String())
+	}
+}
+
+// setup()'s secrets_command is "true", which prints nothing, so secrets
+// validation fails and check stops at the secrets stage with exit 2 — never
+// spawning restic. This keeps the test hermetic while exercising the staged
+// output and the "could not run the check" exit code.
+func TestCheckFailsAtSecretsStage(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"check", "--config", cfgPath}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("check exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "config") || !strings.Contains(s, "ok") {
+		t.Errorf("expected config stage to pass, got %q", s)
+	}
+	if !strings.Contains(s, "secrets") || !strings.Contains(s, "FAILED") {
+		t.Errorf("expected secrets stage to fail, got %q", s)
+	}
+}
+
 // A refresh whose repos are all healthy but whose results could not be
 // persisted must still exit 2 ("...or a failure"), not 0 — otherwise cron
 // callers miss that the cache is now stale. The end-to-end --refresh path needs
