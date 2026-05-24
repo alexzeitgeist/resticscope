@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // Material is the resolved secret bundle for a single repo: the S3 key pair
@@ -140,6 +141,9 @@ func (s *Store) Validate(wantCreds, wantRepos []string) (warnings []string, err 
 			warnings = append(warnings, fmt.Sprintf("secrets: repo %q has no matching config; ignored", name))
 		}
 	}
+	// Both loops above range over maps, so sort for a deterministic warning
+	// order (these are logged; reordering between runs is confusing).
+	sort.Strings(warnings)
 
 	return warnings, errors.Join(errs...)
 }

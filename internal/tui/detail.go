@@ -189,7 +189,10 @@ func joinOrDash(vals []string) string {
 }
 
 func truncate(s string, max int) string {
-	if max <= 0 || len([]rune(s)) <= max {
+	if max <= 0 {
+		return ""
+	}
+	if len([]rune(s)) <= max {
 		return s
 	}
 	r := []rune(s)

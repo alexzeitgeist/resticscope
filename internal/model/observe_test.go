@@ -21,6 +21,20 @@ func TestObserved(t *testing.T) {
 	}
 }
 
+func TestObservedFiltersEmptyTagsAndHosts(t *testing.T) {
+	snaps := []Snapshot{
+		{Hostname: "", Tags: []string{"", "daily"}},
+		{Hostname: "laptop", Tags: []string{""}},
+	}
+	hosts, tags := Observed(snaps)
+	if want := []string{"laptop"}; !reflect.DeepEqual(hosts, want) {
+		t.Errorf("hosts = %v, want %v (empty hostname must be dropped)", hosts, want)
+	}
+	if want := []string{"daily"}; !reflect.DeepEqual(tags, want) {
+		t.Errorf("tags = %v, want %v (empty tag must be dropped)", tags, want)
+	}
+}
+
 func TestObservedEmpty(t *testing.T) {
 	hosts, tags := Observed(nil)
 	if hosts != nil || tags != nil {

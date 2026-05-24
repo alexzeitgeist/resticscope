@@ -805,3 +805,25 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		s    string
+		max  int
+		want string
+	}{
+		{"hello", 10, "hello"}, // fits unchanged
+		{"hello", 5, "hello"},  // exact fit
+		{"hello", 4, "hel…"},   // truncated with ellipsis
+		{"hello", 1, "…"},      // single cell is just the ellipsis
+		{"hello", 0, ""},       // non-positive width yields empty, not the input
+		{"hello", -3, ""},      // negative likewise
+		{"héllo", 3, "hé…"},    // counts runes, not bytes
+		{"", 5, ""},            // empty input stays empty
+	}
+	for _, tt := range tests {
+		if got := truncate(tt.s, tt.max); got != tt.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,38 @@ func TestValidateWarnsAndIgnoresExtras(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "cred-extra") || !strings.Contains(joined, "repo-extra") {
 		t.Errorf("expected warnings for extras, got %q", joined)
+	}
+}
+
+// TestValidateWarningsAreSorted guards against the map-iteration order leaking
+// into the (logged) warnings. With several extra entries the unsorted order is
+// random per run, so a sorted result is the only deterministic contract.
+func TestValidateWarningsAreSorted(t *testing.T) {
+	json := `{
+	  "credentials": {
+	    "cred-a": {"access_key":"a","secret_key":"b"},
+	    "cred-z": {"access_key":"x","secret_key":"y"},
+	    "cred-m": {"access_key":"x","secret_key":"y"}
+	  },
+	  "repos": {
+	    "repo-a": {"restic_password":"p"},
+	    "repo-z": {"restic_password":"q"},
+	    "repo-m": {"restic_password":"q"}
+	  }
+	}`
+	store, err := Parse([]byte(json))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	warnings, err := store.Validate([]string{"cred-a"}, []string{"repo-a"})
+	if err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if len(warnings) != 4 {
+		t.Fatalf("expected 4 warnings (two extra creds, two extra repos), got %d: %v", len(warnings), warnings)
+	}
+	if !sort.StringsAreSorted(warnings) {
+		t.Errorf("warnings are not sorted: %v", warnings)
 	}
 }
 

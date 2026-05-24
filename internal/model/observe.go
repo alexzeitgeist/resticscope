@@ -17,7 +17,9 @@ func Observed(snaps []Snapshot) (hosts, tags []string) {
 			hostSet[s.Hostname] = struct{}{}
 		}
 		for _, tg := range s.Tags {
-			tagSet[tg] = struct{}{}
+			if tg != "" {
+				tagSet[tg] = struct{}{}
+			}
 		}
 	}
 	return sortedKeys(hostSet), sortedKeys(tagSet)
