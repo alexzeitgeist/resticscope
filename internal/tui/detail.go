@@ -99,8 +99,10 @@ func (m Model) detailBody() string {
 		m.detailMeta(repo, row, w),
 		clip(m.styles.heading.Render("Snapshots"), w) + "\n" + m.snapshotTable(),
 	}
-	if sub := m.snapshotDetail(w); sub != "" {
-		sections = append(sections, sub)
+	if m.detailSnapDetailVisible() {
+		if sub := m.snapshotDetail(w); sub != "" {
+			sections = append(sections, sub)
+		}
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -131,11 +133,9 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 // snapshotDetail renders a fixed-height sub-panel describing the snapshot under
 // the cursor — the per-backup data restic records that the table has no room
 // for: full id, restic version, duration, and churn (bytes added and file
-// counts). It returns "" when the repo has no snapshots, so
-// detailBody omits the section and detailSnapVisible's matching overhead term
-// applies exactly when the panel is shown. Every value is clipped to one line,
-// so the height is always detailSnapDetailRows and the snapshot window above
-// stays correctly sized.
+// counts). detailBody calls it only when the repo has snapshots and the panel
+// can fit. Every value is clipped to one line, so the height is always
+// detailSnapDetailRows and the snapshot window above stays correctly sized.
 func (m Model) snapshotDetail(width int) string {
 	s := m.selectedSnapshot()
 	if s == nil {
@@ -247,7 +247,7 @@ func (m Model) snapshotTable() string {
 		}
 		lines = append(lines, clip(indicator+content, w))
 	}
-	if start > 0 || end < len(snaps) {
+	if (start > 0 || end < len(snaps)) && m.detailWindowNoteVisible(m.detailSnapDetailVisible()) {
 		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(snaps))), w))
 	}
 	return strings.Join(lines, "\n")
@@ -284,26 +284,47 @@ func snapCols(width int) (host, tags int) {
 	return host, tags
 }
 
-// detailSnapVisible is how many snapshot data rows the detail view shows at once:
-// the height less the view header, both gaps, the footer, the meta block, the
-// blank line and "Snapshots" heading above the table, the table's column header,
-// the "showing N–M of T" note, and the selected-snapshot sub-panel (with its own
-// preceding blank line). Floored at 1, which sets the detail view's minimum usable
-// height — below it the footer scrolls off.
+// detailSnapVisible is how many snapshot data rows the detail view shows at once.
+// It subtracts the view's fixed rows, including the selected-snapshot sub-panel
+// and scroll note only when they can fit. Floored at 1, which sets the detail
+// view's minimum usable height — below it the footer scrolls off.
 func (m Model) detailSnapVisible() int {
 	_, h := m.effSize()
-	overhead := headerRows + 2*gapRows + m.footerRows() +
-		detailMetaRows + // the seven meta lines
-		1 + // the blank line between the meta block and the heading
-		1 + // the "Snapshots" heading
-		1 + // the table's column-header row
-		1 + // the "showing N–M of T" note
-		1 + // the blank line between the table and the snapshot sub-panel
-		detailSnapDetailRows // the selected-snapshot sub-panel
+	withSnapDetail := m.detailSnapDetailVisible()
+	overhead := m.detailOverhead(withSnapDetail, m.detailWindowNoteVisible(withSnapDetail))
 	if n := h - overhead; n >= 1 {
 		return n
 	}
 	return 1
+}
+
+func (m Model) detailSnapDetailVisible() bool {
+	if m.snapCount() == 0 {
+		return false
+	}
+	_, h := m.effSize()
+	return h >= m.detailOverhead(true, false)+1
+}
+
+func (m Model) detailWindowNoteVisible(withSnapDetail bool) bool {
+	_, h := m.effSize()
+	return h >= m.detailOverhead(withSnapDetail, true)+1
+}
+
+func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
+	overhead := headerRows + 2*gapRows + m.footerRows() +
+		detailMetaRows + // the seven meta lines
+		1 + // the blank line between the meta block and the heading
+		1 + // the "Snapshots" heading
+		1 // the table's column-header row
+	if withWindowNote {
+		overhead += 1 // the "showing N–M of T" note
+	}
+	if withSnapDetail {
+		overhead += 1 + // the blank line between the table and the snapshot sub-panel
+			detailSnapDetailRows // the selected-snapshot sub-panel
+	}
+	return overhead
 }
 
 // snapshotWindow returns the [start, end) slice bounds for a scrolling window of

@@ -39,23 +39,38 @@ func ObservedVersions(snaps []Snapshot) []string {
 }
 
 // LastBackupDuration returns how long the most recent backup took: BackupEnd-
-// BackupStart of the newest snapshot that carries both timestamps. It scans by
-// snapshot time (not slice order) and skips snapshots without a summary (pre-0.17
-// snapshots) or with incomplete timestamps, returning 0 when none qualifies —
-// the "unknown" value humanize.Duration renders as an em-dash.
+// BackupStart of the newest snapshot. It scans by snapshot time (not slice
+// order; exact timestamp ties use snapshot IDs for stable output) and returns 0
+// when the newest snapshot has no summary (pre-0.17 snapshots) or incomplete
+// timestamps — the "unknown" value humanize.Duration renders as an em-dash.
 func LastBackupDuration(snaps []Snapshot) time.Duration {
-	var newest time.Time
-	var dur time.Duration
+	newest, ok := latestSnapshot(snaps)
+	if !ok || newest.Summary == nil || newest.Summary.BackupStart.IsZero() || newest.Summary.BackupEnd.IsZero() {
+		return 0
+	}
+	return newest.Summary.BackupEnd.Sub(newest.Summary.BackupStart)
+}
+
+func latestSnapshot(snaps []Snapshot) (Snapshot, bool) {
+	var newest Snapshot
+	var ok bool
 	for _, s := range snaps {
-		if s.Summary == nil || s.Summary.BackupStart.IsZero() || s.Summary.BackupEnd.IsZero() {
-			continue
-		}
-		if s.Time.After(newest) {
-			newest = s.Time
-			dur = s.Summary.BackupEnd.Sub(s.Summary.BackupStart)
+		if !ok || snapshotAfter(s, newest) {
+			newest = s
+			ok = true
 		}
 	}
-	return dur
+	return newest, ok
+}
+
+func snapshotAfter(a, b Snapshot) bool {
+	if !a.Time.Equal(b.Time) {
+		return a.Time.After(b.Time)
+	}
+	if a.ID != b.ID {
+		return a.ID > b.ID
+	}
+	return a.ShortID > b.ShortID
 }
 
 // LatestSnapshotTime returns the most recent snapshot time, or the zero time

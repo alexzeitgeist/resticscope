@@ -798,6 +798,36 @@ func TestListViewClipsNarrowTerminalStates(t *testing.T) {
 	}
 }
 
+func TestListSummaryTruncatesLongDuration(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	start := testNow.Add(-1001 * time.Hour)
+	row := app.RepoStatus{
+		Name:  "repo-a",
+		Stale: true,
+		State: model.RepoState{
+			LastSnapshot:  testNow.Add(-time.Hour),
+			SnapshotCount: 1,
+			Snapshots: []model.Snapshot{{
+				ID:   "id-long-duration",
+				Time: testNow.Add(-time.Hour),
+				Summary: &model.SnapshotSummary{
+					BackupStart: start,
+					BackupEnd:   start.Add(1000 * time.Hour),
+				},
+			}},
+		},
+		Status: model.StatusGreen,
+	}
+
+	got := m.summary(row)
+	if !strings.Contains(got, "took: 1000h0…  ") {
+		t.Fatalf("summary did not truncate duration to its fixed field:\n%s", got)
+	}
+	if !strings.Contains(got, "(stale)") {
+		t.Fatalf("summary dropped stale marker:\n%s", got)
+	}
+}
+
 // On a wide pane the snapshot table shows its column header and nothing wraps.
 func TestDetailViewShowsResponsiveColumns(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
@@ -835,6 +865,32 @@ func TestDetailViewClipsNarrowTerminal(t *testing.T) {
 			m.width, m.height = tc.width, 40
 
 			assertLinesFit(t, m.detailHeaderView()+"\n"+m.detailBody(), tc.width)
+		})
+	}
+}
+
+func TestDetailViewFitsCompactTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		height    int
+		wantPanel bool
+	}{
+		{"auxiliary rows hidden at minimum height", 15, false},
+		{"panel hidden below its minimum height", 17, false},
+		{"panel shown when it fits", 19, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t, detailApp(t))
+			m = update(t, m, press("enter"))
+			m.width, m.height = 80, tc.height
+
+			view := m.View().Content
+			if got := lipgloss.Height(view); got > tc.height {
+				t.Fatalf("view height = %d, want <= %d\n---\n%s", got, tc.height, view)
+			}
+			if got := strings.Contains(view, "Selected"); got != tc.wantPanel {
+				t.Fatalf("selected-snapshot panel visible = %v, want %v\n---\n%s", got, tc.wantPanel, view)
+			}
 		})
 	}
 }

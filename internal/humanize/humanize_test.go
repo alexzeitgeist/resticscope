@@ -31,6 +31,7 @@ func TestDuration(t *testing.T) {
 	}{
 		{0, "—"},
 		{-5 * time.Second, "—"},
+		{600 * time.Millisecond, "<1s"},
 		{28 * time.Second, "28s"},
 		{4*time.Minute + 12*time.Second, "4m12s"},
 		{4 * time.Minute, "4m00s"},

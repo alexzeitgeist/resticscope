@@ -77,6 +77,24 @@ func TestLastBackupDuration(t *testing.T) {
 		t.Errorf("duration = %v, want 28s", got)
 	}
 
+	latestUnsummarized := []Snapshot{
+		mk(21, d1s, d1s.Add(time.Minute)),
+		mk(23, time.Time{}, time.Time{}),
+	}
+	if got := LastBackupDuration(latestUnsummarized); got != 0 {
+		t.Errorf("duration = %v, want 0 when the latest snapshot has no summary", got)
+	}
+
+	tieA := mk(23, d3s, d3s.Add(10*time.Second))
+	tieA.ID = "a"
+	tieB := mk(23, d3s, d3s.Add(20*time.Second))
+	tieB.ID = "b"
+	for _, snaps := range [][]Snapshot{{tieA, tieB}, {tieB, tieA}} {
+		if got := LastBackupDuration(snaps); got != 20*time.Second {
+			t.Errorf("duration for tied snapshot times = %v, want stable ID tie-break duration 20s", got)
+		}
+	}
+
 	// No snapshot carries a summary → unknown (0).
 	none := []Snapshot{mk(21, time.Time{}, time.Time{}), mk(22, time.Time{}, time.Time{})}
 	if got := LastBackupDuration(none); got != 0 {
