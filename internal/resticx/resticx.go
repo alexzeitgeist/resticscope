@@ -157,11 +157,19 @@ func minimalEnv() []string {
 }
 
 func (c *Client) repoCacheDir(t Target) string {
-	root := CacheRoot(c.CacheDir)
+	return RepoCacheDir(c.CacheDir, t.Name)
+}
+
+// RepoCacheDir returns the RESTIC_CACHE_DIR for one repo — the per-repo
+// subdirectory under CacheRoot that holds its restic cache — or "" when no
+// cache dir is configured. It is the single source of truth for the path the
+// refresh runner sets and the built-in shell exports, so both warm one cache.
+func RepoCacheDir(cacheDir, repoName string) string {
+	root := CacheRoot(cacheDir)
 	if root == "" {
 		return ""
 	}
-	return filepath.Join(root, RepoCacheName(t.Name))
+	return filepath.Join(root, RepoCacheName(repoName))
 }
 
 // CacheRoot returns the directory under which resticscope keeps restic's own

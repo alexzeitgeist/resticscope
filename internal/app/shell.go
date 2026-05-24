@@ -57,7 +57,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 
 	return &ShellSession{
 		Shell:   resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
-		Env:     buildShellEnv(os.Environ(), target, creds, snap, mode, pwFile),
+		Env:     buildShellEnv(os.Environ(), target, a.Cfg.Global.CacheDir, creds, snap, mode, pwFile),
 		Banner:  shellBanner(r.Name, resticx.RepoURL(target), snap),
 		Cleanup: cleanup,
 	}, nil
@@ -136,6 +136,7 @@ var ownedShellVars = map[string]bool{
 	"RESTIC_PASSWORD":         true,
 	"RESTIC_PASSWORD_FILE":    true,
 	"RESTIC_PASSWORD_COMMAND": true,
+	"RESTIC_CACHE_DIR":        true,
 	"AWS_ACCESS_KEY_ID":       true,
 	"AWS_SECRET_ACCESS_KEY":   true,
 	"AWS_SESSION_TOKEN":       true,
@@ -151,8 +152,8 @@ var ownedShellVars = map[string]bool{
 // appears in the environment; env mode is the documented opt-in that exports
 // RESTIC_PASSWORD instead (plan §8). The base keeps the user's PATH/HOME/TERM
 // for a usable interactive shell, but every var we own is stripped first.
-func buildShellEnv(base []string, t resticx.Target, creds resticx.Creds, snap *model.Snapshot, mode, pwFile string) []string {
-	env := make([]string, 0, len(base)+8)
+func buildShellEnv(base []string, t resticx.Target, cacheDir string, creds resticx.Creds, snap *model.Snapshot, mode, pwFile string) []string {
+	env := make([]string, 0, len(base)+9)
 	for _, kv := range base {
 		if k, _, ok := strings.Cut(kv, "="); ok && ownedShellVars[k] {
 			continue
@@ -167,6 +168,14 @@ func buildShellEnv(base []string, t resticx.Target, creds resticx.Creds, snap *m
 		"AWS_DEFAULT_REGION="+t.Region,
 		"RESTICSCOPE_REPO="+t.Name,
 	)
+	// Point restic at the same per-repo cache the refresh runner warms, so a
+	// manual `restic stats`/`ls`/`mount` in the shell reuses it instead of
+	// cold-starting one under ~/.cache/restic that `cache prune` can't see.
+	// When no cache_dir is configured the var is omitted, leaving restic's own
+	// default rather than exporting an empty RESTIC_CACHE_DIR.
+	if dir := resticx.RepoCacheDir(cacheDir, t.Name); dir != "" {
+		env = append(env, "RESTIC_CACHE_DIR="+dir)
+	}
 	if snap != nil {
 		env = append(env, "RESTICSCOPE_SNAPSHOT_ID="+snap.ID)
 	}

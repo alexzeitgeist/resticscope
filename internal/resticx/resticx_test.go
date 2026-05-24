@@ -277,6 +277,14 @@ func TestCacheLayoutHelpers(t *testing.T) {
 	if got := c.repoCacheDir(testTarget); got != want {
 		t.Errorf("repoCacheDir = %q, want %q", got, want)
 	}
+	// The exported helper the shell uses must agree with the method, so refresh
+	// and the shell warm byte-identical paths.
+	if got := RepoCacheDir("/cache", testTarget.Name); got != want {
+		t.Errorf("RepoCacheDir = %q, want %q", got, want)
+	}
+	if got := RepoCacheDir("", testTarget.Name); got != "" {
+		t.Errorf("RepoCacheDir(\"\", ...) = %q, want empty", got)
+	}
 }
 
 func asResticError(err error, target **Error) bool {

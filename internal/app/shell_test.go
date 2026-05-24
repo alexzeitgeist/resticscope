@@ -45,7 +45,7 @@ func TestResolveShell(t *testing.T) {
 }
 
 func TestBuildShellEnvFileMode(t *testing.T) {
-	env := buildShellEnv(nil, shellTarget, shellCreds, nil, "file", "/tmp/pw-123")
+	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw-123")
 
 	if v, _ := envValue(env, "RESTIC_PASSWORD_FILE"); v != "/tmp/pw-123" {
 		t.Errorf("RESTIC_PASSWORD_FILE = %q, want /tmp/pw-123", v)
@@ -72,7 +72,7 @@ func TestBuildShellEnvFileMode(t *testing.T) {
 }
 
 func TestBuildShellEnvEnvMode(t *testing.T) {
-	env := buildShellEnv(nil, shellTarget, shellCreds, nil, "env", "")
+	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "env", "")
 
 	if v, _ := envValue(env, "RESTIC_PASSWORD"); v != "super-secret-pw" {
 		t.Errorf("env mode should export RESTIC_PASSWORD, got %q", v)
@@ -82,9 +82,26 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 	}
 }
 
+func TestBuildShellEnvSetsCacheDir(t *testing.T) {
+	// With a cache dir configured, the shell must export the exact per-repo path
+	// the refresh runner warms, so a manual restic reuses that cache.
+	env := buildShellEnv(nil, shellTarget, "/home/me/.cache/resticscope", shellCreds, nil, "file", "/tmp/pw")
+	want := resticx.RepoCacheDir("/home/me/.cache/resticscope", shellTarget.Name)
+	if v, _ := envValue(env, "RESTIC_CACHE_DIR"); v != want {
+		t.Errorf("RESTIC_CACHE_DIR = %q, want %q", v, want)
+	}
+
+	// With no cache dir configured, the var is omitted so restic falls back to
+	// its own default rather than seeing an empty RESTIC_CACHE_DIR.
+	env = buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw")
+	if _, ok := envValue(env, "RESTIC_CACHE_DIR"); ok {
+		t.Error("unconfigured cache dir must not export RESTIC_CACHE_DIR")
+	}
+}
+
 func TestBuildShellEnvSnapshotContext(t *testing.T) {
 	snap := &model.Snapshot{ID: "a1b2c3d4e5", ShortID: "a1b2c3d4"}
-	env := buildShellEnv(nil, shellTarget, shellCreds, snap, "file", "/tmp/pw")
+	env := buildShellEnv(nil, shellTarget, "", shellCreds, snap, "file", "/tmp/pw")
 	if v, _ := envValue(env, "RESTICSCOPE_SNAPSHOT_ID"); v != "a1b2c3d4e5" {
 		t.Errorf("RESTICSCOPE_SNAPSHOT_ID = %q, want the full id", v)
 	}
@@ -99,12 +116,22 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=old-key",
 		"AWS_SESSION_TOKEN=stale-session-token", // never paired with our static keys
 		"RESTIC_REPOSITORY=s3:old",
+		"RESTIC_CACHE_DIR=/stale/inherited", // must be replaced by our per-repo path
 	}
-	env := buildShellEnv(base, shellTarget, shellCreds, nil, "file", "/tmp/pw")
+	env := buildShellEnv(base, shellTarget, "/test-cache", shellCreds, nil, "file", "/tmp/pw")
 
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "stale-leftover") {
 		t.Error("inherited RESTIC_PASSWORD must be stripped in file mode")
+	}
+	if strings.Contains(joined, "/stale/inherited") {
+		t.Error("inherited RESTIC_CACHE_DIR must be stripped, not carried through")
+	}
+	if v, _ := envValue(env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", shellTarget.Name) {
+		t.Errorf("RESTIC_CACHE_DIR = %q, want our per-repo path", v)
+	}
+	if n := strings.Count(joined, "RESTIC_CACHE_DIR="); n != 1 {
+		t.Errorf("RESTIC_CACHE_DIR appears %d times, want 1", n)
 	}
 	if strings.Contains(joined, "old-key") || strings.Contains(joined, "s3:old") {
 		t.Error("inherited owned vars must be replaced, not duplicated")
@@ -177,7 +204,7 @@ func (s shellSecrets) Resolve(_, _ string) (secrets.Material, error) { return s.
 
 func shellApp(mode string, sec Secrets) *App {
 	cfg := &config.Config{
-		Global:      config.Global{ShellPasswordMode: mode, Shell: "/bin/sh"},
+		Global:      config.Global{ShellPasswordMode: mode, Shell: "/bin/sh", CacheDir: "/test-cache"},
 		Credentials: []config.Credential{{Name: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto"}},
 		Repos:       []config.Repo{{Name: "repo-a", Credential: "cred-a", Bucket: "b"}},
 	}
@@ -195,6 +222,12 @@ func TestShellSessionFileModeWritesAndCleansUp(t *testing.T) {
 	pwFile, ok := envValue(sess.Env, "RESTIC_PASSWORD_FILE")
 	if !ok {
 		t.Fatal("file mode did not set RESTIC_PASSWORD_FILE")
+	}
+
+	// The session must export the same per-repo cache dir the refresh runner
+	// uses, wired through from Global.CacheDir.
+	if v, _ := envValue(sess.Env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", "repo-a") {
+		t.Errorf("RESTIC_CACHE_DIR = %q, want the per-repo cache path", v)
 	}
 	info, err := os.Stat(pwFile)
 	if err != nil {
