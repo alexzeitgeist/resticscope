@@ -77,14 +77,18 @@ func Run(ctx context.Context, a *app.App, resticVer string) error {
 }
 
 func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows []app.RepoStatus, resticVer string) Model {
+	st := newStyles()
+	helpModel := help.New()
+	helpModel.Styles = st.help
+
 	m := Model{
 		app:       a,
 		ctx:       ctx,
 		cancel:    cancel,
 		keys:      defaultKeys(),
-		styles:    newStyles(),
-		help:      help.New(),
-		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		styles:    st,
+		help:      helpModel,
+		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(st.spinner)),
 		rows:      rows,
 		meta:      buildMeta(a.Cfg),
 		pending:   make(map[string]bool),

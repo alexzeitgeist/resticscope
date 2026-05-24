@@ -133,7 +133,7 @@ func (m Model) renderHelpSection(s helpSection, keyWidth int) string {
 	lines := make([]string, 0, len(s.entries)+1)
 	lines = append(lines, m.styles.heading.Render(s.title))
 	for _, e := range s.entries {
-		lines = append(lines, "  "+padRight(e.keys, keyWidth)+"  "+m.styles.meta.Render(e.desc))
+		lines = append(lines, "  "+m.styles.key.Render(padRight(e.keys, keyWidth))+"  "+m.styles.meta.Render(e.desc))
 	}
 	return strings.Join(lines, "\n")
 }
