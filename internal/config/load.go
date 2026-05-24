@@ -102,9 +102,9 @@ func (c *Config) Normalize(home string) {
 		g.LogFile = expandPath(g.LogFile, home)
 	}
 
-	for i := range c.Credentials {
-		if c.Credentials[i].BucketLookup == "" {
-			c.Credentials[i].BucketLookup = "auto"
+	for i := range c.Repos {
+		if c.Repos[i].BucketLookup == "" {
+			c.Repos[i].BucketLookup = "auto"
 		}
 	}
 }

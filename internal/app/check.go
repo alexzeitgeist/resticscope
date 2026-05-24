@@ -60,13 +60,12 @@ func (a *App) Check(ctx context.Context) ([]RepoCheck, error) {
 // Any returned error already excludes secret values (secrets.Resolve and
 // resticx both guarantee this), so it is safe to surface to the user.
 func (a *App) checkOne(ctx context.Context, r config.Repo) error {
-	cred, ok := a.Cfg.Credential(r.Credential)
-	if !ok { // unreachable after config validation, but stay defensive
+	if _, ok := a.Cfg.Credential(r.Credential); !ok { // unreachable after config validation, but stay defensive
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
 		return err
 	}
-	return a.Restic.CatConfig(ctx, targetOf(r, cred), resticCreds(material))
+	return a.Restic.CatConfig(ctx, targetOf(r), resticCreds(material))
 }

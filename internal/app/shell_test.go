@@ -82,6 +82,21 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 	}
 }
 
+func TestBuildShellEnvRegionOptional(t *testing.T) {
+	// A set region is exported for the shell's S3 tooling...
+	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw")
+	if v, _ := envValue(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
+		t.Errorf("AWS_DEFAULT_REGION = %q, want fsn1", v)
+	}
+	// ...but an empty region is omitted, never exported as an empty value.
+	noRegion := shellTarget
+	noRegion.Region = ""
+	env = buildShellEnv(nil, noRegion, "", shellCreds, nil, "file", "/tmp/pw")
+	if _, ok := envValue(env, "AWS_DEFAULT_REGION"); ok {
+		t.Error("an empty region must not export AWS_DEFAULT_REGION")
+	}
+}
+
 func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 	// With a cache dir configured, the shell must export the exact per-repo path
 	// the refresh runner warms, so a manual restic reuses that cache.
@@ -205,8 +220,8 @@ func (s shellSecrets) Resolve(_, _ string) (secrets.Material, error) { return s.
 func shellApp(mode string, sec Secrets) *App {
 	cfg := &config.Config{
 		Global:      config.Global{ShellPasswordMode: mode, Shell: "/bin/sh", CacheDir: "/test-cache"},
-		Credentials: []config.Credential{{Name: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto"}},
-		Repos:       []config.Repo{{Name: "repo-a", Credential: "cred-a", Bucket: "b"}},
+		Credentials: []config.Credential{{Name: "cred-a"}},
+		Repos:       []config.Repo{{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b"}},
 	}
 	return &App{Cfg: cfg, Secrets: sec}
 }

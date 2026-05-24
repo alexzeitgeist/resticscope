@@ -123,8 +123,7 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 		return state
 	}
 
-	cred, ok := a.Cfg.Credential(r.Credential)
-	if !ok { // unreachable after config validation, but stay defensive
+	if _, ok := a.Cfg.Credential(r.Credential); !ok { // unreachable after config validation, but stay defensive
 		return fail(fmt.Sprintf("credential %q not found", r.Credential))
 	}
 
@@ -133,7 +132,7 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 		return fail(err.Error())
 	}
 
-	target := targetOf(r, cred)
+	target := targetOf(r)
 	creds := resticCreds(material)
 
 	snaps, err := a.Restic.Snapshots(ctx, target, creds)

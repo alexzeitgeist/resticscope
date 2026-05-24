@@ -30,7 +30,7 @@ func setup(t *testing.T, states map[string]model.RepoState) string {
 		if err := c.Save(context.Background(), name, st); err != nil {
 			t.Fatalf("seed cache: %v", err)
 		}
-		fmt.Fprintf(&repos, "\n[[repos]]\nname=%q\ncredential=\"cred-a\"\nbucket=%q\nexpected_frequency=\"24h\"\n", name, name+"-bucket")
+		fmt.Fprintf(&repos, "\n[[repos]]\nname=%q\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nregion=\"fsn1\"\nbucket=%q\nexpected_frequency=\"24h\"\n", name, name+"-bucket")
 	}
 
 	cfg := fmt.Sprintf(`
@@ -40,8 +40,6 @@ cache_dir = %q
 
 [[credentials]]
 name = "cred-a"
-endpoint = "https://fsn1.example.com"
-region = "fsn1"
 %s`, cacheDir, repos.String())
 
 	cfgPath := filepath.Join(dir, "config.toml")
@@ -123,7 +121,7 @@ func appendRepoWithoutCache(t *testing.T, cfgPath string) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	fmt.Fprint(f, "\n[[repos]]\nname=\"cold-repo\"\ncredential=\"cred-a\"\nbucket=\"cold-bucket\"\nexpected_frequency=\"24h\"\n")
+	fmt.Fprint(f, "\n[[repos]]\nname=\"cold-repo\"\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nbucket=\"cold-bucket\"\nexpected_frequency=\"24h\"\n")
 }
 
 func TestStatusOutputFormat(t *testing.T) {

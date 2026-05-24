@@ -37,12 +37,6 @@ func (c *Config) Validate() error {
 		default:
 			credNames[cr.Name] = true
 		}
-		if cr.Endpoint == "" {
-			errs = append(errs, fmt.Errorf("credential %q: endpoint is required", cr.Name))
-		}
-		if !validBucketLookup[cr.BucketLookup] {
-			errs = append(errs, fmt.Errorf("credential %q: bucket_lookup must be auto|dns|path, got %q", cr.Name, cr.BucketLookup))
-		}
 	}
 
 	if len(c.Repos) == 0 {
@@ -63,6 +57,12 @@ func (c *Config) Validate() error {
 		}
 		if r.Bucket == "" {
 			errs = append(errs, fmt.Errorf("repo %q: bucket is required", r.Name))
+		}
+		if r.Endpoint == "" {
+			errs = append(errs, fmt.Errorf("repo %q: endpoint is required", r.Name))
+		}
+		if !validBucketLookup[r.BucketLookup] {
+			errs = append(errs, fmt.Errorf("repo %q: bucket_lookup must be auto|dns|path, got %q", r.Name, r.BucketLookup))
 		}
 		if r.Credential == "" {
 			errs = append(errs, fmt.Errorf("repo %q: credential is required", r.Name))

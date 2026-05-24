@@ -22,11 +22,11 @@ import (
 const defaultTimeout = 2 * time.Minute
 
 // Target is the restic-facing coordinates of one repository, assembled by the
-// caller from a config repo plus its credential.
+// caller from a config repo.
 type Target struct {
 	Name         string // repo name; used for the per-repo restic cache subdir
-	Endpoint     string // credential endpoint, scheme included (https://...)
-	Region       string // credential region
+	Endpoint     string // repo endpoint, scheme included (https://...)
+	Region       string // repo region; optional (the endpoint host usually implies it)
 	BucketLookup string // auto | dns | path
 	Bucket       string // repo bucket
 	Path         string // optional sub-prefix
@@ -126,16 +126,21 @@ func (c *Client) timeout() time.Duration {
 // password is NOT placed here; it is delivered via fd 3 and referenced by
 // RESTIC_PASSWORD_FILE (engineering rules, Rule 9; plan §7).
 func (c *Client) buildEnv(t Target, creds Creds) []string {
-	return []string{
+	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
 		"RESTIC_REPOSITORY=" + RepoURL(t),
 		"RESTIC_CACHE_DIR=" + c.repoCacheDir(t),
 		"AWS_ACCESS_KEY_ID=" + creds.AccessKey,
 		"AWS_SECRET_ACCESS_KEY=" + creds.SecretKey,
-		"AWS_DEFAULT_REGION=" + t.Region,
 		"RESTIC_PASSWORD_FILE=/dev/fd/3",
 	}
+	// Region is optional (the endpoint host usually implies it); export it only
+	// when set rather than handing restic an empty AWS_DEFAULT_REGION.
+	if t.Region != "" {
+		env = append(env, "AWS_DEFAULT_REGION="+t.Region)
+	}
+	return env
 }
 
 func minimalEnv() []string {

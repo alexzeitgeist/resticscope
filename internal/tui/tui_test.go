@@ -77,11 +77,11 @@ func testApp(states map[string]model.RepoState) *app.App {
 	}
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2},
-		Credentials: []config.Credential{{Name: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto"}},
+		Credentials: []config.Credential{{Name: "cred-a"}},
 		Repos: []config.Repo{
-			{Name: "repo-a", Credential: "cred-a", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
+			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
 				Labels: map[string]string{"env": "home", "criticality": "high"}},
-			{Name: "repo-b", Credential: "cred-a", Bucket: "b2", ExpectedFrequency: config.Duration(24 * time.Hour)},
+			{Name: "repo-b", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b2", ExpectedFrequency: config.Duration(24 * time.Hour)},
 		},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)

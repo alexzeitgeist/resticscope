@@ -84,10 +84,10 @@ func testConfig() *config.Config {
 	cfg := &config.Config{
 		Global: config.Global{Parallelism: 4},
 		Credentials: []config.Credential{
-			{Name: "cred-a", Endpoint: "https://fsn1.example.com", Region: "fsn1", BucketLookup: "auto"},
+			{Name: "cred-a"},
 		},
 		Repos: []config.Repo{
-			{Name: "repo-a", Credential: "cred-a", Bucket: "bucket-a", ExpectedFrequency: config.Duration(24 * time.Hour)},
+			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://fsn1.example.com", Region: "fsn1", BucketLookup: "auto", Bucket: "bucket-a", ExpectedFrequency: config.Duration(24 * time.Hour)},
 		},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
@@ -326,8 +326,8 @@ func TestRefreshSecretsErrorRecorded(t *testing.T) {
 func TestRefreshAll(t *testing.T) {
 	cfg := testConfig()
 	cfg.Repos = append(cfg.Repos,
-		config.Repo{Name: "repo-b", Credential: "cred-a", Bucket: "bucket-b", ExpectedFrequency: config.Duration(24 * time.Hour)},
-		config.Repo{Name: "repo-c", Credential: "cred-a", Bucket: "bucket-c", ExpectedFrequency: config.Duration(24 * time.Hour)},
+		config.Repo{Name: "repo-b", Credential: "cred-a", Endpoint: "https://fsn1.example.com", Bucket: "bucket-b", ExpectedFrequency: config.Duration(24 * time.Hour)},
+		config.Repo{Name: "repo-c", Credential: "cred-a", Endpoint: "https://fsn1.example.com", Bucket: "bucket-c", ExpectedFrequency: config.Duration(24 * time.Hour)},
 	)
 	fc := newFakeCache()
 	a := &App{

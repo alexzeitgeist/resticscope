@@ -37,8 +37,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 	if !ok {
 		return nil, fmt.Errorf("no repo %q in config", repoName)
 	}
-	cred, ok := a.Cfg.Credential(r.Credential)
-	if !ok { // unreachable after config validation, but stay defensive
+	if _, ok := a.Cfg.Credential(r.Credential); !ok { // unreachable after config validation, but stay defensive
 		return nil, fmt.Errorf("credential %q not found", r.Credential)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
@@ -46,7 +45,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 		return nil, err
 	}
 
-	target := targetOf(r, cred)
+	target := targetOf(r)
 	creds := resticCreds(material)
 	mode := passwordMode(a.Cfg.Global.ShellPasswordMode)
 
@@ -165,9 +164,13 @@ func buildShellEnv(base []string, t resticx.Target, cacheDir string, creds resti
 		"RESTIC_REPOSITORY="+resticx.RepoURL(t),
 		"AWS_ACCESS_KEY_ID="+creds.AccessKey,
 		"AWS_SECRET_ACCESS_KEY="+creds.SecretKey,
-		"AWS_DEFAULT_REGION="+t.Region,
 		"RESTICSCOPE_REPO="+t.Name,
 	)
+	// Region is optional; export it only when set, mirroring resticx.buildEnv,
+	// so the shell never sees an empty AWS_DEFAULT_REGION.
+	if t.Region != "" {
+		env = append(env, "AWS_DEFAULT_REGION="+t.Region)
+	}
 	// Point restic at the same per-repo cache the refresh runner warms, so a
 	// manual `restic stats`/`ls`/`mount` in the shell reuses it instead of
 	// cold-starting one under ~/.cache/restic that `cache prune` can't see.

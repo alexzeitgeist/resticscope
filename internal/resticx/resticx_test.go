@@ -130,6 +130,9 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 	if !strings.Contains(env, "AWS_ACCESS_KEY_ID=AK-XYZ") {
 		t.Error("env should carry the S3 access key")
 	}
+	if !strings.Contains(env, "AWS_DEFAULT_REGION=fsn1") {
+		t.Error("env should carry the repo region when one is set")
+	}
 	// The password must travel out-of-band, never in env or args.
 	if strings.Contains(env, "super-secret-pw") {
 		t.Error("password leaked into the environment")
@@ -139,6 +142,22 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 	}
 	if fr.gotPassword != "super-secret-pw" {
 		t.Errorf("password not passed out-of-band, got %q", fr.gotPassword)
+	}
+}
+
+// Region is optional. When a Target carries none, restic must get no
+// AWS_DEFAULT_REGION at all rather than an empty one (Hetzner does not require
+// it, and the endpoint host implies the region).
+func TestEnvOmitsEmptyRegion(t *testing.T) {
+	fr := &fakeRunner{stdout: []byte("[]")}
+	c := &Client{Runner: fr}
+	tgt := testTarget
+	tgt.Region = ""
+	if _, err := c.Snapshots(context.Background(), tgt, Creds{ResticPassword: "pw"}); err != nil {
+		t.Fatalf("Snapshots: %v", err)
+	}
+	if strings.Contains(strings.Join(fr.gotEnv, "\n"), "AWS_DEFAULT_REGION") {
+		t.Error("an empty region must not export AWS_DEFAULT_REGION")
 	}
 }
 

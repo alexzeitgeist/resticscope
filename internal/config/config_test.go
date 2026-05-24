@@ -11,13 +11,13 @@ const minimalTOML = `
 secrets_command = "cat ./test-secrets.json"
 
 [[credentials]]
-name     = "cred-a"
-endpoint = "https://fsn1.your-objectstorage.com"
-region   = "fsn1"
+name = "cred-a"
 
 [[repos]]
 name               = "repo-a"
 credential         = "cred-a"
+endpoint           = "https://fsn1.your-objectstorage.com"
+region             = "fsn1"
 bucket             = "bucket-a"
 expected_frequency = "24h"
 `
@@ -62,8 +62,8 @@ func TestDefaultsApplied(t *testing.T) {
 	if g.StaleGrace.Std() != defaultStaleGrace {
 		t.Errorf("stale_grace = %v, want %v", g.StaleGrace.Std(), defaultStaleGrace)
 	}
-	if cfg.Credentials[0].BucketLookup != "auto" {
-		t.Errorf("bucket_lookup default = %q, want auto", cfg.Credentials[0].BucketLookup)
+	if cfg.Repos[0].BucketLookup != "auto" {
+		t.Errorf("bucket_lookup default = %q, want auto", cfg.Repos[0].BucketLookup)
 	}
 }
 
@@ -123,8 +123,7 @@ expected_frequency = "24h"
 			name: "duplicate credential names",
 			toml: minimalTOML + `
 [[credentials]]
-name     = "cred-a"
-endpoint = "https://hel1.your-objectstorage.com"
+name = "cred-a"
 `,
 			wantSub: "duplicate credential name",
 		},
@@ -135,10 +134,10 @@ endpoint = "https://hel1.your-objectstorage.com"
 secrets_command = "x"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
 [[repos]]
 name = "repo-a"
 credential = "missing"
+endpoint = "https://e"
 bucket = "b"
 expected_frequency = "24h"
 `,
@@ -151,10 +150,10 @@ expected_frequency = "24h"
 secrets_command = "x"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
 [[repos]]
 name = "repo-a"
 credential = "cred-a"
+endpoint = "https://e"
 expected_frequency = "24h"
 `,
 			wantSub: "bucket is required",
@@ -181,12 +180,12 @@ expected_frequency = "24h"
 secrets_command = "x"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
-bucket_lookup = "wrong"
 [[repos]]
 name = "repo-a"
 credential = "cred-a"
+endpoint = "https://e"
 bucket = "b"
+bucket_lookup = "wrong"
 expected_frequency = "24h"
 `,
 			wantSub: "bucket_lookup must be",
@@ -198,10 +197,10 @@ expected_frequency = "24h"
 secrets_command = "x"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
 [[repos]]
 name = "foo/bar"
 credential = "cred-a"
+endpoint = "https://e"
 bucket = "b"
 expected_frequency = "24h"
 `,
@@ -214,10 +213,10 @@ expected_frequency = "24h"
 secrets_command = "x"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
 [[repos]]
 name = "repo-a"
 credential = "cred-a"
+endpoint = "https://e"
 bucket = "b"
 expected_frequency = "0s"
 `,
@@ -245,15 +244,38 @@ secrets_command = "x"
 shell_password_mode = "shout"
 [[credentials]]
 name = "cred-a"
-endpoint = "https://e"
 [[repos]]
 name = "repo-a"
 credential = "cred-a"
+endpoint = "https://e"
 bucket = "b"
 expected_frequency = "24h"
 `)
 	if err == nil || !strings.Contains(err.Error(), "shell_password_mode") {
 		t.Fatalf("expected shell_password_mode error, got %v", err)
+	}
+}
+
+// region is optional: the endpoint host usually implies it, so a repo that omits
+// it must load and validate cleanly (and refresh exports no AWS_DEFAULT_REGION).
+func TestOmittedRegionAccepted(t *testing.T) {
+	cfg, err := load(t, `
+[global]
+secrets_command = "x"
+[[credentials]]
+name = "cred-a"
+[[repos]]
+name = "repo-a"
+credential = "cred-a"
+endpoint = "https://hel1.your-objectstorage.com"
+bucket = "b"
+expected_frequency = "24h"
+`)
+	if err != nil {
+		t.Fatalf("omitted region should be accepted, got %v", err)
+	}
+	if cfg.Repos[0].Region != "" {
+		t.Errorf("region = %q, want empty", cfg.Repos[0].Region)
 	}
 }
 

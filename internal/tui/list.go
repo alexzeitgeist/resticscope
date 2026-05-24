@@ -17,7 +17,7 @@ import (
 )
 
 // rowMeta is the per-repo descriptive line shown under each list entry: the
-// credential's region plus the repo's labels. It is derived once from config.
+// repo's region plus its labels. It is derived once from config.
 type rowMeta struct {
 	region string
 	labels []string // label values, ordered by key for deterministic output
@@ -26,10 +26,7 @@ type rowMeta struct {
 func buildMeta(cfg *config.Config) map[string]rowMeta {
 	out := make(map[string]rowMeta, len(cfg.Repos))
 	for _, r := range cfg.Repos {
-		var rm rowMeta
-		if cred, ok := cfg.Credential(r.Credential); ok {
-			rm.region = cred.Region
-		}
+		rm := rowMeta{region: r.Region}
 		keys := make([]string, 0, len(r.Labels))
 		for k := range r.Labels {
 			keys = append(keys, k)

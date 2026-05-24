@@ -3,11 +3,40 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"resticscope/internal/config"
+	"resticscope/internal/model"
+	"resticscope/internal/resticx"
 )
+
+type recordingRestic struct {
+	mu      sync.Mutex
+	targets map[string]resticx.Target
+}
+
+func (r *recordingRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
+	return nil, nil
+}
+
+func (r *recordingRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.targets == nil {
+		r.targets = map[string]resticx.Target{}
+	}
+	r.targets[t.Name] = t
+	return nil
+}
+
+func (r *recordingRestic) target(name string) (resticx.Target, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.targets[name]
+	return t, ok
+}
 
 func TestCheckAllReachable(t *testing.T) {
 	a := &App{
@@ -66,15 +95,16 @@ func TestCheckRecordsSecretsFailure(t *testing.T) {
 func TestCheckPreservesOrder(t *testing.T) {
 	cfg := testConfig()
 	cfg.Repos = append(cfg.Repos,
-		config.Repo{Name: "repo-b", Credential: "cred-a", Bucket: "bucket-b", ExpectedFrequency: config.Duration(24 * time.Hour)},
-		config.Repo{Name: "repo-c", Credential: "cred-a", Bucket: "bucket-c", ExpectedFrequency: config.Duration(24 * time.Hour)},
+		config.Repo{Name: "repo-b", Credential: "cred-a", Endpoint: "https://hel1.example.com", Bucket: "bucket-b", Path: "nested/repo", BucketLookup: "dns", ExpectedFrequency: config.Duration(24 * time.Hour)},
+		config.Repo{Name: "repo-c", Credential: "cred-a", Endpoint: "https://nbg1.example.com", Region: "nbg1", Bucket: "bucket-c", BucketLookup: "path", ExpectedFrequency: config.Duration(24 * time.Hour)},
 	)
+	restic := &recordingRestic{}
 	a := &App{
 		Cfg:     cfg,
 		Cache:   newFakeCache(),
 		Clock:   fixedClock{now},
 		Secrets: fakeSecrets{},
-		Restic:  fakeRestic{},
+		Restic:  restic,
 	}
 	checks, err := a.Check(context.Background())
 	if err != nil {
@@ -84,6 +114,15 @@ func TestCheckPreservesOrder(t *testing.T) {
 		if checks[i].Name != name {
 			t.Errorf("checks[%d].Name = %q, want %q (order not preserved)", i, checks[i].Name, name)
 		}
+	}
+
+	wantB := resticx.Target{Name: "repo-b", Endpoint: "https://hel1.example.com", BucketLookup: "dns", Bucket: "bucket-b", Path: "nested/repo"}
+	if got, ok := restic.target("repo-b"); !ok || got != wantB {
+		t.Errorf("repo-b target = %+v, %v; want %+v, true", got, ok, wantB)
+	}
+	wantC := resticx.Target{Name: "repo-c", Endpoint: "https://nbg1.example.com", Region: "nbg1", BucketLookup: "path", Bucket: "bucket-c"}
+	if got, ok := restic.target("repo-c"); !ok || got != wantC {
+		t.Errorf("repo-c target = %+v, %v; want %+v, true", got, ok, wantC)
 	}
 }
 

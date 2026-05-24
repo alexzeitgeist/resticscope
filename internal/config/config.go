@@ -32,26 +32,30 @@ type Global struct {
 	ResticCommandTimeout  Duration `toml:"restic_command_timeout"`  // timeout for each restic invocation
 }
 
-// Credential is an S3 access-key/secret-key pair's coordinates. On Hetzner a
-// key pair is project-bound and reaches every bucket in that project, so the
-// endpoint/region/bucket_lookup live here, not per repo. The actual keys are
-// resolved at runtime from the secrets_command, keyed by Name.
+// Credential names an S3 access-key/secret-key pair. On Hetzner a key pair is
+// project-bound and reaches every bucket in the project — including buckets in
+// different regions — so a credential carries no location: endpoint, region, and
+// bucket_lookup live on the repo. The block exists to declare which key pairs
+// exist (so a dangling repo reference is caught) and to document what
+// secrets_command must provide. The actual keys are resolved at runtime from the
+// secrets_command, keyed by Name.
 type Credential struct {
-	Name         string `toml:"name"`
-	Endpoint     string `toml:"endpoint"`
-	Region       string `toml:"region"`
-	BucketLookup string `toml:"bucket_lookup"` // auto | dns | path
+	Name string `toml:"name"`
 }
 
-// Repo is a single restic repository: a bucket (and optional path) reached via
-// a named Credential, plus the expected_frequency that drives its freshness
-// status.
+// Repo is a single restic repository: a bucket (and optional path) at an
+// endpoint, reached with a named Credential's keys, plus the expected_frequency
+// that drives its freshness status. Endpoint/region/bucket_lookup live here, not
+// on the credential, so one key pair can back buckets in several regions.
 type Repo struct {
 	Name              string            `toml:"name"`
 	Description       string            `toml:"description"`
 	Credential        string            `toml:"credential"`
+	Endpoint          string            `toml:"endpoint"`
+	Region            string            `toml:"region"`
 	Bucket            string            `toml:"bucket"`
 	Path              string            `toml:"path"`
+	BucketLookup      string            `toml:"bucket_lookup"` // auto | dns | path
 	ExpectedFrequency Duration          `toml:"expected_frequency"`
 	Labels            map[string]string `toml:"labels"`
 }

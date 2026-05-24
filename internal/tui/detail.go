@@ -92,10 +92,6 @@ func (m Model) detailBody() string {
 // detailMeta renders the fixed repo facts: where it lives and what was observed.
 func (m Model) detailMeta(repo config.Repo, row app.RepoStatus) string {
 	st := row.State
-	var endpoint string
-	if cred, ok := m.app.Cfg.Credential(repo.Credential); ok {
-		endpoint = cred.Endpoint
-	}
 
 	last := humanize.Ago(m.app.Clock.Now(), st.LastSnapshot)
 	if !st.LastSnapshot.IsZero() {
@@ -103,7 +99,7 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus) string {
 	}
 
 	lines := []string{
-		m.field("Endpoint", endpoint),
+		m.field("Endpoint", repo.Endpoint),
 		m.field("Bucket", bucketLabel(repo)),
 		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount)),
 		m.field("Hosts", joinOrDash(st.Hosts)),

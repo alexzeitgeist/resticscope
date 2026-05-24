@@ -85,12 +85,12 @@ func (a *App) statusParams(r config.Repo) model.StatusParams {
 	}
 }
 
-func targetOf(r config.Repo, cred config.Credential) resticx.Target {
+func targetOf(r config.Repo) resticx.Target {
 	return resticx.Target{
 		Name:         r.Name,
-		Endpoint:     cred.Endpoint,
-		Region:       cred.Region,
-		BucketLookup: cred.BucketLookup,
+		Endpoint:     r.Endpoint,
+		Region:       r.Region,
+		BucketLookup: r.BucketLookup,
 		Bucket:       r.Bucket,
 		Path:         r.Path,
 	}
