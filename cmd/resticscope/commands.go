@@ -133,6 +133,65 @@ func cmdCachePrune(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
+// cmdSecrets dispatches the `secrets` subcommands. Only `template` exists today;
+// it is kept as its own command group so future secrets helpers have a home.
+func cmdSecrets(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: resticscope secrets template [--config PATH]"
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "template":
+		return cmdSecretsTemplate(ctx, rest, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown secrets subcommand %q\n", sub)
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+}
+
+// cmdSecretsTemplate prints a blank secrets JSON skeleton — the credentials and
+// repos maps pre-filled with the names from config, every value left empty — for
+// the user to fill in and store in their secrets backend (plan §3). It is the
+// onboarding scaffold: it only loads config, reads no secrets, and makes no
+// network or restic calls, so it works before any secret exists and is the first
+// step on a new machine or repo. It pairs with `check`, which verifies the
+// filled-in secrets resolve. The JSON goes to stdout so it can be piped (e.g.
+// `... > s.json` then `pass insert -m ... < s.json`); the guidance line goes to
+// stderr so stdout stays clean. Exit codes: 0 on success, 2 if config cannot be
+// loaded (consistent with the other commands).
+func cmdSecretsTemplate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: resticscope secrets template [--config PATH]"
+	fs := flag.NewFlagSet("secrets template", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+
+	cfg, err := loadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	out, err := secrets.Template(credentialNames(cfg), repoNames(cfg))
+	if err != nil {
+		fmt.Fprintf(stderr, "secrets template: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "%s\n", out)
+	fmt.Fprintln(stderr, "fill in the blank values, store the result in your secrets backend, then verify with `resticscope check`")
+	return 0
+}
+
 // cmdTUI launches the Bubble Tea list view. It runs secrets_command and wires
 // restic up front — before tea.NewProgram — so any GPG passphrase prompt
 // happens at the normal terminal instead of fighting the alt-screen (plan §12).

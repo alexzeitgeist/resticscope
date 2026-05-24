@@ -32,6 +32,15 @@ type repoEntry struct {
 	ResticPassword string `json:"restic_password"`
 }
 
+// document is the on-the-wire shape of the secrets JSON: a credentials map
+// keyed by credential name and a repos map keyed by repo name. Parse decodes
+// into it and Template emits it, so the scaffold can never drift from what the
+// parser accepts.
+type document struct {
+	Credentials map[string]credEntry `json:"credentials"`
+	Repos       map[string]repoEntry `json:"repos"`
+}
+
 // Store holds parsed secrets in memory. The zero value is not usable; build one
 // with Parse or Load.
 type Store struct {
@@ -60,15 +69,33 @@ func Load(ctx context.Context, run RunFunc, shell, command string) (*Store, erro
 // Parse decodes the secrets JSON document. It does not validate against config;
 // call Validate for that.
 func Parse(data []byte) (*Store, error) {
-	var raw struct {
-		Credentials map[string]credEntry `json:"credentials"`
-		Repos       map[string]repoEntry `json:"repos"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	var doc document
+	if err := json.Unmarshal(data, &doc); err != nil {
 		// Never include data in the error: it is the secret payload.
 		return nil, fmt.Errorf("parse secrets JSON: %w", err)
 	}
-	return &Store{credentials: raw.Credentials, repos: raw.Repos}, nil
+	return &Store{credentials: doc.Credentials, repos: doc.Repos}, nil
+}
+
+// Template returns a blank secrets document for the given credential and repo
+// names: the exact JSON shape Parse expects, with every value left empty for
+// the user to fill in and store in their secrets backend. It contains no
+// secrets and reads none — it is the onboarding scaffold, generated from config
+// before any secret exists, and pairs with Validate/`check` once filled in.
+// credEntry/repoEntry carry no omitempty, so empty fields render as "", and map
+// keys serialize alphabetically, so the output is deterministic.
+func Template(credNames, repoNames []string) ([]byte, error) {
+	doc := document{
+		Credentials: make(map[string]credEntry, len(credNames)),
+		Repos:       make(map[string]repoEntry, len(repoNames)),
+	}
+	for _, n := range credNames {
+		doc.Credentials[n] = credEntry{}
+	}
+	for _, n := range repoNames {
+		doc.Repos[n] = repoEntry{}
+	}
+	return json.MarshalIndent(doc, "", "  ")
 }
 
 // Validate checks that every wanted credential and repo resolves to complete

@@ -163,6 +163,65 @@ func TestLoadSuccess(t *testing.T) {
 	}
 }
 
+func TestTemplate(t *testing.T) {
+	creds := []string{"hetzner-home", "hetzner-cold"}
+	repos := []string{"homeserver-system", "laptop-photos"}
+
+	data, err := Template(creds, repos)
+	if err != nil {
+		t.Fatalf("Template: %v", err)
+	}
+
+	// The skeleton must be structurally valid input to Parse (incomplete, but the
+	// right shape) and round-trip to exactly the names it was given, all blank.
+	store, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse(Template): %v", err)
+	}
+	for _, c := range creds {
+		for _, r := range repos {
+			m, err := store.Resolve(r, c)
+			if err != nil {
+				t.Fatalf("Resolve(%q, %q): %v", r, c, err)
+			}
+			if m.AccessKey != "" || m.SecretKey != "" || m.ResticPassword != "" {
+				t.Errorf("template value not blank for %q/%q: %+v", r, c, m)
+			}
+		}
+	}
+
+	// Shape check: every name present, and empty fields rendered as "" (the
+	// entry types carry no omitempty), so the user sees blanks to fill in.
+	s := string(data)
+	for _, name := range append(append([]string{}, creds...), repos...) {
+		if !strings.Contains(s, name) {
+			t.Errorf("template missing name %q:\n%s", name, s)
+		}
+	}
+	for _, field := range []string{`"access_key": ""`, `"secret_key": ""`, `"restic_password": ""`} {
+		if !strings.Contains(s, field) {
+			t.Errorf("template missing blank field %q:\n%s", field, s)
+		}
+	}
+}
+
+func TestTemplateEmptyConfig(t *testing.T) {
+	// No credentials or repos configured yet — the scaffold still emits a valid,
+	// parseable document with empty maps.
+	data, err := Template(nil, nil)
+	if err != nil {
+		t.Fatalf("Template: %v", err)
+	}
+	if _, err := Parse(data); err != nil {
+		t.Fatalf("Parse(Template(nil,nil)): %v", err)
+	}
+	for _, key := range []string{`"credentials": {}`, `"repos": {}`} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("expected empty map %q, got:\n%s", key, data)
+		}
+	}
+}
+
 func TestRedactor(t *testing.T) {
 	store, err := Parse([]byte(validJSON))
 	if err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -222,6 +223,92 @@ func seedResticCache(t *testing.T, cacheDir, repoName string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// secrets template scaffolds a blank secrets document from config alone: it
+// loads no secrets and makes no network/restic calls, so it works with the
+// hermetic setup() config. stdout must be valid JSON listing every configured
+// credential/repo name with blank values; the guidance line goes to stderr.
+func TestSecretsTemplate(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+		"repo-b": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("secrets template exit = %d, want 0 (stderr=%q)", code, errBuf.String())
+	}
+
+	var doc struct {
+		Credentials map[string]map[string]string `json:"credentials"`
+		Repos       map[string]map[string]string `json:"repos"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+	}
+
+	// setup() declares the single credential "cred-a" and one repo per state.
+	cred, ok := doc.Credentials["cred-a"]
+	if !ok {
+		t.Fatalf("missing credential cred-a:\n%s", out.String())
+	}
+	if cred["access_key"] != "" || cred["secret_key"] != "" {
+		t.Errorf("credential values not blank: %+v", cred)
+	}
+	for _, name := range []string{"repo-a", "repo-b"} {
+		entry, ok := doc.Repos[name]
+		if !ok {
+			t.Errorf("missing repo %q:\n%s", name, out.String())
+			continue
+		}
+		if entry["restic_password"] != "" {
+			t.Errorf("repo %q password not blank: %q", name, entry["restic_password"])
+		}
+	}
+
+	// Guidance must not pollute the pipeable stdout.
+	if strings.Contains(out.String(), "secrets backend") {
+		t.Errorf("guidance leaked into stdout: %q", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "resticscope check") {
+		t.Errorf("expected a hint on stderr, got %q", errBuf.String())
+	}
+}
+
+func TestSecretsTemplateBadConfig(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"secrets", "template", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
+	if code != 2 {
+		t.Errorf("bad config exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
+	}
+}
+
+func TestSecretsTemplateRejectsArgs(t *testing.T) {
+	cfgPath := setup(t, map[string]model.RepoState{
+		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
+	})
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath, "extra"}, &out, &errBuf)
+	if code != 2 {
+		t.Errorf("extra arg exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("extra arg should not print template JSON, got stdout=%q", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "unexpected argument") {
+		t.Errorf("expected unexpected argument error, got %q", errBuf.String())
+	}
+}
+
+func TestSecretsUnknownSubcommand(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run(context.Background(), []string{"secrets", "frobnicate"}, &out, &errBuf); code != 2 {
+		t.Errorf("unknown secrets subcommand exit = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "unknown secrets subcommand") {
+		t.Errorf("expected error message, got %q", errBuf.String())
+	}
 }
 
 func TestUnknownCommand(t *testing.T) {

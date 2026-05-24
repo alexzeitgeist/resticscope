@@ -42,6 +42,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdExec(ctx, rest, stdout, stderr)
 	case "cache":
 		return cmdCache(ctx, rest, stdout, stderr)
+	case "secrets":
+		return cmdSecrets(ctx, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
 		usage(stderr)
@@ -60,6 +62,7 @@ Usage:
   resticscope exec [--config PATH] <repo> -- cmd   run cmd in that environment instead of a shell
   resticscope cache prune [--config PATH]          remove restic caches for repos no longer in config
   resticscope cache prune --all                    remove every repo's restic cache (restic rebuilds it)
+  resticscope secrets template [--config PATH]     print a blank secrets JSON skeleton for your config
   resticscope version                              print resticscope and restic versions
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
