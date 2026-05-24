@@ -72,43 +72,101 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// headerView is the top line: the app name, the at-a-glance status badges, the
+// repo count, the restic version, and (when active) the sort indicator on the
+// left; the clock on the right. The badges count the visible rows so they agree
+// with countLabel() under a filter. It is a plain line, not a bar — only the app
+// name is bold and only the badges carry color.
 func (m Model) headerView() string {
-	left := "resticscope · " + m.countLabel()
+	parts := []string{m.styles.title.Render("resticscope")}
+	if badges := m.statusBadges(statusCounts(m.visibleRows())); badges != "" {
+		parts = append(parts, badges)
+	}
+	parts = append(parts, m.countLabel())
 	if m.resticVer != "" {
-		left += " · restic " + m.resticVer
+		parts = append(parts, "restic "+m.resticVer)
 	}
 	if m.sortMode != sortConfig {
-		left += " · sort: " + m.sortMode.label()
+		parts = append(parts, "sort: "+m.sortMode.label())
 	}
-	right := m.app.Clock.Now().Format("15:04:05")
-	return m.spread(m.styles.title.Render(left), m.styles.dim.Render(right))
+	left := strings.Join(parts, " · ")
+	right := m.styles.dim.Render(m.app.Clock.Now().Format("15:04:05"))
+	w, _ := m.effSize()
+	return clip(m.spread(left, right), w)
+}
+
+// statusCounts tallies the rows by status across all five buckets.
+func statusCounts(rows []app.RepoStatus) map[model.Status]int {
+	counts := make(map[model.Status]int, 5)
+	for _, r := range rows {
+		counts[r.Status]++
+	}
+	return counts
+}
+
+// statusBadges renders the header's count buckets, each in its status color and
+// only when non-zero: green (●), amber (▲), failed (✕, red and error summed so ✕
+// is never double-counted), and cold (…, grey).
+func (m Model) statusBadges(counts map[model.Status]int) string {
+	buckets := []struct {
+		status model.Status
+		n      int
+	}{
+		{model.StatusGreen, counts[model.StatusGreen]},
+		{model.StatusAmber, counts[model.StatusAmber]},
+		{model.StatusRed, counts[model.StatusRed] + counts[model.StatusError]},
+		{model.StatusGrey, counts[model.StatusGrey]},
+	}
+	parts := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		if b.n == 0 {
+			continue
+		}
+		parts = append(parts, m.styles.glyph[b.status].Render(fmt.Sprintf("%s%d", statusGlyph(b.status), b.n)))
+	}
+	return strings.Join(parts, "  ")
 }
 
 // spread lays left and right on one line, padding the gap so right sits flush
-// against the terminal's right edge once the width is known. It expects already
-// styled strings: lipgloss.Width discounts the styling escapes. Shared by every
-// view's header bar.
+// against the right edge once the width is known. It expects already styled
+// strings: lipgloss.Width discounts the styling escapes. Shared by every view's
+// header.
 func (m Model) spread(left, right string) string {
+	w, _ := m.effSize()
 	gap := "  "
-	if m.width > 0 {
-		if n := m.width - lipgloss.Width(left) - lipgloss.Width(right); n > 2 {
-			gap = strings.Repeat(" ", n)
-		}
+	if n := w - lipgloss.Width(left) - lipgloss.Width(right); n > 2 {
+		gap = strings.Repeat(" ", n)
 	}
 	return left + gap + right
 }
 
 func (m Model) listView() string {
+	w, _ := m.effSize()
 	if len(m.rows) == 0 {
-		return m.styles.meta.Render("no repositories configured")
+		return clip(m.styles.meta.Render("no repositories configured"), w)
 	}
 	rows := m.visibleRows()
 	if len(rows) == 0 {
-		return m.styles.meta.Render("no repositories match " + strconv.Quote(strings.TrimSpace(m.filter)))
+		return clip(m.styles.meta.Render("no repositories match "+strconv.Quote(strings.TrimSpace(m.filter))), w)
 	}
-	lines := make([]string, 0, len(rows))
-	for i, row := range rows {
-		lines = append(lines, m.renderRow(i, row))
+
+	// Clamp the cursor here too: the field isn't re-clamped when a filter shrinks
+	// the set, and the window must center on a real row.
+	cursor := m.cursor
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	start, end := listWindow(cursor, len(rows), m.visibleRepos())
+
+	lines := make([]string, 0, end-start+1)
+	for i := start; i < end; i++ {
+		lines = append(lines, m.renderRow(rows[i], i == cursor, w))
+	}
+	if start > 0 || end < len(rows) {
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(rows))), w))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -123,10 +181,18 @@ func (m Model) countLabel() string {
 	return fmt.Sprintf("%d of %d repos", len(m.visibleRows()), total)
 }
 
-func (m Model) renderRow(i int, row app.RepoStatus) string {
-	indicator := "  "
-	if i == m.cursor {
-		indicator = "> "
+// renderRow renders one repo as a main line (a left gutter, the status
+// glyph/spinner, the name, and the status summary) plus an optional indented meta
+// sub-line. The cursor row is marked with an accent gutter bar (▎) and an accent
+// name rather than a full-width highlight, so selection reads as style, not as a
+// status. Both lines are clipped to width so a long name or refresh error can't
+// wrap and break the two-lines-per-repo budget visibleRepos relies on.
+func (m Model) renderRow(row app.RepoStatus, selected bool, width int) string {
+	gutter := "  "
+	nameStyle := m.styles.name
+	if selected {
+		gutter = m.styles.gutter.Render("▎") + " "
+		nameStyle = m.styles.selectedName
 	}
 
 	mark := m.styles.glyph[row.Status].Render(statusGlyph(row.Status))
@@ -134,18 +200,14 @@ func (m Model) renderRow(i int, row app.RepoStatus) string {
 		mark = m.spinner.View()
 	}
 
-	nameStyle := m.styles.name
-	if i == m.cursor {
-		nameStyle = nameStyle.Bold(true)
-	}
-
-	main := indicator + mark + " " + nameStyle.Render(row.Name) + m.summary(row)
+	main := gutter + mark + " " + nameStyle.Render(truncate(row.Name, nameWidth)) + m.summary(row)
+	main = clip(main, width)
 
 	sub := m.metaLine(row.Name)
 	if sub == "" {
 		return main
 	}
-	return main + "\n      " + m.styles.meta.Render(sub)
+	return main + "\n" + clip("      "+m.styles.meta.Render(sub), width)
 }
 
 func (m Model) summary(row app.RepoStatus) string {
@@ -171,16 +233,17 @@ func (m Model) summary(row app.RepoStatus) string {
 }
 
 func (m Model) footerView() string {
-	helpView := m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering})
+	w, _ := m.effSize()
+	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering}), w)
 	switch {
 	case m.filtering:
 		// Show the live query (vim-style) with a block cursor so the input mode
 		// is obvious. The "/<query>" stays unstyled so it reads as one token.
-		return "/" + m.filter + m.styles.dim.Render("▏") + "\n" + helpView
+		return clip("/"+m.filter+m.styles.dim.Render("▏"), w) + "\n" + help
 	case m.statusMsg != "":
-		return m.styles.errText.Render(m.statusMsg) + "\n" + helpView
+		return clip(m.styles.errText.Render(m.statusMsg), w) + "\n" + help
 	}
-	return helpView
+	return help
 }
 
 func (m Model) metaLine(name string) string {

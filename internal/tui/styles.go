@@ -10,37 +10,42 @@ import (
 // indices that Lip Gloss degrades gracefully on limited terminals, and it
 // honors NO_COLOR for free.
 type styles struct {
-	title    lipgloss.Style
-	dim      lipgloss.Style
-	name     lipgloss.Style
-	selected lipgloss.Style
-	meta     lipgloss.Style
-	errText  lipgloss.Style
-	heading  lipgloss.Style // detail-view section titles
-	label    lipgloss.Style // detail-view field labels
-	good     lipgloss.Style // positive status text
-	bad      lipgloss.Style // negative status text
-	glyph    map[model.Status]lipgloss.Style
+	title        lipgloss.Style
+	dim          lipgloss.Style
+	name         lipgloss.Style
+	selected     lipgloss.Style // detail-view snapshot selection (accent)
+	selectedName lipgloss.Style // list cursor row name: accent, fixed-width
+	gutter       lipgloss.Style // accent left-gutter glyph on the cursor row
+	meta         lipgloss.Style
+	errText      lipgloss.Style
+	heading      lipgloss.Style // detail-view section titles
+	label        lipgloss.Style // detail-view field labels
+	good         lipgloss.Style // positive status text
+	bad          lipgloss.Style // negative status text
+	glyph        map[model.Status]lipgloss.Style
 }
 
 func newStyles() styles {
 	var (
-		green = lipgloss.Color("42")
-		amber = lipgloss.Color("214")
-		red   = lipgloss.Color("203")
-		grey  = lipgloss.Color("244")
+		green  = lipgloss.Color("42")
+		amber  = lipgloss.Color("214")
+		red    = lipgloss.Color("203")
+		grey   = lipgloss.Color("244")
+		accent = lipgloss.Color("44") // cyan: selection emphasis, distinct from the status colors
 	)
 	return styles{
-		title:    lipgloss.NewStyle().Bold(true),
-		dim:      lipgloss.NewStyle().Foreground(grey),
-		name:     lipgloss.NewStyle().Width(nameWidth),
-		selected: lipgloss.NewStyle().Bold(true),
-		meta:     lipgloss.NewStyle().Foreground(grey),
-		errText:  lipgloss.NewStyle().Foreground(red),
-		heading:  lipgloss.NewStyle().Bold(true),
-		label:    lipgloss.NewStyle().Foreground(grey).Width(labelWidth),
-		good:     lipgloss.NewStyle().Foreground(green),
-		bad:      lipgloss.NewStyle().Foreground(red),
+		title:        lipgloss.NewStyle().Bold(true),
+		dim:          lipgloss.NewStyle().Foreground(grey),
+		name:         lipgloss.NewStyle().Width(nameWidth),
+		selected:     lipgloss.NewStyle().Foreground(accent).Bold(true),
+		selectedName: lipgloss.NewStyle().Width(nameWidth).Foreground(accent).Bold(true),
+		gutter:       lipgloss.NewStyle().Foreground(accent),
+		meta:         lipgloss.NewStyle().Foreground(grey),
+		errText:      lipgloss.NewStyle().Foreground(red),
+		heading:      lipgloss.NewStyle().Bold(true),
+		label:        lipgloss.NewStyle().Foreground(grey).Width(labelWidth),
+		good:         lipgloss.NewStyle().Foreground(green),
+		bad:          lipgloss.NewStyle().Foreground(red),
 		glyph: map[model.Status]lipgloss.Style{
 			model.StatusGreen: lipgloss.NewStyle().Foreground(green),
 			model.StatusAmber: lipgloss.NewStyle().Foreground(amber),

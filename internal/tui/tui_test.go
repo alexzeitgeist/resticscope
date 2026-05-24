@@ -9,6 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"resticscope/internal/app"
 	"resticscope/internal/cache"
@@ -694,6 +695,40 @@ func TestFilterNoMatch(t *testing.T) {
 	}
 	if v := m.View().Content; !strings.Contains(v, "no repositories match") {
 		t.Errorf("expected an empty-match notice\n---\n%s", v)
+	}
+}
+
+func TestListViewClipsNarrowTerminalStates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(Model) Model
+	}{
+		{
+			name: "no match",
+			setup: func(m Model) Model {
+				m.filter = strings.Repeat("very-long-filter", 4)
+				return m
+			},
+		},
+		{
+			name: "window note",
+			setup: func(m Model) Model {
+				m.height = 8 // one visible repo plus the "showing N-M of T" note
+				return m
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t, testApp(nil))
+			m.width = 10
+			m = tc.setup(m)
+
+			for _, line := range strings.Split(m.listView(), "\n") {
+				if got := lipgloss.Width(line); got > m.width {
+					t.Fatalf("line width = %d, want <= %d: %q", got, m.width, line)
+				}
+			}
+		})
 	}
 }
 

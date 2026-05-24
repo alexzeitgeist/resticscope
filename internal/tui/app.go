@@ -52,6 +52,7 @@ type Model struct {
 	sem        chan struct{}   // bounds concurrent refreshes to parallelism
 	resticVer  string
 	width      int
+	height     int
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 }
@@ -131,6 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		return m, nil
 	case tea.KeyPressMsg:
