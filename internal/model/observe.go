@@ -25,6 +25,39 @@ func Observed(snaps []Snapshot) (hosts, tags []string) {
 	return sortedKeys(hostSet), sortedKeys(tagSet)
 }
 
+// ObservedVersions returns the de-duplicated, sorted restic program versions
+// seen across the given snapshots, so a detail view can reveal a fleet running
+// mixed or outdated clients. It mirrors Observed's nil-on-empty convention.
+func ObservedVersions(snaps []Snapshot) []string {
+	verSet := map[string]struct{}{}
+	for _, s := range snaps {
+		if s.ProgramVersion != "" {
+			verSet[s.ProgramVersion] = struct{}{}
+		}
+	}
+	return sortedKeys(verSet)
+}
+
+// LastBackupDuration returns how long the most recent backup took: BackupEnd-
+// BackupStart of the newest snapshot that carries both timestamps. It scans by
+// snapshot time (not slice order) and skips snapshots without a summary (pre-0.17
+// snapshots) or with incomplete timestamps, returning 0 when none qualifies —
+// the "unknown" value humanize.Duration renders as an em-dash.
+func LastBackupDuration(snaps []Snapshot) time.Duration {
+	var newest time.Time
+	var dur time.Duration
+	for _, s := range snaps {
+		if s.Summary == nil || s.Summary.BackupStart.IsZero() || s.Summary.BackupEnd.IsZero() {
+			continue
+		}
+		if s.Time.After(newest) {
+			newest = s.Time
+			dur = s.Summary.BackupEnd.Sub(s.Summary.BackupStart)
+		}
+	}
+	return dur
+}
+
 // LatestSnapshotTime returns the most recent snapshot time, or the zero time
 // when there are no snapshots.
 func LatestSnapshotTime(snaps []Snapshot) time.Time {

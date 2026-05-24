@@ -72,6 +72,10 @@ func (blockingRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.C
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
 
+func int64p(n int64) *int64 { return &n }
+
+func uint64p(n uint64) *uint64 { return &n }
+
 func testApp(states map[string]model.RepoState) *app.App {
 	if states == nil {
 		states = map[string]model.RepoState{}
@@ -440,7 +444,15 @@ func detailApp(t *testing.T) *app.App {
 			Snapshots: []model.Snapshot{
 				{ID: "id-oldest", ShortID: "s1", Time: testNow.Add(-3 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
 				{ID: "id-middle", ShortID: "s2", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
-				{ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
+				{
+					ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver",
+					Tags: []string{"daily"}, ProgramVersion: "restic 0.18.1",
+					Summary: &model.SnapshotSummary{
+						TotalBytesProcessed: 4404019200, DataAdded: int64p(5242880), DataAddedPacked: int64p(4194304),
+						BackupStart: testNow.Add(-1 * time.Hour), BackupEnd: testNow.Add(-1*time.Hour + 28*time.Second),
+						FilesNew: uint64p(12), FilesChanged: uint64p(34), TotalFilesProcessed: uint64p(4096),
+					},
+				},
 			},
 		},
 	})
@@ -458,13 +470,34 @@ func TestEnterOpensDetailView(t *testing.T) {
 	for _, want := range []string{
 		"repo-a",           // detail header
 		"Endpoint",         // metadata block
+		"Versions",         // meta rollup of observed restic versions
+		"restic 0.18.1",    // the observed version value
 		"Snapshots",        // snapshot table heading
 		"2026-05-23 13:00", // newest snapshot (testNow - 1h)
 		"homeserver",
+		"s3",             // short id, in the table and the sub-panel heading
+		"Selected",       // selected-snapshot sub-panel
+		"took 28s",       // backup duration of the selected snapshot
+		"5.0 MiB added",  // churn data from the selected snapshot summary
+		"4.0 MiB packed", // packed bytes are shown only when present
+		"id-newest",      // full id in the sub-panel
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("detail view missing %q\n---\n%s", want, view)
 		}
+	}
+}
+
+func TestSnapshotChurnOmitsMissingFields(t *testing.T) {
+	got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)})
+	if got != "+5.0 MiB added" {
+		t.Errorf("snapshotChurn with missing packed/file fields = %q, want only added bytes", got)
+	}
+	if strings.Contains(got, "0 B") || strings.Contains(got, "packed") {
+		t.Errorf("snapshotChurn should not synthesize missing packed bytes: %q", got)
+	}
+	if got := snapshotChurn(&model.SnapshotSummary{}); got != "churn unavailable" {
+		t.Errorf("snapshotChurn(empty summary) = %q, want churn unavailable", got)
 	}
 }
 

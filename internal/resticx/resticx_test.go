@@ -104,8 +104,21 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if last.Summary.TotalBytesProcessed != 4404019200 {
 		t.Errorf("TotalBytesProcessed = %d, want 4404019200", last.Summary.TotalBytesProcessed)
 	}
-	if last.Summary.DataAdded != 5242880 {
-		t.Errorf("DataAdded = %d, want 5242880", last.Summary.DataAdded)
+	if last.Summary.DataAdded == nil || *last.Summary.DataAdded != 5242880 {
+		t.Errorf("DataAdded = %v, want 5242880", last.Summary.DataAdded)
+	}
+	if last.Summary.DataAddedPacked != nil {
+		t.Errorf("DataAddedPacked = %d, want nil when omitted", *last.Summary.DataAddedPacked)
+	}
+	// The richer summary fields restic records per backup must also parse.
+	if last.Summary.FilesNew == nil || *last.Summary.FilesNew != 12 ||
+		last.Summary.FilesChanged == nil || *last.Summary.FilesChanged != 34 ||
+		last.Summary.TotalFilesProcessed == nil || *last.Summary.TotalFilesProcessed != 4096 {
+		t.Errorf("file counts = new %v/changed %v/total %v, want 12/34/4096",
+			last.Summary.FilesNew, last.Summary.FilesChanged, last.Summary.TotalFilesProcessed)
+	}
+	if last.Summary.BackupStart.IsZero() || last.Summary.BackupEnd.IsZero() {
+		t.Errorf("expected non-zero backup_start/backup_end, got %v / %v", last.Summary.BackupStart, last.Summary.BackupEnd)
 	}
 	if snaps[0].Summary != nil {
 		t.Errorf("expected nil Summary for the un-summarized snapshot, got %+v", snaps[0].Summary)

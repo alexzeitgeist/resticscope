@@ -221,9 +221,10 @@ func (m Model) summary(row app.RepoStatus) string {
 	case model.StatusGrey:
 		return m.styles.meta.Render("never refreshed")
 	default:
-		s := fmt.Sprintf("last: %-9s  snaps: %4d",
+		s := fmt.Sprintf("last: %-9s  snaps: %4d  took: %-7s",
 			humanize.Ago(m.app.Clock.Now(), row.State.LastSnapshot),
 			row.State.SnapshotCount,
+			humanize.Duration(model.LastBackupDuration(row.State.Snapshots)),
 		)
 		if row.Stale {
 			s += "  " + m.styles.meta.Render("(stale)")

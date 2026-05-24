@@ -12,9 +12,19 @@ import (
 )
 
 // detailMetaRows is the number of fixed meta lines the detail body renders
-// (Endpoint/Bucket/Snapshots/Hosts/Tags/Last); detailSnapVisible subtracts it
-// from the height to size the scrolling snapshot window.
-const detailMetaRows = 6
+// (Endpoint/Bucket/Snapshots/Hosts/Versions/Tags/Last); detailSnapVisible
+// subtracts it from the height to size the scrolling snapshot window.
+const detailMetaRows = 7
+
+// detailSnapDetailRows is the fixed height of the selected-snapshot sub-panel
+// (its heading plus two clipped field lines). detailSnapVisible subtracts it,
+// like detailMetaRows, so the snapshot window stays correctly sized.
+const detailSnapDetailRows = 3
+
+// snapIDWidth is the fixed width of the short-id column in the snapshot table;
+// restic short ids are 8 hex chars. snapHeader, the row format, and snapCols all
+// reserve exactly this width so the columns stay aligned.
+const snapIDWidth = 8
 
 // repoConfig returns the config.Repo backing the named row. The bool is false
 // only if config and rows somehow disagree, which validation prevents.
@@ -89,6 +99,9 @@ func (m Model) detailBody() string {
 		m.detailMeta(repo, row, w),
 		clip(m.styles.heading.Render("Snapshots"), w) + "\n" + m.snapshotTable(),
 	}
+	if sub := m.snapshotDetail(w); sub != "" {
+		sections = append(sections, sub)
+	}
 	return strings.Join(sections, "\n\n")
 }
 
@@ -108,10 +121,76 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 		m.field("Bucket", bucketLabel(repo), width),
 		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount), width),
 		m.field("Hosts", joinOrDash(st.Hosts), width),
+		m.field("Versions", joinOrDash(model.ObservedVersions(st.Snapshots)), width),
 		m.field("Tags", joinOrDash(st.Tags), width),
 		m.field("Last", last, width),
 	}
 	return strings.Join(lines, "\n")
+}
+
+// snapshotDetail renders a fixed-height sub-panel describing the snapshot under
+// the cursor — the per-backup data restic records that the table has no room
+// for: full id, restic version, duration, and churn (bytes added and file
+// counts). It returns "" when the repo has no snapshots, so
+// detailBody omits the section and detailSnapVisible's matching overhead term
+// applies exactly when the panel is shown. Every value is clipped to one line,
+// so the height is always detailSnapDetailRows and the snapshot window above
+// stays correctly sized.
+func (m Model) snapshotDetail(width int) string {
+	s := m.selectedSnapshot()
+	if s == nil {
+		return ""
+	}
+
+	ver := s.ProgramVersion
+	if ver == "" {
+		ver = "unknown version"
+	}
+	dur, churn := "—", "no summary"
+	if sum := s.Summary; sum != nil {
+		if !sum.BackupStart.IsZero() && !sum.BackupEnd.IsZero() {
+			dur = humanize.Duration(sum.BackupEnd.Sub(sum.BackupStart))
+		}
+		churn = snapshotChurn(sum)
+	}
+
+	heading := clip(m.styles.heading.Render(
+		fmt.Sprintf("Selected · %s · %s · took %s", s.ShortID, ver, dur)), width)
+	lines := []string{
+		heading,
+		m.field("ID", s.ID, width),
+		m.field("Churn", churn, width),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func snapshotChurn(sum *model.SnapshotSummary) string {
+	if sum == nil {
+		return "no summary"
+	}
+	parts := make([]string, 0, 4)
+	if sum.DataAdded != nil {
+		added := "+" + humanize.Bytes(*sum.DataAdded) + " added"
+		if sum.DataAddedPacked != nil {
+			added += " (" + humanize.Bytes(*sum.DataAddedPacked) + " packed)"
+		}
+		parts = append(parts, added)
+	} else if sum.DataAddedPacked != nil {
+		parts = append(parts, "+"+humanize.Bytes(*sum.DataAddedPacked)+" packed")
+	}
+	if sum.FilesNew != nil {
+		parts = append(parts, fmt.Sprintf("%d new", *sum.FilesNew))
+	}
+	if sum.FilesChanged != nil {
+		parts = append(parts, fmt.Sprintf("%d changed", *sum.FilesChanged))
+	}
+	if sum.TotalFilesProcessed != nil {
+		parts = append(parts, fmt.Sprintf("%d files", *sum.TotalFilesProcessed))
+	}
+	if len(parts) == 0 {
+		return "churn unavailable"
+	}
+	return strings.Join(parts, " · ")
 }
 
 // field renders one meta line: a two-space indent, the fixed-width label, then
@@ -154,7 +233,8 @@ func (m Model) snapshotTable() string {
 		if s.Summary != nil {
 			size = humanize.Bytes(s.Summary.TotalBytesProcessed)
 		}
-		content := fmt.Sprintf("%-16s  %-*s  %9s  %s",
+		content := fmt.Sprintf("%-*s  %-16s  %-*s  %9s  %s",
+			snapIDWidth, s.ShortID,
 			s.Time.Format("2006-01-02 15:04"),
 			hostW, truncate(s.Hostname, hostW),
 			size,
@@ -177,15 +257,16 @@ func (m Model) snapshotTable() string {
 // same columns as the data rows: a two-cell indent, fixed time, hostW host, fixed
 // size, then tags.
 func snapHeader(hostW int) string {
-	return fmt.Sprintf("  %-16s  %-*s  %9s  %s", "Time", hostW, "Hostname", "Size", "Tags")
+	return fmt.Sprintf("  %-*s  %-16s  %-*s  %9s  %s", snapIDWidth, "ID", "Time", hostW, "Hostname", "Size", "Tags")
 }
 
 // snapCols sizes the snapshot table's variable columns to the total width: a
-// two-cell indicator, a 16-cell time and 9-cell size column, and three two-space
-// gaps are fixed; the hostname is clamped to a sane range and tags takes the rest.
+// two-cell indicator, the fixed-width short-id, a 16-cell time and 9-cell size
+// column, and four two-space gaps are fixed; the hostname is clamped to a sane
+// range and tags takes the rest.
 func snapCols(width int) (host, tags int) {
-	const indicator, timeW, sizeW, gaps = 2, 16, 9, 6
-	rest := width - indicator - timeW - sizeW - gaps
+	const indicator, timeW, sizeW, gaps = 2, 16, 9, 8
+	rest := width - indicator - snapIDWidth - timeW - sizeW - gaps
 	if rest < 2 {
 		rest = 2
 	}
@@ -206,16 +287,19 @@ func snapCols(width int) (host, tags int) {
 // detailSnapVisible is how many snapshot data rows the detail view shows at once:
 // the height less the view header, both gaps, the footer, the meta block, the
 // blank line and "Snapshots" heading above the table, the table's column header,
-// and one line reserved for the "showing N–M of T" note. Floored at 1, which sets
-// the detail view's minimum usable height — below it the footer scrolls off.
+// the "showing N–M of T" note, and the selected-snapshot sub-panel (with its own
+// preceding blank line). Floored at 1, which sets the detail view's minimum usable
+// height — below it the footer scrolls off.
 func (m Model) detailSnapVisible() int {
 	_, h := m.effSize()
 	overhead := headerRows + 2*gapRows + m.footerRows() +
-		detailMetaRows + // the six meta lines
+		detailMetaRows + // the seven meta lines
 		1 + // the blank line between the meta block and the heading
 		1 + // the "Snapshots" heading
 		1 + // the table's column-header row
-		1 // the "showing N–M of T" note
+		1 + // the "showing N–M of T" note
+		1 + // the blank line between the table and the snapshot sub-panel
+		detailSnapDetailRows // the selected-snapshot sub-panel
 	if n := h - overhead; n >= 1 {
 		return n
 	}

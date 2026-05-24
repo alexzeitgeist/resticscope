@@ -27,10 +27,11 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 		case model.StatusGrey:
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Status, "never refreshed")
 		default:
-			line := fmt.Sprintf("%s\t%s\t%s\t%d snaps",
+			line := fmt.Sprintf("%s\t%s\t%s\t%d snaps\t%s",
 				r.Name, r.Status,
 				humanize.Ago(now, r.State.LastSnapshot),
 				r.State.SnapshotCount,
+				humanize.Duration(model.LastBackupDuration(r.State.Snapshots)),
 			)
 			if r.Stale {
 				line += "\t(stale cache)"

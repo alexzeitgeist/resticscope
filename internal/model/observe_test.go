@@ -42,6 +42,51 @@ func TestObservedEmpty(t *testing.T) {
 	}
 }
 
+func TestObservedVersions(t *testing.T) {
+	snaps := []Snapshot{
+		{ProgramVersion: "restic 0.18.1"},
+		{ProgramVersion: "restic 0.17.0"},
+		{ProgramVersion: "restic 0.18.1"},
+		{ProgramVersion: ""}, // empty must be dropped
+	}
+	if want := []string{"restic 0.17.0", "restic 0.18.1"}; !reflect.DeepEqual(ObservedVersions(snaps), want) {
+		t.Errorf("versions = %v, want %v", ObservedVersions(snaps), want)
+	}
+	if v := ObservedVersions(nil); v != nil {
+		t.Errorf("empty versions = %v, want nil", v)
+	}
+}
+
+func TestLastBackupDuration(t *testing.T) {
+	mk := func(day int, start, end time.Time) Snapshot {
+		s := Snapshot{Time: time.Date(2026, 5, day, 6, 0, 0, 0, time.UTC)}
+		if !start.IsZero() {
+			s.Summary = &SnapshotSummary{BackupStart: start, BackupEnd: end}
+		}
+		return s
+	}
+	d1s := time.Date(2026, 5, 21, 6, 0, 0, 0, time.UTC)
+	d3s := time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC)
+
+	snaps := []Snapshot{
+		mk(21, d1s, d1s.Add(time.Minute)),    // older, has summary
+		mk(23, d3s, d3s.Add(28*time.Second)), // newest with summary → wins
+		mk(22, time.Time{}, time.Time{}),     // no summary, must be skipped
+	}
+	if got := LastBackupDuration(snaps); got != 28*time.Second {
+		t.Errorf("duration = %v, want 28s", got)
+	}
+
+	// No snapshot carries a summary → unknown (0).
+	none := []Snapshot{mk(21, time.Time{}, time.Time{}), mk(22, time.Time{}, time.Time{})}
+	if got := LastBackupDuration(none); got != 0 {
+		t.Errorf("duration = %v, want 0 when no summaries", got)
+	}
+	if got := LastBackupDuration(nil); got != 0 {
+		t.Errorf("empty duration = %v, want 0", got)
+	}
+}
+
 func TestLatestSnapshotTime(t *testing.T) {
 	t1 := time.Date(2026, 5, 21, 6, 0, 0, 0, time.UTC)
 	t2 := time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC)

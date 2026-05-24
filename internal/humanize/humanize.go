@@ -31,6 +31,25 @@ func Ago(now, t time.Time) string {
 	}
 }
 
+// Duration renders an elapsed duration in coarse units: whole seconds below a
+// minute ("28s"), minutes and seconds below an hour ("4m12s"), else hours and
+// minutes ("1h03m"). A non-positive duration (the "unknown" sentinel, e.g. a
+// snapshot with no summary) renders as an em-dash so it reads as "missing", the
+// same convention the snapshot table uses for an absent size.
+func Duration(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
 // Bytes formats a byte count in IEC units (GiB, MiB, …), with one decimal place
 // below 10 of a unit.
 func Bytes(n int64) string {

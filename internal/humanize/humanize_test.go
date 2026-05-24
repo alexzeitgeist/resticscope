@@ -24,6 +24,26 @@ func TestBytes(t *testing.T) {
 	}
 }
 
+func TestDuration(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "—"},
+		{-5 * time.Second, "—"},
+		{28 * time.Second, "28s"},
+		{4*time.Minute + 12*time.Second, "4m12s"},
+		{4 * time.Minute, "4m00s"},
+		{time.Hour + 3*time.Minute, "1h03m"},
+		{2*time.Hour + 30*time.Minute, "2h30m"},
+	}
+	for _, tt := range tests {
+		if got := Duration(tt.d); got != tt.want {
+			t.Errorf("Duration(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
 func TestAgo(t *testing.T) {
 	now := time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
 	tests := []struct {
