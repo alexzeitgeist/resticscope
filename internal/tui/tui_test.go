@@ -476,6 +476,8 @@ func TestEnterOpensDetailView(t *testing.T) {
 		t.Fatalf("view = %d, want detailView", m.view)
 	}
 	view := m.View().Content
+	// The default test width (100) promotes both extra columns, so Added/Took
+	// are table columns and the panel slims to non-columnar facts.
 	for _, want := range []string{
 		"repo-a",           // detail header
 		"Endpoint",         // metadata block
@@ -485,28 +487,61 @@ func TestEnterOpensDetailView(t *testing.T) {
 		"2026-05-23 13:00", // newest snapshot (testNow - 1h)
 		"homeserver",
 		"s3",             // short id, in the table and the sub-panel heading
+		"Added",          // promoted column header
+		"Took",           // promoted column header
+		"+5.0 MiB",       // added bytes, now their own column value
+		"28s",            // backup duration, now in the Took column
 		"Selected",       // selected-snapshot sub-panel
-		"took 28s",       // backup duration of the selected snapshot
-		"5.0 MiB added",  // churn data from the selected snapshot summary
-		"4.0 MiB packed", // packed bytes are shown only when present
+		"4.0 MiB packed", // packed bytes, panel drops the duplicated "+X added"
 		"id-newest",      // full id in the sub-panel
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("detail view missing %q\n---\n%s", want, view)
 		}
 	}
+	// Added/Took are columns now, so the panel must not repeat them.
+	for _, dup := range []string{"5.0 MiB added", "took 28s"} {
+		if strings.Contains(view, dup) {
+			t.Errorf("detail view duplicates columnar field %q in the panel\n---\n%s", dup, view)
+		}
+	}
 }
 
 func TestSnapshotChurnOmitsMissingFields(t *testing.T) {
-	got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)})
+	got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)}, true)
 	if got != "+5.0 MiB added" {
 		t.Errorf("snapshotChurn with missing packed/file fields = %q, want only added bytes", got)
 	}
 	if strings.Contains(got, "0 B") || strings.Contains(got, "packed") {
 		t.Errorf("snapshotChurn should not synthesize missing packed bytes: %q", got)
 	}
-	if got := snapshotChurn(&model.SnapshotSummary{}); got != "churn unavailable" {
+	if got := snapshotChurn(&model.SnapshotSummary{}, true); got != "churn unavailable" {
 		t.Errorf("snapshotChurn(empty summary) = %q, want churn unavailable", got)
+	}
+}
+
+// When the Added column is present (includeAdded == false), the churn line drops
+// the duplicated "+X added" piece and leads with bare "Y packed"; a summary that
+// has nothing left to say after de-duplication collapses to an em-dash, while a
+// wholly absent summary still reports "no summary".
+func TestSnapshotChurnDropsAddedWhenColumnShown(t *testing.T) {
+	sum := &model.SnapshotSummary{
+		DataAdded: int64p(5242880), DataAddedPacked: int64p(4194304),
+		FilesNew: uint64p(12), FilesChanged: uint64p(34), TotalFilesProcessed: uint64p(4096),
+	}
+	got := snapshotChurn(sum, false)
+	if want := "4.0 MiB packed · 12 new · 34 changed · 4096 files"; got != want {
+		t.Errorf("snapshotChurn(includeAdded=false) = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "added") || strings.Contains(got, "(") {
+		t.Errorf("snapshotChurn(includeAdded=false) should drop the added piece and its parens: %q", got)
+	}
+	// Only added bytes present: nothing remains once Added owns it.
+	if got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)}, false); got != "—" {
+		t.Errorf("snapshotChurn(includeAdded=false, added-only) = %q, want em-dash", got)
+	}
+	if got := snapshotChurn(nil, false); got != "no summary" {
+		t.Errorf("snapshotChurn(nil) = %q, want no summary", got)
 	}
 }
 
@@ -524,6 +559,9 @@ func TestDetailSnapshotsUseModelOrdering(t *testing.T) {
 
 	m := newTestModel(t, a)
 	m = update(t, m, press("enter"))
+	// Narrow pane: no Took column, so the duration stays in the panel heading,
+	// which is where we prove the selected detail tracks the ordered snapshot.
+	m.width, m.height = 80, 40
 	snaps := m.detailSnapshots()
 	if len(snaps) != 2 || snaps[0].ID != "b" {
 		t.Fatalf("detailSnapshots first = %+v, want ID b", snaps)
@@ -906,6 +944,124 @@ func TestDetailViewShowsResponsiveColumns(t *testing.T) {
 		}
 	}
 	assertLinesFit(t, wide, m.width)
+}
+
+// snapshotLayout promotes Added at width 92 and Took at width 100, in priority order,
+// never surfacing Took without Added, and always keeps host/tags in range.
+func TestSnapshotLayoutProgressiveThresholds(t *testing.T) {
+	for _, tc := range []struct {
+		width               int
+		wantAdded, wantTook bool
+	}{
+		{80, false, false},
+		{91, false, false},
+		{92, true, false},
+		{99, true, false},
+		{100, true, true},
+		{140, true, true},
+	} {
+		l := snapshotLayout(tc.width)
+		if l.showAdded != tc.wantAdded || l.showTook != tc.wantTook {
+			t.Errorf("snapshotLayout(%d) = {added:%v took:%v}, want {added:%v took:%v}",
+				tc.width, l.showAdded, l.showTook, tc.wantAdded, tc.wantTook)
+		}
+		if l.showTook && !l.showAdded {
+			t.Errorf("snapshotLayout(%d) promoted Took without Added", tc.width)
+		}
+		if l.host < 8 || l.host > 24 || l.tags < 1 {
+			t.Errorf("snapshotLayout(%d) host=%d tags=%d out of range", tc.width, l.host, l.tags)
+		}
+	}
+}
+
+// As the pane widens, Added then Took graduate to table columns and the bottom
+// panel sheds exactly the facts those columns now carry — so the union of
+// (columns + panel) loses nothing and duplicates nothing at any width.
+func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		width             int
+		wantColHeaders    []string
+		missingColHeaders []string
+		wantText          []string
+		missingText       []string
+	}{
+		{
+			name:              "narrow keeps every fact in the panel",
+			width:             80,
+			missingColHeaders: []string{"Added", "Took"},
+			wantText:          []string{"took 28s", "+5.0 MiB added", "4.0 MiB packed"},
+		},
+		{
+			name:              "medium promotes Added only",
+			width:             95,
+			wantColHeaders:    []string{"Added"},
+			missingColHeaders: []string{"Took"},
+			wantText:          []string{"took 28s", "4.0 MiB packed"},
+			missingText:       []string{"+5.0 MiB added"},
+		},
+		{
+			name:           "wide promotes Added and Took",
+			width:          110,
+			wantColHeaders: []string{"Added", "Took"},
+			wantText:       []string{"4.0 MiB packed"},
+			missingText:    []string{"took 28s", "+5.0 MiB added"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t, detailApp(t))
+			m = update(t, m, press("enter"))
+			m.width, m.height = tc.width, 40
+
+			view := m.detailHeaderView() + "\n" + m.detailBody()
+			for _, want := range append(tc.wantColHeaders, tc.wantText...) {
+				if !strings.Contains(view, want) {
+					t.Errorf("detail view missing %q\n---\n%s", want, view)
+				}
+			}
+			for _, miss := range append(tc.missingColHeaders, tc.missingText...) {
+				if strings.Contains(view, miss) {
+					t.Errorf("detail view unexpectedly contains %q\n---\n%s", miss, view)
+				}
+			}
+			assertLinesFit(t, view, tc.width)
+		})
+	}
+}
+
+// A backup that ran far longer than the Took column is wide gets truncated to
+// snapTookWidth, so it can't widen the column and push the trailing Tags column
+// out of alignment.
+func TestDetailViewTruncatesLongTookColumn(t *testing.T) {
+	if got := snapTook(model.Snapshot{Summary: &model.SnapshotSummary{
+		BackupStart: testNow, BackupEnd: testNow.Add(1000 * time.Hour),
+	}}); got != "1000h…" || lipgloss.Width(got) > snapTookWidth {
+		t.Fatalf("snapTook(1000h) = %q (width %d), want %q within %d",
+			got, lipgloss.Width(got), "1000h…", snapTookWidth)
+	}
+
+	a := detailApp(t)
+	cache := a.Cache.(stubCache)
+	state := cache.states["repo-a"]
+	newest := state.Snapshots[2] // id-newest, the cursor row, has a summary and a tag
+	newest.Summary.BackupEnd = newest.Summary.BackupStart.Add(1000 * time.Hour)
+	cache.states["repo-a"] = state
+
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m.width, m.height = 110, 40 // wide enough for the Took column
+
+	view := m.detailHeaderView() + "\n" + m.detailBody()
+	if !strings.Contains(view, "1000h…") {
+		t.Errorf("Took column did not truncate the long duration\n---\n%s", view)
+	}
+	if strings.Contains(view, "1000h00m") {
+		t.Errorf("Took column showed the untruncated duration\n---\n%s", view)
+	}
+	if !strings.Contains(view, "daily") {
+		t.Errorf("Tags column dropped after the long Took value\n---\n%s", view)
+	}
+	assertLinesFit(t, view, m.width)
 }
 
 // Every detail line clips to a narrow pane — including the section heading and

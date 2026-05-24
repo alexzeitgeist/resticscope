@@ -21,7 +21,7 @@ const detailMetaRows = 7
 const detailSnapDetailRows = 3
 
 // snapIDWidth is the fixed width of the short-id column in the snapshot table;
-// restic short ids are 8 hex chars. snapHeader, the row format, and snapCols all
+// restic short ids are 8 hex chars. snapHeader, snapCells, and snapshotLayout all
 // reserve exactly this width so the columns stay aligned.
 const snapIDWidth = 8
 
@@ -130,52 +130,70 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 }
 
 // snapshotDetail renders a fixed-height sub-panel describing the snapshot under
-// the cursor — the per-backup data restic records that the table has no room
-// for: full id, restic version, duration, and churn (bytes added and file
-// counts). detailBody calls it only when the repo has snapshots and the panel
-// can fit. Every value is clipped to one line, so the height is always
-// detailSnapDetailRows and the snapshot window above stays correctly sized.
+// the cursor — the per-backup data restic records that isn't already a table
+// column: full id, restic version, packed size, and file counts, plus the
+// duration and added bytes only while their columns are off (snapshotLayout decides,
+// so columns and panel never duplicate or drop a fact). detailBody calls it only
+// when the repo has snapshots and the panel can fit. Every value is clipped to
+// one line, so the height is always detailSnapDetailRows and the snapshot window
+// above stays correctly sized.
 func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	s := m.selectedSnapshotFrom(snaps)
 	if s == nil {
 		return ""
 	}
+	l := snapshotLayout(width)
 
 	ver := s.ProgramVersion
 	if ver == "" {
 		ver = "unknown version"
 	}
-	dur, churn := "—", "no summary"
-	if sum := s.Summary; sum != nil {
+
+	// Duration lives in the Took column when it's present; surface it in the
+	// heading only when it isn't, so it's never shown twice or lost.
+	heading := fmt.Sprintf("Selected · %s · %s", s.ShortID, ver)
+	if !l.showTook {
+		dur := "—"
 		if d, ok := model.SnapshotBackupDuration(*s); ok {
 			dur = humanize.Duration(d)
 		}
-		churn = snapshotChurn(sum)
+		heading += " · took " + dur
 	}
 
-	heading := clip(m.styles.heading.Render(
-		fmt.Sprintf("Selected · %s · %s · took %s", s.ShortID, ver, dur)), width)
+	churn := "no summary"
+	if sum := s.Summary; sum != nil {
+		churn = snapshotChurn(sum, !l.showAdded)
+	}
+
 	lines := []string{
-		heading,
+		clip(m.styles.heading.Render(heading), width),
 		m.field("ID", s.ID, width),
 		m.field("Churn", churn, width),
 	}
 	return strings.Join(lines, "\n")
 }
 
-func snapshotChurn(sum *model.SnapshotSummary) string {
+// snapshotChurn renders the per-backup churn line for the bottom panel. When
+// includeAdded is true the panel owns the added bytes (no Added column), so it
+// leads with "+X added (Y packed)"; when false the Added column already shows
+// the added bytes, so it omits that piece and leads with bare "Y packed".
+func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 	if sum == nil {
 		return "no summary"
 	}
 	parts := make([]string, 0, 4)
-	if sum.DataAdded != nil {
-		added := "+" + humanize.Bytes(*sum.DataAdded) + " added"
-		if sum.DataAddedPacked != nil {
-			added += " (" + humanize.Bytes(*sum.DataAddedPacked) + " packed)"
+	if includeAdded {
+		if sum.DataAdded != nil {
+			added := "+" + humanize.Bytes(*sum.DataAdded) + " added"
+			if sum.DataAddedPacked != nil {
+				added += " (" + humanize.Bytes(*sum.DataAddedPacked) + " packed)"
+			}
+			parts = append(parts, added)
+		} else if sum.DataAddedPacked != nil {
+			parts = append(parts, "+"+humanize.Bytes(*sum.DataAddedPacked)+" packed")
 		}
-		parts = append(parts, added)
 	} else if sum.DataAddedPacked != nil {
-		parts = append(parts, "+"+humanize.Bytes(*sum.DataAddedPacked)+" packed")
+		parts = append(parts, humanize.Bytes(*sum.DataAddedPacked)+" packed")
 	}
 	if sum.FilesNew != nil {
 		parts = append(parts, fmt.Sprintf("%d new", *sum.FilesNew))
@@ -187,7 +205,10 @@ func snapshotChurn(sum *model.SnapshotSummary) string {
 		parts = append(parts, fmt.Sprintf("%d files", *sum.TotalFilesProcessed))
 	}
 	if len(parts) == 0 {
-		return "churn unavailable"
+		if includeAdded {
+			return "churn unavailable"
+		}
+		return "—"
 	}
 	return strings.Join(parts, " · ")
 }
@@ -205,13 +226,13 @@ func (m Model) field(label, value string, width int) string {
 
 // snapshotTable renders a column header and a scrolling window of snapshots,
 // newest first, marking the selected row with the accent gutter. The columns size
-// to the terminal width (snapCols) and the window to its height (detailSnapVisible)
+// to the terminal width (snapshotLayout) and the window to its height (detailSnapVisible)
 // so the table fills the pane without wrapping. Enter on the selection opens a
 // shell scoped to it.
 func (m Model) snapshotTable(snaps []model.Snapshot) string {
 	w, _ := m.effSize()
-	hostW, tagsW := snapCols(w)
-	header := clip(m.styles.dim.Render(snapHeader(hostW)), w)
+	l := snapshotLayout(w)
+	header := clip(m.styles.dim.Render(snapHeader(l)), w)
 
 	if len(snaps) == 0 {
 		return header + "\n" + clip(m.styles.meta.Render("  no snapshots"), w)
@@ -231,13 +252,15 @@ func (m Model) snapshotTable(snaps []model.Snapshot) string {
 		if s.Summary != nil {
 			size = humanize.Bytes(s.Summary.TotalBytesProcessed)
 		}
-		content := fmt.Sprintf("%-*s  %-16s  %-*s  %9s  %s",
-			snapIDWidth, s.ShortID,
+		content := strings.Join(snapCells(l,
+			s.ShortID,
 			s.Time.Format("2006-01-02 15:04"),
-			hostW, truncate(s.Hostname, hostW),
+			truncate(s.Hostname, l.host),
 			size,
-			truncate(strings.Join(s.Tags, ","), tagsW),
-		)
+			snapAdded(s),
+			snapTook(s),
+			truncate(strings.Join(s.Tags, ","), l.tags),
+		), "  ")
 		indicator := "  "
 		if i == cur {
 			indicator = m.styles.gutter.Render("▎") + " "
@@ -251,35 +274,115 @@ func (m Model) snapshotTable(snaps []model.Snapshot) string {
 	return strings.Join(lines, "\n")
 }
 
-// snapHeader is the dim column-label row for the snapshot table, aligned to the
-// same columns as the data rows: a two-cell indent, fixed time, hostW host, fixed
-// size, then tags.
-func snapHeader(hostW int) string {
-	return fmt.Sprintf("  %-*s  %-16s  %-*s  %9s  %s", snapIDWidth, "ID", "Time", hostW, "Hostname", "Size", "Tags")
+// snapLayout describes the snapshot table's variable geometry for a given width:
+// the host and tags column widths, and whether the optional Added/Took columns
+// are promoted. snapshotTable and snapshotDetail both derive it from
+// snapshotLayout so the columns and the bottom panel always agree on what's
+// shown where.
+type snapLayout struct {
+	host, tags          int
+	showAdded, showTook bool
 }
 
-// snapCols sizes the snapshot table's variable columns to the total width: a
-// two-cell indicator, the fixed-width short-id, a 16-cell time and 9-cell size
-// column, and four two-space gaps are fixed; the hostname is clamped to a sane
-// range and tags takes the rest.
-func snapCols(width int) (host, tags int) {
+const (
+	snapAddedWidth   = 9  // "+1023 GiB" target width, right-aligned like Size
+	snapTookWidth    = 6  // "12h59m" target width; truncate longer durations to this
+	snapPromoFlexMin = 38 // host+tags cells that must remain after promoting a column
+)
+
+// snapHeader is the dim column-label row for the snapshot table, built from the
+// same snapCells layout as the data rows (plus the two-cell gutter the rows get
+// from their indicator) so labels line up with their values at every width.
+func snapHeader(l snapLayout) string {
+	return "  " + strings.Join(
+		snapCells(l, "ID", "Time", "Hostname", "Size", "Added", "Took", "Tags"), "  ")
+}
+
+// snapCells formats one row's worth of columns — header or data — into the
+// shared column order, so both are guaranteed to align: ID(8,left) · Time(16,
+// left) · Hostname(host,left) · Size(9,right) · [Added(9,right)] ·
+// [Took(6,right)] · Tags(flex,left). Callers join the result with two spaces.
+func snapCells(l snapLayout, id, tm, host, size, added, took, tags string) []string {
+	cells := []string{
+		fmt.Sprintf("%-*s", snapIDWidth, id),
+		fmt.Sprintf("%-16s", tm),
+		fmt.Sprintf("%-*s", l.host, host),
+		fmt.Sprintf("%9s", size),
+	}
+	if l.showAdded {
+		cells = append(cells, fmt.Sprintf("%*s", snapAddedWidth, added))
+	}
+	if l.showTook {
+		cells = append(cells, fmt.Sprintf("%*s", snapTookWidth, took))
+	}
+	return append(cells, tags)
+}
+
+// snapAdded is the right-aligned Added cell value: deduped bytes this run added,
+// or an em-dash when the summary (pre-0.17) or the field is absent.
+func snapAdded(s model.Snapshot) string {
+	if s.Summary == nil || s.Summary.DataAdded == nil {
+		return "—"
+	}
+	return "+" + humanize.Bytes(*s.Summary.DataAdded)
+}
+
+// snapTook is the right-aligned Took cell value: how long the backup ran,
+// truncated to snapTookWidth so a long duration (e.g. 1000h00m) can't widen the
+// column and shove Tags out of alignment. Em-dash when unavailable.
+func snapTook(s model.Snapshot) string {
+	d, ok := model.SnapshotBackupDuration(s)
+	if !ok {
+		return "—"
+	}
+	return truncate(humanize.Duration(d), snapTookWidth)
+}
+
+// snapshotLayout sizes the snapshot table's variable columns to the total width. A
+// two-cell indicator, the fixed-width short-id, 16-cell time, 9-cell size, and
+// their two-space gaps are always reserved. Added then Took are promoted in
+// priority order, each only while the host+tags flex area would stay usable
+// (snapPromoFlexMin) afterwards; promotion stops at the first that won't fit so
+// a lower-priority column never appears without a higher one. With the constants
+// here Added lands at width 92 and Took at 100. Whatever flex remains splits
+// into a host column clamped to 8–24 and tags taking the rest.
+func snapshotLayout(width int) snapLayout {
 	const indicator, timeW, sizeW, gaps = 2, 16, 9, 8
-	rest := width - indicator - snapIDWidth - timeW - sizeW - gaps
+	baseFixed := indicator + snapIDWidth + timeW + sizeW + gaps
+
+	var l snapLayout
+	reservedExtra := 0
+	for _, c := range []struct {
+		width int
+		on    *bool
+	}{
+		{snapAddedWidth, &l.showAdded},
+		{snapTookWidth, &l.showTook},
+	} {
+		cost := c.width + 2 // the column plus one more two-space separator
+		if width-baseFixed-reservedExtra-cost < snapPromoFlexMin {
+			break
+		}
+		reservedExtra += cost
+		*c.on = true
+	}
+
+	rest := width - baseFixed - reservedExtra
 	if rest < 2 {
 		rest = 2
 	}
-	host = rest / 2
-	if host < 8 {
-		host = 8
+	l.host = rest / 2
+	if l.host < 8 {
+		l.host = 8
 	}
-	if host > 24 {
-		host = 24
+	if l.host > 24 {
+		l.host = 24
 	}
-	tags = rest - host
-	if tags < 1 {
-		tags = 1
+	l.tags = rest - l.host
+	if l.tags < 1 {
+		l.tags = 1
 	}
-	return host, tags
+	return l
 }
 
 // detailSnapVisible is how many snapshot data rows the detail view shows at once.
