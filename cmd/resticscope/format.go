@@ -31,7 +31,7 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 				r.Name, r.Status,
 				humanize.Ago(now, r.State.LastSnapshot),
 				r.State.SnapshotCount,
-				humanize.Duration(model.LastBackupDuration(r.State.Snapshots)),
+				lastBackupDuration(r.State.Snapshots),
 			)
 			if r.Stale {
 				line += "\t(stale cache)"
@@ -40,6 +40,14 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 		}
 	}
 	tw.Flush()
+}
+
+func lastBackupDuration(snaps []model.Snapshot) string {
+	d, ok := model.LastBackupDuration(snaps)
+	if !ok {
+		return "—"
+	}
+	return humanize.Duration(d)
 }
 
 // formatPruneResult writes the outcome of `resticscope cache prune`: the scanned

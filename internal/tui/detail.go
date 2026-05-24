@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"resticscope/internal/app"
@@ -54,11 +53,7 @@ func (m Model) detailRow() (app.RepoStatus, bool) {
 // the cached state's slice order is left untouched.
 func (m Model) detailSnapshots() []model.Snapshot {
 	row, _ := m.detailRow()
-	src := row.State.Snapshots
-	snaps := make([]model.Snapshot, len(src))
-	copy(snaps, src)
-	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].Time.After(snaps[j].Time) })
-	return snaps
+	return model.SortedSnapshotsNewestFirst(row.State.Snapshots)
 }
 
 func (m Model) snapCount() int {
@@ -70,7 +65,10 @@ func (m Model) snapCount() int {
 // repo has none. The cursor is clamped on read so a refresh that shrinks the
 // list can never index out of range.
 func (m Model) selectedSnapshot() *model.Snapshot {
-	snaps := m.detailSnapshots()
+	return m.selectedSnapshotFrom(m.detailSnapshots())
+}
+
+func (m Model) selectedSnapshotFrom(snaps []model.Snapshot) *model.Snapshot {
 	if len(snaps) == 0 {
 		return nil
 	}
@@ -94,13 +92,14 @@ func (m Model) detailBody() string {
 	row, _ := m.detailRow()
 	repo, _ := m.repoConfig(row.Name)
 	w, _ := m.effSize()
+	snaps := m.detailSnapshots()
 
 	sections := []string{
 		m.detailMeta(repo, row, w),
-		clip(m.styles.heading.Render("Snapshots"), w) + "\n" + m.snapshotTable(),
+		clip(m.styles.heading.Render("Snapshots"), w) + "\n" + m.snapshotTable(snaps),
 	}
 	if m.detailSnapDetailVisible() {
-		if sub := m.snapshotDetail(w); sub != "" {
+		if sub := m.snapshotDetail(w, snaps); sub != "" {
 			sections = append(sections, sub)
 		}
 	}
@@ -136,8 +135,8 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 // counts). detailBody calls it only when the repo has snapshots and the panel
 // can fit. Every value is clipped to one line, so the height is always
 // detailSnapDetailRows and the snapshot window above stays correctly sized.
-func (m Model) snapshotDetail(width int) string {
-	s := m.selectedSnapshot()
+func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
+	s := m.selectedSnapshotFrom(snaps)
 	if s == nil {
 		return ""
 	}
@@ -148,8 +147,8 @@ func (m Model) snapshotDetail(width int) string {
 	}
 	dur, churn := "—", "no summary"
 	if sum := s.Summary; sum != nil {
-		if !sum.BackupStart.IsZero() && !sum.BackupEnd.IsZero() {
-			dur = humanize.Duration(sum.BackupEnd.Sub(sum.BackupStart))
+		if d, ok := model.SnapshotBackupDuration(*s); ok {
+			dur = humanize.Duration(d)
 		}
 		churn = snapshotChurn(sum)
 	}
@@ -209,12 +208,11 @@ func (m Model) field(label, value string, width int) string {
 // to the terminal width (snapCols) and the window to its height (detailSnapVisible)
 // so the table fills the pane without wrapping. Enter on the selection opens a
 // shell scoped to it.
-func (m Model) snapshotTable() string {
+func (m Model) snapshotTable(snaps []model.Snapshot) string {
 	w, _ := m.effSize()
 	hostW, tagsW := snapCols(w)
 	header := clip(m.styles.dim.Render(snapHeader(hostW)), w)
 
-	snaps := m.detailSnapshots()
 	if len(snaps) == 0 {
 		return header + "\n" + clip(m.styles.meta.Render("  no snapshots"), w)
 	}

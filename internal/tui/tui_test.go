@@ -371,6 +371,15 @@ func TestHelpOverlayToggle(t *testing.T) {
 	}
 }
 
+func TestHelpHeaderClipsNarrowTerminal(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m.width = 12
+	header := m.helpHeaderView()
+	if got := lipgloss.Width(header); got > m.width {
+		t.Fatalf("help header width = %d, want <= %d: %q", got, m.width, header)
+	}
+}
+
 // The overlay returns to the view it was opened from, and `esc` closes it too.
 func TestHelpOverlayReturnsToOrigin(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
@@ -498,6 +507,32 @@ func TestSnapshotChurnOmitsMissingFields(t *testing.T) {
 	}
 	if got := snapshotChurn(&model.SnapshotSummary{}); got != "churn unavailable" {
 		t.Errorf("snapshotChurn(empty summary) = %q, want churn unavailable", got)
+	}
+}
+
+func TestDetailSnapshotsUseModelOrdering(t *testing.T) {
+	a := detailApp(t)
+	cache := a.Cache.(stubCache)
+	state := cache.states["repo-a"]
+	tm := testNow.Add(-time.Hour)
+	state.Snapshots = []model.Snapshot{
+		{ID: "a", ShortID: "a", Time: tm, Summary: &model.SnapshotSummary{BackupStart: tm, BackupEnd: tm.Add(10 * time.Second)}},
+		{ID: "b", ShortID: "b", Time: tm, Summary: &model.SnapshotSummary{BackupStart: tm, BackupEnd: tm.Add(20 * time.Second)}},
+	}
+	state.SnapshotCount = len(state.Snapshots)
+	cache.states["repo-a"] = state
+
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	snaps := m.detailSnapshots()
+	if len(snaps) != 2 || snaps[0].ID != "b" {
+		t.Fatalf("detailSnapshots first = %+v, want ID b", snaps)
+	}
+	if snap := m.selectedSnapshot(); snap == nil || snap.ID != "b" {
+		t.Fatalf("selectedSnapshot = %+v, want ID b", snap)
+	}
+	if !strings.Contains(m.View().Content, "took 20s") {
+		t.Fatalf("detail view did not use the same ordered snapshot for selected detail:\n%s", m.View().Content)
 	}
 }
 
@@ -825,6 +860,36 @@ func TestListSummaryTruncatesLongDuration(t *testing.T) {
 	}
 	if !strings.Contains(got, "(stale)") {
 		t.Fatalf("summary dropped stale marker:\n%s", got)
+	}
+}
+
+func TestListSummaryDistinguishesZeroDurationFromUnknown(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	start := testNow.Add(-time.Hour)
+	row := app.RepoStatus{
+		Name: "repo-a",
+		State: model.RepoState{
+			LastSnapshot:  start,
+			SnapshotCount: 1,
+			Snapshots: []model.Snapshot{{
+				ID:   "id-zero-duration",
+				Time: start,
+				Summary: &model.SnapshotSummary{
+					BackupStart: start,
+					BackupEnd:   start,
+				},
+			}},
+		},
+		Status: model.StatusGreen,
+	}
+
+	if got := m.summary(row); !strings.Contains(got, "took: <1s") {
+		t.Fatalf("summary did not show known zero duration as <1s:\n%s", got)
+	}
+
+	row.State.Snapshots[0].Summary = nil
+	if got := m.summary(row); !strings.Contains(got, "took: —") {
+		t.Fatalf("summary did not show unknown duration as em-dash:\n%s", got)
 	}
 }
 

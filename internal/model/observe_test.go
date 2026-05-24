@@ -73,16 +73,16 @@ func TestLastBackupDuration(t *testing.T) {
 		mk(23, d3s, d3s.Add(28*time.Second)), // newest with summary → wins
 		mk(22, time.Time{}, time.Time{}),     // no summary, must be skipped
 	}
-	if got := LastBackupDuration(snaps); got != 28*time.Second {
-		t.Errorf("duration = %v, want 28s", got)
+	if got, ok := LastBackupDuration(snaps); !ok || got != 28*time.Second {
+		t.Errorf("duration = %v, %v, want 28s, true", got, ok)
 	}
 
 	latestUnsummarized := []Snapshot{
 		mk(21, d1s, d1s.Add(time.Minute)),
 		mk(23, time.Time{}, time.Time{}),
 	}
-	if got := LastBackupDuration(latestUnsummarized); got != 0 {
-		t.Errorf("duration = %v, want 0 when the latest snapshot has no summary", got)
+	if got, ok := LastBackupDuration(latestUnsummarized); ok || got != 0 {
+		t.Errorf("duration = %v, %v, want 0, false when the latest snapshot has no summary", got, ok)
 	}
 
 	tieA := mk(23, d3s, d3s.Add(10*time.Second))
@@ -90,18 +90,40 @@ func TestLastBackupDuration(t *testing.T) {
 	tieB := mk(23, d3s, d3s.Add(20*time.Second))
 	tieB.ID = "b"
 	for _, snaps := range [][]Snapshot{{tieA, tieB}, {tieB, tieA}} {
-		if got := LastBackupDuration(snaps); got != 20*time.Second {
-			t.Errorf("duration for tied snapshot times = %v, want stable ID tie-break duration 20s", got)
+		if got, ok := LastBackupDuration(snaps); !ok || got != 20*time.Second {
+			t.Errorf("duration for tied snapshot times = %v, %v, want stable ID tie-break duration 20s, true", got, ok)
 		}
 	}
 
-	// No snapshot carries a summary → unknown (0).
-	none := []Snapshot{mk(21, time.Time{}, time.Time{}), mk(22, time.Time{}, time.Time{})}
-	if got := LastBackupDuration(none); got != 0 {
-		t.Errorf("duration = %v, want 0 when no summaries", got)
+	zero := mk(23, d3s, d3s)
+	if got, ok := LastBackupDuration([]Snapshot{zero}); !ok || got != 0 {
+		t.Errorf("zero duration = %v, %v, want 0, true", got, ok)
 	}
-	if got := LastBackupDuration(nil); got != 0 {
-		t.Errorf("empty duration = %v, want 0", got)
+
+	// No snapshot carries a summary → unknown.
+	none := []Snapshot{mk(21, time.Time{}, time.Time{}), mk(22, time.Time{}, time.Time{})}
+	if got, ok := LastBackupDuration(none); ok || got != 0 {
+		t.Errorf("duration = %v, %v, want 0, false when no summaries", got, ok)
+	}
+	if got, ok := LastBackupDuration(nil); ok || got != 0 {
+		t.Errorf("empty duration = %v, %v, want 0, false", got, ok)
+	}
+}
+
+func TestSortedSnapshotsNewestFirst(t *testing.T) {
+	tm := time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC)
+	snaps := []Snapshot{
+		{ID: "a", ShortID: "z", Time: tm},
+		{ID: "b", ShortID: "a", Time: tm},
+		{ID: "c", ShortID: "a", Time: tm.Add(-time.Hour)},
+	}
+
+	got := SortedSnapshotsNewestFirst(snaps)
+	if got[0].ID != "b" || got[1].ID != "a" || got[2].ID != "c" {
+		t.Errorf("sorted IDs = %s, %s, %s; want b, a, c", got[0].ID, got[1].ID, got[2].ID)
+	}
+	if snaps[0].ID != "a" {
+		t.Errorf("SortedSnapshotsNewestFirst mutated input: first ID = %s, want a", snaps[0].ID)
 	}
 }
 

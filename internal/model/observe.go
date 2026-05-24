@@ -39,23 +39,35 @@ func ObservedVersions(snaps []Snapshot) []string {
 }
 
 // LastBackupDuration returns how long the most recent backup took: BackupEnd-
-// BackupStart of the newest snapshot. It scans by snapshot time (not slice
-// order; exact timestamp ties use snapshot IDs for stable output) and returns 0
-// when the newest snapshot has no summary (pre-0.17 snapshots) or incomplete
-// timestamps — the "unknown" value humanize.Duration renders as an em-dash.
-func LastBackupDuration(snaps []Snapshot) time.Duration {
+// BackupStart of the newest snapshot. The bool is false when there is no newest
+// snapshot, or when the newest snapshot has no complete, non-negative duration.
+func LastBackupDuration(snaps []Snapshot) (time.Duration, bool) {
 	newest, ok := latestSnapshot(snaps)
-	if !ok || newest.Summary == nil || newest.Summary.BackupStart.IsZero() || newest.Summary.BackupEnd.IsZero() {
-		return 0
+	if !ok {
+		return 0, false
 	}
-	return newest.Summary.BackupEnd.Sub(newest.Summary.BackupStart)
+	return SnapshotBackupDuration(newest)
+}
+
+// SnapshotBackupDuration returns the duration recorded on a snapshot summary.
+// The bool is false when the snapshot has no summary, incomplete timestamps, or
+// an invalid negative duration.
+func SnapshotBackupDuration(s Snapshot) (time.Duration, bool) {
+	if s.Summary == nil || s.Summary.BackupStart.IsZero() || s.Summary.BackupEnd.IsZero() {
+		return 0, false
+	}
+	d := s.Summary.BackupEnd.Sub(s.Summary.BackupStart)
+	if d < 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 func latestSnapshot(snaps []Snapshot) (Snapshot, bool) {
 	var newest Snapshot
 	var ok bool
 	for _, s := range snaps {
-		if !ok || snapshotAfter(s, newest) {
+		if !ok || snapshotBeforeNewest(s, newest) {
 			newest = s
 			ok = true
 		}
@@ -63,7 +75,23 @@ func latestSnapshot(snaps []Snapshot) (Snapshot, bool) {
 	return newest, ok
 }
 
-func snapshotAfter(a, b Snapshot) bool {
+// SortedSnapshotsNewestFirst copies snapshots and orders them newest-first using
+// the same tie-breaks as LastBackupDuration.
+func SortedSnapshotsNewestFirst(src []Snapshot) []Snapshot {
+	snaps := make([]Snapshot, len(src))
+	copy(snaps, src)
+	SortSnapshotsNewestFirst(snaps)
+	return snaps
+}
+
+// SortSnapshotsNewestFirst orders snapshots newest-first in place. Exact
+// timestamp ties are broken by ID, then ShortID, so renderers do not fall back to
+// input slice order.
+func SortSnapshotsNewestFirst(snaps []Snapshot) {
+	sort.SliceStable(snaps, func(i, j int) bool { return snapshotBeforeNewest(snaps[i], snaps[j]) })
+}
+
+func snapshotBeforeNewest(a, b Snapshot) bool {
 	if !a.Time.Equal(b.Time) {
 		return a.Time.After(b.Time)
 	}

@@ -29,7 +29,7 @@ func TestDuration(t *testing.T) {
 		d    time.Duration
 		want string
 	}{
-		{0, "—"},
+		{0, "<1s"},
 		{-5 * time.Second, "—"},
 		{600 * time.Millisecond, "<1s"},
 		{28 * time.Second, "28s"},

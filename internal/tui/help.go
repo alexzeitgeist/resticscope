@@ -90,10 +90,11 @@ func (m Model) helpColumns() (left, right []helpSection) {
 }
 
 func (m Model) helpHeaderView() string {
-	return m.spread(
+	w, _ := m.effSize()
+	return clip(m.spread(
 		m.styles.title.Render("resticscope · keybindings"),
 		m.styles.dim.Render("? close"),
-	)
+	), w)
 }
 
 func (m Model) helpBody() string {

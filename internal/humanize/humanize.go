@@ -33,12 +33,10 @@ func Ago(now, t time.Time) string {
 
 // Duration renders an elapsed duration in coarse units: sub-second durations as
 // "<1s", whole seconds below a minute ("28s"), minutes and seconds below an
-// hour ("4m12s"), else hours and minutes ("1h03m"). A non-positive duration
-// (the "unknown" sentinel, e.g. a snapshot with no summary) renders as an
-// em-dash so it reads as "missing", the same convention the snapshot table uses
-// for an absent size.
+// hour ("4m12s"), else hours and minutes ("1h03m"). A negative duration renders
+// as an em-dash because it is invalid.
 func Duration(d time.Duration) string {
-	if d <= 0 {
+	if d < 0 {
 		return "—"
 	}
 	switch {
