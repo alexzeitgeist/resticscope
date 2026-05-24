@@ -51,6 +51,7 @@ func keyLabel(b key.Binding) string {
 func (m Model) helpColumns() (left, right []helpSection) {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
+	page := keyLabel(k.PageUp) + " " + keyLabel(k.PageDown)
 	// Global holds only keys that act in every view; the per-view sections list
 	// what each adds on top. Cursor movement is *not* global — it does nothing in
 	// the help view — so it lives under List/Detail, not here.
@@ -62,6 +63,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		}},
 		{"List", []helpEntry{
 			{move, "move repo cursor"},
+			{page, "page up/down"},
 			{keyLabel(k.Enter), "open repo detail"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},
@@ -72,6 +74,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 	right = []helpSection{
 		{"Detail", []helpEntry{
 			{move, "select snapshot"},
+			{page, "page up/down"},
 			{keyLabel(k.Enter), "shell at snapshot"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},

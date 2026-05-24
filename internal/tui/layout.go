@@ -62,6 +62,20 @@ func (m Model) visibleRepos() int {
 	return 1
 }
 
+// clampCursor bounds a (possibly out-of-range) cursor index to a list of total
+// rows: never below 0, never past the last row, and 0 for an empty list. It lets
+// the page-up/down handlers add or subtract a page without each repeating the
+// floor/ceiling guards.
+func clampCursor(i, total int) int {
+	if i >= total {
+		i = total - 1
+	}
+	if i < 0 {
+		i = 0
+	}
+	return i
+}
+
 // listWindow returns the [start, end) bounds of a scrolling window of the given
 // visible size that keeps cursor on screen, centering it when possible. It
 // mirrors snapshotWindow's contract for the repo list.

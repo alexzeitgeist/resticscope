@@ -241,6 +241,10 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.visibleRows())-1 {
 			m.cursor++
 		}
+	case key.Matches(msg, m.keys.PageUp):
+		m.cursor = clampCursor(m.cursor-m.visibleRepos(), len(m.visibleRows()))
+	case key.Matches(msg, m.keys.PageDown):
+		m.cursor = clampCursor(m.cursor+m.visibleRepos(), len(m.visibleRows()))
 	case key.Matches(msg, m.keys.Enter):
 		// Pin the detail view to the selected repo by name so a later refresh
 		// (which can reorder a size/staleness sort) can't swap it out.
@@ -328,6 +332,10 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.snapCursor < m.snapCount()-1 {
 			m.snapCursor++
 		}
+	case key.Matches(msg, m.keys.PageUp):
+		m.snapCursor = clampCursor(m.snapCursor-m.detailSnapVisible(), m.snapCount())
+	case key.Matches(msg, m.keys.PageDown):
+		m.snapCursor = clampCursor(m.snapCursor+m.detailSnapVisible(), m.snapCount())
 	case key.Matches(msg, m.keys.Enter):
 		// Enter on a snapshot shells in with that snapshot's context.
 		if snap := m.selectedSnapshot(); snap != nil {

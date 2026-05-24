@@ -163,6 +163,38 @@ func TestCursorNavigationClamps(t *testing.T) {
 	}
 }
 
+// Page-down/up jump a whole window and clamp at the ends. The default test app
+// has two repos in a tall pane, so one page spans the entire list: page-down
+// lands on the last repo, page-up returns to the first.
+func TestListPageNavigationClamps(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.cursor != 1 {
+		t.Errorf("page-down cursor = %d, want 1 (clamped to last)", m.cursor)
+	}
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown}) // already at end
+	if m.cursor != 1 {
+		t.Errorf("page-down past end cursor = %d, want 1", m.cursor)
+	}
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.cursor != 0 {
+		t.Errorf("page-up cursor = %d, want 0 (clamped to first)", m.cursor)
+	}
+}
+
+func TestDetailPageNavigationClamps(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.snapCursor != 2 {
+		t.Errorf("page-down snapCursor = %d, want 2 (clamped to last)", m.snapCursor)
+	}
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.snapCursor != 0 {
+		t.Errorf("page-up snapCursor = %d, want 0 (clamped to first)", m.snapCursor)
+	}
+}
+
 func TestQuit(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	next, cmd := m.Update(press("q"))
@@ -321,6 +353,7 @@ func TestHelpOverlayToggle(t *testing.T) {
 		"Global", "List", "Detail", "Filter", "Status", // section headings
 		"refresh all repos", // the genuinely-global action
 		"move repo cursor",  // cursor movement lives under List, not Global
+		"page up/down",      // page navigation in the lists
 		"shell at snapshot", // a detail-only action
 		"never refreshed",   // glyph legend entry
 	} {

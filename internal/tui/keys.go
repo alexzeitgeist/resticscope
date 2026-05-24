@@ -8,6 +8,8 @@ import "charm.land/bubbles/v2/key"
 type keyMap struct {
 	Up         key.Binding
 	Down       key.Binding
+	PageUp     key.Binding
+	PageDown   key.Binding
 	Enter      key.Binding
 	Back       key.Binding
 	Shell      key.Binding
@@ -30,6 +32,8 @@ func defaultKeys() keyMap {
 	return keyMap{
 		Up:         key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 		Down:       key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
+		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
 		Back:       key.NewBinding(key.WithKeys("b", "esc"), key.WithHelp("b", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
@@ -84,7 +88,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	switch h.view {
 	case detailView:
 		return [][]key.Binding{
-			{k.Up, k.Down},
+			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{k.Enter, k.Shell},
 			{k.Refresh, k.Back, k.Quit},
 		}
@@ -94,7 +98,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		}
 	default: // listView
 		return [][]key.Binding{
-			{k.Up, k.Down},
+			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{k.Enter, k.Shell},
 			{k.Refresh, k.RefreshAll},
 			{k.Filter, k.Sort},
