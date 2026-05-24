@@ -35,7 +35,6 @@ type CacheStore interface {
 // Restic runs the restic operations app needs. Satisfied by *resticx.Client.
 type Restic interface {
 	Snapshots(ctx context.Context, t resticx.Target, creds resticx.Creds) ([]model.Snapshot, error)
-	Stats(ctx context.Context, t resticx.Target, creds resticx.Creds) (model.Stats, error)
 	CatConfig(ctx context.Context, t resticx.Target, creds resticx.Creds) error
 }
 
@@ -83,15 +82,6 @@ func (a *App) statusParams(r config.Repo) model.StatusParams {
 		ExpectedFrequency: r.ExpectedFrequency.Std(),
 		StaleGrace:        a.Cfg.Global.StaleGrace.Std(),
 		LockMaxAge:        a.Cfg.Global.LockMaxAge.Std(),
-	}
-}
-
-func expectationOf(r config.Repo) model.Expectation {
-	return model.Expectation{
-		Hosts:     r.ExpectedHosts,
-		Paths:     r.ExpectedPaths,
-		Tags:      r.ExpectedTags,
-		Frequency: r.ExpectedFrequency.Std(),
 	}
 }
 

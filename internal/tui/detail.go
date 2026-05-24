@@ -84,7 +84,6 @@ func (m Model) detailBody() string {
 
 	sections := []string{
 		m.detailMeta(repo, row),
-		m.styles.heading.Render("Coverage") + "\n" + m.coverageSection(repo, row.Coverage),
 		m.styles.heading.Render("Snapshots") + "\n" + m.snapshotTable(),
 	}
 	return strings.Join(sections, "\n\n")
@@ -98,8 +97,6 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus) string {
 		endpoint = cred.Endpoint
 	}
 
-	size := fmt.Sprintf("%s · %d blobs · %d snapshots",
-		humanize.Bytes(st.TotalSize), st.PackCount, st.SnapshotCount)
 	last := humanize.Ago(m.app.Clock.Now(), st.LastSnapshot)
 	if !st.LastSnapshot.IsZero() {
 		last = st.LastSnapshot.Format("2006-01-02 15:04") + " (" + last + ")"
@@ -108,47 +105,16 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus) string {
 	lines := []string{
 		m.field("Endpoint", endpoint),
 		m.field("Bucket", bucketLabel(repo)),
-		m.field("Size", size),
+		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount)),
 		m.field("Hosts", joinOrDash(st.Hosts)),
 		m.field("Tags", joinOrDash(st.Tags)),
-		m.field("Paths", joinOrDash(st.Paths)),
 		m.field("Last", last),
-	}
-	if st.PartialErr != "" {
-		lines = append(lines, m.field("Note", "stats unavailable: "+firstLine(st.PartialErr)))
 	}
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) field(label, value string) string {
 	return "  " + m.styles.label.Render(label) + value
-}
-
-// coverageSection renders the declared-vs-observed verdict. expected_frequency
-// is always set (config validation requires it), so coverage always reports at
-// least staleness; host/path/tag gaps are listed when present.
-func (m Model) coverageSection(repo config.Repo, cov model.Coverage) string {
-	if cov.Covered() {
-		return "  " + m.styles.good.Render("✓ all expectations met")
-	}
-	var lines []string
-	if len(cov.MissingHosts) > 0 {
-		lines = append(lines, m.gap("missing hosts: "+strings.Join(cov.MissingHosts, ", ")))
-	}
-	if len(cov.MissingPaths) > 0 {
-		lines = append(lines, m.gap("missing paths: "+strings.Join(cov.MissingPaths, ", ")))
-	}
-	if len(cov.MissingTags) > 0 {
-		lines = append(lines, m.gap("missing tags: "+strings.Join(cov.MissingTags, ", ")))
-	}
-	if cov.Stale {
-		lines = append(lines, m.gap("stale: newest snapshot older than expected_frequency ("+repo.ExpectedFrequency.Std().String()+")"))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) gap(s string) string {
-	return "  " + m.styles.bad.Render("✕ "+s)
 }
 
 // snapshotTable renders a scrolling window of snapshots, newest first, marking
@@ -172,11 +138,15 @@ func (m Model) snapshotTable() string {
 		if i == cur {
 			indicator = "> "
 		}
-		line := fmt.Sprintf("%s%-16s  %-12s  %-22s  %s",
+		size := "—"
+		if s.Summary != nil {
+			size = humanize.Bytes(s.Summary.TotalBytesProcessed)
+		}
+		line := fmt.Sprintf("%s%-16s  %-12s  %9s  %s",
 			indicator,
 			s.Time.Format("2006-01-02 15:04"),
 			truncate(s.Hostname, 12),
-			truncate(strings.Join(s.Paths, " "), 22),
+			size,
 			truncate(strings.Join(s.Tags, ","), 20),
 		)
 		if i == cur {

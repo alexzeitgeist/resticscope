@@ -27,10 +27,9 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 		case model.StatusGrey:
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Status, "never refreshed")
 		default:
-			line := fmt.Sprintf("%s\t%s\t%s\t%s\t%d snaps",
+			line := fmt.Sprintf("%s\t%s\t%s\t%d snaps",
 				r.Name, r.Status,
 				humanize.Ago(now, r.State.LastSnapshot),
-				humanize.Bytes(r.State.TotalSize),
 				r.State.SnapshotCount,
 			)
 			if r.Stale {
@@ -38,23 +37,6 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 			}
 			fmt.Fprintln(tw, line)
 		}
-	}
-	tw.Flush()
-}
-
-// formatCoverageRollup writes the cross-repo coverage aggregate: a headline
-// count plus one line per repo with an unmet expectation. It is appended to
-// `resticscope status --coverage` after the per-repo table, and stays plain
-// text so it remains scriptable (plan §9, §11).
-func formatCoverageRollup(w io.Writer, r app.CoverageRollup) {
-	fmt.Fprintf(w, "coverage: %d of %d repos fully covered\n", r.Covered, r.Total)
-	if r.FullyCovered() {
-		return
-	}
-	fmt.Fprintln(w)
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	for _, g := range r.Gaps {
-		fmt.Fprintf(tw, "  %s\t%s\n", g.Repo, g.Coverage.Summary())
 	}
 	tw.Flush()
 }

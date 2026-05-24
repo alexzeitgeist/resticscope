@@ -8,16 +8,13 @@ import (
 
 func TestObserved(t *testing.T) {
 	snaps := []Snapshot{
-		{Hostname: "homeserver", Paths: []string{"/etc", "/var/lib"}, Tags: []string{"daily", "system"}},
-		{Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
-		{Hostname: "laptop", Paths: []string{"/home"}, Tags: nil},
+		{Hostname: "homeserver", Tags: []string{"daily", "system"}},
+		{Hostname: "homeserver", Tags: []string{"daily"}},
+		{Hostname: "laptop", Tags: nil},
 	}
-	hosts, paths, tags := Observed(snaps)
+	hosts, tags := Observed(snaps)
 	if want := []string{"homeserver", "laptop"}; !reflect.DeepEqual(hosts, want) {
 		t.Errorf("hosts = %v, want %v", hosts, want)
-	}
-	if want := []string{"/etc", "/home", "/var/lib"}; !reflect.DeepEqual(paths, want) {
-		t.Errorf("paths = %v, want %v", paths, want)
 	}
 	if want := []string{"daily", "system"}; !reflect.DeepEqual(tags, want) {
 		t.Errorf("tags = %v, want %v", tags, want)
@@ -25,9 +22,9 @@ func TestObserved(t *testing.T) {
 }
 
 func TestObservedEmpty(t *testing.T) {
-	hosts, paths, tags := Observed(nil)
-	if hosts != nil || paths != nil || tags != nil {
-		t.Errorf("expected nil slices, got %v %v %v", hosts, paths, tags)
+	hosts, tags := Observed(nil)
+	if hosts != nil || tags != nil {
+		t.Errorf("expected nil slices, got %v %v", hosts, tags)
 	}
 }
 

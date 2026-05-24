@@ -12,23 +12,23 @@ import "time"
 // restic's JSON contract is additive, so unknown fields are ignored on decode.
 // Keep this struct tolerant: never fail a refresh because restic grew a field.
 type Snapshot struct {
-	ID             string    `json:"id"`
-	ShortID        string    `json:"short_id"`
-	Time           time.Time `json:"time"`
-	Hostname       string    `json:"hostname"`
-	Username       string    `json:"username,omitempty"`
-	Paths          []string  `json:"paths,omitempty"`
-	Tags           []string  `json:"tags,omitempty"`
-	ProgramVersion string    `json:"program_version,omitempty"`
+	ID             string           `json:"id"`
+	ShortID        string           `json:"short_id"`
+	Time           time.Time        `json:"time"`
+	Hostname       string           `json:"hostname"`
+	Username       string           `json:"username,omitempty"`
+	Tags           []string         `json:"tags,omitempty"`
+	ProgramVersion string           `json:"program_version,omitempty"`
+	Summary        *SnapshotSummary `json:"summary,omitempty"`
 }
 
-// Stats mirrors `restic stats --json --mode raw-data`.
+// SnapshotSummary mirrors the `summary` object restic 0.17+ returns inline with
+// each entry of `restic snapshots --json`. It gives a per-snapshot size for
+// free, so resticscope no longer runs a separate (heavy) `restic stats`.
 //
-// restic reports blob counts, not pack counts; the field name reflects what
-// restic actually returns. Stats are best-effort (slow on large repos) and a
-// refresh stays useful even when they fail.
-type Stats struct {
-	TotalSize      int64 `json:"total_size"`
-	TotalBlobCount int   `json:"total_blob_count"`
-	SnapshotsCount int   `json:"snapshots_count"`
+// The field is a pointer on Snapshot so a missing summary (a pre-0.17 snapshot)
+// is distinguishable from a genuine zero-byte snapshot.
+type SnapshotSummary struct {
+	TotalBytesProcessed int64 `json:"total_bytes_processed"` // logical size of this snapshot
+	DataAdded           int64 `json:"data_added,omitempty"`  // new (deduped) bytes this run added
 }

@@ -56,13 +56,6 @@ func (m Model) View() tea.View {
 			"",
 			m.helpBody(),
 		)
-	case m.view == coverageView:
-		r := app.Rollup(m.rows)
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.coverageHeaderView(r),
-			"",
-			m.coverageBody(r),
-		)
 	case m.view == detailView && hasDetail:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),
@@ -169,9 +162,8 @@ func (m Model) summary(row app.RepoStatus) string {
 	case model.StatusGrey:
 		return m.styles.meta.Render("never refreshed")
 	default:
-		s := fmt.Sprintf("last: %-9s  size: %9s  snaps: %4d",
+		s := fmt.Sprintf("last: %-9s  snaps: %4d",
 			humanize.Ago(m.app.Clock.Now(), row.State.LastSnapshot),
-			humanize.Bytes(row.State.TotalSize),
 			row.State.SnapshotCount,
 		)
 		if row.Stale {

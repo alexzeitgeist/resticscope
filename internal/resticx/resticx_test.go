@@ -95,25 +95,20 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if last.Hostname != "homeserver" || last.ShortID != "c3d4e5f6" {
 		t.Errorf("unexpected last snapshot: %+v", last)
 	}
-	if len(last.Paths) != 2 || last.Paths[0] != "/etc" {
-		t.Errorf("unexpected paths: %v", last.Paths)
+	// restic 0.17+ embeds a per-snapshot summary; we parse its size for free. The
+	// last entry carries one, the earlier entries do not — a nil Summary must stay
+	// distinguishable from a zero-byte snapshot.
+	if last.Summary == nil {
+		t.Fatal("expected the summarized snapshot to carry a Summary")
 	}
-}
-
-func TestStatsParsesFixture(t *testing.T) {
-	fr := &fakeRunner{stdout: readFixture(t, "restic-stats-raw.json")}
-	c := &Client{Runner: fr}
-	s, err := c.Stats(context.Background(), testTarget, Creds{ResticPassword: "pw"})
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
+	if last.Summary.TotalBytesProcessed != 4404019200 {
+		t.Errorf("TotalBytesProcessed = %d, want 4404019200", last.Summary.TotalBytesProcessed)
 	}
-	if s.TotalSize != 442000000000 || s.TotalBlobCount != 31204 || s.SnapshotsCount != 240 {
-		t.Errorf("unexpected stats: %+v", s)
+	if last.Summary.DataAdded != 5242880 {
+		t.Errorf("DataAdded = %d, want 5242880", last.Summary.DataAdded)
 	}
-	// Verify the args restic was actually invoked with.
-	want := []string{"stats", "--json", "--mode", "raw-data"}
-	if strings.Join(fr.gotArgs, " ") != strings.Join(want, " ") {
-		t.Errorf("stats args = %v, want %v", fr.gotArgs, want)
+	if snaps[0].Summary != nil {
+		t.Errorf("expected nil Summary for the un-summarized snapshot, got %+v", snaps[0].Summary)
 	}
 }
 

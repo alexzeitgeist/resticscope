@@ -53,7 +53,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
 	// Global holds only keys that act in every view; the per-view sections list
 	// what each adds on top. Cursor movement is *not* global — it does nothing in
-	// the coverage or help views — so it lives under List/Detail, not here.
+	// the help view — so it lives under List/Detail, not here.
 	left = []helpSection{
 		{"Global", []helpEntry{
 			{keyLabel(k.RefreshAll), "refresh all repos"},
@@ -65,7 +65,6 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Enter), "open repo detail"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},
-			{keyLabel(k.Coverage), "coverage rollup"},
 			{keyLabel(k.Filter), "filter by name/label"},
 			{keyLabel(k.Sort), "cycle sort order"},
 		}},
@@ -82,9 +81,6 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.FilterAccept), "apply filter"},
 			{keyLabel(k.FilterCancel), "clear filter"},
 			{keyLabel(k.FilterDelete), "delete a character"},
-		}},
-		{"Coverage", []helpEntry{
-			{keyLabel(k.Back), "back to the list"},
 		}},
 	}
 	return left, right

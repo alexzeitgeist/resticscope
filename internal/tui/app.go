@@ -25,7 +25,6 @@ type view int
 const (
 	listView view = iota
 	detailView
-	coverageView
 	helpView
 )
 
@@ -179,7 +178,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Refresh-all acts on every repo, so it needs no per-view cursor and works
-	// from the list, detail, and coverage views alike.
+	// from the list and detail views alike.
 	if key.Matches(msg, m.keys.RefreshAll) {
 		m.statusMsg = ""
 		var cmds []tea.Cmd
@@ -189,12 +188,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(cmds...)
-	}
-
-	// The coverage view has no per-repo cursor, so the repo-scoped keys below
-	// (shell, refresh-current) do not apply there.
-	if m.view == coverageView {
-		return m.handleCoverageKey(msg)
 	}
 
 	switch {
@@ -219,19 +212,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleListKey(msg)
 }
 
-// handleCoverageKey handles input while the cross-repo coverage view is showing.
-// Only navigation back to the list is meaningful; quit, help, and refresh-all
-// are handled globally before this is reached.
-func (m Model) handleCoverageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key.Matches(msg, m.keys.Back) {
-		m.view = listView
-	}
-	return m, nil
-}
-
 // toggleHelp opens the help overlay from the current view, or closes it back to
 // the view it was opened from. Remembering the origin lets `?` from the detail
-// or coverage view return there rather than dumping the user on the list.
+// view return there rather than dumping the user on the list.
 func (m Model) toggleHelp() Model {
 	if m.view == helpView {
 		m.view = m.prevView
@@ -264,8 +247,6 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filtering = true
 	case key.Matches(msg, m.keys.Sort):
 		m = m.cycleSort()
-	case key.Matches(msg, m.keys.Coverage):
-		m.view = coverageView
 	}
 	return m, nil
 }
@@ -413,10 +394,10 @@ func (m Model) refreshCmd(name string) tea.Cmd {
 }
 
 func (m Model) applyRefresh(msg repoRefreshedMsg) Model {
-	// A refresh can change LastSnapshot/TotalSize and thus reorder the visible
-	// list under a staleness/size sort. Anchor the cursor to the repo it was on
-	// (by name) so the selection — and the repo r/s/enter act on — never silently
-	// jumps, matching cycleSort's behavior.
+	// A refresh can change LastSnapshot and thus reorder the visible list under a
+	// staleness sort. Anchor the cursor to the repo it was on (by name) so the
+	// selection — and the repo r/s/enter act on — never silently jumps, matching
+	// cycleSort's behavior.
 	var selected string
 	if row, ok := m.currentRow(); ok {
 		selected = row.Name

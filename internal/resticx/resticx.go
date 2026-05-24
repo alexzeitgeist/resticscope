@@ -68,20 +68,6 @@ func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.
 	return snaps, nil
 }
 
-// Stats returns whole-repository raw-data stats (actual stored size and blob
-// count). It is best-effort and slow on large repositories.
-func (c *Client) Stats(ctx context.Context, t Target, creds Creds) (model.Stats, error) {
-	out, err := c.run(ctx, t, creds, "stats", "--json", "--mode", "raw-data")
-	if err != nil {
-		return model.Stats{}, err
-	}
-	var s model.Stats
-	if err := json.Unmarshal(out, &s); err != nil {
-		return model.Stats{}, &Error{Kind: KindParse, Op: "stats", wrapped: err}
-	}
-	return s, nil
-}
-
 // CatConfig reaches the repository by reading and decrypting its config file
 // (`restic cat config`). It is the cheapest end-to-end probe: it exercises the
 // S3 credentials, confirms the repository exists (exit 10 otherwise), and

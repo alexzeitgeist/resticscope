@@ -67,17 +67,11 @@ func (f fakeSecrets) Resolve(repoName, credName string) (secrets.Material, error
 type fakeRestic struct {
 	snaps   []model.Snapshot
 	snapErr error
-	stats   model.Stats
-	statErr error
 	catErr  error // returned by CatConfig
 }
 
 func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
 	return f.snaps, f.snapErr
-}
-
-func (f fakeRestic) Stats(ctx context.Context, t resticx.Target, c resticx.Creds) (model.Stats, error) {
-	return f.stats, f.statErr
 }
 
 func (f fakeRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
@@ -93,7 +87,7 @@ func testConfig() *config.Config {
 			{Name: "cred-a", Endpoint: "https://fsn1.example.com", Region: "fsn1", BucketLookup: "auto"},
 		},
 		Repos: []config.Repo{
-			{Name: "repo-a", Credential: "cred-a", Bucket: "bucket-a", ExpectedFrequency: config.Duration(24 * time.Hour), ExpectedHosts: []string{"homeserver"}},
+			{Name: "repo-a", Credential: "cred-a", Bucket: "bucket-a", ExpectedFrequency: config.Duration(24 * time.Hour)},
 		},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
@@ -155,9 +149,8 @@ func TestRefreshSuccess(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic: fakeRestic{
 			snaps: []model.Snapshot{
-				{Hostname: "homeserver", Time: now.Add(-2 * time.Hour), Paths: []string{"/etc"}, Tags: []string{"daily"}},
+				{Hostname: "homeserver", Time: now.Add(-2 * time.Hour), Tags: []string{"daily"}},
 			},
-			stats: model.Stats{TotalSize: 1000, TotalBlobCount: 42, SnapshotsCount: 1},
 		},
 	}
 	state, err := a.Refresh(context.Background(), "repo-a")
@@ -167,7 +160,7 @@ func TestRefreshSuccess(t *testing.T) {
 	if state.Status != model.StatusGreen {
 		t.Errorf("status = %v, want green", state.Status)
 	}
-	if state.SnapshotCount != 1 || state.TotalSize != 1000 || state.PackCount != 42 {
+	if state.SnapshotCount != 1 {
 		t.Errorf("unexpected state: %+v", state)
 	}
 	if len(state.Hosts) != 1 || state.Hosts[0] != "homeserver" {
@@ -203,8 +196,8 @@ func TestRefreshResticErrorRecorded(t *testing.T) {
 }
 
 // A transient snapshots failure must not erase the last-known-good observation:
-// the repo reports StatusError (live verdict) but keeps the snapshots, size,
-// last-snapshot time, and observed coverage from the prior successful refresh,
+// the repo reports StatusError (live verdict) but keeps the snapshots,
+// last-snapshot time, and observed hosts/tags from the prior successful refresh,
 // and keeps that refresh's RefreshedAt rather than advancing it.
 func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 	fc := newFakeCache()
@@ -212,13 +205,10 @@ func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 		Name:          "repo-a",
 		RefreshedAt:   now.Add(-2 * time.Hour),
 		Status:        model.StatusGreen,
-		TotalSize:     1000,
-		PackCount:     42,
 		SnapshotCount: 2,
 		LastSnapshot:  now.Add(-3 * time.Hour),
 		Snapshots:     []model.Snapshot{{Hostname: "homeserver"}, {Hostname: "homeserver"}},
 		Hosts:         []string{"homeserver"},
-		Paths:         []string{"/etc"},
 		Tags:          []string{"daily"},
 	}
 	fc.states["repo-a"] = good
@@ -243,11 +233,8 @@ func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 	if !state.LastSnapshot.Equal(good.LastSnapshot) {
 		t.Errorf("LastSnapshot = %v, want preserved %v", state.LastSnapshot, good.LastSnapshot)
 	}
-	if state.TotalSize != 1000 || state.PackCount != 42 {
-		t.Errorf("size/packs not preserved: size=%d packs=%d", state.TotalSize, state.PackCount)
-	}
-	if len(state.Hosts) != 1 || len(state.Paths) != 1 || len(state.Tags) != 1 {
-		t.Errorf("observed coverage not preserved: hosts=%v paths=%v tags=%v", state.Hosts, state.Paths, state.Tags)
+	if len(state.Hosts) != 1 || len(state.Tags) != 1 {
+		t.Errorf("observed hosts/tags not preserved: hosts=%v tags=%v", state.Hosts, state.Tags)
 	}
 	if !state.RefreshedAt.Equal(good.RefreshedAt) {
 		t.Errorf("RefreshedAt = %v, want preserved last-success %v", state.RefreshedAt, good.RefreshedAt)
@@ -292,7 +279,6 @@ func TestRefreshAllPreservesLastGoodOnFailure(t *testing.T) {
 		RefreshedAt:   now.Add(-2 * time.Hour),
 		Status:        model.StatusGreen,
 		SnapshotCount: 3,
-		TotalSize:     5000,
 		LastSnapshot:  now.Add(-90 * time.Minute),
 		Snapshots:     []model.Snapshot{{Hostname: "homeserver"}, {Hostname: "homeserver"}, {Hostname: "homeserver"}},
 		Hosts:         []string{"homeserver"},
@@ -312,7 +298,7 @@ func TestRefreshAllPreservesLastGoodOnFailure(t *testing.T) {
 	if got.Status != model.StatusError || got.LastError == "" {
 		t.Errorf("want live error verdict, got %+v", got)
 	}
-	if got.SnapshotCount != 3 || got.TotalSize != 5000 || !got.LastSnapshot.Equal(now.Add(-90*time.Minute)) {
+	if got.SnapshotCount != 3 || !got.LastSnapshot.Equal(now.Add(-90*time.Minute)) {
 		t.Errorf("last-known-good not preserved through RefreshAll: %+v", got)
 	}
 	if saved := fc.saved["repo-a"]; saved.SnapshotCount != 3 || saved.Status != model.StatusError {
@@ -334,30 +320,6 @@ func TestRefreshSecretsErrorRecorded(t *testing.T) {
 	}
 	if state.Status != model.StatusError || state.LastError == "" {
 		t.Errorf("expected recorded secrets error, got %+v", state)
-	}
-}
-
-func TestRefreshStatsBestEffort(t *testing.T) {
-	a := &App{
-		Cfg:     testConfig(),
-		Cache:   newFakeCache(),
-		Clock:   fixedClock{now},
-		Secrets: fakeSecrets{},
-		Restic: fakeRestic{
-			snaps:   []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-time.Hour)}},
-			statErr: errors.New("stats timed out"),
-		},
-	}
-	state, err := a.Refresh(context.Background(), "repo-a")
-	if err != nil {
-		t.Fatalf("Refresh: %v", err)
-	}
-	// Snapshots succeeded, so status is real; stats failure is only a partial error.
-	if state.Status != model.StatusGreen {
-		t.Errorf("status = %v, want green despite stats failure", state.Status)
-	}
-	if state.PartialErr == "" {
-		t.Error("expected PartialErr from stats failure")
 	}
 }
 
@@ -430,7 +392,6 @@ func TestRefreshRow(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic: fakeRestic{
 			snaps: []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-2 * time.Hour)}},
-			stats: model.Stats{TotalSize: 1000, SnapshotsCount: 1},
 		},
 	}
 	row, err := a.RefreshRow(context.Background(), "repo-a")

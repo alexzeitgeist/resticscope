@@ -18,8 +18,8 @@ type styles struct {
 	errText  lipgloss.Style
 	heading  lipgloss.Style // detail-view section titles
 	label    lipgloss.Style // detail-view field labels
-	good     lipgloss.Style // a satisfied coverage line
-	bad      lipgloss.Style // a coverage gap
+	good     lipgloss.Style // positive status text
+	bad      lipgloss.Style // negative status text
 	glyph    map[model.Status]lipgloss.Style
 }
 

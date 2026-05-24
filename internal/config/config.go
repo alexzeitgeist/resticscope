@@ -44,7 +44,8 @@ type Credential struct {
 }
 
 // Repo is a single restic repository: a bucket (and optional path) reached via
-// a named Credential, plus the coverage expectations used for status.
+// a named Credential, plus the expected_frequency that drives its freshness
+// status.
 type Repo struct {
 	Name              string            `toml:"name"`
 	Description       string            `toml:"description"`
@@ -52,9 +53,6 @@ type Repo struct {
 	Bucket            string            `toml:"bucket"`
 	Path              string            `toml:"path"`
 	ExpectedFrequency Duration          `toml:"expected_frequency"`
-	ExpectedHosts     []string          `toml:"expected_hosts"`
-	ExpectedPaths     []string          `toml:"expected_paths"`
-	ExpectedTags      []string          `toml:"expected_tags"`
 	Labels            map[string]string `toml:"labels"`
 }
 

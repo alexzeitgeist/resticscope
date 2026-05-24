@@ -13,11 +13,10 @@ import (
 // RepoStatus is one repo's evaluated status plus the cached state it was
 // derived from. It is what `resticscope status` and the TUI list view render.
 type RepoStatus struct {
-	Name     string
-	Status   model.Status
-	State    model.RepoState
-	Coverage model.Coverage
-	Stale    bool // the cache entry is older than global.stale_after
+	Name   string
+	Status model.Status
+	State  model.RepoState
+	Stale  bool // the cache entry is older than global.stale_after
 }
 
 // Statuses returns the current status of every configured repo, reading the
@@ -69,10 +68,9 @@ func (a *App) RowsFromStates(states []model.RepoState) []RepoStatus {
 // statusRow evaluates one repo's state into a render-ready row.
 func (a *App) statusRow(now time.Time, r config.Repo, state model.RepoState, staleAfter time.Duration) RepoStatus {
 	row := RepoStatus{
-		Name:     r.Name,
-		Status:   model.EvaluateStatus(now, a.statusParams(r), state),
-		State:    state,
-		Coverage: model.ComputeCoverage(now, expectationOf(r), state),
+		Name:   r.Name,
+		Status: model.EvaluateStatus(now, a.statusParams(r), state),
+		State:  state,
 	}
 	if state.Refreshed() && staleAfter > 0 && now.Sub(state.RefreshedAt) > staleAfter {
 		row.Stale = true

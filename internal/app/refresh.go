@@ -95,8 +95,8 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 //
 // A failed refresh preserves the last-known-good observation rather than blanking
 // the repo: a single transient restic failure (e.g. an intermittent "repository
-// does not exist") must not erase the snapshots, size, and coverage data we last
-// saw. The failing attempt is recorded in LastError — which makes EvaluateStatus
+// does not exist") must not erase the snapshots and observed data we last saw.
+// The failing attempt is recorded in LastError — which makes EvaluateStatus
 // classify the repo as StatusError regardless of the carried-over data — so the
 // health verdict stays live while the detail data stays useful until the next
 // successful refresh replaces it.
@@ -113,12 +113,11 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	// fail builds the state for an unsuccessful refresh. It keeps prior's observed
 	// data and its RefreshedAt — the time of the last *successful* observation,
 	// which stays zero when there was never one — and records the new failure in
-	// LastError. The stale PartialErr (which described the prior stats run) is
-	// dropped so it cannot be confused with the current failure.
+	// LastError. The remaining last-known-good observations (Snapshots,
+	// SnapshotCount, LastSnapshot, Hosts, Tags) carry over untouched.
 	fail := func(msg string) model.RepoState {
 		state := prior
 		state.Name = r.Name
-		state.PartialErr = ""
 		state.LastError = msg
 		state.Status = model.EvaluateStatus(now, params, state)
 		return state
@@ -151,17 +150,8 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	state := model.RepoState{Name: r.Name, RefreshedAt: now}
 	state.Snapshots = snaps
 	state.SnapshotCount = len(snaps)
-	state.Hosts, state.Paths, state.Tags = model.Observed(snaps)
+	state.Hosts, state.Tags = model.Observed(snaps)
 	state.LastSnapshot = model.LatestSnapshotTime(snaps)
-
-	// Stats are best-effort: slow on big repos, and a refresh stays useful
-	// without them.
-	if stats, sErr := a.Restic.Stats(ctx, target, creds); sErr != nil {
-		state.PartialErr = sErr.Error()
-	} else {
-		state.TotalSize = stats.TotalSize
-		state.PackCount = stats.TotalBlobCount
-	}
 
 	state.Status = model.EvaluateStatus(now, params, state)
 	return state

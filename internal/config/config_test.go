@@ -268,6 +268,21 @@ bogus_key = true
 	}
 }
 
+// The coverage feature was removed: a pre-cleanup config that still declares
+// expected_hosts/paths/tags must fail decode with an unknown-keys error so the
+// user deletes them, rather than silently ignoring stale expectations.
+func TestRejectsRemovedCoverageKeys(t *testing.T) {
+	for _, key := range []string{"expected_hosts", "expected_paths", "expected_tags"} {
+		t.Run(key, func(t *testing.T) {
+			toml := minimalTOML + key + ` = ["x"]` + "\n"
+			_, err := load(t, toml)
+			if err == nil || !strings.Contains(err.Error(), "unknown config keys") {
+				t.Fatalf("expected unknown-keys error for %s, got %v", key, err)
+			}
+		})
+	}
+}
+
 func TestRejectsBadDuration(t *testing.T) {
 	_, err := Decode([]byte(`
 [global]

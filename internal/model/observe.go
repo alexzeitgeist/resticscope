@@ -5,26 +5,22 @@ import (
 	"time"
 )
 
-// Observed extracts the de-duplicated, sorted hosts, paths, and tags seen
-// across the given snapshots. These become the observed side of a coverage
-// comparison (see ComputeCoverage). Each return value is nil when nothing was
-// seen, keeping JSON output and equality checks clean.
-func Observed(snaps []Snapshot) (hosts, paths, tags []string) {
+// Observed extracts the de-duplicated, sorted hosts and tags seen across the
+// given snapshots. They are surfaced as informational detail-view lines. Each
+// return value is nil when nothing was seen, keeping JSON output and equality
+// checks clean.
+func Observed(snaps []Snapshot) (hosts, tags []string) {
 	hostSet := map[string]struct{}{}
-	pathSet := map[string]struct{}{}
 	tagSet := map[string]struct{}{}
 	for _, s := range snaps {
 		if s.Hostname != "" {
 			hostSet[s.Hostname] = struct{}{}
 		}
-		for _, p := range s.Paths {
-			pathSet[p] = struct{}{}
-		}
 		for _, tg := range s.Tags {
 			tagSet[tg] = struct{}{}
 		}
 	}
-	return sortedKeys(hostSet), sortedKeys(pathSet), sortedKeys(tagSet)
+	return sortedKeys(hostSet), sortedKeys(tagSet)
 }
 
 // LatestSnapshotTime returns the most recent snapshot time, or the zero time

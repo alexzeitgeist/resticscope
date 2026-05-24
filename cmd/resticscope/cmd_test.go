@@ -132,7 +132,6 @@ func TestStatusOutputFormat(t *testing.T) {
 		"homeserver-system": {
 			RefreshedAt:   now,
 			LastSnapshot:  now.Add(-8 * time.Hour),
-			TotalSize:     442000000000,
 			SnapshotCount: 240,
 		},
 	})
@@ -143,37 +142,11 @@ func TestStatusOutputFormat(t *testing.T) {
 	if !strings.Contains(out, "homeserver-system") || !strings.Contains(out, "green") {
 		t.Errorf("missing repo/status in output: %q", out)
 	}
-	if !strings.Contains(out, "412 GiB") {
-		t.Errorf("expected humanized size, got %q", out)
-	}
 	if !strings.Contains(out, "240 snaps") {
 		t.Errorf("expected snapshot count, got %q", out)
 	}
 	if !strings.Contains(out, "8h ago") {
 		t.Errorf("expected relative time, got %q", out)
-	}
-}
-
-// status --coverage appends the cross-repo rollup after the table: a headline
-// count and one line per repo with an unmet expectation. A repo whose newest
-// snapshot is older than its expected_frequency shows up as a stale gap.
-func TestStatusCoverageRollup(t *testing.T) {
-	now := time.Now()
-	cfgPath := setup(t, map[string]model.RepoState{
-		"fresh-repo": {RefreshedAt: now, LastSnapshot: now.Add(-2 * time.Hour)},  // covered
-		"stale-repo": {RefreshedAt: now, LastSnapshot: now.Add(-72 * time.Hour)}, // stale gap
-	})
-	var out, errBuf bytes.Buffer
-	run(context.Background(), []string{"status", "--coverage", "--config", cfgPath}, &out, &errBuf)
-	s := out.String()
-	if !strings.Contains(s, "coverage: 1 of 2 repos fully covered") {
-		t.Errorf("expected coverage headline, got %q", s)
-	}
-	if !strings.Contains(s, "stale-repo") || !strings.Contains(s, "stale") {
-		t.Errorf("expected stale repo listed as a gap, got %q", s)
-	}
-	if strings.Contains(s, "fresh-repo\tstale") {
-		t.Errorf("covered repo should not appear as a gap, got %q", s)
 	}
 }
 

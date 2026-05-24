@@ -7,15 +7,14 @@ import (
 	"resticscope/internal/app"
 )
 
-// sortMode orders the list view. sortConfig is the natural config order; the
-// other modes surface the repos most likely to need attention (oldest backup,
-// or largest on disk) at the top.
+// sortMode orders the list view. sortConfig is the natural config order;
+// sortStale surfaces the repos most likely to need attention (oldest backup) at
+// the top.
 type sortMode int
 
 const (
 	sortConfig    sortMode = iota // config order (default)
 	sortStale                     // oldest last snapshot first (never-refreshed first)
-	sortSize                      // largest total size first
 	sortModeCount                 // sentinel: number of modes, for cycling
 )
 
@@ -24,8 +23,6 @@ func (s sortMode) label() string {
 	switch s {
 	case sortStale:
 		return "staleness"
-	case sortSize:
-		return "size"
 	default:
 		return "config"
 	}
@@ -40,10 +37,6 @@ func sortRows(rows []app.RepoStatus, mode sortMode) {
 		// LastSnapshot, which sorts before any real time — i.e. most stale.
 		sort.SliceStable(rows, func(i, j int) bool {
 			return rows[i].State.LastSnapshot.Before(rows[j].State.LastSnapshot)
-		})
-	case sortSize:
-		sort.SliceStable(rows, func(i, j int) bool {
-			return rows[i].State.TotalSize > rows[j].State.TotalSize
 		})
 	}
 }
@@ -74,7 +67,7 @@ func matchRepo(name string, meta rowMeta, q string) bool {
 // visibleRows is the configured rows with the active filter and sort applied.
 // The list cursor and every list-view action index into this, never m.rows, so
 // what the user selects is always what they see. m.rows itself stays in config
-// order so refresh-all and the coverage rollup keep spanning every repo.
+// order so refresh-all keeps spanning every repo.
 func (m Model) visibleRows() []app.RepoStatus {
 	q := strings.ToLower(strings.TrimSpace(m.filter))
 	rows := make([]app.RepoStatus, 0, len(m.rows))

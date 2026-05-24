@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +50,6 @@ func (s stubRestic) Snapshots(_ context.Context, _ resticx.Target, _ resticx.Cre
 	return s.snaps, nil
 }
 
-func (stubRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (model.Stats, error) {
-	return model.Stats{}, nil
-}
-
 func (stubRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
 	return nil
 }
@@ -68,10 +63,6 @@ func (b blockingRestic) Snapshots(ctx context.Context, _ resticx.Target, _ resti
 	close(b.started)
 	<-ctx.Done()
 	return nil, ctx.Err()
-}
-
-func (blockingRestic) Stats(_ context.Context, _ resticx.Target, _ resticx.Creds) (model.Stats, error) {
-	return model.Stats{}, nil
 }
 
 func (blockingRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
@@ -131,7 +122,7 @@ func update(t *testing.T, m Model, msg tea.Msg) Model {
 
 func TestViewRendersReposGlyphsAndMeta(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), TotalSize: 442000000000, SnapshotCount: 240},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 240},
 	})
 	m := newTestModel(t, a)
 	view := m.View().Content
@@ -141,7 +132,7 @@ func TestViewRendersReposGlyphsAndMeta(t *testing.T) {
 		"repo-a", "repo-b",
 		statusGlyph(model.StatusGreen), // repo-a is green
 		statusGlyph(model.StatusGrey),  // repo-b never refreshed
-		"412 GiB", "240",
+		"240",
 		"never refreshed",
 		"fsn1 · high · home", // region + labels sorted by key (criticality, env)
 	} {
@@ -325,11 +316,10 @@ func TestHelpOverlayToggle(t *testing.T) {
 	}
 	view := m.View().Content
 	for _, want := range []string{
-		"keybindings",                                              // overlay title
-		"Global", "List", "Detail", "Coverage", "Filter", "Status", // section headings
+		"keybindings",                                  // overlay title
+		"Global", "List", "Detail", "Filter", "Status", // section headings
 		"refresh all repos", // the genuinely-global action
 		"move repo cursor",  // cursor movement lives under List, not Global
-		"coverage rollup",   // a list action
 		"shell at snapshot", // a detail-only action
 		"never refreshed",   // glyph legend entry
 	} {
@@ -400,9 +390,9 @@ func TestKeyLabel(t *testing.T) {
 
 // --- detail view ---
 
-// detailApp seeds repo-a with three snapshots and observed coverage data. It
-// uses env password mode so building a shell session in tests never writes a
-// temp password file to disk.
+// detailApp seeds repo-a with three snapshots and observed hosts/tags. It uses
+// env password mode so building a shell session in tests never writes a temp
+// password file to disk.
 func detailApp(t *testing.T) *app.App {
 	t.Helper()
 	a := testApp(map[string]model.RepoState{
@@ -410,16 +400,13 @@ func detailApp(t *testing.T) *app.App {
 			Name:          "repo-a",
 			RefreshedAt:   testNow,
 			LastSnapshot:  testNow.Add(-time.Hour),
-			TotalSize:     442000000000,
-			PackCount:     31204,
 			SnapshotCount: 3,
 			Hosts:         []string{"homeserver"},
-			Paths:         []string{"/etc", "/var/lib"},
 			Tags:          []string{"daily"},
 			Snapshots: []model.Snapshot{
-				{ID: "id-oldest", ShortID: "s1", Time: testNow.Add(-3 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
-				{ID: "id-middle", ShortID: "s2", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
-				{ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver", Paths: []string{"/etc"}, Tags: []string{"daily"}},
+				{ID: "id-oldest", ShortID: "s1", Time: testNow.Add(-3 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
+				{ID: "id-middle", ShortID: "s2", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
+				{ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver", Tags: []string{"daily"}},
 			},
 		},
 	})
@@ -437,8 +424,6 @@ func TestEnterOpensDetailView(t *testing.T) {
 	for _, want := range []string{
 		"repo-a",           // detail header
 		"Endpoint",         // metadata block
-		"412 GiB",          // humanized size
-		"Coverage",         // coverage section
 		"Snapshots",        // snapshot table heading
 		"2026-05-23 13:00", // newest snapshot (testNow - 1h)
 		"homeserver",
@@ -481,66 +466,6 @@ func TestDetailSnapshotCursorNavigatesAndClamps(t *testing.T) {
 	// The selected snapshot tracks the cursor in newest-first order.
 	if snap := m.selectedSnapshot(); snap == nil || snap.ID != "id-oldest" {
 		t.Errorf("selectedSnapshot = %+v, want the oldest", snap)
-	}
-}
-
-func TestCoverageReportsGaps(t *testing.T) {
-	a := detailApp(t)
-	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver", "laptop"} // laptop never observed
-	a.Cfg.Repos[0].ExpectedTags = []string{"daily", "weekly"}       // weekly never observed
-	m := newTestModel(t, a)
-	m = update(t, m, press("enter"))
-	view := m.View().Content
-	if !strings.Contains(view, "missing hosts: laptop") {
-		t.Errorf("coverage missing the host gap\n---\n%s", view)
-	}
-	if !strings.Contains(view, "missing tags: weekly") {
-		t.Errorf("coverage missing the tag gap\n---\n%s", view)
-	}
-}
-
-func TestCoverageAllMet(t *testing.T) {
-	a := detailApp(t)
-	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver"}
-	m := newTestModel(t, a)
-	m = update(t, m, press("enter"))
-	if view := m.View().Content; !strings.Contains(view, "all expectations met") {
-		t.Errorf("expected a satisfied coverage line\n---\n%s", view)
-	}
-}
-
-// --- coverage view ---
-
-// `c` opens the cross-repo coverage view; it lists repos with unmet
-// expectations across all repos, and `b` returns to the list.
-func TestCoverageViewListsGapsAndReturns(t *testing.T) {
-	a := detailApp(t)
-	a.Cfg.Repos[0].ExpectedHosts = []string{"homeserver", "laptop"} // laptop never observed -> gap
-	// repo-b has no cache, so it is stale -> also a gap.
-	m := newTestModel(t, a)
-
-	m = update(t, m, press("c"))
-	if m.view != coverageView {
-		t.Fatalf("view = %d, want coverageView", m.view)
-	}
-	view := m.View().Content
-	if !strings.Contains(view, "0 of 2 repos fully covered") { // both repos have gaps
-		t.Errorf("coverage view missing headline count\n---\n%s", view)
-	}
-	// Each gap row keeps the repo name and its summary on one line, separated by
-	// whitespace — not concatenated into "repo-amissing hosts".
-	for _, want := range []*regexp.Regexp{
-		regexp.MustCompile(`repo-a +missing hosts: laptop`), // observed-host gap
-		regexp.MustCompile(`repo-b +stale`),                 // cold repo is stale
-	} {
-		if !want.MatchString(view) {
-			t.Errorf("coverage row not composed as %q\n---\n%s", want, view)
-		}
-	}
-
-	m = update(t, m, press("b"))
-	if m.view != listView {
-		t.Errorf("b did not return to the list view (view = %d)", m.view)
 	}
 }
 
@@ -614,9 +539,9 @@ func typeFilter(t *testing.T, m Model, s string) Model {
 func TestSortRowsOrders(t *testing.T) {
 	base := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	src := []app.RepoStatus{
-		{Name: "a", State: model.RepoState{LastSnapshot: base.Add(-1 * time.Hour), TotalSize: 100}},
-		{Name: "b", State: model.RepoState{LastSnapshot: base.Add(-5 * time.Hour), TotalSize: 300}},
-		{Name: "c", State: model.RepoState{}}, // never refreshed: zero time, zero size
+		{Name: "a", State: model.RepoState{LastSnapshot: base.Add(-1 * time.Hour)}},
+		{Name: "b", State: model.RepoState{LastSnapshot: base.Add(-5 * time.Hour)}},
+		{Name: "c", State: model.RepoState{}}, // never refreshed: zero time
 	}
 	clone := func() []app.RepoStatus { return append([]app.RepoStatus(nil), src...) }
 
@@ -626,7 +551,6 @@ func TestSortRowsOrders(t *testing.T) {
 	}{
 		{sortConfig, "a,b,c"}, // untouched
 		{sortStale, "c,b,a"},  // oldest/never first
-		{sortSize, "b,a,c"},   // largest first
 	} {
 		rows := clone()
 		sortRows(rows, tc.mode)
@@ -773,13 +697,12 @@ func TestFilterNoMatch(t *testing.T) {
 	}
 }
 
-// `o` cycles config -> staleness -> size -> config, reorders accordingly, and
-// keeps the cursor on the same repo across the reorder. The header names the
-// active sort.
+// `o` cycles config -> staleness -> config, reorders accordingly, and keeps the
+// cursor on the same repo across the reorder. The header names the active sort.
 func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour), TotalSize: 100},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour), TotalSize: 900},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)},
 	})
 	m := newTestModel(t, a)
 	if got := visNames(m); got != "repo-a,repo-b" {
@@ -804,11 +727,6 @@ func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 		t.Errorf("header should name the active sort")
 	}
 
-	m = update(t, m, press("o")) // size: repo-b (900) before repo-a (100)
-	if m.sortMode != sortSize || visNames(m) != "repo-b,repo-a" {
-		t.Errorf("size sort wrong: mode=%v order=%q", m.sortMode, visNames(m))
-	}
-
 	m = update(t, m, press("o")) // back to config order
 	if m.sortMode != sortConfig || visNames(m) != "repo-a,repo-b" {
 		t.Errorf("cycle did not return to config order: mode=%v order=%q", m.sortMode, visNames(m))
@@ -820,19 +738,19 @@ func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 // cycleSort anchors it. Regression for the applyRefresh cursor-drift bug.
 func TestSortedSelectionSurvivesRefreshReorder(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 900},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 100},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
 	})
 	m := newTestModel(t, a)
-	m.sortMode = sortSize // repo-a (900) sorts first, so cursor 0 is repo-a
+	m.sortMode = sortStale // repo-a (oldest) sorts first, so cursor 0 is repo-a
 	if r, _ := m.currentRow(); r.Name != "repo-a" {
 		t.Fatalf("precondition: cursor should be on repo-a, got %s", r.Name)
 	}
 
-	// repo-b grows past repo-a; the visible order flips to repo-b, repo-a.
-	bigger := app.RepoStatus{Name: "repo-b", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 9000}}
-	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: bigger})
+	// repo-b ages past repo-a; the visible order flips to repo-b, repo-a.
+	older := app.RepoStatus{Name: "repo-b", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: older})
 
 	if got := visNames(m); got != "repo-b,repo-a" {
 		t.Fatalf("order after refresh = %q, want repo-b,repo-a", got)
@@ -866,23 +784,23 @@ func TestFilteredSelectionDrivesActions(t *testing.T) {
 }
 
 // The detail view stays pinned to the repo it was opened on, even when a sort by
-// size reorders the list underneath it (e.g. after a background refresh).
+// staleness reorders the list underneath it (e.g. after a background refresh).
 func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 900},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 100},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
 	})
 	m := newTestModel(t, a)
-	m.sortMode = sortSize // repo-a (900) is first
+	m.sortMode = sortStale // repo-a (oldest) is first
 	m = update(t, m, press("enter"))
 	if m.detailName != "repo-a" {
 		t.Fatalf("opened detail on %q, want repo-a", m.detailName)
 	}
-	// repo-a shrinks below repo-b; under size sort repo-b would now sort first,
-	// so a cursor-based detail view would jump to repo-b.
-	grown := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), TotalSize: 1}}
-	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: grown})
+	// repo-a gets a fresher snapshot than repo-b; under staleness sort repo-b would
+	// now sort first, so a cursor-based detail view would jump to repo-b.
+	fresher := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Minute)}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: fresher})
 	if row, ok := m.detailRow(); !ok || row.Name != "repo-a" {
 		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
 	}

@@ -43,7 +43,4 @@ credential         = "hetzner-home-fsn1"
 bucket             = "homeserver-backups"
 path               = ""                         # optional sub-prefix within the bucket
 expected_frequency = "24h"                      # older than this (+ stale_grace) turns the repo amber/red
-expected_hosts     = ["homeserver"]             # coverage expectations, compared against observed snapshots
-expected_paths     = ["/etc", "/var/lib"]
-expected_tags      = ["daily", "system"]
 labels             = { env = "home", criticality = "high" }

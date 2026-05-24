@@ -19,7 +19,6 @@ func TestSaveThenLoad(t *testing.T) {
 		Name:          "homeserver-system",
 		RefreshedAt:   time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC),
 		Status:        model.StatusGreen,
-		TotalSize:     442000000000,
 		SnapshotCount: 240,
 		LastSnapshot:  time.Date(2026, 5, 23, 6, 0, 0, 0, time.UTC),
 		Hosts:         []string{"homeserver"},
@@ -31,7 +30,7 @@ func TestSaveThenLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.Name != want.Name || got.Status != want.Status || got.TotalSize != want.TotalSize {
+	if got.Name != want.Name || got.Status != want.Status || got.SnapshotCount != want.SnapshotCount {
 		t.Errorf("round-trip mismatch: got %+v want %+v", got, want)
 	}
 	if !got.RefreshedAt.Equal(want.RefreshedAt) {
@@ -119,7 +118,17 @@ func TestNoCredentialKeysInCacheFile(t *testing.T) {
 func TestUnknownFieldsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	json := `{"name":"repo","status":"green","future_field":{"nested":true},"extra":42}`
+	// A pre-cleanup cache file still carries fields that RepoState/Snapshot no
+	// longer represent (total_size, pack_count, partial_err, the top-level paths
+	// list, and a nested snapshot paths list). The decoder must ignore them and
+	// still load the supported fields rather than failing.
+	json := `{
+		"name":"repo","status":"green",
+		"total_size":442000000000,"pack_count":31204,"partial_err":"stats timed out",
+		"paths":["/etc","/var/lib"],
+		"snapshots":[{"short_id":"s1","hostname":"homeserver","paths":["/etc"]}],
+		"future_field":{"nested":true},"extra":42
+	}`
 	if err := os.WriteFile(filepath.Join(dir, "repo.json"), []byte(json), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +138,9 @@ func TestUnknownFieldsIgnored(t *testing.T) {
 	}
 	if got.Name != "repo" || got.Status != model.StatusGreen {
 		t.Errorf("unexpected state: %+v", got)
+	}
+	if len(got.Snapshots) != 1 || got.Snapshots[0].ShortID != "s1" {
+		t.Errorf("snapshots not loaded past the ignored nested paths: %+v", got.Snapshots)
 	}
 }
 
