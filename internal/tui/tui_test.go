@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -123,6 +124,22 @@ func update(t *testing.T, m Model, msg tea.Msg) Model {
 	return next.(Model)
 }
 
+// leafCmds flattens a possibly-batched command into its leaf commands. The
+// refresh keys now batch the spinner tick with the live refresh, so a test that
+// wants the refresh command unwraps the batch first. Running the batch wrapper
+// only assembles the slice — it never runs the leaves — so this is safe even
+// when a leaf (the refresh) would block.
+func leafCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	if batch, ok := cmd().(tea.BatchMsg); ok {
+		return batch
+	}
+	return []tea.Cmd{cmd}
+}
+
 // --- tests ---
 
 func TestViewRendersReposGlyphsAndMeta(t *testing.T) {
@@ -233,6 +250,37 @@ func TestRefreshMarksPendingAndIgnoresDouble(t *testing.T) {
 	}
 }
 
+// The spinner must stop ticking once nothing is refreshing: an idle spinner is
+// invisible, so re-arming its tick only re-renders a hidden frame ~12×/second
+// and burns CPU forever (this was the cause of ~5% idle CPU). While a repo is
+// pending the tick must keep going so the glyph animates.
+func TestSpinnerTickStopsWhenIdle(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	if _, cmd := m.Update(spinner.TickMsg{}); cmd != nil {
+		t.Error("spinner kept ticking while idle; it should stop to spare CPU")
+	}
+	m.pending["repo-a"] = true
+	if _, cmd := m.Update(spinner.TickMsg{}); cmd == nil {
+		t.Error("spinner stopped ticking while a repo was refreshing")
+	}
+}
+
+// Starting a refresh from idle must restart the spinner tick loop, since the
+// loop stops itself once pending drains; otherwise the glyph would never spin.
+func TestRefreshFromIdleRestartsSpinner(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	_, cmd := m.Update(press("r"))
+	var sawTick bool
+	for _, c := range leafCmds(t, cmd) {
+		if _, ok := c().(spinner.TickMsg); ok {
+			sawTick = true
+		}
+	}
+	if !sawTick {
+		t.Error("pressing r from idle did not (re)start the spinner tick")
+	}
+}
+
 func TestRefreshAllMarksEveryRepo(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	next, cmd := m.Update(press("R"))
@@ -284,9 +332,17 @@ func TestRefreshCommandRunsLiveRefresh(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a refresh command")
 	}
-	msg, ok := cmd().(repoRefreshedMsg)
-	if !ok {
-		t.Fatalf("command produced %T, want repoRefreshedMsg", cmd())
+	// Pressing r also starts the spinner, so the refresh arrives inside a batch;
+	// run each leaf and keep the live refresh result.
+	var msg repoRefreshedMsg
+	var found bool
+	for _, c := range leafCmds(t, cmd) {
+		if rm, ok := c().(repoRefreshedMsg); ok {
+			msg, found = rm, true
+		}
+	}
+	if !found {
+		t.Fatal("refresh command produced no repoRefreshedMsg")
 	}
 	if msg.err != nil {
 		t.Errorf("unexpected refresh error: %v", msg.err)
@@ -309,8 +365,18 @@ func TestQuitCancelsInFlightRefresh(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a refresh command")
 	}
+	// r batches the spinner tick with the refresh; run every leaf (the tick
+	// returns at once, only the refresh blocks) and forward just the refresh
+	// result so the cancel assertion below isn't satisfied by the tick.
 	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
+	for _, c := range leafCmds(t, cmd) {
+		c := c
+		go func() {
+			if msg, ok := c().(repoRefreshedMsg); ok {
+				done <- msg
+			}
+		}()
+	}
 
 	select {
 	case <-started:

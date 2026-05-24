@@ -123,11 +123,19 @@ func (m Model) refreshOnOpenNames() []string {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick}
+	var cmds []tea.Cmd
 	if m.app.Cfg.Global.RefreshOnOpen {
 		for _, name := range m.refreshOnOpenNames() {
 			cmds = append(cmds, m.refreshCmd(name))
 		}
+	}
+	// The spinner is only visible while a repo is refreshing, so run its tick
+	// loop only when one is pending (refresh_on_open seeds pending in newModel).
+	// Leaving it ticking at idle would re-render a hidden frame 12×/second and
+	// burn CPU for nothing; Update stops the loop when pending drains and the
+	// refresh keys restart it.
+	if len(m.pending) > 0 {
+		cmds = append(cmds, m.spinner.Tick)
 	}
 	return tea.Batch(cmds...)
 }
@@ -148,6 +156,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		// Stop the tick loop once nothing is refreshing: the spinner glyph is
+		// hidden when no repo is pending, so re-arming would just re-render an
+		// invisible frame 12×/second. A refresh key restarts it (see handleKey).
+		if len(m.pending) == 0 {
+			return m, nil
+		}
 		return m, cmd
 	}
 	return m, nil
@@ -187,11 +201,17 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// from the list and detail views alike.
 	if key.Matches(msg, m.keys.RefreshAll) {
 		m.statusMsg = ""
+		wasIdle := len(m.pending) == 0
 		var cmds []tea.Cmd
 		for _, r := range m.rows {
 			if cmd := m.startRefresh(r.Name); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		}
+		// Restart the spinner only on the idle->refreshing edge so a refresh-all
+		// fired while one is already running doesn't stack a second tick loop.
+		if wasIdle && len(cmds) > 0 {
+			cmds = append(cmds, m.spinner.Tick)
 		}
 		return m, tea.Batch(cmds...)
 	}
@@ -207,7 +227,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Refresh):
 		if name, ok := m.actionRepo(); ok {
 			m.statusMsg = ""
-			return m, m.startRefresh(name)
+			wasIdle := len(m.pending) == 0
+			cmd := m.startRefresh(name)
+			// On the idle->refreshing edge, (re)start the spinner alongside the
+			// refresh; if one was already in flight its tick loop is still running.
+			if cmd != nil && wasIdle {
+				return m, tea.Batch(cmd, m.spinner.Tick)
+			}
+			return m, cmd
 		}
 		return m, nil
 	}
