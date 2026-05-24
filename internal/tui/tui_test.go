@@ -732,6 +732,56 @@ func TestListViewClipsNarrowTerminalStates(t *testing.T) {
 	}
 }
 
+// On a wide pane the snapshot table shows its column header and nothing wraps.
+func TestDetailViewShowsResponsiveColumns(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	m.width, m.height = 120, 40
+
+	wide := m.detailHeaderView() + "\n" + m.detailBody()
+	for _, want := range []string{"Time", "Hostname", "Size"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("snapshot table missing column header %q\n---\n%s", want, wide)
+		}
+	}
+	assertLinesFit(t, wide, m.width)
+}
+
+// Every detail line clips to a narrow pane — including the section heading and
+// the no-snapshots placeholder, both wider than the narrowest width tested. The
+// height is generous: the detail view's fixed meta block sets a minimum usable
+// height, so this exercises width only.
+func TestDetailViewClipsNarrowTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		toRepo string // "" = the first repo (3 snapshots); else navigate to this repo
+		width  int
+	}{
+		{"with snapshots, heading wider than pane", "", 8},
+		{"no snapshots, placeholder wider than pane", "repo-b", 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t, detailApp(t)) // repo-b has no cached snapshots
+			if tc.toRepo == "repo-b" {
+				m = update(t, m, press("j")) // cursor: repo-a -> repo-b
+			}
+			m = update(t, m, press("enter"))
+			m.width, m.height = tc.width, 40
+
+			assertLinesFit(t, m.detailHeaderView()+"\n"+m.detailBody(), tc.width)
+		})
+	}
+}
+
+func assertLinesFit(t *testing.T, s string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(s, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("line width = %d, want <= %d: %q", got, width, line)
+		}
+	}
+}
+
 // `o` cycles config -> staleness -> config, reorders accordingly, and keeps the
 // cursor on the same repo across the reorder. The header names the active sort.
 func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
