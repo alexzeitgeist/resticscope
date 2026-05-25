@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -164,12 +165,13 @@ func TestBrowseLoadMoreReplacesTreeAndRestoresSelection(t *testing.T) {
 		t.Fatal("load-more produced no command")
 	}
 
-	// Deliver a richer, complete result tagged with the current (advanced) gen.
+	// Deliver a richer, complete result tagged with the current (advanced) gen,
+	// carrying the doubled caps a real load-more would have run with.
 	bigger := model.BuildBrowseTree(browseScan(model.BrowseComplete, model.BrowseFrontier{},
 		bnode("/a", "a", true, 0),
 		bnode("/b", "b", true, 0),
 		bnode("/z", "z", true, 0),
-	), m.browseLimits)
+	), model.NextBrowseLimits(m.browseResult.Limits))
 	m = update(t, m, browseLoadedMsg{gen: m.browseGen, result: &bigger})
 
 	if m.browseLoading {
@@ -212,6 +214,12 @@ func TestBrowseBackDuringLoadMoreCancelsAndKeepsTree(t *testing.T) {
 			if m.browseResult == nil || m.browseResult.LoadedEntries != 2 {
 				t.Errorf("%q during load-more should keep the old tree, got %+v", k, m.browseResult)
 			}
+			if m.browseResult.Limits.MaxEntries != 2 {
+				t.Errorf("%q must not advance the visible tree's committed caps: MaxEntries = %d, want 2", k, m.browseResult.Limits.MaxEntries)
+			}
+			if !m.browseCanLoadMore() {
+				t.Errorf("%q during load-more should leave load-more available (old tree still partial)", k)
+			}
 			if m.browseLoading || m.browsing {
 				t.Errorf("%q should clear the load flags: loading=%v browsing=%v", k, m.browseLoading, m.browsing)
 			}
@@ -222,6 +230,55 @@ func TestBrowseBackDuringLoadMoreCancelsAndKeepsTree(t *testing.T) {
 				t.Errorf("%q during load-more should emit no command", k)
 			}
 		})
+	}
+}
+
+// A failed load-more keeps the old tree visible without advancing the committed
+// caps: the visible tree's limits are unchanged, the footer still offers load-more
+// (doubling from those limits, not a phantom intermediate level), and leaving
+// browse clears the transient error so it never lingers in the detail view.
+func TestBrowseLoadMoreErrorKeepsTreeAndLimits(t *testing.T) {
+	scan := browseScan(model.PartialEntryCap, model.BrowseFrontier{Path: "/b", IsDir: true},
+		bnode("/a", "a", true, 0),
+		bnode("/b", "b", true, 0),
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+	if m.browseResult.Limits.MaxEntries != 2 {
+		t.Fatalf("precondition: initial MaxEntries = %d, want 2", m.browseResult.Limits.MaxEntries)
+	}
+
+	next, _ := m.Update(press("r")) // start load-more
+	m = next.(Model)
+	if !m.browseLoading {
+		t.Fatal("precondition: load-more should be in flight")
+	}
+
+	m = update(t, m, browseLoadedMsg{gen: m.browseGen, err: errors.New("ls failed")})
+
+	if m.view != browseView {
+		t.Errorf("failed load-more should stay in browse, view = %d", m.view)
+	}
+	if m.browseResult == nil || m.browseResult.LoadedEntries != 2 {
+		t.Errorf("failed load-more should keep the old tree, got %+v", m.browseResult)
+	}
+	if m.browseResult.Limits.MaxEntries != 2 {
+		t.Errorf("failed load-more must not advance committed caps: MaxEntries = %d, want 2", m.browseResult.Limits.MaxEntries)
+	}
+	if !m.browseCanLoadMore() {
+		t.Error("footer should still offer load-more after a failed load-more")
+	}
+	if m.statusMsg == "" {
+		t.Fatal("a failed load-more should surface a status message")
+	}
+
+	// Backing out clears the transient browse error so it never lingers in detail.
+	next, _ = m.Update(press("q"))
+	m = next.(Model)
+	if m.view != detailView {
+		t.Errorf("q after a failed load-more should return to detail, view = %d", m.view)
+	}
+	if m.statusMsg != "" {
+		t.Errorf("leaving browse should clear the transient browse error, got %q", m.statusMsg)
 	}
 }
 
@@ -236,7 +293,7 @@ func TestBrowseStaleGenerationDiscarded(t *testing.T) {
 
 	other := model.BuildBrowseTree(browseScan(model.BrowseComplete, model.BrowseFrontier{},
 		bnode("/zzz", "zzz", true, 0),
-	), m.browseLimits)
+	), m.browseResult.Limits)
 	m = update(t, m, browseLoadedMsg{gen: m.browseGen + 99, result: &other})
 
 	if m.browseResult != before {

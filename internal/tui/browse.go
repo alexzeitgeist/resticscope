@@ -43,7 +43,6 @@ func browseLimits(b config.Browse) model.BrowseLimits {
 func (m Model) startBrowse(repo, snapshotID string, limits model.BrowseLimits) (Model, tea.Cmd) {
 	m.browseRepo = repo
 	m.browseSnapshot = snapshotID
-	m.browseLimits = limits
 	m.browseResult = nil
 	m.browseDir = "/"
 	m.browseCursor = 0
@@ -59,12 +58,16 @@ func (m Model) loadMoreBrowse() (Model, tea.Cmd) {
 	if m.browsing || m.browseResult == nil {
 		return m, nil
 	}
-	if !model.CanLoadMore(m.browseResult.Reason, m.browseLimits) {
+	// The visible tree's own limits are the committed source of truth, so the
+	// next caps are derived from them — never from a field bumped ahead of a load
+	// that might be cancelled or fail. A cancelled/failed load-more therefore
+	// leaves the caps exactly where the visible tree left them; the next r doubles
+	// from there, not from a phantom intermediate level.
+	if !model.CanLoadMore(m.browseResult.Reason, m.browseResult.Limits) {
 		return m, nil
 	}
-	m.browseLimits = model.NextBrowseLimits(m.browseLimits)
 	m.statusMsg = ""
-	return m.beginBrowseLoad(m.browseLimits)
+	return m.beginBrowseLoad(model.NextBrowseLimits(m.browseResult.Limits))
 }
 
 // beginBrowseLoad sets up the generation/cancel/flags for a browse load and
@@ -109,10 +112,16 @@ func (m Model) applyBrowseLoaded(msg browseLoadedMsg) Model {
 	m.browseLoading = false
 
 	if msg.err != nil {
-		// Errors carry only redacted restic/secrets failures, never path data.
+		// Browse errors carry only restic's redacted output (secrets masked) and
+		// are never persisted. A load-more failure (below) keeps the old tree and
+		// is cleared by browseBack on manual leave; an initial-load failure has no
+		// tree to show, so we surface the message in the detail view we fall back
+		// to. The new tree's caps are not committed either, so a failed load-more
+		// keeps the visible tree's limits intact.
 		m.statusMsg = "browse: " + firstLine(msg.err.Error())
 		if m.browseResult == nil {
-			// Initial load failed with no tree to fall back to: leave browse.
+			// Initial load failed with no tree to fall back to: leave browse,
+			// keeping the status so the user learns why it didn't open.
 			m.view = detailView
 			return m.clearBrowse()
 		}
@@ -124,7 +133,6 @@ func (m Model) applyBrowseLoaded(msg browseLoadedMsg) Model {
 	prevSelected := m.selectedBrowsePath()
 
 	m.browseResult = msg.result
-	m.browseLimits = msg.result.Limits
 	m.view = browseView
 
 	if prevDir == "" || msg.result.Tree.ByPath[prevDir] == nil {
@@ -143,6 +151,9 @@ func (m Model) applyBrowseLoaded(msg browseLoadedMsg) Model {
 // load that has no tree yet — it cancels any load, returns to the detail view,
 // and clears all session browse state so no filenames linger.
 func (m Model) browseBack() Model {
+	// Drop any transient browse status (e.g. a load-more error) so a restic
+	// message never lingers into the view we return to.
+	m.statusMsg = ""
 	if m.browseLoading && m.browseResult != nil {
 		m.browseGen++
 		if m.browseCancel != nil {
@@ -169,7 +180,6 @@ func (m Model) clearBrowse() Model {
 	m.browseSnapshot = ""
 	m.browseDir = ""
 	m.browseCursor = 0
-	m.browseLimits = model.BrowseLimits{}
 	m.browsing = false
 	m.browseLoading = false
 	m.browseCancel = nil
@@ -338,7 +348,7 @@ func (m Model) browseCanLoadMore() bool {
 	if m.view != browseView || m.browseResult == nil {
 		return false
 	}
-	return model.CanLoadMore(m.browseResult.Reason, m.browseLimits)
+	return model.CanLoadMore(m.browseResult.Reason, m.browseResult.Limits)
 }
 
 // --- rendering ---

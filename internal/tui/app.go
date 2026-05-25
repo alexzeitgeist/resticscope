@@ -64,7 +64,6 @@ type Model struct {
 	browseSnapshot string              // snapshot id being browsed
 	browseDir      string              // path of the directory currently listed
 	browseCursor   int                 // selected entry within the current directory
-	browseLimits   model.BrowseLimits  // the live caps; load-more raises these
 	browseLoading  bool                // an initial load or load-more is in flight
 	browsing       bool                // single-flight guard: one browse load at a time
 	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
