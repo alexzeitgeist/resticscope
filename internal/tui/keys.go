@@ -18,7 +18,8 @@ type keyMap struct {
 	Filter     key.Binding
 	Sort       key.Binding
 	Help       key.Binding
-	Quit       key.Binding
+	Quit       key.Binding // context-aware q: back from nested views, quit on list
+	HardQuit   key.Binding // unconditional ctrl+c
 
 	// Filter-input-mode bindings. They are matched only while the user is typing
 	// a filter (m.filtering), so they may safely reuse keys like enter and esc
@@ -35,14 +36,15 @@ func defaultKeys() keyMap {
 		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
 		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
-		Back:       key.NewBinding(key.WithKeys("b", "esc"), key.WithHelp("b", "back")),
+		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 
 		FilterAccept: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
 		FilterCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
@@ -51,12 +53,13 @@ func defaultKeys() keyMap {
 }
 
 // viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
-// navigation, filter/sort, refresh-all, and help; the detail view swaps in back
-// and the snapshot-scoped keys; the help overlay shows only back and quit (the
-// overlay itself is the full reference). While the user is typing a filter
-// (filtering), it shows the apply/clear bindings instead. Enter means "open" in
-// the list and "shell here" in the detail view (its generic help text covers
-// both).
+// navigation, filter/sort, refresh-all, help, and quit; the detail view swaps in
+// the snapshot-scoped keys and back (advertised as q, with esc still bound),
+// where q steps back rather than quits; the help overlay shows only back (the
+// overlay itself is the full reference). The list keeps Quit because q only exits
+// there. While the user is typing a filter (filtering), it shows the apply/clear
+// bindings instead. Enter means "open" in the list and "shell here" in the detail
+// view (its generic help text covers both).
 type viewHelp struct {
 	keys      keyMap
 	view      view
@@ -70,9 +73,9 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back}
 	case helpView:
-		return []key.Binding{k.Back, k.Quit}
+		return []key.Binding{k.Back}
 	default: // listView
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Help, k.Quit}
 	}
@@ -90,11 +93,11 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{k.Enter, k.Shell},
-			{k.Refresh, k.Back, k.Quit},
+			{k.Refresh, k.Back},
 		}
 	case helpView:
 		return [][]key.Binding{
-			{k.Back, k.Quit},
+			{k.Back},
 		}
 	default: // listView
 		return [][]key.Binding{

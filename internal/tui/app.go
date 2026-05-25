@@ -168,8 +168,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKey dispatches a keypress. The keys that mean the same thing everywhere
-// (quit, help, shell, refresh) are handled first; anything else is routed to the
-// active view's handler, where ↑/↓ and enter carry view-specific meaning.
+// (the hard quit, help, shell, refresh) are handled first; anything else is
+// routed to the active view's handler, where ↑/↓ and enter carry view-specific
+// meaning. q is dual-role: it quits from the main list but steps back one screen
+// from any nested view, so repeated q walks home and then exits.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// While typing a filter, every key feeds the query (so "q", "r", etc. are
 	// literal text); only apply/clear and ctrl+c escape it.
@@ -177,13 +179,23 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
-	// Quit and the help overlay toggle work from every view, including the
-	// overlay itself.
+	// The hard quit, the context-aware q, and the help overlay toggle are matched
+	// from every view, including the overlay itself.
 	switch {
-	case key.Matches(msg, m.keys.Quit):
+	case key.Matches(msg, m.keys.HardQuit):
+		// Unconditional hard quit from anywhere.
 		m.quitting = true
 		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
+	case key.Matches(msg, m.keys.Quit):
+		// q quits only on the main list; on any nested view it steps back one
+		// screen like esc, so repeated q walks home and then exits.
+		if m.view == listView {
+			m.quitting = true
+			m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
+			return m, tea.Quit
+		}
+		return m.goBack(), nil
 	case key.Matches(msg, m.keys.Help):
 		return m.toggleHelp(), nil
 	}
@@ -192,7 +204,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// and the help toggle are handled above); action keys do nothing.
 	if m.view == helpView {
 		if key.Matches(msg, m.keys.Back) {
-			m.view = m.prevView
+			m = m.goBack()
 		}
 		return m, nil
 	}
@@ -245,6 +257,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleListKey(msg)
 }
 
+// goBack steps one screen toward the list: the detail view returns to the list
+// and the help overlay returns to the view that opened it. No-op on the list.
+func (m Model) goBack() Model {
+	switch m.view {
+	case detailView:
+		m.view = listView
+	case helpView:
+		m.view = m.prevView
+	}
+	return m
+}
+
 // toggleHelp opens the help overlay from the current view, or closes it back to
 // the view it was opened from. Remembering the origin lets `?` from the detail
 // view return there rather than dumping the user on the list.
@@ -294,7 +318,7 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // the top whenever the query changes so it never points past the matches.
 func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case msg.String() == "ctrl+c":
+	case key.Matches(msg, m.keys.HardQuit):
 		m.quitting = true
 		m.cancel()
 		return m, tea.Quit
@@ -350,7 +374,7 @@ func (m Model) actionRepo() (string, bool) {
 func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
-		m.view = listView
+		m = m.goBack()
 	case key.Matches(msg, m.keys.Up):
 		if m.snapCursor > 0 {
 			m.snapCursor--

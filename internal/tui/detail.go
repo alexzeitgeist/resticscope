@@ -83,7 +83,7 @@ func (m Model) detailHeaderView() string {
 	row, _ := m.detailRow()
 	left := m.styles.title.Render(row.Name) + "  " +
 		m.styles.glyph[row.Status].Render(statusGlyph(row.Status)+" "+string(row.Status))
-	right := m.styles.dim.Render("b back")
+	right := m.styles.dim.Render("q back")
 	w, _ := m.effSize()
 	return clip(m.spread(left, right), w)
 }

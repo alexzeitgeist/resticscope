@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -490,14 +491,127 @@ func TestKeyLabel(t *testing.T) {
 	}{
 		{k.Up, "↑/k"},
 		{k.Down, "↓/j"},
-		{k.Back, "b/esc"},
-		{k.Quit, "q/ctrl+c"},
+		{k.Back, "esc"},        // back dropped b; q is matched separately
+		{k.Quit, "q"},          // context-aware quit/back is bare q
+		{k.HardQuit, "ctrl+c"}, // unconditional hard quit
 		{k.Enter, "enter"},
 		{k.FilterDelete, "⌫"},
 	} {
 		if got := keyLabel(tc.b); got != tc.want {
 			t.Errorf("keyLabel(%v) = %q, want %q", tc.b.Keys(), got, tc.want)
 		}
+	}
+}
+
+// The footers and detail header must advertise the new back/quit scheme: the
+// list still shows `q quit`, the detail header and both nested footers show
+// `q back`, and the removed `b back` hint appears nowhere. The footer's help
+// styles each key and label as separate ANSI spans, so we strip color before
+// matching the "key label" pairs.
+func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	listFooter := stripANSI(m.footerView())
+	if !strings.Contains(listFooter, "q quit") {
+		t.Errorf("list footer should advertise 'q quit'\n---\n%s", listFooter)
+	}
+	if strings.Contains(listFooter, "b back") {
+		t.Errorf("list footer should not mention the removed 'b back'\n---\n%s", listFooter)
+	}
+
+	m = update(t, m, press("enter"))
+	if header := stripANSI(m.detailHeaderView()); !strings.Contains(header, "q back") {
+		t.Errorf("detail header should show 'q back'\n---\n%s", header)
+	}
+	if detailFooter := stripANSI(m.footerView()); !strings.Contains(detailFooter, "q back") {
+		t.Errorf("detail footer should advertise 'q back'\n---\n%s", detailFooter)
+	}
+	if content := stripANSI(m.View().Content); strings.Contains(content, "b back") {
+		t.Errorf("detail view should not contain the removed 'b back'\n---\n%s", content)
+	}
+	if content := stripANSI(m.View().Content); strings.Contains(content, "esc/q back") {
+		t.Errorf("detail view should not advertise esc in the compact back hint\n---\n%s", content)
+	}
+	m = update(t, m, press("?"))
+	if helpFooter := stripANSI(m.footerView()); !strings.Contains(helpFooter, "q back") {
+		t.Errorf("help footer should advertise 'q back'\n---\n%s", helpFooter)
+	}
+	if helpFooter := stripANSI(m.footerView()); strings.Contains(helpFooter, "b back") {
+		t.Errorf("help footer should not mention the removed 'b back'\n---\n%s", helpFooter)
+	}
+	if helpFooter := stripANSI(m.footerView()); strings.Contains(helpFooter, "esc/q back") {
+		t.Errorf("help footer should not advertise esc in the compact back hint\n---\n%s", helpFooter)
+	}
+}
+
+// stripANSI removes SGR color/style escape sequences so tests can match the
+// underlying text regardless of the terminal color profile under which the
+// styled output was rendered.
+func stripANSI(s string) string {
+	return ansiSGR.ReplaceAllString(s, "")
+}
+
+var ansiSGR = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// The full-screen help overlay must reflect the context-aware scheme: q is no
+// longer a global quit key (it lives under List, where it actually exits), the
+// only unconditional quit advertised globally is ctrl+c, and the detail back row
+// documents both back keys (esc/q) derived from the live Back and Quit bindings.
+func TestHelpOverlayDescribesContextAwareQuit(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	left, right := m.helpColumns()
+
+	find := func(secs []helpSection, title string) (helpSection, bool) {
+		for _, s := range secs {
+			if s.title == title {
+				return s, true
+			}
+		}
+		return helpSection{}, false
+	}
+	hasEntry := func(s helpSection, keys, desc string) bool {
+		for _, e := range s.entries {
+			if e.keys == keys && e.desc == desc {
+				return true
+			}
+		}
+		return false
+	}
+	hasKeys := func(s helpSection, keys string) bool {
+		for _, e := range s.entries {
+			if e.keys == keys {
+				return true
+			}
+		}
+		return false
+	}
+
+	global, ok := find(left, "Global")
+	if !ok {
+		t.Fatal("help overlay missing Global section")
+	}
+	if !hasEntry(global, "ctrl+c", "quit") {
+		t.Errorf("Global section should document 'ctrl+c quit', got %+v", global.entries)
+	}
+	if hasKeys(global, "q") {
+		t.Errorf("q must not appear in the Global section (it is not a global quit), got %+v", global.entries)
+	}
+
+	list, ok := find(left, "List")
+	if !ok {
+		t.Fatal("help overlay missing List section")
+	}
+	if !hasEntry(list, "q", "quit") {
+		t.Errorf("List section should document 'q quit', got %+v", list.entries)
+	}
+
+	detail, ok := find(right, "Detail")
+	if !ok {
+		t.Fatal("help overlay missing Detail section")
+	}
+	if !hasEntry(detail, "esc/q", "back to the list") {
+		t.Errorf("Detail section should document 'esc/q back to the list', got %+v", detail.entries)
 	}
 }
 
@@ -641,17 +755,103 @@ func TestDetailSnapshotsUseModelOrdering(t *testing.T) {
 }
 
 func TestDetailBackReturnsToList(t *testing.T) {
-	for _, k := range []string{"b", "esc"} {
+	for _, k := range []string{"esc", "q"} {
 		m := newTestModel(t, detailApp(t))
-		m = update(t, m, press("enter"))
+		next, cmd := m.Update(press("enter"))
+		m = next.(Model)
 		if m.view != detailView {
 			t.Fatal("expected detail view after enter")
 		}
-		m = update(t, m, press(k))
+		next, cmd = m.Update(press(k))
+		m = next.(Model)
 		if m.view != listView {
 			t.Errorf("%q did not return to the list view", k)
 		}
+		// q steps back from the detail view rather than quitting, so it must not
+		// set quitting or emit a quit command on its way home.
+		if m.quitting {
+			t.Errorf("%q from detail should not set quitting", k)
+		}
+		if cmd != nil {
+			t.Errorf("%q from detail should emit no command", k)
+		}
 	}
+}
+
+// b is no longer bound to anything: from the detail view it must not go back, not
+// quit, and not emit a command (back is now q, with esc still accepted).
+func TestDetailBKeyIsUnbound(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	if m.view != detailView {
+		t.Fatal("expected detail view after enter")
+	}
+	next, cmd := m.Update(press("b"))
+	nm := next.(Model)
+	if nm.view != detailView {
+		t.Errorf("b should be unbound; view = %d, want detailView", nm.view)
+	}
+	if nm.quitting {
+		t.Error("b should not set quitting")
+	}
+	if cmd != nil {
+		t.Error("b should emit no command")
+	}
+}
+
+// q is context-aware: on a nested view it steps back instead of quitting. From
+// the detail view it returns to the list without quitting; from the help overlay
+// it closes back to the view that opened it. ctrl+c still hard-quits from a
+// nested view.
+func TestQuitKeyStepsBackFromNestedViews(t *testing.T) {
+	t.Run("q on detail returns to list without quitting", func(t *testing.T) {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter"))
+		next, cmd := m.Update(press("q"))
+		nm := next.(Model)
+		if nm.view != listView {
+			t.Errorf("q from detail should return to the list, view = %d", nm.view)
+		}
+		if nm.quitting {
+			t.Error("q from detail should not set quitting")
+		}
+		if cmd != nil {
+			t.Error("q from detail should emit no quit command")
+		}
+	})
+	t.Run("q on help closes the overlay to the previous view", func(t *testing.T) {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter")) // detail
+		m = update(t, m, press("?"))     // open help over detail
+		if m.view != helpView {
+			t.Fatalf("expected help view, got %d", m.view)
+		}
+		next, cmd := m.Update(press("q"))
+		nm := next.(Model)
+		if nm.view != detailView {
+			t.Errorf("q from help should return to the detail view, got %d", nm.view)
+		}
+		if nm.quitting {
+			t.Error("q from help should not set quitting")
+		}
+		if cmd != nil {
+			t.Error("q from help should emit no quit command")
+		}
+	})
+	t.Run("ctrl+c hard-quits from a nested view", func(t *testing.T) {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter"))
+		next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+		if !next.(Model).quitting {
+			t.Error("ctrl+c should quit from the detail view")
+		}
+		if cmd == nil {
+			t.Fatal("expected a quit command")
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Errorf("ctrl+c did not produce tea.QuitMsg")
+		}
+	})
 }
 
 func TestDetailSnapshotCursorNavigatesAndClamps(t *testing.T) {

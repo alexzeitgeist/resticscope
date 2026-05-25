@@ -11,7 +11,7 @@ import (
 
 // help.go renders the full-screen help overlay (key `?`): a complete keybinding
 // reference grouped by the context each key acts in, plus a legend for the list
-// status glyphs. It is reached via the helpView value and closed with `?`, `b`,
+// status glyphs. It is reached via the helpView value and closed with `?`, `q`,
 // or `esc`; the View() switch and handleKey route to it.
 
 // helpEntry is one row of the reference: a key label and what it does.
@@ -52,14 +52,16 @@ func (m Model) helpColumns() (left, right []helpSection) {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
 	page := keyLabel(k.PageUp) + " " + keyLabel(k.PageDown)
-	// Global holds only keys that act in every view; the per-view sections list
-	// what each adds on top. Cursor movement is *not* global — it does nothing in
-	// the help view — so it lives under List/Detail, not here.
+	// Global means shared by the normal list/detail screens; the help overlay is
+	// modal and swallows action keys behind it. Cursor movement is not global
+	// because it carries view-specific meaning, so it lives under List/Detail.
+	// q is not global either: it quits only on the list and steps back from nested
+	// views, so it belongs to List, not Global; ctrl+c is the one unconditional quit.
 	left = []helpSection{
 		{"Global", []helpEntry{
 			{keyLabel(k.RefreshAll), "refresh all repos"},
 			{keyLabel(k.Help), "toggle this help"},
-			{keyLabel(k.Quit), "quit"},
+			{keyLabel(k.HardQuit), "quit"},
 		}},
 		{"List", []helpEntry{
 			{move, "move repo cursor"},
@@ -69,6 +71,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Filter), "filter by name/label"},
 			{keyLabel(k.Sort), "cycle sort order"},
+			{keyLabel(k.Quit), "quit"},
 		}},
 	}
 	right = []helpSection{
@@ -78,7 +81,11 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Enter), "shell at snapshot"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},
-			{keyLabel(k.Back), "back to the list"},
+			// Both keys back out of the detail view: Back (esc) and the
+			// context-aware Quit (q, via goBack). The full reference shows both,
+			// derived from the live bindings, so it documents q's back role that
+			// the compact footer abbreviates to just "q".
+			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to the list"},
 		}},
 		{"Filter", []helpEntry{
 			{keyLabel(k.FilterAccept), "apply filter"},
