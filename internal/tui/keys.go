@@ -13,6 +13,8 @@ type keyMap struct {
 	Enter      key.Binding
 	Back       key.Binding
 	Shell      key.Binding
+	Browse     key.Binding
+	Parent     key.Binding // browse: step to the parent directory (backspace/left)
 	Refresh    key.Binding
 	RefreshAll key.Binding
 	Filter     key.Binding
@@ -38,6 +40,8 @@ func defaultKeys() keyMap {
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
+		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse files")),
+		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
@@ -61,9 +65,17 @@ func defaultKeys() keyMap {
 // bindings instead. Enter means "open" in the list and "shell here" in the detail
 // view (its generic help text covers both).
 type viewHelp struct {
-	keys      keyMap
-	view      view
-	filtering bool
+	keys        keyMap
+	view        view
+	filtering   bool
+	canLoadMore bool // browse view only: advertise `r load more` when raising caps can fetch more
+}
+
+// loadMore is the browse view's relabeling of the `r` key: in browse it reloads
+// with raised caps rather than refreshing the repo, so the footer reads "load
+// more" while still matching the shared Refresh binding's key.
+func (h viewHelp) loadMore() key.Binding {
+	return key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "load more"))
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
@@ -73,7 +85,13 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Browse, k.Refresh, k.Back}
+	case browseView:
+		bindings := []key.Binding{k.Up, k.Down, k.Enter, k.Parent}
+		if h.canLoadMore {
+			bindings = append(bindings, h.loadMore())
+		}
+		return append(bindings, k.Shell, k.Back)
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -92,8 +110,18 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Shell},
+			{k.Enter, k.Shell, k.Browse},
 			{k.Refresh, k.Back},
+		}
+	case browseView:
+		open := []key.Binding{k.Enter, k.Parent, k.Shell}
+		if h.canLoadMore {
+			open = append(open, h.loadMore())
+		}
+		return [][]key.Binding{
+			{k.Up, k.Down, k.PageUp, k.PageDown},
+			open,
+			{k.Back},
 		}
 	case helpView:
 		return [][]key.Binding{

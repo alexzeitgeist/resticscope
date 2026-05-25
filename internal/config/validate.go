@@ -74,5 +74,38 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, c.validateBrowse()...)
+
 	return errors.Join(errs...)
+}
+
+// validateBrowse checks the browse caps: all five must be positive, and each
+// session ceiling must be at least its matching initial cap (a load-more must
+// never be able to lower a cap). Zero values have already become defaults in
+// Normalize, so a value reaching here at <= 0 was set explicitly negative.
+func (c *Config) validateBrowse() []error {
+	var errs []error
+	b := c.Browse
+	if b.MaxEntries <= 0 {
+		errs = append(errs, fmt.Errorf("browse.max_entries must be positive, got %d", b.MaxEntries))
+	}
+	if b.MaxJSONBytes <= 0 {
+		errs = append(errs, fmt.Errorf("browse.max_json_bytes must be positive, got %d", b.MaxJSONBytes.Bytes()))
+	}
+	if b.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("browse.timeout must be a positive duration, got %q", b.Timeout.Std()))
+	}
+	if b.MaxSessionEntries <= 0 {
+		errs = append(errs, fmt.Errorf("browse.max_session_entries must be positive, got %d", b.MaxSessionEntries))
+	}
+	if b.MaxSessionJSONBytes <= 0 {
+		errs = append(errs, fmt.Errorf("browse.max_session_json_bytes must be positive, got %d", b.MaxSessionJSONBytes.Bytes()))
+	}
+	if b.MaxSessionEntries > 0 && b.MaxEntries > 0 && b.MaxSessionEntries < b.MaxEntries {
+		errs = append(errs, fmt.Errorf("browse.max_session_entries (%d) must be >= browse.max_entries (%d)", b.MaxSessionEntries, b.MaxEntries))
+	}
+	if b.MaxSessionJSONBytes > 0 && b.MaxJSONBytes > 0 && b.MaxSessionJSONBytes < b.MaxJSONBytes {
+		errs = append(errs, fmt.Errorf("browse.max_session_json_bytes (%d) must be >= browse.max_json_bytes (%d)", b.MaxSessionJSONBytes.Bytes(), b.MaxJSONBytes.Bytes()))
+	}
+	return errs
 }

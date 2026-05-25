@@ -5,13 +5,34 @@
 // describes which repos exist and what is expected of them.
 package config
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Config is the fully parsed, normalized, validated configuration.
 type Config struct {
 	Global      Global       `toml:"global"`
 	Credentials []Credential `toml:"credentials"`
 	Repos       []Repo       `toml:"repos"`
+	Browse      Browse       `toml:"browse"`
+}
+
+// Browse bounds the in-app snapshot file browser. A browse loads one streamed
+// `restic ls --recursive`, capped so a huge snapshot can't exhaust memory or
+// hang: MaxEntries/MaxJSONBytes/Timeout bound a single crawl, and the
+// MaxSession* ceilings bound how far repeated "load more" can raise the entry
+// and byte caps. Timeout is never raised by load-more. None of the browse data
+// is ever persisted; these caps only govern the session-only in-memory tree.
+type Browse struct {
+	MaxEntries          int      `toml:"max_entries"`
+	MaxJSONBytes        ByteSize `toml:"max_json_bytes"`
+	Timeout             Duration `toml:"timeout"`
+	MaxSessionEntries   int      `toml:"max_session_entries"`
+	MaxSessionJSONBytes ByteSize `toml:"max_session_json_bytes"`
 }
 
 // Global holds process-wide settings.
@@ -85,3 +106,60 @@ func (d *Duration) UnmarshalText(text []byte) error {
 
 // Std returns the standard library duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// ByteSize is a byte count that unmarshals from a TOML string with a binary unit
+// suffix ("128MiB", "768MiB"). It mirrors Duration: a named integer with a text
+// unmarshaler and a typed accessor, so the browse caps read naturally in config.
+type ByteSize int64
+
+// UnmarshalText parses a byte-size string, satisfying encoding.TextUnmarshaler.
+// It accepts KiB/MiB/GiB (and the KB/MB/GB and bare K/M/G/B variants) and
+// rejects negative or unparseable values.
+func (b *ByteSize) UnmarshalText(text []byte) error {
+	n, err := parseByteSize(string(text))
+	if err != nil {
+		return err
+	}
+	*b = ByteSize(n)
+	return nil
+}
+
+// Bytes returns the size as a plain int64.
+func (b ByteSize) Bytes() int64 { return int64(b) }
+
+// parseByteSize parses a human byte size like "128MiB". It is intentionally a
+// duplicate of the parser in tools/restic-ls-poc: that is a dev measurement
+// tool, and product code must not import dev tooling. It accepts a bare number
+// (bytes) and the common binary/decimal-ish suffixes, treating e.g. KB and KiB
+// alike (1024); it rejects negative values.
+func parseByteSize(raw string) (int64, error) {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	if s == "" {
+		return 0, errors.New("empty byte size")
+	}
+	units := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"gib", 1 << 30}, {"gb", 1 << 30}, {"g", 1 << 30},
+		{"mib", 1 << 20}, {"mb", 1 << 20}, {"m", 1 << 20},
+		{"kib", 1 << 10}, {"kb", 1 << 10}, {"k", 1 << 10},
+		{"b", 1},
+	}
+	mult := int64(1)
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			mult = u.mult
+			s = strings.TrimSpace(strings.TrimSuffix(s, u.suffix))
+			break
+		}
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse byte size %q: %w", raw, err)
+	}
+	if n < 0 {
+		return 0, errors.New("byte size must be >= 0")
+	}
+	return int64(n * float64(mult)), nil
+}

@@ -47,7 +47,11 @@ func (stubSecrets) Resolve(_, _ string) (secrets.Material, error) {
 	return secrets.Material{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"}, nil
 }
 
-type stubRestic struct{ snaps []model.Snapshot }
+type stubRestic struct {
+	snaps   []model.Snapshot
+	scan    model.BrowseScan // returned by ListSnapshotTree
+	scanErr error
+}
 
 func (s stubRestic) Snapshots(_ context.Context, _ resticx.Target, _ resticx.Creds) ([]model.Snapshot, error) {
 	return s.snaps, nil
@@ -55,6 +59,10 @@ func (s stubRestic) Snapshots(_ context.Context, _ resticx.Target, _ resticx.Cre
 
 func (stubRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
 	return nil
+}
+
+func (s stubRestic) ListSnapshotTree(_ context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ model.BrowseLimits) (model.BrowseScan, error) {
+	return s.scan, s.scanErr
 }
 
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
@@ -70,6 +78,14 @@ func (b blockingRestic) Snapshots(ctx context.Context, _ resticx.Target, _ resti
 
 func (blockingRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds) error {
 	return nil
+}
+
+// ListSnapshotTree blocks until cancelled too, so a browse load can be used to
+// test that quit/back cancel the in-flight crawl just like a refresh.
+func (b blockingRestic) ListSnapshotTree(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ model.BrowseLimits) (model.BrowseScan, error) {
+	close(b.started)
+	<-ctx.Done()
+	return model.BrowseScan{}, ctx.Err()
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
@@ -778,9 +794,10 @@ func TestDetailBackReturnsToList(t *testing.T) {
 	}
 }
 
-// b is no longer bound to anything: from the detail view it must not go back, not
-// quit, and not emit a command (back is now q, with esc still accepted).
-func TestDetailBKeyIsUnbound(t *testing.T) {
+// b now opens the in-app file browser for the selected snapshot: it switches to
+// browseView (showing a loading state), marks a browse in flight, and returns the
+// command that runs the load.
+func TestDetailBKeyStartsBrowse(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m = update(t, m, press("enter"))
 	if m.view != detailView {
@@ -788,14 +805,17 @@ func TestDetailBKeyIsUnbound(t *testing.T) {
 	}
 	next, cmd := m.Update(press("b"))
 	nm := next.(Model)
-	if nm.view != detailView {
-		t.Errorf("b should be unbound; view = %d, want detailView", nm.view)
+	if nm.view != browseView {
+		t.Errorf("b should open the browse view; view = %d", nm.view)
 	}
-	if nm.quitting {
-		t.Error("b should not set quitting")
+	if !nm.browsing || !nm.browseLoading {
+		t.Errorf("b should mark a browse load in flight: browsing=%v loading=%v", nm.browsing, nm.browseLoading)
 	}
-	if cmd != nil {
-		t.Error("b should emit no command")
+	if nm.browseRepo != "repo-a" || nm.browseSnapshot != "id-newest" {
+		t.Errorf("browse target = %q/%q, want repo-a/id-newest", nm.browseRepo, nm.browseSnapshot)
+	}
+	if cmd == nil {
+		t.Error("b should emit a browse command")
 	}
 }
 

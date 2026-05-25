@@ -79,6 +79,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{move, "select snapshot"},
 			{page, "page up/down"},
 			{keyLabel(k.Enter), "shell at snapshot"},
+			{keyLabel(k.Browse), "browse snapshot files"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},
 			// Both keys back out of the detail view: Back (esc) and the
@@ -86,6 +87,14 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			// derived from the live bindings, so it documents q's back role that
 			// the compact footer abbreviates to just "q".
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to the list"},
+		}},
+		{"Browse", []helpEntry{
+			{move, "move cursor"},
+			{keyLabel(k.Enter), "open directory"},
+			{keyLabel(k.Parent), "parent directory"},
+			{keyLabel(k.Refresh), "load more (raise caps)"},
+			{keyLabel(k.Shell), "shell at snapshot"},
+			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},
 		{"Filter", []helpEntry{
 			{keyLabel(k.FilterAccept), "apply filter"},

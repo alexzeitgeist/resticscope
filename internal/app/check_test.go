@@ -31,6 +31,10 @@ func (r *recordingRestic) CatConfig(ctx context.Context, t resticx.Target, c res
 	return nil
 }
 
+func (r *recordingRestic) ListSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error) {
+	return model.BrowseScan{}, nil
+}
+
 func (r *recordingRestic) target(name string) (resticx.Target, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

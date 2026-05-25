@@ -19,6 +19,23 @@ stale_grace         = "12h"                   # amber band added on top of each 
 shell               = ""                       # empty -> use $SHELL for the snapshot-browsing shell
 shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWORD_FILE (default); env = RESTIC_PASSWORD
 
+# --- in-app file browser ------------------------------------------------------
+# Press `b` on a snapshot to browse its files in-app. One streamed
+# `restic ls --recursive` builds a session-only in-memory tree, bounded by these
+# caps. The tree is NEVER persisted (not to the cache, state, or any log). When a
+# cap truncates the listing the tree is shown but marked partial — incomplete
+# directories carry a "more entries not loaded" row and missing files may exist;
+# the scoped restic shell (`s`) is always the exact, complete fallback. Pressing
+# `r` rebuilds from scratch with doubled entry/byte caps, up to the session
+# ceilings (timeout is never raised). This whole block is optional; the defaults
+# below apply when it is omitted.
+[browse]
+max_entries            = 200000     # stop one crawl after this many filesystem nodes
+max_json_bytes         = "128MiB"   # or after reading this much `restic ls` JSON
+timeout                = "120s"     # or after this long (never raised by load-more)
+max_session_entries    = 1000000    # ceiling that load-more can raise max_entries to
+max_session_json_bytes = "768MiB"   # ceiling that load-more can raise max_json_bytes to
+
 # --- S3 credentials -----------------------------------------------------------
 # A credential is just a NAME for an access-key/secret-key pair; it carries no
 # location. On Hetzner one project key pair reaches every bucket in the project,

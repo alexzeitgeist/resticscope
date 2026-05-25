@@ -68,6 +68,19 @@ type fakeRestic struct {
 	snaps   []model.Snapshot
 	snapErr error
 	catErr  error // returned by CatConfig
+
+	browseScan model.BrowseScan
+	browseErr  error
+	browseCap  *browseCapture // optional; records what ListSnapshotTree was asked
+}
+
+// browseCapture records ListSnapshotTree's arguments. It is a pointer field so
+// the value-receiver fake (kept a value to satisfy the interface as the existing
+// tests pass it by value) can still record through it.
+type browseCapture struct {
+	snapID string
+	target resticx.Target
+	limits model.BrowseLimits
 }
 
 func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
@@ -76,6 +89,15 @@ func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.C
 
 func (f fakeRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
 	return f.catErr
+}
+
+func (f fakeRestic) ListSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error) {
+	if f.browseCap != nil {
+		f.browseCap.snapID = snapshotID
+		f.browseCap.target = t
+		f.browseCap.limits = limits
+	}
+	return f.browseScan, f.browseErr
 }
 
 // --- helpers ---
@@ -431,6 +453,69 @@ func TestRefreshRowUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
 	if _, err := a.RefreshRow(context.Background(), "nope"); err == nil {
 		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestBrowseSnapshotBuildsTreeWithoutPersisting(t *testing.T) {
+	fc := newFakeCache()
+	cap := &browseCapture{}
+	scan := model.BrowseScan{
+		Nodes: []model.BrowseNode{
+			{Path: "/home", Name: "home", IsDir: true},
+			{Path: "/home/notes.txt", Name: "notes.txt", Size: 7},
+		},
+		Reason:        model.BrowseComplete,
+		LoadedEntries: 2,
+	}
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   fc,
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic:  fakeRestic{browseScan: scan, browseCap: cap},
+	}
+	limits := model.BrowseLimits{MaxEntries: 100, MaxJSONBytes: 1 << 20, Timeout: time.Minute}
+	res, err := a.BrowseSnapshot(context.Background(), "repo-a", "snap123", limits)
+	if err != nil {
+		t.Fatalf("BrowseSnapshot: %v", err)
+	}
+	// Resolved the right snapshot and the repo's target.
+	if cap.snapID != "snap123" {
+		t.Errorf("snapshot ID = %q, want snap123", cap.snapID)
+	}
+	if cap.target.Name != "repo-a" || cap.target.Bucket != "bucket-a" {
+		t.Errorf("target = %+v, want repo-a/bucket-a", cap.target)
+	}
+	// Built the tree from the scan.
+	if res.Tree == nil || res.Tree.ByPath["/home/notes.txt"] == nil {
+		t.Fatalf("tree not built from scan: %+v", res.Tree)
+	}
+	if res.Reason != model.BrowseComplete {
+		t.Errorf("reason = %v, want complete", res.Reason)
+	}
+	// Browse must never persist anything: no cache writes.
+	if len(fc.saved) != 0 {
+		t.Errorf("BrowseSnapshot must not write the cache, saved=%v", fc.saved)
+	}
+}
+
+func TestBrowseSnapshotUnknownRepo(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	if _, err := a.BrowseSnapshot(context.Background(), "nope", "s1", model.BrowseLimits{}); err == nil {
+		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestBrowseSnapshotSecretsErrorPropagates(t *testing.T) {
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   newFakeCache(),
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")},
+		Restic:  fakeRestic{},
+	}
+	if _, err := a.BrowseSnapshot(context.Background(), "repo-a", "s1", model.BrowseLimits{}); err == nil {
+		t.Fatal("expected secrets error to propagate")
 	}
 }
 

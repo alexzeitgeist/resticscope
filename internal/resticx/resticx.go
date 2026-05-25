@@ -11,6 +11,7 @@ package resticx
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,9 +48,20 @@ type Runner interface {
 	Run(ctx context.Context, env []string, password string, args ...string) (stdout, stderr []byte, err error)
 }
 
+// StreamRunner executes a restic invocation whose stdout is consumed as a
+// stream rather than buffered whole. onStdout is called on the runner's calling
+// goroutine with a reader over restic's stdout; the runner returns once onStdout
+// returns and the process exits. It uses the same out-of-band password delivery
+// as Runner. It is a separate seam from Runner so the buffered path is untouched
+// and the streaming caps/cancellation are testable without a real restic.
+type StreamRunner interface {
+	RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error)
+}
+
 // Client runs restic commands against a Runner.
 type Client struct {
 	Runner   Runner
+	Stream   StreamRunner        // streaming path for browse; production wires ExecRunner{}
 	CacheDir string              // resticscope cache root; restic's own cache goes under it
 	Timeout  time.Duration       // per-invocation timeout; defaults to 2m
 	Redact   func(string) string // optional; scrubs stderr before it enters an error

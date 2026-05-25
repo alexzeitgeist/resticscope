@@ -25,6 +25,7 @@ type view int
 const (
 	listView view = iota
 	detailView
+	browseView
 	helpView
 )
 
@@ -55,6 +56,19 @@ type Model struct {
 	height     int
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
+
+	// Browse state. All of it is session-only: the in-memory tree is never
+	// persisted to the cache, RepoState, or any log, and leaving browse clears it.
+	browseResult   *model.BrowseResult // the active session-only tree, or nil
+	browseRepo     string              // repo being browsed (pins the action target)
+	browseSnapshot string              // snapshot id being browsed
+	browseDir      string              // path of the directory currently listed
+	browseCursor   int                 // selected entry within the current directory
+	browseLimits   model.BrowseLimits  // the live caps; load-more raises these
+	browseLoading  bool                // an initial load or load-more is in flight
+	browsing       bool                // single-flight guard: one browse load at a time
+	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
+	browseGen      int                 // generation token; stale browseLoadedMsgs are discarded
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -151,6 +165,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case repoRefreshedMsg:
 		return m.applyRefresh(msg), nil
+	case browseLoadedMsg:
+		return m.applyBrowseLoaded(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case spinner.TickMsg:
@@ -189,7 +205,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Quit):
 		// q quits only on the main list; on any nested view it steps back one
-		// screen like esc, so repeated q walks home and then exits.
+		// screen like esc, so repeated q walks home and then exits. Browse needs a
+		// load-aware back (cancel-and-stay during a load-more), so it routes there
+		// rather than through the generic goBack.
+		if m.view == browseView {
+			return m.browseBack(), nil
+		}
 		if m.view == listView {
 			m.quitting = true
 			m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
@@ -207,6 +228,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m = m.goBack()
 		}
 		return m, nil
+	}
+
+	// Browse owns all its non-global keys (including r=load-more and s=shell), so
+	// it is routed before the shared refresh/shell handlers below would steal r/s.
+	if m.view == browseView {
+		return m.handleBrowseKey(msg)
 	}
 
 	// Refresh-all acts on every repo, so it needs no per-view cursor and works
@@ -357,8 +384,15 @@ func (m Model) cycleSort() Model {
 }
 
 // actionRepo names the repo that repo-scoped keys (shell, refresh) act on: the
-// pinned repo in the detail view, otherwise the selected row in the list.
+// repo being browsed in the browse view, the pinned repo in the detail view,
+// otherwise the selected row in the list.
 func (m Model) actionRepo() (string, bool) {
+	if m.view == browseView {
+		if m.browseRepo != "" {
+			return m.browseRepo, true
+		}
+		return "", false
+	}
 	if m.view == detailView {
 		if row, ok := m.detailRow(); ok {
 			return row.Name, true
@@ -387,6 +421,17 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.snapCursor = clampCursor(m.snapCursor-m.detailSnapVisible(), m.snapCount())
 	case key.Matches(msg, m.keys.PageDown):
 		m.snapCursor = clampCursor(m.snapCursor+m.detailSnapVisible(), m.snapCount())
+	case key.Matches(msg, m.keys.Browse):
+		// b opens the in-app file browser for the selected snapshot, starting an
+		// initial load at the configured caps.
+		if snap := m.selectedSnapshot(); snap != nil {
+			if name, ok := m.actionRepo(); ok {
+				m.statusMsg = ""
+				var cmd tea.Cmd
+				m, cmd = m.startBrowse(name, snap.ID, browseLimits(m.app.Cfg.Browse))
+				return m, cmd
+			}
+		}
 	case key.Matches(msg, m.keys.Enter):
 		// Enter on a snapshot shells in with that snapshot's context.
 		if snap := m.selectedSnapshot(); snap != nil {

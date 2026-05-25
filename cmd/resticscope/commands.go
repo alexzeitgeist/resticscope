@@ -396,6 +396,7 @@ func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 
 	client := &resticx.Client{
 		Runner:   resticx.ExecRunner{},
+		Stream:   resticx.ExecRunner{}, // streaming path for the in-app browser
 		CacheDir: cfg.Global.CacheDir,
 		Timeout:  cfg.Global.ResticCommandTimeout.Std(),
 		Redact:   store.Redactor().Redact,

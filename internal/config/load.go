@@ -20,6 +20,15 @@ const (
 	defaultSecretsCommandTimeout = 30 * time.Second
 	defaultResticCommandTimeout  = 2 * time.Minute
 	defaultShellPasswordMode     = "file"
+
+	// Browse caps. A single crawl stops at the first of these it hits; load-more
+	// raises the entry/byte caps toward the session ceilings but never the
+	// timeout. See config.Browse for the rationale.
+	defaultBrowseMaxEntries          = 200_000
+	defaultBrowseMaxJSONBytes        = 128 << 20
+	defaultBrowseTimeout             = 120 * time.Second
+	defaultBrowseMaxSessionEntries   = 1_000_000
+	defaultBrowseMaxSessionJSONBytes = 768 << 20
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -93,6 +102,23 @@ func (c *Config) Normalize(home string) {
 	}
 	if g.ResticCommandTimeout == 0 {
 		g.ResticCommandTimeout = Duration(defaultResticCommandTimeout)
+	}
+
+	b := &c.Browse
+	if b.MaxEntries == 0 {
+		b.MaxEntries = defaultBrowseMaxEntries
+	}
+	if b.MaxJSONBytes == 0 {
+		b.MaxJSONBytes = defaultBrowseMaxJSONBytes
+	}
+	if b.Timeout == 0 {
+		b.Timeout = Duration(defaultBrowseTimeout)
+	}
+	if b.MaxSessionEntries == 0 {
+		b.MaxSessionEntries = defaultBrowseMaxSessionEntries
+	}
+	if b.MaxSessionJSONBytes == 0 {
+		b.MaxSessionJSONBytes = defaultBrowseMaxSessionJSONBytes
 	}
 
 	g.CacheDir = expandPath(g.CacheDir, home)
