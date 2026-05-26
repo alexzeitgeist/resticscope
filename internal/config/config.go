@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"resticscope/internal/model"
 )
 
 // Config is the fully parsed, normalized, validated configuration.
@@ -23,32 +21,18 @@ type Config struct {
 	Browse      Browse       `toml:"browse"`
 }
 
-// Browse bounds the in-app snapshot file browser. A browse loads one streamed
-// `restic ls --recursive`, capped so a huge snapshot can't exhaust memory or
-// hang: MaxEntries/MaxJSONBytes/Timeout bound a single crawl, and the
-// MaxSession* ceilings bound how far repeated "load more" can raise the entry
-// and byte caps. Timeout is never raised by load-more. None of the browse data
-// is ever persisted; these caps only govern the session-only in-memory tree.
+// Browse bounds the in-app snapshot file browser. The first time a snapshot is
+// browsed its whole namespace is streamed once into a session-scoped,
+// encrypted-at-rest SQLite DB, and all later navigation is served from SQL.
+// IndexTimeout caps how long that one-time index may run (generous, because a
+// huge snapshot can take minutes). MaxDiskBytes is an optional session-wide
+// ceiling on the total size of the encrypted browse directory — 0 means
+// unlimited — enforced by the browse store across every repo/snapshot indexed
+// during the run, not by resticx. Filenames are persisted only in that encrypted
+// DB and destroyed on clean exit.
 type Browse struct {
-	MaxEntries          int      `toml:"max_entries"`
-	MaxJSONBytes        ByteSize `toml:"max_json_bytes"`
-	Timeout             Duration `toml:"timeout"`
-	MaxSessionEntries   int      `toml:"max_session_entries"`
-	MaxSessionJSONBytes ByteSize `toml:"max_session_json_bytes"`
-}
-
-// Limits converts the configured Browse block into the model's BrowseLimits,
-// turning the typed config units (ByteSize/Duration) into the plain
-// ints/int64/Duration the model works in. It is the single conversion point so
-// the TUI and any other caller share one mapping.
-func (b Browse) Limits() model.BrowseLimits {
-	return model.BrowseLimits{
-		MaxEntries:          b.MaxEntries,
-		MaxJSONBytes:        b.MaxJSONBytes.Bytes(),
-		Timeout:             b.Timeout.Std(),
-		MaxSessionEntries:   b.MaxSessionEntries,
-		MaxSessionJSONBytes: b.MaxSessionJSONBytes.Bytes(),
-	}
+	IndexTimeout Duration `toml:"index_timeout"`
+	MaxDiskBytes ByteSize `toml:"max_disk_bytes"`
 }
 
 // Global holds process-wide settings.

@@ -1,76 +1,47 @@
 package model
 
 import (
+	"errors"
 	"path"
-	"sort"
 	"strings"
 	"time"
 )
 
-// browse.go holds the pure types and tree builder for the in-app snapshot file
-// browser. It is part of the leaf model package, so — like everything here — it
-// never carries credentials and is safe to hold in memory. Browse data is built
-// from a single streamed `restic ls --recursive`; the structures below are
-// session-only and are deliberately NOT persisted to the cache or any log (the
-// privacy contract of the browse feature lives at the app/tui layer, but this
-// package is kept free of any Save path on purpose).
+// browse.go holds the pure types and shared path/name helpers for the in-app
+// snapshot file browser. It is part of the leaf model package, so — like
+// everything here — it never carries credentials. Browse data is streamed from a
+// single `restic ls --recursive` and indexed into a session-scoped, encrypted-at-
+// rest SQLite database (see internal/browsedb); these types are the flat DTOs
+// that cross the resticx→browsedb→app→tui boundary. The persistence/privacy
+// contract lives at the browsedb/app/tui layers; this package stays free of any
+// Save path on purpose.
 
-// approxBytesPerEntry is a coarse per-node memory estimate used only to give the
-// user rough guidance on how much a tree is retaining. It is intentionally an
-// order-of-magnitude figure (path + name strings + a retained time.Time and
-// permissions string + struct overhead), not a measured value, and is derived
-// from the entry count rather than JSON bytes.
-const approxBytesPerEntry = 320
+// ErrBrowseDiskLimit is returned (wrapped) by the browse store when indexing a
+// snapshot would push the session directory past its configured disk ceiling.
+// It is a path-free typed sentinel so app/tui can classify the limit with
+// errors.Is without importing the store package, and so the surfaced error
+// never carries a filename.
+var ErrBrowseDiskLimit = errors.New("browse index disk limit reached")
 
-// BrowseLimits are the five caps that bound one browse crawl. The initial caps
-// (MaxEntries/MaxJSONBytes/Timeout) bound a single run; the session ceilings
-// (MaxSessionEntries/MaxSessionJSONBytes) bound how far repeated load-more can
-// raise the entry/byte caps. Timeout is never raised by load-more.
-type BrowseLimits struct {
-	MaxEntries          int
-	MaxJSONBytes        int64
-	Timeout             time.Duration
-	MaxSessionEntries   int
-	MaxSessionJSONBytes int64
+// BrowseScanSummary reports the outcome of one streamed namespace crawl:
+// how many nodes the callback accepted and whether restic emitted the whole
+// tree (clean EOF) versus stopping early (e.g. its index timeout fired).
+type BrowseScanSummary struct {
+	Entries  int
+	Complete bool
 }
-
-// PartialReason records whether a scan returned the whole namespace or stopped
-// early, and if so which cap stopped it. Only an entry or byte cap can be raised
-// by load-more; a complete scan or a timeout cannot.
-type PartialReason int
-
-const (
-	BrowseComplete  PartialReason = iota // restic emitted the whole tree (clean EOF)
-	PartialEntryCap                      // stopped at MaxEntries
-	PartialByteCap                       // stopped at MaxJSONBytes
-	PartialTimeout                       // stopped at Timeout with at least one node
-)
-
-// String renders the reason as the short status the browse header/footer show.
-func (r PartialReason) String() string {
-	switch r {
-	case PartialEntryCap:
-		return "partial: entry cap"
-	case PartialByteCap:
-		return "partial: byte cap"
-	case PartialTimeout:
-		return "partial: timeout"
-	default:
-		return "complete"
-	}
-}
-
-// Partial reports whether the scan stopped before the namespace was exhausted.
-func (r PartialReason) Partial() bool { return r != BrowseComplete }
 
 // BrowseNode is one flat node as decoded from `restic ls --json`. Path is the
-// absolute path within the snapshot; the builder turns the flat stream into a
-// tree keyed by Path. OwnerKnown distinguishes a node that carried uid/gid (so
-// UID:GID is meaningful, including a real root-owned 0:0) from one that omitted
-// them (rendered as a missing value, never as 0:0).
+// absolute path within the snapshot. OwnerKnown distinguishes a node that
+// carried uid/gid (so UID:GID is meaningful, including a real root-owned 0:0)
+// from one that omitted them (rendered as a missing value, never as 0:0). Type
+// is restic's raw node type ("dir"/"file"/"symlink"/special); IsDir is derived
+// from it for renderer/query convenience. LinkTarget is a symlink's target, "".
 type BrowseNode struct {
 	Path        string
 	Name        string
+	Type        string
+	LinkTarget  string
 	IsDir       bool
 	Size        int64
 	ModTime     time.Time
@@ -79,116 +50,30 @@ type BrowseNode struct {
 	OwnerKnown  bool
 }
 
-// BrowseFrontier is the last node the scan decoded before it was cut off. It is
-// used to mark which directories are known-incomplete: every ancestor of the
-// frontier (and the frontier itself when it is a directory) may have unseen
-// children. It is the zero value for a complete scan.
-type BrowseFrontier struct {
-	Path  string
-	IsDir bool
-}
-
-// BrowseScan is resticx's raw streamed output for one crawl: the ordered nodes,
-// why it stopped, how much it read, and the frontier. It carries no tree
-// structure — BuildBrowseTree turns it into one.
-type BrowseScan struct {
-	Nodes         []BrowseNode
-	Reason        PartialReason
-	LoadedEntries int
-	JSONBytes     int64
-	Frontier      BrowseFrontier
-}
-
-// BrowseEntry is one node in the built tree. Incomplete marks a directory whose
-// children are known to be only partially loaded (a synthetic parent, or an
-// ancestor/frontier of a truncated crawl); the renderer shows such a directory
-// with a "more entries not loaded" row so it is never presented as complete.
+// BrowseEntry is one row of a directory listing served from the browse store: a
+// flat DTO with no tree structure (the store answers parent→children queries
+// directly). It carries the same metadata as BrowseNode plus the cleaned Path,
+// so the TUI renders names, sizes, mtimes, perms, owner, and symlink targets
+// without re-reading restic.
 type BrowseEntry struct {
 	Path        string
 	Name        string
+	Type        string
+	LinkTarget  string
 	IsDir       bool
 	Size        int64
 	ModTime     time.Time
 	Permissions string
 	UID, GID    uint32
 	OwnerKnown  bool // the node carried uid/gid; distinguishes real 0:0 from missing
-	Children    []*BrowseEntry
-	Incomplete  bool
 }
 
-// HasMoreRow reports whether listing this directory should append the synthetic
-// "more entries not loaded" row. Only incomplete directories qualify.
-func (e *BrowseEntry) HasMoreRow() bool {
-	return e != nil && e.IsDir && e.Incomplete
-}
-
-// BrowseTree is the built structure: the root entry plus a path index. ByPath
-// makes current-directory lookup, selection restore after a reload, and
-// parent-fallback O(1).
-type BrowseTree struct {
-	Root   *BrowseEntry
-	ByPath map[string]*BrowseEntry
-}
-
-// BrowseResult is the app-level outcome of one load: the built tree plus the
-// outcome metadata the TUI needs to label status, decide whether load-more is
-// possible, and show rough retained-memory guidance. BrowseTree is structure
-// only; BrowseResult is structure plus outcome.
-type BrowseResult struct {
-	Tree                *BrowseTree
-	Reason              PartialReason
-	LoadedEntries       int
-	JSONBytes           int64
-	Limits              BrowseLimits
-	Frontier            BrowseFrontier
-	ApproxRetainedBytes int64
-}
-
-// BuildBrowseTree turns a flat, ordered scan into a tree keyed by path. It does
-// not depend on restic's emission order: nodes are placed under their parent by
-// path, missing parents are synthesized (and marked Incomplete so a truncated or
-// malformed stream cannot panic or masquerade as complete), and each directory's
-// children are sorted dirs-first then case-insensitively by name for display.
-// When the scan is partial, the frontier rule marks the known-incomplete dirs.
-func BuildBrowseTree(scan BrowseScan, limits BrowseLimits) BrowseResult {
-	tree := &BrowseTree{ByPath: make(map[string]*BrowseEntry, len(scan.Nodes)+1)}
-	tree.Root = &BrowseEntry{Path: "/", Name: "/", IsDir: true}
-	tree.ByPath["/"] = tree.Root
-
-	for _, n := range scan.Nodes {
-		insertNode(tree, n)
-	}
-	for _, e := range tree.ByPath {
-		sortChildren(e.Children)
-	}
-	if scan.Reason.Partial() {
-		markFrontier(tree, scan.Frontier)
-	}
-
-	// LoadedEntries is normally set by resticx; fall back to the node count so an
-	// alternate/future scan source that leaves it zero still reports a sensible
-	// count and retained-memory estimate (a no-op for resticx, which always sets it).
-	loaded := scan.LoadedEntries
-	if loaded == 0 {
-		loaded = len(scan.Nodes)
-	}
-
-	return BrowseResult{
-		Tree:                tree,
-		Reason:              scan.Reason,
-		LoadedEntries:       loaded,
-		JSONBytes:           scan.JSONBytes,
-		Limits:              limits,
-		Frontier:            scan.Frontier,
-		ApproxRetainedBytes: approxRetainedBytes(loaded),
-	}
-}
-
-// cleanBrowsePath normalizes a node path to a rooted, lexically clean key so the
-// tree is indexed consistently regardless of how restic spelled the path (a
+// CleanBrowsePath normalizes a node path to a rooted, lexically clean key so the
+// namespace is indexed consistently regardless of how restic spelled the path (a
 // missing leading slash or a trailing slash must not split a directory across
-// two keys). An empty path is treated as the root.
-func cleanBrowsePath(p string) string {
+// two keys). An empty path is treated as the root. It is the one shared path
+// rule that resticx-stream, browsedb, and the TUI agree on.
+func CleanBrowsePath(p string) string {
 	if p == "" {
 		return "/"
 	}
@@ -198,9 +83,9 @@ func cleanBrowsePath(p string) string {
 	return path.Clean(p)
 }
 
-// browseName picks a display name for a node: its emitted name when present,
+// BrowseName picks a display name for a node: its emitted name when present,
 // else the base of its (already cleaned) path, with the root shown as "/".
-func browseName(name, p string) string {
+func BrowseName(name, p string) string {
 	if name != "" {
 		return name
 	}
@@ -208,135 +93,4 @@ func browseName(name, p string) string {
 		return "/"
 	}
 	return path.Base(p)
-}
-
-// insertNode places one node under its parent directory, creating the entry if
-// it is new or filling in real data over a previously synthesized placeholder.
-func insertNode(tree *BrowseTree, n BrowseNode) {
-	p := cleanBrowsePath(n.Path)
-	if p == "/" {
-		return // the root record carries nothing to insert; root is pre-seeded
-	}
-	parent := ensureDir(tree, path.Dir(p))
-	name := browseName(n.Name, p)
-	if e, ok := tree.ByPath[p]; ok {
-		// A child arrived before this node and synthesized it as a placeholder;
-		// fill in the real metadata and clear the synthetic-incomplete flag.
-		e.Name = name
-		e.IsDir = n.IsDir
-		e.Size = n.Size
-		e.ModTime = n.ModTime
-		e.Permissions = n.Permissions
-		e.UID, e.GID, e.OwnerKnown = n.UID, n.GID, n.OwnerKnown
-		e.Incomplete = false
-		return
-	}
-	e := &BrowseEntry{
-		Path: p, Name: name, IsDir: n.IsDir, Size: n.Size,
-		ModTime: n.ModTime, Permissions: n.Permissions,
-		UID: n.UID, GID: n.GID, OwnerKnown: n.OwnerKnown,
-	}
-	tree.ByPath[p] = e
-	parent.Children = append(parent.Children, e)
-}
-
-// ensureDir returns the entry for path p, creating synthetic Incomplete parent
-// directories up to the root for any missing ancestor. The root always exists
-// (BuildBrowseTree seeds it), so recursion terminates there.
-func ensureDir(tree *BrowseTree, p string) *BrowseEntry {
-	p = cleanBrowsePath(p)
-	if e, ok := tree.ByPath[p]; ok {
-		return e
-	}
-	e := &BrowseEntry{Path: p, Name: path.Base(p), IsDir: true, Incomplete: true}
-	tree.ByPath[p] = e
-	parent := ensureDir(tree, path.Dir(p))
-	parent.Children = append(parent.Children, e)
-	return e
-}
-
-// sortChildren orders a directory's children for display: directories first,
-// then case-insensitively by name. Stable so equal keys keep insertion order.
-func sortChildren(children []*BrowseEntry) {
-	sort.SliceStable(children, func(i, j int) bool {
-		a, b := children[i], children[j]
-		if a.IsDir != b.IsDir {
-			return a.IsDir
-		}
-		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
-	})
-}
-
-// markFrontier marks the directories that a truncated crawl could not finish.
-// restic ls --recursive emits a pre-order DFS, so when the stream is cut at the
-// frontier, every ancestor directory of the frontier may still have unseen
-// siblings, and the frontier itself — when it is a directory — has unseen
-// children. A frontier file is a fully-known leaf, so only its ancestors are
-// marked. An empty frontier (truncated before any node) marks the root.
-func markFrontier(tree *BrowseTree, f BrowseFrontier) {
-	fp := cleanBrowsePath(f.Path)
-	if fp == "/" {
-		tree.Root.Incomplete = true
-		return
-	}
-	for _, d := range ancestorDirs(fp) {
-		if e, ok := tree.ByPath[d]; ok {
-			e.Incomplete = true
-		}
-	}
-	if f.IsDir {
-		if e, ok := tree.ByPath[fp]; ok {
-			e.Incomplete = true
-		}
-	}
-}
-
-// ancestorDirs returns the directory paths strictly above p, root first:
-// "/a/b/c.txt" -> ["/", "/a", "/a/b"]. It excludes p itself.
-func ancestorDirs(p string) []string {
-	dirs := []string{"/"}
-	trimmed := strings.Trim(p, "/")
-	if trimmed == "" {
-		return dirs
-	}
-	parts := strings.Split(trimmed, "/")
-	cur := ""
-	for i := 0; i < len(parts)-1; i++ {
-		cur += "/" + parts[i]
-		dirs = append(dirs, cur)
-	}
-	return dirs
-}
-
-// approxRetainedBytes gives rough guidance on the memory a tree retains, derived
-// from the loaded entry count rather than JSON bytes read (the JSON is streamed
-// and discarded; what we keep is the node structs).
-func approxRetainedBytes(loadedEntries int) int64 {
-	return int64(loadedEntries) * approxBytesPerEntry
-}
-
-// CanLoadMore reports whether reloading with raised caps could return more than
-// the current run did. Only the cap that actually stopped the run is considered,
-// and only when doubling it (clamped to the session ceiling) would exceed the
-// current cap. A complete scan, a timeout, or a cap already at its ceiling
-// cannot load more.
-func CanLoadMore(reason PartialReason, limits BrowseLimits) bool {
-	switch reason {
-	case PartialEntryCap:
-		return min(limits.MaxEntries*2, limits.MaxSessionEntries) > limits.MaxEntries
-	case PartialByteCap:
-		return min(limits.MaxJSONBytes*2, limits.MaxSessionJSONBytes) > limits.MaxJSONBytes
-	default:
-		return false
-	}
-}
-
-// NextBrowseLimits doubles both the entry and byte caps for a load-more, each
-// clamped to its session ceiling. It never raises Timeout and never mutates the
-// session ceilings; the caller passes the result back as the live limits.
-func NextBrowseLimits(limits BrowseLimits) BrowseLimits {
-	next := limits
-	next.MaxEntries = min(limits.MaxEntries*2, limits.MaxSessionEntries)
-	next.MaxJSONBytes = min(limits.MaxJSONBytes*2, limits.MaxSessionJSONBytes)
-	return next
 }

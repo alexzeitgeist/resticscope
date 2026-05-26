@@ -11,52 +11,37 @@ func TestBrowseDefaultsApplied(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	b := cfg.Browse
-	if b.MaxEntries != defaultBrowseMaxEntries {
-		t.Errorf("max_entries = %d, want %d", b.MaxEntries, defaultBrowseMaxEntries)
+	if b.IndexTimeout.Std() != defaultBrowseIndexTimeout {
+		t.Errorf("index_timeout = %v, want %v", b.IndexTimeout.Std(), defaultBrowseIndexTimeout)
 	}
-	if b.MaxJSONBytes.Bytes() != defaultBrowseMaxJSONBytes {
-		t.Errorf("max_json_bytes = %d, want %d", b.MaxJSONBytes.Bytes(), defaultBrowseMaxJSONBytes)
-	}
-	if b.Timeout.Std() != defaultBrowseTimeout {
-		t.Errorf("timeout = %v, want %v", b.Timeout.Std(), defaultBrowseTimeout)
-	}
-	if b.MaxSessionEntries != defaultBrowseMaxSessionEntries {
-		t.Errorf("max_session_entries = %d, want %d", b.MaxSessionEntries, defaultBrowseMaxSessionEntries)
-	}
-	if b.MaxSessionJSONBytes.Bytes() != defaultBrowseMaxSessionJSONBytes {
-		t.Errorf("max_session_json_bytes = %d, want %d", b.MaxSessionJSONBytes.Bytes(), defaultBrowseMaxSessionJSONBytes)
+	if b.MaxDiskBytes.Bytes() != defaultBrowseMaxDiskBytes {
+		t.Errorf("max_disk_bytes = %d, want %d", b.MaxDiskBytes.Bytes(), defaultBrowseMaxDiskBytes)
 	}
 }
 
-func TestBrowseByteSizeParses(t *testing.T) {
+func TestBrowseIndexTimeoutParses(t *testing.T) {
 	cfg, err := load(t, minimalTOML+`
 [browse]
-max_json_bytes = "64KiB"
-max_session_json_bytes = "2MiB"
-max_session_entries = 5000000
+index_timeout = "5m"
 `)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := cfg.Browse.MaxJSONBytes.Bytes(); got != 64<<10 {
-		t.Errorf("max_json_bytes = %d, want %d", got, 64<<10)
-	}
-	if got := cfg.Browse.MaxSessionJSONBytes.Bytes(); got != 2<<20 {
-		t.Errorf("max_session_json_bytes = %d, want %d", got, 2<<20)
+	if got := cfg.Browse.IndexTimeout.Std().Minutes(); got != 5 {
+		t.Errorf("index_timeout = %v minutes, want 5", got)
 	}
 }
 
-func TestBrowseByteSizeGiB(t *testing.T) {
+func TestBrowseMaxDiskBytesParses(t *testing.T) {
 	cfg, err := load(t, minimalTOML+`
 [browse]
-max_json_bytes = "1GiB"
-max_session_json_bytes = "1GiB"
+max_disk_bytes = "2GiB"
 `)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := cfg.Browse.MaxJSONBytes.Bytes(); got != 1<<30 {
-		t.Errorf("max_json_bytes = %d, want %d", got, 1<<30)
+	if got := cfg.Browse.MaxDiskBytes.Bytes(); got != 2<<30 {
+		t.Errorf("max_disk_bytes = %d, want %d", got, 2<<30)
 	}
 }
 
@@ -67,24 +52,9 @@ func TestBrowseValidationErrors(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name:    "negative max_entries",
-			browse:  "max_entries = -1",
-			wantSub: "browse.max_entries must be positive",
-		},
-		{
 			name:    "negative timeout survives normalize then fails validate",
-			browse:  `timeout = "-5s"`,
-			wantSub: "browse.timeout must be a positive duration",
-		},
-		{
-			name:    "session entries below initial",
-			browse:  "max_entries = 500000\nmax_session_entries = 1000",
-			wantSub: "max_session_entries (1000) must be >= browse.max_entries (500000)",
-		},
-		{
-			name:    "session bytes below initial",
-			browse:  `max_json_bytes = "256MiB"` + "\n" + `max_session_json_bytes = "1MiB"`,
-			wantSub: "max_session_json_bytes",
+			browse:  `index_timeout = "-5s"`,
+			wantSub: "browse.index_timeout must be a positive duration",
 		},
 	}
 	for _, tt := range tests {
@@ -104,9 +74,9 @@ func TestBrowseValidationErrors(t *testing.T) {
 // turn a zero into a default — the parser refuses them outright.
 func TestBrowseRejectsBadByteSizeAtDecode(t *testing.T) {
 	for _, bad := range []string{`"nonsense"`, `"-4MiB"`} {
-		_, err := Decode([]byte(minimalTOML + "\n[browse]\nmax_json_bytes = " + bad + "\n"))
+		_, err := Decode([]byte(minimalTOML + "\n[browse]\nmax_disk_bytes = " + bad + "\n"))
 		if err == nil {
-			t.Errorf("expected decode error for max_json_bytes = %s, got nil", bad)
+			t.Errorf("expected decode error for max_disk_bytes = %s, got nil", bad)
 		}
 	}
 }
@@ -114,7 +84,7 @@ func TestBrowseRejectsBadByteSizeAtDecode(t *testing.T) {
 func TestBrowseRejectsUnknownKey(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [browse]
-max_entries = 1000
+index_timeout = "5m"
 bogus = 5
 `)
 	if err == nil || !strings.Contains(err.Error(), "unknown config keys") {
@@ -122,19 +92,33 @@ bogus = 5
 	}
 }
 
-// An explicit zero is no longer treated like an omitted value. Browse caps are
-// seeded with their defaults before decode, so a configured `0` overwrites the
+// An explicit zero index_timeout is not treated like an omitted value: it is
+// seeded with the default before decode, so a configured `0` overwrites the
 // default and survives into validation, where it is rejected — letting a typo'd
-// or deliberately-zeroed cap fail loudly instead of silently defaulting.
-func TestBrowseExplicitZeroRejected(t *testing.T) {
+// or deliberately-zeroed timeout fail loudly instead of silently defaulting.
+func TestBrowseExplicitZeroTimeoutRejected(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [browse]
-max_entries = 0
+index_timeout = "0s"
 `)
 	if err == nil {
-		t.Fatal("expected validation error for explicit max_entries = 0, got nil")
+		t.Fatal("expected validation error for explicit index_timeout = 0, got nil")
 	}
-	if !strings.Contains(err.Error(), "browse.max_entries must be positive") {
-		t.Errorf("error = %q, want substring %q", err.Error(), "browse.max_entries must be positive")
+	if !strings.Contains(err.Error(), "browse.index_timeout must be a positive duration") {
+		t.Errorf("error = %q, want substring about index_timeout", err.Error())
+	}
+}
+
+// max_disk_bytes = 0 means unlimited and must be accepted, not rejected.
+func TestBrowseExplicitZeroDiskAllowed(t *testing.T) {
+	cfg, err := load(t, minimalTOML+`
+[browse]
+max_disk_bytes = "0"
+`)
+	if err != nil {
+		t.Fatalf("explicit max_disk_bytes = 0 should be allowed, got %v", err)
+	}
+	if cfg.Browse.MaxDiskBytes.Bytes() != 0 {
+		t.Errorf("max_disk_bytes = %d, want 0", cfg.Browse.MaxDiskBytes.Bytes())
 	}
 }

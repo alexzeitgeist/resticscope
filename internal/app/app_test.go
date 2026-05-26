@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,18 +71,22 @@ type fakeRestic struct {
 	snapErr error
 	catErr  error // returned by CatConfig
 
-	browseScan model.BrowseScan
-	browseErr  error
-	browseCap  *browseCapture // optional; records what ListSnapshotTree was asked
+	browseNodes   []model.BrowseNode      // nodes streamed to onNode in order
+	browseSummary model.BrowseScanSummary // returned on a clean stream (Entries overwritten with the count actually emitted)
+	browseErr     error                   // returned instead of a summary (simulates a restic failure)
+	browseDelay   time.Duration           // sleep after emitting nodes, widening the open-tx window for the serialization test
+	browseCap     *browseCapture          // optional; records what StreamSnapshotTree was asked
 }
 
-// browseCapture records ListSnapshotTree's arguments. It is a pointer field so
+// browseCapture records StreamSnapshotTree's arguments. It is a pointer field so
 // the value-receiver fake (kept a value to satisfy the interface as the existing
-// tests pass it by value) can still record through it.
+// tests pass it by value) can still record through it; the mutex guards it when
+// two goroutines share one fake in the serialization test.
 type browseCapture struct {
-	snapID string
-	target resticx.Target
-	limits model.BrowseLimits
+	mu      sync.Mutex
+	snapID  string
+	target  resticx.Target
+	timeout time.Duration
 }
 
 func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
@@ -91,13 +97,173 @@ func (f fakeRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.C
 	return f.catErr
 }
 
-func (f fakeRestic) ListSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error) {
+func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
 	if f.browseCap != nil {
+		f.browseCap.mu.Lock()
 		f.browseCap.snapID = snapshotID
 		f.browseCap.target = t
-		f.browseCap.limits = limits
+		f.browseCap.timeout = timeout
+		f.browseCap.mu.Unlock()
 	}
-	return f.browseScan, f.browseErr
+	n := 0
+	for _, node := range f.browseNodes {
+		if err := onNode(node); err != nil {
+			// Mirror resticx: a callback (store/disk-limit/cancel) error is surfaced
+			// verbatim so the app can classify it, not as a restic failure.
+			return model.BrowseScanSummary{Entries: n}, err
+		}
+		n++
+	}
+	if f.browseDelay > 0 {
+		time.Sleep(f.browseDelay)
+	}
+	if f.browseErr != nil {
+		return model.BrowseScanSummary{Entries: n}, f.browseErr
+	}
+	summary := f.browseSummary
+	summary.Entries = n
+	return summary, nil
+}
+
+// --- fake browse store / index writer ---
+
+func storeKey(repo, snap string) string { return repo + "\x00" + snap }
+
+// fakeStore is an in-memory BrowseStore. It records the repo keys it is asked
+// about (to prove the app passes the configured repo name, not a target), tracks
+// commit/rollback/indexed state per snapshot, and counts the maximum number of
+// concurrently-open index transactions (which indexMu must hold to 1).
+type fakeStore struct {
+	mu sync.Mutex
+
+	indexed map[string]bool                // snapshots with a committed index
+	entries map[string][]model.BrowseEntry // ListDir results, keyed storeKey+"\x00"+dir
+
+	isIndexedErr error
+	beginErr     error
+	listErr      error
+
+	addErrAt  int   // if >0, the writer's Add fails on this call number
+	addErr    error // error Add returns at addErrAt
+	commitErr error
+
+	repos      []string // every repo arg seen across calls
+	beginCalls int
+	committed  map[string]bool
+	rolledBack map[string]bool
+	closed     bool
+
+	concurrent int // currently-open index transactions
+	maxConc    int // high-water mark
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		indexed:    map[string]bool{},
+		entries:    map[string][]model.BrowseEntry{},
+		committed:  map[string]bool{},
+		rolledBack: map[string]bool{},
+	}
+}
+
+func (s *fakeStore) IsIndexed(ctx context.Context, repo, snap string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = append(s.repos, repo)
+	if s.isIndexedErr != nil {
+		return false, s.isIndexedErr
+	}
+	return s.indexed[storeKey(repo, snap)], nil
+}
+
+func (s *fakeStore) BeginIndex(ctx context.Context, repo, snap string) (IndexWriter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = append(s.repos, repo)
+	s.beginCalls++
+	if s.beginErr != nil {
+		return nil, s.beginErr
+	}
+	s.concurrent++
+	if s.concurrent > s.maxConc {
+		s.maxConc = s.concurrent
+	}
+	return &fakeWriter{store: s, repo: repo, snap: snap, addErrAt: s.addErrAt, addErr: s.addErr, commitErr: s.commitErr}, nil
+}
+
+func (s *fakeStore) ListDir(ctx context.Context, repo, snap, dir string) ([]model.BrowseEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = append(s.repos, repo)
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.entries[storeKey(repo, snap)+"\x00"+dir], nil
+}
+
+func (s *fakeStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
+
+// fakeWriter is one index transaction over fakeStore.
+type fakeWriter struct {
+	store      *fakeStore
+	repo, snap string
+	addErrAt   int
+	addErr     error
+	commitErr  error
+
+	added  []model.BrowseNode
+	count  int
+	closed bool // Commit or Rollback has settled this tx (decrements concurrency once)
+}
+
+func (w *fakeWriter) Add(ctx context.Context, n model.BrowseNode) error {
+	w.count++
+	if w.addErrAt > 0 && w.count >= w.addErrAt {
+		return w.addErr
+	}
+	w.added = append(w.added, n)
+	return nil
+}
+
+func (w *fakeWriter) Count() int { return w.count }
+
+func (w *fakeWriter) Commit(ctx context.Context) error {
+	w.store.mu.Lock()
+	defer w.store.mu.Unlock()
+	if !w.closed {
+		w.store.concurrent--
+		w.closed = true
+	}
+	if w.commitErr != nil {
+		w.store.rolledBack[storeKey(w.repo, w.snap)] = true
+		return w.commitErr
+	}
+	w.store.indexed[storeKey(w.repo, w.snap)] = true
+	w.store.committed[storeKey(w.repo, w.snap)] = true
+	return nil
+}
+
+func (w *fakeWriter) Rollback() error {
+	w.store.mu.Lock()
+	defer w.store.mu.Unlock()
+	if !w.closed {
+		w.store.concurrent--
+		w.closed = true
+	}
+	w.store.rolledBack[storeKey(w.repo, w.snap)] = true
+	return nil
+}
+
+// browseApp wires an App whose Browse session serves store and whose Restic is r.
+func browseApp(store BrowseStore, r fakeRestic) *App {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: r}
+	a.Browse = NewBrowseSession(func() (BrowseStore, error) { return store, nil })
+	return a
 }
 
 // --- helpers ---
@@ -115,6 +281,7 @@ func testConfig() *config.Config {
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.LockMaxAge = config.Duration(30 * time.Minute)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	cfg.Browse = config.Browse{IndexTimeout: config.Duration(10 * time.Minute)}
 	return cfg
 }
 
@@ -456,66 +623,228 @@ func TestRefreshRowUnknownRepo(t *testing.T) {
 	}
 }
 
-func TestBrowseSnapshotBuildsTreeWithoutPersisting(t *testing.T) {
-	fc := newFakeCache()
-	cap := &browseCapture{}
-	scan := model.BrowseScan{
-		Nodes: []model.BrowseNode{
-			{Path: "/home", Name: "home", IsDir: true},
-			{Path: "/home/notes.txt", Name: "notes.txt", Size: 7},
-		},
-		Reason:        model.BrowseComplete,
-		LoadedEntries: 2,
+func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
+	store := newFakeStore()
+	bc := &browseCapture{}
+	nodes := []model.BrowseNode{
+		{Path: "/home", Name: "home", IsDir: true},
+		{Path: "/home/notes.txt", Name: "notes.txt", Size: 7},
+		{Path: "/etc", Name: "etc", IsDir: true},
 	}
-	a := &App{
-		Cfg:     testConfig(),
-		Cache:   fc,
-		Clock:   fixedClock{now},
-		Secrets: fakeSecrets{},
-		Restic:  fakeRestic{browseScan: scan, browseCap: cap},
+	a := browseApp(store, fakeRestic{browseNodes: nodes, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
+
+	var lastProgress int
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", func(n int) { lastProgress = n }); err != nil {
+		t.Fatalf("IndexSnapshot: %v", err)
 	}
-	limits := model.BrowseLimits{MaxEntries: 100, MaxJSONBytes: 1 << 20, Timeout: time.Minute}
-	res, err := a.BrowseSnapshot(context.Background(), "repo-a", "snap123", limits)
-	if err != nil {
-		t.Fatalf("BrowseSnapshot: %v", err)
+	// Resolved the right snapshot, the repo's target, and the configured timeout.
+	if bc.snapID != "snap123" {
+		t.Errorf("snapshot ID = %q, want snap123", bc.snapID)
 	}
-	// Resolved the right snapshot and the repo's target.
-	if cap.snapID != "snap123" {
-		t.Errorf("snapshot ID = %q, want snap123", cap.snapID)
+	if bc.target.Name != "repo-a" || bc.target.Bucket != "bucket-a" {
+		t.Errorf("target = %+v, want repo-a/bucket-a", bc.target)
 	}
-	if cap.target.Name != "repo-a" || cap.target.Bucket != "bucket-a" {
-		t.Errorf("target = %+v, want repo-a/bucket-a", cap.target)
+	if bc.timeout != 10*time.Minute {
+		t.Errorf("timeout = %v, want 10m (cfg.Browse.IndexTimeout)", bc.timeout)
 	}
-	// Built the tree from the scan.
-	if res.Tree == nil || res.Tree.ByPath["/home/notes.txt"] == nil {
-		t.Fatalf("tree not built from scan: %+v", res.Tree)
+	// Committed and marked indexed; every node was streamed into the writer.
+	if !store.indexed[storeKey("repo-a", "snap123")] {
+		t.Error("snapshot not marked indexed after a complete stream")
 	}
-	if res.Reason != model.BrowseComplete {
-		t.Errorf("reason = %v, want complete", res.Reason)
+	if !store.committed[storeKey("repo-a", "snap123")] {
+		t.Error("index transaction was not committed")
 	}
-	// Browse must never persist anything: no cache writes.
-	if len(fc.saved) != 0 {
-		t.Errorf("BrowseSnapshot must not write the cache, saved=%v", fc.saved)
+	if store.rolledBack[storeKey("repo-a", "snap123")] {
+		t.Error("a complete stream must not roll back")
+	}
+	if lastProgress != len(nodes) {
+		t.Errorf("final progress = %d, want %d", lastProgress, len(nodes))
+	}
+	// The store is keyed by the configured repo NAME, never the bucket/endpoint.
+	for _, r := range store.repos {
+		if r != "repo-a" {
+			t.Errorf("store saw repo key %q, want the configured name repo-a", r)
+		}
 	}
 }
 
-func TestBrowseSnapshotUnknownRepo(t *testing.T) {
+func TestIndexSnapshotIdempotent(t *testing.T) {
+	store := newFakeStore()
+	store.indexed[storeKey("repo-a", "snap123")] = true
+	bc := &browseCapture{}
+	a := browseApp(store, fakeRestic{browseNodes: []model.BrowseNode{{Path: "/x", Name: "x"}}, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
+
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err != nil {
+		t.Fatalf("IndexSnapshot on already-indexed: %v", err)
+	}
+	if store.beginCalls != 0 {
+		t.Errorf("BeginIndex called %d times, want 0 for an already-indexed snapshot", store.beginCalls)
+	}
+	if bc.snapID != "" {
+		t.Error("restic must not be invoked for an already-indexed snapshot")
+	}
+}
+
+func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
+	store := newFakeStore()
+	a := browseApp(store, fakeRestic{
+		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
+		browseSummary: model.BrowseScanSummary{Complete: false},
+	})
+	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
+	if !errors.Is(err, ErrBrowseIncomplete) {
+		t.Fatalf("err = %v, want ErrBrowseIncomplete", err)
+	}
+	if store.indexed[storeKey("repo-a", "snap123")] {
+		t.Error("an incomplete stream must not be marked indexed")
+	}
+	if !store.rolledBack[storeKey("repo-a", "snap123")] {
+		t.Error("an incomplete stream must roll back")
+	}
+}
+
+func TestIndexSnapshotDiskLimitRollsBack(t *testing.T) {
+	store := newFakeStore()
+	store.addErrAt = 2 // the store rejects the 2nd Add with a path-free disk-limit error
+	store.addErr = fmt.Errorf("browsedb add: %w", model.ErrBrowseDiskLimit)
+	a := browseApp(store, fakeRestic{
+		browseNodes:   []model.BrowseNode{{Path: "/home/secret-passwords.txt", Name: "secret-passwords.txt"}, {Path: "/home/more-secrets.txt", Name: "more-secrets.txt"}},
+		browseSummary: model.BrowseScanSummary{Complete: true},
+	})
+	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
+	if !errors.Is(err, model.ErrBrowseDiskLimit) {
+		t.Fatalf("err = %v, want it to wrap ErrBrowseDiskLimit", err)
+	}
+	if store.indexed[storeKey("repo-a", "snap123")] {
+		t.Error("a disk-limited index must not be marked indexed")
+	}
+	if !store.rolledBack[storeKey("repo-a", "snap123")] {
+		t.Error("a disk-limited index must roll back")
+	}
+	// The surfaced error must never leak a filename.
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("surfaced error leaked a filename: %q", err.Error())
+	}
+}
+
+func TestIndexSnapshotResticErrorRollsBack(t *testing.T) {
+	store := newFakeStore()
+	a := browseApp(store, fakeRestic{
+		browseNodes: []model.BrowseNode{{Path: "/a", Name: "a"}},
+		browseErr:   errors.New("restic ls: repository is locked (exit 11)"),
+	})
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err == nil {
+		t.Fatal("expected the restic failure to surface")
+	}
+	if store.indexed[storeKey("repo-a", "snap123")] {
+		t.Error("a failed stream must not be marked indexed")
+	}
+	if !store.rolledBack[storeKey("repo-a", "snap123")] {
+		t.Error("a failed stream must roll back")
+	}
+}
+
+func TestIndexSnapshotSecretsErrorPropagates(t *testing.T) {
+	store := newFakeStore()
+	a := browseApp(store, fakeRestic{})
+	a.Secrets = fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")}
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err == nil {
+		t.Fatal("expected secrets error to propagate")
+	}
+	if store.beginCalls != 0 {
+		t.Errorf("BeginIndex called %d times, want 0 when secrets fail before indexing", store.beginCalls)
+	}
+}
+
+func TestIndexSnapshotSerializedByIndexMu(t *testing.T) {
+	store := newFakeStore()
+	a := browseApp(store, fakeRestic{
+		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
+		browseSummary: model.BrowseScanSummary{Complete: true},
+		browseDelay:   10 * time.Millisecond, // hold each tx open long enough to overlap if unserialized
+	})
+	var wg sync.WaitGroup
+	for _, snap := range []string{"snapA", "snapB"} {
+		wg.Add(1)
+		go func(snap string) {
+			defer wg.Done()
+			if err := a.IndexSnapshot(context.Background(), "repo-a", snap, nil); err != nil {
+				t.Errorf("IndexSnapshot(%s): %v", snap, err)
+			}
+		}(snap)
+	}
+	wg.Wait()
+	if store.maxConc > 1 {
+		t.Errorf("max concurrent index transactions = %d, want 1 (indexMu must serialize)", store.maxConc)
+	}
+	if !store.indexed[storeKey("repo-a", "snapA")] || !store.indexed[storeKey("repo-a", "snapB")] {
+		t.Error("both snapshots should be indexed after serialized runs")
+	}
+}
+
+func TestIndexSnapshotNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, err := a.BrowseSnapshot(context.Background(), "nope", "s1", model.BrowseLimits{}); err == nil {
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); !errors.Is(err, ErrBrowseNotEnabled) {
+		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
+	}
+}
+
+func TestIndexSnapshotUnknownRepo(t *testing.T) {
+	a := browseApp(newFakeStore(), fakeRestic{})
+	if err := a.IndexSnapshot(context.Background(), "nope", "s1", nil); err == nil {
 		t.Fatal("expected error for unknown repo")
 	}
 }
 
-func TestBrowseSnapshotSecretsErrorPropagates(t *testing.T) {
-	a := &App{
-		Cfg:     testConfig(),
-		Cache:   newFakeCache(),
-		Clock:   fixedClock{now},
-		Secrets: fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")},
-		Restic:  fakeRestic{},
+func TestEnsureStoreOpenFailureNotCached(t *testing.T) {
+	calls := 0
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	a.Browse = NewBrowseSession(func() (BrowseStore, error) {
+		calls++
+		return nil, errors.New("open failed")
+	})
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); err == nil {
+		t.Fatal("expected the open failure to surface")
 	}
-	if _, err := a.BrowseSnapshot(context.Background(), "repo-a", "s1", model.BrowseLimits{}); err == nil {
-		t.Fatal("expected secrets error to propagate")
+	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); err == nil {
+		t.Fatal("expected the open failure to surface on retry too")
+	}
+	if calls != 2 {
+		t.Errorf("open called %d times, want 2 (a failed open must not be cached)", calls)
+	}
+}
+
+func TestListDirDelegates(t *testing.T) {
+	store := newFakeStore()
+	want := []model.BrowseEntry{{Path: "/home/notes.txt", Name: "notes.txt", Size: 7}}
+	store.entries[storeKey("repo-a", "snap123")+"\x00/home"] = want
+	a := browseApp(store, fakeRestic{})
+
+	got, err := a.ListDir(context.Background(), "repo-a", "snap123", "/home")
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "notes.txt" {
+		t.Errorf("ListDir = %+v, want the store's rows", got)
+	}
+	for _, r := range store.repos {
+		if r != "repo-a" {
+			t.Errorf("store saw repo key %q, want repo-a", r)
+		}
+	}
+}
+
+func TestListDirNilBrowseGuard(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	if _, err := a.ListDir(context.Background(), "repo-a", "s1", "/"); !errors.Is(err, ErrBrowseNotEnabled) {
+		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
+	}
+}
+
+func TestListDirUnknownRepo(t *testing.T) {
+	a := browseApp(newFakeStore(), fakeRestic{})
+	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); err == nil {
+		t.Fatal("expected error for unknown repo")
 	}
 }
 

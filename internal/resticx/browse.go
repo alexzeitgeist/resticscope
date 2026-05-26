@@ -11,22 +11,13 @@ import (
 )
 
 // browse.go is the streaming restic boundary for the in-app snapshot browser. It
-// runs a single `restic --no-lock ls --json --recursive <snap> /` and streams the
-// NDJSON into a capped, ordered node slice. The expensive part of any restic
-// invocation is opening the repo (index/lock load); returning more data is cheap.
-// So browse pays that cost once and reads a lot, bounded by entry/byte/time caps,
+// runs a single `restic --no-lock ls --json --recursive <snap> /` and hands each
+// decoded node to a caller-supplied callback as it arrives. The expensive part of
+// any restic invocation is opening the repo (index/lock load); returning more
+// data is cheap. So browse pays that cost once and streams the whole namespace,
 // rather than listing lazily per directory (which would re-pay repo-open on every
-// keystroke). The result is a model.BrowseScan; building it into a tree is the
-// pure model layer's job. No path data is persisted anywhere.
-
-// errBrowsePartial is the sentinel the stream callback returns when it stops the
-// crawl at a configured entry or byte cap. It is a deliberate stop, not a
-// failure, so ListSnapshotTree turns it into a partial scan rather than an error.
-var errBrowsePartial = errors.New("resticx: browse cap reached")
-
-// errBrowseByteLimit is returned by byteLimitReader once the JSON byte cap is
-// reached, so the JSON decoder unwinds and the callback can classify the stop.
-var errBrowseByteLimit = errors.New("resticx: browse byte limit reached")
+// keystroke). The callback persists each node into the encrypted browse store; no
+// path data is retained here or returned in the summary.
 
 // lsNode mirrors the subset of `restic ls --json` records browse needs. restic
 // emits a leading snapshot record (struct_type != "node") then one record per
@@ -34,6 +25,7 @@ var errBrowseByteLimit = errors.New("resticx: browse byte limit reached")
 // fields are ignored. mtime decodes straight into a time.Time (restic emits
 // RFC3339, which Go's JSON unmarshals). uid/gid are pointers so a node that
 // omits them is distinguishable from a real root-owned node (uid=0,gid=0).
+// linktarget is present only for symlinks.
 type lsNode struct {
 	StructType  string    `json:"struct_type"`
 	Name        string    `json:"name"`
@@ -44,23 +36,27 @@ type lsNode struct {
 	Permissions string    `json:"permissions"`
 	UID         *uint32   `json:"uid"`
 	GID         *uint32   `json:"gid"`
+	LinkTarget  string    `json:"linktarget"`
 }
 
-// ListSnapshotTree streams a recursive listing of one snapshot's full namespace
-// into a model.BrowseScan, bounded by limits. It owns its own timeout context
-// (limits.Timeout), independent of the Client's refresh budget, because a deep
-// browse may legitimately run longer than a refresh.
+// StreamSnapshotTree streams a recursive listing of one snapshot's full namespace,
+// invoking onNode for each decoded node. It owns its own timeout context
+// (timeout), independent of the Client's refresh budget, because a deep browse may
+// legitimately run longer than a refresh. It retains nothing: the returned summary
+// reports only the node count and whether restic emitted the whole tree.
 //
-// Classification is deliberate and ordered (a cap-cancel surfaces as
-// context.Canceled, which classify would otherwise call KindUnknown):
-//  1. we hit an entry/byte cap and decoded ≥1 node → return the partial scan, nil;
-//  2. the deadline fired and we decoded ≥1 node → return a PartialTimeout scan, nil;
-//  3. a clean run decoded ≥1 node → return a BrowseComplete scan, nil;
-//  4. anything else (timeout during repo-open, restic failure, zero usable nodes)
-//     → return the classified, redacted *Error, never an empty scan, so the TUI
-//     never opens an empty, misleading tree.
-func (c *Client) ListSnapshotTree(ctx context.Context, t Target, creds Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error) {
-	bctx, cancel := context.WithTimeout(ctx, limits.Timeout)
+// Classification is deliberate and ordered:
+//  1. onNode returned an error → return it verbatim, so the caller can tell its own
+//     store/disk-limit/cancel failure (e.g. errors.Is(model.ErrBrowseDiskLimit))
+//     from a restic failure;
+//  2. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream;
+//     the caller must not mark it indexed);
+//  3. a clean run (no run/decode error) → {Complete:true}, nil, including an empty
+//     snapshot (count 0) — a clean exit unambiguously means restic finished;
+//  4. a genuine JSON decode failure → KindParse;
+//  5. anything else (timeout during repo-open, restic failure) → classify.
+func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
+	bctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	full := make([]string, 0, 8)
@@ -70,26 +66,22 @@ func (c *Client) ListSnapshotTree(ctx context.Context, t Target, creds Creds, sn
 	full = append(full, "--no-lock", "ls", "--json", "--recursive", snapshotID, "/")
 
 	env := c.buildEnv(t, creds)
-	st := &browseStream{limits: limits, cancel: cancel}
+	st := &browseStream{onNode: onNode, cancel: cancel}
 	stderr, runErr := c.streamRunner().RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
-	case st.capped && len(st.nodes) > 0:
-		return st.scan(), nil
-	case bctx.Err() == context.DeadlineExceeded && len(st.nodes) > 0:
-		st.reason = model.PartialTimeout
-		return st.scan(), nil
-	case runErr == nil && st.decodeErr == nil && len(st.nodes) > 0:
-		st.reason = model.BrowseComplete
-		return st.scan(), nil
+	case st.cbErr != nil:
+		return model.BrowseScanSummary{Entries: st.count}, st.cbErr
+	case bctx.Err() == context.DeadlineExceeded && st.count > 0:
+		return model.BrowseScanSummary{Entries: st.count, Complete: false}, nil
+	case runErr == nil && st.decodeErr == nil:
+		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
+	case st.decodeErr != nil:
+		// A genuine JSON decode failure is the real cause; surface it as KindParse
+		// rather than letting classify mislabel the generic run state.
+		return model.BrowseScanSummary{Entries: st.count}, &Error{Kind: KindParse, Op: "ls", wrapped: st.decodeErr}
 	default:
-		// A genuine JSON decode failure is the real cause when one occurred;
-		// surface it as KindParse rather than letting classify mislabel the
-		// generic run state (matching the snapshots-parse precedent).
-		if st.decodeErr != nil {
-			return model.BrowseScan{}, &Error{Kind: KindParse, Op: "ls", wrapped: st.decodeErr}
-		}
-		return model.BrowseScan{}, c.classify(bctx, "ls", runErr, stderr)
+		return model.BrowseScanSummary{Entries: st.count}, c.classify(bctx, "ls", runErr, stderr)
 	}
 }
 
@@ -109,27 +101,23 @@ func (c *Client) streamRunner() StreamRunner {
 	return ExecRunner{}
 }
 
-// browseStream accumulates the streamed nodes and records why the crawl stopped.
+// browseStream decodes the NDJSON stream and forwards each node to onNode. It
+// keeps no node data: only a processed count and the first callback/decode error.
 type browseStream struct {
-	limits model.BrowseLimits
+	onNode func(model.BrowseNode) error
 	cancel context.CancelFunc
 
-	nodes     []model.BrowseNode
-	bytesRead int64
-	reason    model.PartialReason
-	frontier  model.BrowseFrontier
-	capped    bool  // stopped at an entry/byte cap (a deliberate stop)
-	decodeErr error // a genuine JSON decode failure (not a cap or EOF)
+	count     int   // nodes successfully handed to onNode
+	cbErr     error // onNode's error (caller/store/cancel), surfaced verbatim
+	decodeErr error // a genuine JSON decode failure (not a clean EOF)
 }
 
-// consume reads the NDJSON stream, appending each node and tracking the frontier
-// (the last node seen). It stops at the entry cap or the byte cap by recording
-// the reason, cancelling the process so restic stops producing, and returning
-// errBrowsePartial. A clean EOF returns nil; a genuine decode error is recorded
-// and returned for the caller to classify.
+// consume reads the NDJSON stream and calls onNode for each filesystem node. An
+// onNode error records cbErr, cancels the process so restic stops producing, and
+// returns. A clean EOF returns nil; a genuine decode error is recorded and
+// returned for the caller to classify.
 func (s *browseStream) consume(r io.Reader) error {
-	reader := &byteLimitReader{r: r, limit: s.limits.MaxJSONBytes}
-	dec := json.NewDecoder(reader)
+	dec := json.NewDecoder(r)
 	for {
 		var n lsNode
 		err := dec.Decode(&n)
@@ -138,75 +126,26 @@ func (s *browseStream) consume(r io.Reader) error {
 				continue // leading snapshot record
 			}
 			node := model.BrowseNode{
-				Path: n.Path, Name: n.Name, IsDir: n.Type == "dir", Size: n.Size,
-				ModTime: n.ModTime, Permissions: n.Permissions,
+				Path: n.Path, Name: n.Name, Type: n.Type, LinkTarget: n.LinkTarget,
+				IsDir: n.Type == "dir", Size: n.Size, ModTime: n.ModTime, Permissions: n.Permissions,
 			}
 			if n.UID != nil && n.GID != nil {
 				node.UID = *n.UID
 				node.GID = *n.GID
 				node.OwnerKnown = true
 			}
-			s.nodes = append(s.nodes, node)
-			s.frontier = model.BrowseFrontier{Path: node.Path, IsDir: node.IsDir}
-			if s.limits.MaxEntries > 0 && len(s.nodes) >= s.limits.MaxEntries {
-				s.reason = model.PartialEntryCap
-				s.capped = true
-				s.bytesRead = reader.read
+			if cbErr := s.onNode(node); cbErr != nil {
+				s.cbErr = cbErr
 				s.cancel()
-				return errBrowsePartial
+				return cbErr
 			}
+			s.count++
 			continue
 		}
-		s.bytesRead = reader.read
 		if errors.Is(err, io.EOF) {
 			return nil
-		}
-		if errors.Is(err, errBrowseByteLimit) || reader.hitLimit {
-			s.reason = model.PartialByteCap
-			s.capped = true
-			s.cancel()
-			return errBrowsePartial
 		}
 		s.decodeErr = err
 		return err
 	}
-}
-
-// scan snapshots the accumulated state as a model.BrowseScan.
-func (s *browseStream) scan() model.BrowseScan {
-	return model.BrowseScan{
-		Nodes:         s.nodes,
-		Reason:        s.reason,
-		LoadedEntries: len(s.nodes),
-		JSONBytes:     s.bytesRead,
-		Frontier:      s.frontier,
-	}
-}
-
-// byteLimitReader caps the bytes read from the wrapped reader. Once limit bytes
-// have been read it returns errBrowseByteLimit and sets hitLimit, so the JSON
-// decoder unwinds rather than reading an unbounded stream. A limit <= 0 disables
-// the cap. It is a reimplementation of the equivalent in tools/restic-ls-poc;
-// product code must not import the dev tool.
-type byteLimitReader struct {
-	r        io.Reader
-	limit    int64
-	read     int64
-	hitLimit bool
-}
-
-func (r *byteLimitReader) Read(p []byte) (int, error) {
-	if r.limit > 0 {
-		remaining := r.limit - r.read
-		if remaining <= 0 {
-			r.hitLimit = true
-			return 0, errBrowseByteLimit
-		}
-		if int64(len(p)) > remaining {
-			p = p[:remaining]
-		}
-	}
-	n, err := r.r.Read(p)
-	r.read += int64(n)
-	return n, err
 }

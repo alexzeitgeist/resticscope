@@ -21,14 +21,12 @@ const (
 	defaultResticCommandTimeout  = 2 * time.Minute
 	defaultShellPasswordMode     = "file"
 
-	// Browse caps. A single crawl stops at the first of these it hits; load-more
-	// raises the entry/byte caps toward the session ceilings but never the
-	// timeout. See config.Browse for the rationale.
-	defaultBrowseMaxEntries          = 200_000
-	defaultBrowseMaxJSONBytes        = 128 << 20
-	defaultBrowseTimeout             = 120 * time.Second
-	defaultBrowseMaxSessionEntries   = 1_000_000
-	defaultBrowseMaxSessionJSONBytes = 768 << 20
+	// Browse index settings. IndexTimeout is generous because a one-time full
+	// index of a huge snapshot can take minutes; MaxDiskBytes defaults to 0
+	// (unlimited), leaving the index timeout as the primary bound. See
+	// config.Browse for the rationale.
+	defaultBrowseIndexTimeout = 10 * time.Minute
+	defaultBrowseMaxDiskBytes = 0
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -57,20 +55,18 @@ func Load(path string) (*Config, error) {
 // Normalize, not here, with two deliberate exceptions seeded pre-decode:
 // refresh_on_open (a plain bool cannot tell an absent key from an explicit
 // `false` afterward, so its default-true must precede decoding) and the browse
-// caps. The browse caps are seeded here for the same reason in reverse: seeding
-// them before decode lets an explicit `0` overwrite the default and survive into
-// validation as a rejected value, while an omitted key keeps the default. It
-// rejects unknown keys so typos in config surface as errors rather than being
-// silently ignored.
+// index settings. The browse settings are seeded here for the same reason in
+// reverse: seeding index_timeout before decode lets an explicit `0` overwrite
+// the default and survive into validation as a rejected value, while an omitted
+// key keeps the default (max_disk_bytes defaults to 0 = unlimited, so it has no
+// rejected zero). It rejects unknown keys so typos in config surface as errors
+// rather than being silently ignored.
 func Decode(data []byte) (*Config, error) {
 	cfg := Config{
 		Global: Global{RefreshOnOpen: true},
 		Browse: Browse{
-			MaxEntries:          defaultBrowseMaxEntries,
-			MaxJSONBytes:        defaultBrowseMaxJSONBytes,
-			Timeout:             Duration(defaultBrowseTimeout),
-			MaxSessionEntries:   defaultBrowseMaxSessionEntries,
-			MaxSessionJSONBytes: defaultBrowseMaxSessionJSONBytes,
+			IndexTimeout: Duration(defaultBrowseIndexTimeout),
+			MaxDiskBytes: defaultBrowseMaxDiskBytes,
 		},
 	}
 	md, err := toml.Decode(string(data), &cfg)
@@ -116,8 +112,9 @@ func (c *Config) Normalize(home string) {
 		g.ResticCommandTimeout = Duration(defaultResticCommandTimeout)
 	}
 
-	// Browse caps are seeded with their defaults in Decode (not here) so an
-	// explicit `0` is distinguishable from an omitted key and reaches validation.
+	// Browse index settings are seeded with their defaults in Decode (not here)
+	// so an explicit index_timeout `0` is distinguishable from an omitted key and
+	// reaches validation.
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {

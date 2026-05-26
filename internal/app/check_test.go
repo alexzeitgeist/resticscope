@@ -31,8 +31,8 @@ func (r *recordingRestic) CatConfig(ctx context.Context, t resticx.Target, c res
 	return nil
 }
 
-func (r *recordingRestic) ListSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error) {
-	return model.BrowseScan{}, nil
+func (r *recordingRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
+	return model.BrowseScanSummary{}, nil
 }
 
 func (r *recordingRestic) target(name string) (resticx.Target, bool) {

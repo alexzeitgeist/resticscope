@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"resticscope/internal/app"
+	"resticscope/internal/browsedb"
 	"resticscope/internal/cache"
 	"resticscope/internal/config"
 	"resticscope/internal/resticx"
@@ -227,6 +228,22 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Secrets: store,
 		Restic:  client,
 	}
+
+	// Reclaim demonstrably-stale browse session dirs left by crashed prior runs
+	// before opening our own. It is lock-aware and never removes a live sibling,
+	// and the leftovers are unreadable anyway (their key died with the process),
+	// so a failure here is logged and ignored.
+	if err := browsedb.CleanStaleSessions(cfg.Global.CacheDir); err != nil {
+		logger.Warn("browse stale-session cleanup", "err", err)
+	}
+	// The browse store is opened lazily on the first browse; a run that never
+	// browses creates no session directory. Close tears it down on clean exit.
+	a.Browse = app.NewBrowseSession(newBrowseOpen(cfg.Global.CacheDir, cfg.Browse.MaxDiskBytes.Bytes()))
+	defer func() {
+		if err := a.Browse.Close(); err != nil {
+			logger.Warn("browse session close", "err", err)
+		}
+	}()
 
 	var resticVer string
 	if v, err := (&resticx.Client{Runner: resticx.ExecRunner{}}).Version(ctx); err == nil {

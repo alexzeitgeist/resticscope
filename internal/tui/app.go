@@ -57,17 +57,22 @@ type Model struct {
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 
-	// Browse state. All of it is session-only: the in-memory tree is never
-	// persisted to the cache, RepoState, or any log, and leaving browse clears it.
-	browseResult   *model.BrowseResult // the active session-only tree, or nil
+	// Browse state. The on-screen rows are session-only — they are never persisted
+	// to the cache, RepoState, or any log, and leaving browse clears them. The
+	// underlying filenames live only in the session-scoped encrypted store
+	// (app.Browse), which survives until the app exits so returning to an
+	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
+	browseRows     []model.BrowseEntry // the current directory's children, or nil
 	browseRepo     string              // repo being browsed (pins the action target)
 	browseSnapshot string              // snapshot id being browsed
 	browseDir      string              // path of the directory currently listed
 	browseCursor   int                 // selected entry within the current directory
-	browseLoading  bool                // an initial load or load-more is in flight
-	browsing       bool                // single-flight guard: one browse load at a time
+	browseIndexed  bool                // the snapshot's one-time index has committed
+	browseIndexN   int                 // running node count shown while indexing
+	browseLoading  bool                // an index or directory load is in flight (navigation paused)
 	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
-	browseGen      int                 // generation token; stale browseLoadedMsgs are discarded
+	browseGen      int                 // generation token; stale browse msgs are discarded
+	browseProgress chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -164,8 +169,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	case repoRefreshedMsg:
 		return m.applyRefresh(msg), nil
-	case browseLoadedMsg:
-		return m.applyBrowseLoaded(msg), nil
+	case browseIndexProgressMsg:
+		return m.applyBrowseIndexProgress(msg)
+	case browseIndexedMsg:
+		return m.applyBrowseIndexed(msg)
+	case browseDirMsg:
+		return m.applyBrowseDir(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case spinner.TickMsg:
@@ -229,8 +238,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Browse owns all its non-global keys (including r=load-more and s=shell), so
-	// it is routed before the shared refresh/shell handlers below would steal r/s.
+	// Browse owns all its non-global keys (including s=shell), so it is routed
+	// before the shared refresh/shell handlers below would steal s.
 	if m.view == browseView {
 		return m.handleBrowseKey(msg)
 	}
@@ -421,13 +430,13 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.PageDown):
 		m.snapCursor = clampCursor(m.snapCursor+m.detailSnapVisible(), m.snapCount())
 	case key.Matches(msg, m.keys.Browse):
-		// b opens the in-app file browser for the selected snapshot, starting an
-		// initial load at the configured caps.
+		// b opens the in-app file browser for the selected snapshot, kicking off
+		// the one-time index of its namespace.
 		if snap := m.selectedSnapshot(); snap != nil {
 			if name, ok := m.actionRepo(); ok {
 				m.statusMsg = ""
 				var cmd tea.Cmd
-				m, cmd = m.startBrowse(name, snap.ID, m.app.Cfg.Browse.Limits())
+				m, cmd = m.startBrowse(name, snap.ID)
 				return m, cmd
 			}
 		}

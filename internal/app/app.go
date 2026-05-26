@@ -36,7 +36,7 @@ type CacheStore interface {
 type Restic interface {
 	Snapshots(ctx context.Context, t resticx.Target, creds resticx.Creds) ([]model.Snapshot, error)
 	CatConfig(ctx context.Context, t resticx.Target, creds resticx.Creds) error
-	ListSnapshotTree(ctx context.Context, t resticx.Target, creds resticx.Creds, snapshotID string, limits model.BrowseLimits) (model.BrowseScan, error)
+	StreamSnapshotTree(ctx context.Context, t resticx.Target, creds resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error)
 }
 
 // Secrets resolves a repo's runtime credentials. Satisfied by *secrets.Store.
@@ -45,7 +45,11 @@ type Secrets interface {
 }
 
 // App wires the dependencies together. Construct it directly; all fields are
-// required except Log.
+// required except Log and Browse.
+//
+// Browse is the lazily-opened, session-scoped encrypted store backing the in-app
+// file browser. It is nil for non-TUI entry points (status/check/exec), and the
+// browse methods guard that nil.
 type App struct {
 	Cfg     *config.Config
 	Secrets Secrets
@@ -53,6 +57,7 @@ type App struct {
 	Cache   CacheStore
 	Clock   Clock
 	Log     *slog.Logger
+	Browse  *BrowseSession
 }
 
 func (a *App) logger() *slog.Logger {

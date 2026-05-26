@@ -48,9 +48,10 @@ func (stubSecrets) Resolve(_, _ string) (secrets.Material, error) {
 }
 
 type stubRestic struct {
-	snaps   []model.Snapshot
-	scan    model.BrowseScan // returned by ListSnapshotTree
-	scanErr error
+	snaps       []model.Snapshot
+	browseNodes []model.BrowseNode // streamed by StreamSnapshotTree
+	browseErr   error              // returned after streaming (e.g. a restic failure)
+	browseDelay time.Duration      // optional per-node delay to model a slow crawl
 }
 
 func (s stubRestic) Snapshots(_ context.Context, _ resticx.Target, _ resticx.Creds) ([]model.Snapshot, error) {
@@ -61,8 +62,26 @@ func (stubRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.Creds
 	return nil
 }
 
-func (s stubRestic) ListSnapshotTree(_ context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ model.BrowseLimits) (model.BrowseScan, error) {
-	return s.scan, s.scanErr
+// StreamSnapshotTree replays browseNodes through onNode, honoring context
+// cancellation between nodes so a delayed crawl can be cancelled. A non-nil
+// browseErr models a restic failure; otherwise it reports a complete scan.
+func (s stubRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
+	for _, n := range s.browseNodes {
+		if err := onNode(n); err != nil {
+			return model.BrowseScanSummary{}, err
+		}
+		if s.browseDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return model.BrowseScanSummary{}, ctx.Err()
+			case <-time.After(s.browseDelay):
+			}
+		}
+	}
+	if s.browseErr != nil {
+		return model.BrowseScanSummary{}, s.browseErr
+	}
+	return model.BrowseScanSummary{Entries: len(s.browseNodes), Complete: true}, nil
 }
 
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
@@ -80,12 +99,12 @@ func (blockingRestic) CatConfig(_ context.Context, _ resticx.Target, _ resticx.C
 	return nil
 }
 
-// ListSnapshotTree blocks until cancelled too, so a browse load can be used to
-// test that quit/back cancel the in-flight crawl just like a refresh.
-func (b blockingRestic) ListSnapshotTree(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ model.BrowseLimits) (model.BrowseScan, error) {
+// StreamSnapshotTree blocks until cancelled too, so an in-flight index can be
+// used to test that quit/back cancel the running crawl just like a refresh.
+func (b blockingRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ string, _ time.Duration, _ func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
 	close(b.started)
 	<-ctx.Done()
-	return model.BrowseScan{}, ctx.Err()
+	return model.BrowseScanSummary{}, ctx.Err()
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
@@ -795,10 +814,10 @@ func TestDetailBackReturnsToList(t *testing.T) {
 }
 
 // b now opens the in-app file browser for the selected snapshot: it switches to
-// browseView (showing a loading state), marks a browse in flight, and returns the
-// command that runs the load.
+// browseView (showing the indexing state with no listing yet), marks the index in
+// flight, and returns the command that runs the one-time index.
 func TestDetailBKeyStartsBrowse(t *testing.T) {
-	m := newTestModel(t, detailApp(t))
+	m := newTestModel(t, browseApp(t))
 	m = update(t, m, press("enter"))
 	if m.view != detailView {
 		t.Fatal("expected detail view after enter")
@@ -808,8 +827,8 @@ func TestDetailBKeyStartsBrowse(t *testing.T) {
 	if nm.view != browseView {
 		t.Errorf("b should open the browse view; view = %d", nm.view)
 	}
-	if !nm.browsing || !nm.browseLoading {
-		t.Errorf("b should mark a browse load in flight: browsing=%v loading=%v", nm.browsing, nm.browseLoading)
+	if !nm.browseLoading || nm.browseIndexed {
+		t.Errorf("b should mark the index in flight, not yet indexed: loading=%v indexed=%v", nm.browseLoading, nm.browseIndexed)
 	}
 	if nm.browseRepo != "repo-a" || nm.browseSnapshot != "id-newest" {
 		t.Errorf("browse target = %q/%q, want repo-a/id-newest", nm.browseRepo, nm.browseSnapshot)

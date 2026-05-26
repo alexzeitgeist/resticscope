@@ -2,6 +2,7 @@ package resticx
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -17,13 +18,25 @@ const (
 	nodeHome = `{"name":"home","type":"dir","path":"/home","size":0,"struct_type":"node"}`
 	nodeAlex = `{"name":"alex","type":"dir","path":"/home/alex","size":0,"struct_type":"node"}`
 	nodeFile = `{"name":"f.txt","type":"file","path":"/home/alex/f.txt","size":42,"struct_type":"node"}`
+	nodeLink = `{"name":"link","type":"symlink","path":"/home/alex/link","linktarget":"/home/alex/f.txt","struct_type":"node"}`
 	// nodeMeta carries the full per-node metadata restic 0.18.1 emits (mtime,
 	// permissions, uid, gid) so the decode of the new fields can be asserted
-	// without disturbing the byte-exact fixtures the cap tests depend on.
+	// without disturbing the byte-exact fixtures other tests depend on.
 	nodeMeta = `{"name":"meta.txt","type":"file","path":"/home/alex/meta.txt","size":7,"uid":1000,"gid":1000,"mode":436,"permissions":"-rw-rw-r--","mtime":"2026-05-26T11:28:49Z","struct_type":"node"}`
 )
 
 func ndjson(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
+
+const browseTimeout = 5 * time.Second
+
+// collect returns an onNode callback that appends to nodes (returned by pointer).
+func collect() (func(model.BrowseNode) error, *[]model.BrowseNode) {
+	var nodes []model.BrowseNode
+	return func(n model.BrowseNode) error {
+		nodes = append(nodes, n)
+		return nil
+	}, &nodes
+}
 
 // fakeStream is an injected StreamRunner. It feeds onStdout canned NDJSON,
 // optionally blocking after the data until the context is done (to exercise the
@@ -54,6 +67,11 @@ func (f *fakeStream) RunStream(ctx context.Context, env []string, password strin
 	if cbErr != nil {
 		return f.stderr, cbErr
 	}
+	// A real restic killed by the browse deadline returns a non-nil run error, not
+	// a clean exit; mirror that so timeout classification sees a failed run.
+	if ctx.Err() != nil {
+		return f.stderr, ctx.Err()
+	}
 	return f.stderr, f.err
 }
 
@@ -81,31 +99,19 @@ func (b *blockingReader) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
-func browseLimits() model.BrowseLimits {
-	return model.BrowseLimits{
-		MaxEntries:          1000,
-		MaxJSONBytes:        1 << 20,
-		Timeout:             5 * time.Second,
-		MaxSessionEntries:   10000,
-		MaxSessionJSONBytes: 8 << 20,
-	}
-}
-
-func TestListSnapshotTreeComplete(t *testing.T) {
+func TestStreamSnapshotTreeComplete(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	onNode, nodes := collect()
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err != nil {
-		t.Fatalf("ListSnapshotTree: %v", err)
+		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
-	if scan.Reason != model.BrowseComplete {
-		t.Errorf("reason = %v, want BrowseComplete", scan.Reason)
+	if !sum.Complete {
+		t.Errorf("Complete = false, want true")
 	}
-	if scan.LoadedEntries != 3 || len(scan.Nodes) != 3 {
-		t.Fatalf("loaded = %d / nodes = %d, want 3 (snapshot record must be skipped)", scan.LoadedEntries, len(scan.Nodes))
-	}
-	if scan.Frontier.Path != "/home/alex/f.txt" || scan.Frontier.IsDir {
-		t.Errorf("frontier = %+v, want the last (file) node", scan.Frontier)
+	if sum.Entries != 3 || len(*nodes) != 3 {
+		t.Fatalf("entries = %d / nodes = %d, want 3 (snapshot record must be skipped)", sum.Entries, len(*nodes))
 	}
 	// The recursive, no-lock listing args must be present.
 	got := strings.Join(fs.gotArgs, " ")
@@ -116,22 +122,36 @@ func TestListSnapshotTreeComplete(t *testing.T) {
 	}
 }
 
-func TestListSnapshotTreeParsesMetadata(t *testing.T) {
+// An empty snapshot is a clean run with zero nodes: it must report Complete=true
+// so the caller indexes it (an empty index is valid), not an error.
+func TestStreamSnapshotTreeEmptyIsComplete(t *testing.T) {
+	fs := &fakeStream{data: ndjson(snapLine)}
+	c := &Client{Stream: fs}
+	onNode, nodes := collect()
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	if err != nil {
+		t.Fatalf("StreamSnapshotTree: %v", err)
+	}
+	if !sum.Complete || sum.Entries != 0 || len(*nodes) != 0 {
+		t.Errorf("empty snapshot: Complete=%v entries=%d nodes=%d, want true/0/0", sum.Complete, sum.Entries, len(*nodes))
+	}
+}
+
+func TestStreamSnapshotTreeParsesMetadata(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeMeta)}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
-	if err != nil {
-		t.Fatalf("ListSnapshotTree: %v", err)
+	onNode, nodes := collect()
+	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
-	// The metadata-bearing file is the last node decoded.
 	var got *model.BrowseNode
-	for i := range scan.Nodes {
-		if scan.Nodes[i].Path == "/home/alex/meta.txt" {
-			got = &scan.Nodes[i]
+	for i := range *nodes {
+		if (*nodes)[i].Path == "/home/alex/meta.txt" {
+			got = &(*nodes)[i]
 		}
 	}
 	if got == nil {
-		t.Fatalf("meta.txt node missing from %d nodes", len(scan.Nodes))
+		t.Fatalf("meta.txt node missing from %d nodes", len(*nodes))
 	}
 	wantMod := time.Date(2026, 5, 26, 11, 28, 49, 0, time.UTC)
 	if !got.ModTime.Equal(wantMod) {
@@ -140,141 +160,139 @@ func TestListSnapshotTreeParsesMetadata(t *testing.T) {
 	if got.Permissions != "-rw-rw-r--" {
 		t.Errorf("Permissions = %q, want -rw-rw-r--", got.Permissions)
 	}
+	if got.Type != "file" || got.IsDir {
+		t.Errorf("Type = %q IsDir = %v, want file/false", got.Type, got.IsDir)
+	}
 	if !got.OwnerKnown || got.UID != 1000 || got.GID != 1000 {
 		t.Errorf("owner = %d:%d (known=%v), want 1000:1000 (known)", got.UID, got.GID, got.OwnerKnown)
 	}
 }
 
+// A symlink's type and linktarget must decode into the node.
+func TestStreamSnapshotTreeParsesSymlink(t *testing.T) {
+	fs := &fakeStream{data: ndjson(snapLine, nodeLink)}
+	c := &Client{Stream: fs}
+	onNode, nodes := collect()
+	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+		t.Fatalf("StreamSnapshotTree: %v", err)
+	}
+	if len(*nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(*nodes))
+	}
+	n := (*nodes)[0]
+	if n.Type != "symlink" || n.LinkTarget != "/home/alex/f.txt" || n.IsDir {
+		t.Errorf("symlink decode = Type %q LinkTarget %q IsDir %v", n.Type, n.LinkTarget, n.IsDir)
+	}
+}
+
 // A node that omits uid/gid must decode with OwnerKnown false (so the renderer
-// shows a missing-owner em-dash, never a spurious 0:0). The existing nodeHome
-// fixture carries no uid/gid.
-func TestListSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
+// shows a missing-owner em-dash, never a spurious 0:0).
+func TestStreamSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
-	if err != nil {
-		t.Fatalf("ListSnapshotTree: %v", err)
+	onNode, nodes := collect()
+	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
-	if len(scan.Nodes) != 1 {
-		t.Fatalf("nodes = %d, want 1", len(scan.Nodes))
+	if len(*nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(*nodes))
 	}
-	if scan.Nodes[0].OwnerKnown {
-		t.Errorf("a node without uid/gid must not be OwnerKnown: %+v", scan.Nodes[0])
+	if (*nodes)[0].OwnerKnown {
+		t.Errorf("a node without uid/gid must not be OwnerKnown: %+v", (*nodes)[0])
 	}
 }
 
-func TestListSnapshotTreeEntryCap(t *testing.T) {
-	lim := browseLimits()
-	lim.MaxEntries = 2
+// A callback error (e.g. the store's disk limit) is surfaced verbatim so the
+// caller can classify it, and it cancels the restic process.
+func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", lim)
-	if err != nil {
-		t.Fatalf("entry cap should be a partial success, got error: %v", err)
+	sentinel := errors.New("store is full")
+	calls := 0
+	onNode := func(model.BrowseNode) error {
+		calls++
+		if calls == 2 {
+			return sentinel
+		}
+		return nil
 	}
-	if scan.Reason != model.PartialEntryCap {
-		t.Errorf("reason = %v, want PartialEntryCap", scan.Reason)
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want sentinel verbatim", err)
 	}
-	if scan.LoadedEntries != 2 {
-		t.Errorf("loaded = %d, want 2", scan.LoadedEntries)
+	if sum.Complete {
+		t.Error("Complete must be false when the callback failed")
 	}
 	if fs.ctxErr == nil {
-		t.Error("hitting the entry cap should have cancelled the restic process")
+		t.Error("a callback error should have cancelled the restic process")
 	}
 }
 
-func TestListSnapshotTreeByteCap(t *testing.T) {
-	lim := browseLimits()
-	// Allow exactly the snapshot record + first node line (with newlines); the
-	// next decode must hit the byte limit.
-	lim.MaxJSONBytes = int64(len(snapLine) + 1 + len(nodeHome) + 1)
-	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
-	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", lim)
-	if err != nil {
-		t.Fatalf("byte cap should be a partial success, got error: %v", err)
-	}
-	if scan.Reason != model.PartialByteCap {
-		t.Errorf("reason = %v, want PartialByteCap", scan.Reason)
-	}
-	if scan.LoadedEntries < 1 {
-		t.Errorf("loaded = %d, want >= 1", scan.LoadedEntries)
-	}
-	if fs.ctxErr == nil {
-		t.Error("hitting the byte cap should have cancelled the restic process")
-	}
-}
-
-func TestListSnapshotTreeTimeoutWithNodes(t *testing.T) {
-	lim := browseLimits()
-	lim.Timeout = 60 * time.Millisecond
+func TestStreamSnapshotTreeTimeoutWithNodes(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome), block: true}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", lim)
+	onNode, nodes := collect()
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 60*time.Millisecond, onNode)
 	if err != nil {
 		t.Fatalf("timeout with nodes should be a partial success, got error: %v", err)
 	}
-	if scan.Reason != model.PartialTimeout {
-		t.Errorf("reason = %v, want PartialTimeout", scan.Reason)
+	if sum.Complete {
+		t.Errorf("Complete = true, want false (timeout truncated the stream)")
 	}
-	if scan.LoadedEntries != 1 {
-		t.Errorf("loaded = %d, want 1", scan.LoadedEntries)
+	if sum.Entries != 1 || len(*nodes) != 1 {
+		t.Errorf("entries = %d / nodes = %d, want 1", sum.Entries, len(*nodes))
 	}
 }
 
-func TestListSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
-	lim := browseLimits()
-	lim.Timeout = 50 * time.Millisecond
+func TestStreamSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
 	fs := &fakeStream{data: "", block: true} // stalls in repo-open, never a node
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", lim)
+	onNode, _ := collect()
+	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
 	if err == nil {
-		t.Fatal("timeout with zero nodes must return an error, not an empty scan")
+		t.Fatal("timeout with zero nodes must return an error")
 	}
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("want KindTimeout error, got %v", err)
 	}
-	if len(scan.Nodes) != 0 {
-		t.Errorf("error path must return an empty scan, got %d nodes", len(scan.Nodes))
-	}
 }
 
-func TestListSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
-	// A genuine JSON decode failure (not a cap, not a clean EOF) must surface as
-	// KindParse, not a generically-classified run error.
+func TestStreamSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
+	// A genuine JSON decode failure (not a clean EOF) must surface as KindParse,
+	// not a generically-classified run error.
 	fs := &fakeStream{data: snapLine + "\nnot json at all\n"}
 	c := &Client{Stream: fs}
-	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	onNode, _ := collect()
+	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err == nil {
-		t.Fatal("malformed JSON must return an error, not a scan")
+		t.Fatal("malformed JSON must return an error")
 	}
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindParse {
 		t.Fatalf("want KindParse error, got %v", err)
 	}
-	if len(scan.Nodes) != 0 {
-		t.Errorf("error path must return an empty scan, got %d nodes", len(scan.Nodes))
-	}
 }
 
-func TestListSnapshotTreeResticFailureClassifies(t *testing.T) {
+func TestStreamSnapshotTreeResticFailureClassifies(t *testing.T) {
 	fs := &fakeStream{err: fakeExit(10), stderr: []byte("repository does not exist")}
 	c := &Client{Stream: fs}
-	_, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	onNode, _ := collect()
+	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindRepoNotFound {
 		t.Fatalf("want KindRepoNotFound, got %v", err)
 	}
 }
 
-func TestListSnapshotTreeRedactsStderr(t *testing.T) {
+func TestStreamSnapshotTreeRedactsStderr(t *testing.T) {
 	fs := &fakeStream{err: fakeExit(1), stderr: []byte("failed using key AK-LEAKED-9")}
 	c := &Client{
 		Stream: fs,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAKED-9", "[REDACTED]") },
 	}
-	_, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	onNode, _ := collect()
+	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -286,12 +304,13 @@ func TestListSnapshotTreeRedactsStderr(t *testing.T) {
 	}
 }
 
-func TestListSnapshotTreePasswordOutOfBand(t *testing.T) {
+func TestStreamSnapshotTreePasswordOutOfBand(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
 	c := &Client{Stream: fs}
 	creds := Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "super-secret-pw"}
-	if _, err := c.ListSnapshotTree(context.Background(), testTarget, creds, "abcd", browseLimits()); err != nil {
-		t.Fatalf("ListSnapshotTree: %v", err)
+	onNode, _ := collect()
+	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, creds, "abcd", browseTimeout, onNode); err != nil {
+		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
 	env := strings.Join(fs.gotEnv, "\n")
 	if !strings.Contains(env, "RESTIC_PASSWORD_FILE=/dev/fd/3") {

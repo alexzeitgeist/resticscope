@@ -20,21 +20,18 @@ shell               = ""                       # empty -> use $SHELL for the sna
 shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWORD_FILE (default); env = RESTIC_PASSWORD
 
 # --- in-app file browser ------------------------------------------------------
-# Press `b` on a snapshot to browse its files in-app. One streamed
-# `restic ls --recursive` builds a session-only in-memory tree, bounded by these
-# caps. The tree is NEVER persisted (not to the cache, state, or any log). When a
-# cap truncates the listing the tree is shown but marked partial — incomplete
-# directories carry a "more entries not loaded" row and missing files may exist;
-# the scoped restic shell (`s`) is always the exact, complete fallback. Pressing
-# `r` rebuilds from scratch with doubled entry/byte caps, up to the session
-# ceilings (timeout is never raised). This whole block is optional; the defaults
-# below apply when it is omitted.
+# Press `b` on a snapshot to browse its files in-app. The first time a snapshot
+# is browsed, one streamed `restic ls --recursive` indexes its whole namespace
+# into a session-scoped SQLite database, encrypted at rest under a random 32-byte
+# key that lives ONLY in memory (never derived from the repo password, never
+# written anywhere). All later navigation is served from that database, so it is
+# always complete — no truncation, no "load more". The DB is created lazily on
+# the first browse and deleted on clean exit; a crash leftover is unreadable
+# because the key is gone, and is scavenged by conservative startup cleanup. This
+# whole block is optional; the defaults below apply when it is omitted.
 [browse]
-max_entries            = 200000     # stop one crawl after this many filesystem nodes
-max_json_bytes         = "128MiB"   # or after reading this much `restic ls` JSON
-timeout                = "120s"     # or after this long (never raised by load-more)
-max_session_entries    = 1000000    # ceiling that load-more can raise max_entries to
-max_session_json_bytes = "768MiB"   # ceiling that load-more can raise max_json_bytes to
+index_timeout = "10m"   # cap the one-time full index of a snapshot (generous: huge snapshots take minutes)
+max_disk_bytes = "0"    # session-wide ceiling on the encrypted browse dir; "0" = unlimited (e.g. "2GiB")
 
 # --- S3 credentials -----------------------------------------------------------
 # A credential is just a NAME for an access-key/secret-key pair; it carries no
