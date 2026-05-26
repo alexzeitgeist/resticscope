@@ -396,20 +396,24 @@ func (m Model) browseSummaryLine() string {
 // a responsive table: a dim column header, then rows marking the cursor with the
 // accent gutter, the synthetic "more entries not loaded" row for an incomplete
 // directory, and a window note when the list is scrolled. The header is shown for
-// empty and incomplete-empty directories too so the table shape stays stable.
+// empty and incomplete-empty directories too so the table shape stays stable. The
+// table renders at a capped working width (browseTableWidth) so a very wide
+// terminal does not stretch the Name flex into a desert; the surrounding
+// header/path/summary lines keep using the full terminal width.
 func (m Model) browseList(dir *model.BrowseEntry, w int) string {
+	tw := browseTableWidth(w)
 	if dir == nil {
-		return clip(m.styles.meta.Render("  (no tree)"), w)
+		return clip(m.styles.meta.Render("  (no tree)"), tw)
 	}
-	l := browseLayout(w)
-	header := clip(m.styles.dim.Render(browseHeaderRow(l)), w)
+	l := browseLayout(tw)
+	header := clip(m.styles.dim.Render(browseHeaderRow(l)), tw)
 
 	total := len(dir.Children)
 	if total == 0 {
 		if dir.HasMoreRow() {
-			return header + "\n" + m.browseMoreRow(w)
+			return header + "\n" + m.browseMoreRow(tw)
 		}
-		return header + "\n" + clip(m.styles.meta.Render("  (empty)"), w)
+		return header + "\n" + clip(m.styles.meta.Render("  (empty)"), tw)
 	}
 
 	cur := clampCursor(m.browseCursor, total)
@@ -418,15 +422,33 @@ func (m Model) browseList(dir *model.BrowseEntry, w int) string {
 	lines := make([]string, 0, end-start+3)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {
-		lines = append(lines, m.browseRow(dir.Children[i], i == cur, l, w))
+		lines = append(lines, m.browseRow(dir.Children[i], i == cur, l, tw))
 	}
 	if dir.HasMoreRow() && end >= total {
-		lines = append(lines, m.browseMoreRow(w))
+		lines = append(lines, m.browseMoreRow(tw))
 	}
 	if start > 0 || end < total {
-		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), w))
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// browseTableMaxWidth bounds the file table's working width. Browse puts its only
+// flexible column (Name) first, so left unbounded a wide terminal stretches Name
+// and strands the metadata columns far to the right. (The snapshot table avoids
+// this for free: its flex column, Tags, is last, so slack falls harmlessly at the
+// trailing edge.) Capping the whole table — rather than just the Name column —
+// states the decision once and keeps it correct if a future column is added.
+const browseTableMaxWidth = 132
+
+// browseTableWidth is the width the file table renders at: the terminal width,
+// capped at browseTableMaxWidth so a wide terminal leaves trailing empty space
+// rather than over-stretching the Name flex.
+func browseTableWidth(w int) int {
+	if w > browseTableMaxWidth {
+		return browseTableMaxWidth
+	}
+	return w
 }
 
 // browseColLayout describes the browse table's variable geometry for a given
@@ -516,7 +538,7 @@ func browseHeaderRow(l browseColLayout) string {
 // trailing slash and an em-dash size; missing metadata (no mtime, perms, or owner)
 // renders as an em-dash too. The whole row content is clipped to width so a long
 // name or value can't wrap, and the selected style covers the entire row.
-func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout, w int) string {
+func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout, tw int) string {
 	icon := "  "
 	name := e.Name
 	if e.IsDir {
@@ -549,7 +571,7 @@ func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout,
 		indicator = m.styles.gutter.Render("▎") + " "
 		content = m.styles.selected.Render(content)
 	}
-	return clip(indicator+content, w)
+	return clip(indicator+content, tw)
 }
 
 // browseMoreRow renders the synthetic row that marks an incomplete directory, so

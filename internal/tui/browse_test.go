@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
@@ -375,6 +376,46 @@ func lineContaining(t *testing.T, s, sub string) string {
 	}
 	t.Fatalf("no line containing %q in:\n%s", sub, s)
 	return ""
+}
+
+func TestBrowseTableWidthCapsWideTerminals(t *testing.T) {
+	cases := map[int]int{
+		80:                      80, // narrower than the cap: full width
+		browseTableMaxWidth:     browseTableMaxWidth,
+		browseTableMaxWidth + 1: browseTableMaxWidth, // just over: capped
+		240:                     browseTableMaxWidth, // far over: capped
+	}
+	for in, want := range cases {
+		if got := browseTableWidth(in); got != want {
+			t.Errorf("browseTableWidth(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// On a very wide terminal the file table is bounded to browseTableMaxWidth rather
+// than stretching the Name column the full width, so metadata never drifts to the
+// far right. Both the data row and the column header (which belong to the table)
+// must stay within the cap.
+func TestBrowseTableBoundedOnWideTerminal(t *testing.T) {
+	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
+	scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+		model.BrowseNode{Path: "/file.txt", Name: "file.txt", Size: 42, ModTime: mod, Permissions: "-rw-r--r--", UID: 1000, GID: 1000, OwnerKnown: true},
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 240, Height: 40})
+	view := stripANSI(m.View().Content)
+
+	// View() right-pads every line to the full terminal width as part of its
+	// layout block, so trim that trailing padding before measuring: what matters
+	// is that the table's content (the metadata) does not drift past the cap.
+	row := strings.TrimRight(lineContaining(t, view, "file.txt"), " ")
+	if w := lipgloss.Width(row); w > browseTableMaxWidth {
+		t.Errorf("file row width = %d, want <= %d (table must be capped on a wide terminal)\n%q", w, browseTableMaxWidth, row)
+	}
+	hdr := strings.TrimRight(lineContaining(t, view, "Owner"), " ")
+	if w := lipgloss.Width(hdr); w > browseTableMaxWidth {
+		t.Errorf("header row width = %d, want <= %d\n%q", w, browseTableMaxWidth, hdr)
+	}
 }
 
 // A node carrying explicit uid=0,gid=0 renders as a real "0:0" owner, while a node
