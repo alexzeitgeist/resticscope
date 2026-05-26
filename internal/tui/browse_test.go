@@ -418,6 +418,30 @@ func TestBrowseTableBoundedOnWideTerminal(t *testing.T) {
 	}
 }
 
+// A filename with a wide rune (here U+FE55, the small colon some apps substitute
+// for the filesystem-illegal ':') must not push the metadata columns out of
+// alignment: the Name cell is sized by display width, not rune count. Were it
+// rune-counted, the wide name would render one cell too wide and the trailing
+// Owner value would be clipped (e.g. 10316:1023 → 10316:102), the exact symptom
+// reported. Assert both the wide-rune and plain rows keep their full owner.
+func TestBrowseWideRuneNameKeepsColumnsAligned(t *testing.T) {
+	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
+	scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+		model.BrowseNode{Path: "/wide﹕name.txt", Name: "wide﹕name.txt", Size: 42, ModTime: mod, Permissions: "-rw-rw----", UID: 10316, GID: 1023, OwnerKnown: true},
+		model.BrowseNode{Path: "/plain.txt", Name: "plain.txt", Size: 42, ModTime: mod, Permissions: "-rw-rw----", UID: 10316, GID: 1023, OwnerKnown: true},
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	view := stripANSI(m.View().Content)
+
+	for _, name := range []string{"wide", "plain"} {
+		row := lineContaining(t, view, name)
+		if !strings.Contains(row, "10316:1023") {
+			t.Errorf("%s row lost owner alignment (want full 10316:1023)\n%q", name, row)
+		}
+	}
+}
+
 // A node carrying explicit uid=0,gid=0 renders as a real "0:0" owner, while a node
 // that omitted uid/gid renders the missing-owner em-dash — never a spurious 0:0.
 // Both rows carry a non-zero mtime so the Modified column is never an em-dash;

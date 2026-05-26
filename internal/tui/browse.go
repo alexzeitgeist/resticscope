@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
@@ -504,14 +505,42 @@ func browseLayout(width int) browseColLayout {
 	return l
 }
 
+// truncateWidth shortens s to at most max display cells, appending an ellipsis
+// when it has to cut. Unlike truncate (which counts runes), it measures each
+// rune's terminal width, so a filename with wide runes — CJK, emoji, or the
+// fullwidth/small colon some apps substitute for ':' — still fits its column
+// instead of shoving the metadata columns out of alignment. fmt's %-*s and
+// rune-based truncate both miscount such names.
+func truncateWidth(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= max {
+		return s
+	}
+	budget := max - 1 // reserve one cell for the ellipsis
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > budget {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String() + "…"
+}
+
 // browseCells formats one row's worth of columns — header or data — into the
 // shared column order so both align: Name(l.name,left) · Size(10,right) ·
 // [Modified(16,left)] · [Perms(10,left)] · [Owner(11,right)]. Callers join the
-// result with two spaces. Variable-width text cells must be truncated by the
-// caller; browseCells pads but does not clip.
+// result with two spaces. The Name cell carries arbitrary filenames, so it is
+// truncated and padded by display width (filenames can hold wide runes); the
+// fixed metadata cells are ASCII, so fmt's rune-count padding is exact for them.
 func browseCells(l browseColLayout, name, size, mod, perms, owner string) []string {
 	cells := []string{
-		fmt.Sprintf("%-*s", l.name, name),
+		padRight(truncateWidth(name, l.name), l.name),
 		fmt.Sprintf("%*s", browseSizeWidth, size),
 	}
 	if l.showMod {
@@ -545,8 +574,9 @@ func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout,
 		icon = "▸ "
 		name += "/"
 	}
-	// The name cell is icon + name, the name truncated so icon + name fits the flex.
-	nameCell := icon + truncate(name, l.name-2)
+	// The name cell is icon + name; browseCells truncates and pads it to the flex
+	// width by display width so wide-rune names don't misalign the columns.
+	nameCell := icon + name
 
 	size := "—"
 	if !e.IsDir {
