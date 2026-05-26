@@ -325,6 +325,172 @@ func TestBrowseLeaveClearsSessionState(t *testing.T) {
 	}
 }
 
+// At a wide width the browse table shows every metadata column (Modified, Perms,
+// Owner) with their values; narrowing the terminal drops Owner, then Perms, then
+// Modified in that priority order while Name and Size always remain.
+func TestBrowseRendersMetadataColumnsResponsively(t *testing.T) {
+	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
+	scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+		model.BrowseNode{Path: "/file.txt", Name: "file.txt", Size: 42, ModTime: mod, Permissions: "-rw-r--r--", UID: 1000, GID: 1000, OwnerKnown: true},
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+
+	// Wide: every promoted column header and value is present.
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	wide := stripANSI(m.View().Content)
+	for _, want := range []string{"Modified", "Perms", "Owner", "2026-05-26 11:28", "-rw-r--r--", "1000:1000"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("wide browse view missing %q\n---\n%s", want, wide)
+		}
+	}
+
+	// Narrow (width 50): only Modified survives the promotion budget, so the Perms
+	// and Owner columns and their values drop, while Name and Size stay.
+	m = update(t, m, tea.WindowSizeMsg{Width: 50, Height: 40})
+	narrow := stripANSI(m.View().Content)
+	if strings.Contains(narrow, "Owner") || strings.Contains(narrow, "1000:1000") {
+		t.Errorf("narrow browse view should drop the Owner column\n---\n%s", narrow)
+	}
+	if strings.Contains(narrow, "Perms") || strings.Contains(narrow, "-rw-r--r--") {
+		t.Errorf("narrow browse view should drop the Perms column\n---\n%s", narrow)
+	}
+	if !strings.Contains(narrow, "Name") || !strings.Contains(narrow, "file.txt") {
+		t.Errorf("narrow browse view must keep the Name column\n---\n%s", narrow)
+	}
+	if !strings.Contains(narrow, "Modified") {
+		t.Errorf("width 50 should still promote Modified\n---\n%s", narrow)
+	}
+}
+
+// lineContaining returns the first line of s that contains sub, failing the test
+// if none does. It lets owner/perms assertions target a specific table row rather
+// than the whole view, so a value rendered on one row can't accidentally satisfy
+// an assertion meant for another.
+func lineContaining(t *testing.T, s, sub string) string {
+	t.Helper()
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, sub) {
+			return line
+		}
+	}
+	t.Fatalf("no line containing %q in:\n%s", sub, s)
+	return ""
+}
+
+// A node carrying explicit uid=0,gid=0 renders as a real "0:0" owner, while a node
+// that omitted uid/gid renders the missing-owner em-dash — never a spurious 0:0.
+// Both rows carry a non-zero mtime so the Modified column is never an em-dash;
+// the assertions then target each row's own line, so the only em-dash on the anon
+// line comes from its missing owner cell (and a regression to 0:0 would fail it).
+func TestBrowseOwnerRendersRootVersusMissing(t *testing.T) {
+	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
+	scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+		model.BrowseNode{Path: "/root.txt", Name: "root.txt", Size: 1, ModTime: mod, Permissions: "-rw-------", UID: 0, GID: 0, OwnerKnown: true},
+		model.BrowseNode{Path: "/anon.txt", Name: "anon.txt", Size: 1, ModTime: mod, Permissions: "-rw-r--r--"},
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := stripANSI(m.View().Content)
+
+	rootLine := lineContaining(t, view, "root.txt")
+	if !strings.Contains(rootLine, "0:0") {
+		t.Errorf("a real root-owned node must render 0:0\n---\n%s", rootLine)
+	}
+
+	anonLine := lineContaining(t, view, "anon.txt")
+	if strings.Contains(anonLine, "0:0") {
+		t.Errorf("a node with missing owner metadata must not render 0:0\n---\n%s", anonLine)
+	}
+	if !strings.Contains(anonLine, "—") {
+		t.Errorf("a node with missing owner metadata must render an em-dash owner\n---\n%s", anonLine)
+	}
+}
+
+// Right arrow and l are aliases for Enter in browse: each opens the selected
+// directory. On a file they are a no-op (files have no open action).
+func TestBrowseRightArrowOpensDirectory(t *testing.T) {
+	for _, k := range []string{"right", "l"} {
+		t.Run(k, func(t *testing.T) {
+			scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+				bnode("/dir", "dir", true, 0),
+				bnode("/dir/child.txt", "child.txt", false, 5),
+			)
+			m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+			if m.browseDir != "/" {
+				t.Fatalf("precondition: browseDir = %q, want /", m.browseDir)
+			}
+			m = update(t, m, press(k)) // cursor is on /dir
+			if m.browseDir != "/dir" {
+				t.Errorf("%q should open the selected directory, browseDir = %q", k, m.browseDir)
+			}
+		})
+	}
+}
+
+func TestBrowseRightArrowOnFileIsNoOp(t *testing.T) {
+	for _, k := range []string{"right", "l"} {
+		t.Run(k, func(t *testing.T) {
+			scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+				bnode("/a.txt", "a.txt", false, 5),
+			)
+			m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+			m = update(t, m, press(k)) // cursor is on the file
+			if m.browseDir != "/" {
+				t.Errorf("%q on a file should be a no-op, browseDir = %q", k, m.browseDir)
+			}
+		})
+	}
+}
+
+// The help overlay's Browse section documents the open alias as enter/→/l, while
+// the compact browse footer must not advertise the right-arrow alias.
+func TestBrowseHelpDocumentsOpenAliasFooterHidesIt(t *testing.T) {
+	scan := browseScan(model.BrowseComplete, model.BrowseFrontier{},
+		bnode("/dir", "dir", true, 0),
+	)
+	m := openBrowse(t, newTestModel(t, browseApp(t, scan)))
+
+	if footer := stripANSI(m.footerView()); strings.Contains(footer, "→") {
+		t.Errorf("browse footer must not advertise the right-arrow open alias\n---\n%s", footer)
+	}
+
+	_, right := m.helpColumns()
+	var browse helpSection
+	for _, s := range right {
+		if s.title == "Browse" {
+			browse = s
+		}
+	}
+	if browse.title == "" {
+		t.Fatal("help overlay missing Browse section")
+	}
+	found := false
+	for _, e := range browse.entries {
+		if e.desc == "open directory" {
+			found = true
+			if e.keys != "enter/→/l" {
+				t.Errorf("Browse open row keys = %q, want enter/→/l", e.keys)
+			}
+		}
+	}
+	if !found {
+		t.Error("Browse section missing the 'open directory' row")
+	}
+}
+
+// The detail-view footer reads "b browse" (shortened from "browse files").
+func TestDetailFooterBrowseWording(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter")) // enter detail view
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "browse") {
+		t.Errorf("detail footer should advertise browse\n---\n%s", footer)
+	}
+	if strings.Contains(footer, "browse files") {
+		t.Errorf("detail footer should read 'b browse', not 'browse files'\n---\n%s", footer)
+	}
+}
+
 // Quitting (ctrl+c) while a browse load is in flight cancels the browse context so
 // the restic subprocess does not outlive the UI.
 func TestBrowseQuitCancelsInFlightLoad(t *testing.T) {

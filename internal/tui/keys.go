@@ -15,6 +15,7 @@ type keyMap struct {
 	Shell      key.Binding
 	Browse     key.Binding
 	Parent     key.Binding // browse: step to the parent directory (backspace/left)
+	Open       key.Binding // browse: open the selected directory (right/l), alias for enter
 	Refresh    key.Binding
 	RefreshAll key.Binding
 	Filter     key.Binding
@@ -40,8 +41,9 @@ func defaultKeys() keyMap {
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
-		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse files")),
+		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
 		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
+		Open:       key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "open")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),

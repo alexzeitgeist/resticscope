@@ -168,6 +168,58 @@ func TestBuildBrowseTreeRealNodeClearsSynthetic(t *testing.T) {
 	}
 }
 
+func TestBuildBrowseTreePreservesMetadata(t *testing.T) {
+	mod := time.Date(2026, 5, 26, 11, 0, 0, 0, time.UTC)
+	scan := scanOf(BrowseComplete, BrowseFrontier{},
+		// A real root-owned dir: explicit uid=0,gid=0 with OwnerKnown set.
+		BrowseNode{Path: "/home", Name: "home", IsDir: true, ModTime: mod, Permissions: "drwxr-xr-x", UID: 0, GID: 0, OwnerKnown: true},
+		BrowseNode{Path: "/home/f.txt", Name: "f.txt", Size: 42, ModTime: mod, Permissions: "-rw-r--r--", UID: 1000, GID: 1000, OwnerKnown: true},
+		// A node that carried no uid/gid: OwnerKnown stays false.
+		BrowseNode{Path: "/home/anon", Name: "anon", Size: 1, Permissions: "-rw-r--r--"},
+	)
+	tree := BuildBrowseTree(scan, BrowseLimits{}).Tree
+
+	f := tree.ByPath["/home/f.txt"]
+	if f == nil {
+		t.Fatal("missing /home/f.txt")
+	}
+	if !f.ModTime.Equal(mod) || f.Permissions != "-rw-r--r--" || !f.OwnerKnown || f.UID != 1000 || f.GID != 1000 {
+		t.Errorf("file metadata not preserved: %+v", f)
+	}
+	// Explicit root ownership must be retained as a real 0:0, not look missing.
+	h := tree.ByPath["/home"]
+	if !h.OwnerKnown || h.UID != 0 || h.GID != 0 {
+		t.Errorf("root-owned dir lost explicit 0:0 owner: %+v", h)
+	}
+	if anon := tree.ByPath["/home/anon"]; anon == nil || anon.OwnerKnown {
+		t.Errorf("a node without uid/gid must not be OwnerKnown: %+v", anon)
+	}
+}
+
+func TestBuildBrowseTreePlaceholderFillKeepsMetadata(t *testing.T) {
+	// A child arrives before its parent so ensureDir synthesizes the parent as an
+	// Incomplete placeholder; the real parent node (with metadata) arrives later and
+	// must overwrite the placeholder with its real metadata and clear Incomplete.
+	mod := time.Date(2026, 5, 26, 9, 30, 0, 0, time.UTC)
+	scan := scanOf(BrowseComplete, BrowseFrontier{},
+		BrowseNode{Path: "/a/b/c.txt", Name: "c.txt", Size: 3},
+		BrowseNode{Path: "/a/b", Name: "b", IsDir: true, ModTime: mod, Permissions: "drwxr-xr-x", UID: 1000, GID: 1000, OwnerKnown: true},
+		BrowseNode{Path: "/a", Name: "a", IsDir: true},
+	)
+	tree := BuildBrowseTree(scan, BrowseLimits{}).Tree
+
+	b := tree.ByPath["/a/b"]
+	if b == nil {
+		t.Fatal("missing /a/b")
+	}
+	if b.Incomplete {
+		t.Errorf("/a/b should be complete after its real node arrived: %+v", b)
+	}
+	if !b.ModTime.Equal(mod) || b.Permissions != "drwxr-xr-x" || !b.OwnerKnown || b.UID != 1000 || b.GID != 1000 {
+		t.Errorf("placeholder-fill did not carry real metadata onto the synthesized parent: %+v", b)
+	}
+}
+
 func TestBuildBrowseTreeNormalizesPaths(t *testing.T) {
 	// A path missing its leading slash or carrying a trailing one must land on the
 	// same normalized key as its canonical spelling, so a directory is never split

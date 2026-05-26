@@ -17,6 +17,10 @@ const (
 	nodeHome = `{"name":"home","type":"dir","path":"/home","size":0,"struct_type":"node"}`
 	nodeAlex = `{"name":"alex","type":"dir","path":"/home/alex","size":0,"struct_type":"node"}`
 	nodeFile = `{"name":"f.txt","type":"file","path":"/home/alex/f.txt","size":42,"struct_type":"node"}`
+	// nodeMeta carries the full per-node metadata restic 0.18.1 emits (mtime,
+	// permissions, uid, gid) so the decode of the new fields can be asserted
+	// without disturbing the byte-exact fixtures the cap tests depend on.
+	nodeMeta = `{"name":"meta.txt","type":"file","path":"/home/alex/meta.txt","size":7,"uid":1000,"gid":1000,"mode":436,"permissions":"-rw-rw-r--","mtime":"2026-05-26T11:28:49Z","struct_type":"node"}`
 )
 
 func ndjson(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
@@ -109,6 +113,53 @@ func TestListSnapshotTreeComplete(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("args %q missing %q", got, want)
 		}
+	}
+}
+
+func TestListSnapshotTreeParsesMetadata(t *testing.T) {
+	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeMeta)}
+	c := &Client{Stream: fs}
+	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	if err != nil {
+		t.Fatalf("ListSnapshotTree: %v", err)
+	}
+	// The metadata-bearing file is the last node decoded.
+	var got *model.BrowseNode
+	for i := range scan.Nodes {
+		if scan.Nodes[i].Path == "/home/alex/meta.txt" {
+			got = &scan.Nodes[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("meta.txt node missing from %d nodes", len(scan.Nodes))
+	}
+	wantMod := time.Date(2026, 5, 26, 11, 28, 49, 0, time.UTC)
+	if !got.ModTime.Equal(wantMod) {
+		t.Errorf("ModTime = %v, want %v", got.ModTime, wantMod)
+	}
+	if got.Permissions != "-rw-rw-r--" {
+		t.Errorf("Permissions = %q, want -rw-rw-r--", got.Permissions)
+	}
+	if !got.OwnerKnown || got.UID != 1000 || got.GID != 1000 {
+		t.Errorf("owner = %d:%d (known=%v), want 1000:1000 (known)", got.UID, got.GID, got.OwnerKnown)
+	}
+}
+
+// A node that omits uid/gid must decode with OwnerKnown false (so the renderer
+// shows a missing-owner em-dash, never a spurious 0:0). The existing nodeHome
+// fixture carries no uid/gid.
+func TestListSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
+	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
+	c := &Client{Stream: fs}
+	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	if err != nil {
+		t.Fatalf("ListSnapshotTree: %v", err)
+	}
+	if len(scan.Nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(scan.Nodes))
+	}
+	if scan.Nodes[0].OwnerKnown {
+		t.Errorf("a node without uid/gid must not be OwnerKnown: %+v", scan.Nodes[0])
 	}
 }
 

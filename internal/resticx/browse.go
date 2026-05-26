@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 
 	"resticscope/internal/model"
 )
@@ -30,13 +31,19 @@ var errBrowseByteLimit = errors.New("resticx: browse byte limit reached")
 // lsNode mirrors the subset of `restic ls --json` records browse needs. restic
 // emits a leading snapshot record (struct_type != "node") then one record per
 // filesystem node; we keep only nodes. The JSON contract is additive, so unknown
-// fields are ignored.
+// fields are ignored. mtime decodes straight into a time.Time (restic emits
+// RFC3339, which Go's JSON unmarshals). uid/gid are pointers so a node that
+// omits them is distinguishable from a real root-owned node (uid=0,gid=0).
 type lsNode struct {
-	StructType string `json:"struct_type"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Path       string `json:"path"`
-	Size       int64  `json:"size"`
+	StructType  string    `json:"struct_type"`
+	Name        string    `json:"name"`
+	Type        string    `json:"type"`
+	Path        string    `json:"path"`
+	Size        int64     `json:"size"`
+	ModTime     time.Time `json:"mtime"`
+	Permissions string    `json:"permissions"`
+	UID         *uint32   `json:"uid"`
+	GID         *uint32   `json:"gid"`
 }
 
 // ListSnapshotTree streams a recursive listing of one snapshot's full namespace
@@ -130,7 +137,15 @@ func (s *browseStream) consume(r io.Reader) error {
 			if n.StructType != "node" {
 				continue // leading snapshot record
 			}
-			node := model.BrowseNode{Path: n.Path, Name: n.Name, IsDir: n.Type == "dir", Size: n.Size}
+			node := model.BrowseNode{
+				Path: n.Path, Name: n.Name, IsDir: n.Type == "dir", Size: n.Size,
+				ModTime: n.ModTime, Permissions: n.Permissions,
+			}
+			if n.UID != nil && n.GID != nil {
+				node.UID = *n.UID
+				node.GID = *n.GID
+				node.OwnerKnown = true
+			}
 			s.nodes = append(s.nodes, node)
 			s.frontier = model.BrowseFrontier{Path: node.Path, IsDir: node.IsDir}
 			if s.limits.MaxEntries > 0 && len(s.nodes) >= s.limits.MaxEntries {

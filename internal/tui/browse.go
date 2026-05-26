@@ -207,7 +207,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.browseCursor = clampCursor(m.browseCursor-m.browseVisible(), m.browseRowCount())
 	case key.Matches(msg, m.keys.PageDown):
 		m.browseCursor = clampCursor(m.browseCursor+m.browseVisible(), m.browseRowCount())
-	case key.Matches(msg, m.keys.Enter):
+	case key.Matches(msg, m.keys.Enter), key.Matches(msg, m.keys.Open):
 		m = m.openBrowseDir()
 	case key.Matches(msg, m.keys.Parent):
 		m = m.browseToParent()
@@ -392,28 +392,33 @@ func (m Model) browseSummaryLine() string {
 	return strings.Join(parts, " · ")
 }
 
-// browseList renders the scrolling window of the current directory's children,
-// marking the cursor with the accent gutter, appending the synthetic
-// "more entries not loaded" row for an incomplete directory, and a window note
-// when the list is scrolled. Files show their size; directories a trailing slash.
+// browseList renders the scrolling window of the current directory's children as
+// a responsive table: a dim column header, then rows marking the cursor with the
+// accent gutter, the synthetic "more entries not loaded" row for an incomplete
+// directory, and a window note when the list is scrolled. The header is shown for
+// empty and incomplete-empty directories too so the table shape stays stable.
 func (m Model) browseList(dir *model.BrowseEntry, w int) string {
 	if dir == nil {
 		return clip(m.styles.meta.Render("  (no tree)"), w)
 	}
+	l := browseLayout(w)
+	header := clip(m.styles.dim.Render(browseHeaderRow(l)), w)
+
 	total := len(dir.Children)
 	if total == 0 {
 		if dir.HasMoreRow() {
-			return m.browseMoreRow(w)
+			return header + "\n" + m.browseMoreRow(w)
 		}
-		return clip(m.styles.meta.Render("  (empty)"), w)
+		return header + "\n" + clip(m.styles.meta.Render("  (empty)"), w)
 	}
 
 	cur := clampCursor(m.browseCursor, total)
 	start, end := snapshotWindow(cur, total, m.browseVisible())
 
-	lines := make([]string, 0, end-start+2)
+	lines := make([]string, 0, end-start+3)
+	lines = append(lines, header)
 	for i := start; i < end; i++ {
-		lines = append(lines, m.browseRow(dir.Children[i], i == cur, w))
+		lines = append(lines, m.browseRow(dir.Children[i], i == cur, l, w))
 	}
 	if dir.HasMoreRow() && end >= total {
 		lines = append(lines, m.browseMoreRow(w))
@@ -424,36 +429,127 @@ func (m Model) browseList(dir *model.BrowseEntry, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// browseRow renders one entry: an accent gutter on the cursor row, a dir/file
-// icon, the (truncated) name, and a right-aligned size column for files. The
-// whole line is clipped to width so a long name can't wrap.
-func (m Model) browseRow(e *model.BrowseEntry, selected bool, w int) string {
-	const sizeCol = 10
-	indicator := "  "
-	if selected {
-		indicator = m.styles.gutter.Render("▎") + " "
+// browseColLayout describes the browse table's variable geometry for a given
+// width: the Name flex width and which of the optional Modified/Perms/Owner
+// columns are promoted. It mirrors snapLayout so the two tables behave alike.
+type browseColLayout struct {
+	name      int
+	showMod   bool
+	showPerms bool
+	showOwner bool
+}
+
+const (
+	browseSizeWidth  = 10 // right-aligned Size column (matches the old single size column)
+	browseModWidth   = 16 // "2006-01-02 15:04"
+	browsePermsWidth = 10 // os.FileMode.String() is usually 10 chars; longer (sticky/setuid) is clipped
+	browseOwnerWidth = 11 // "uid:gid"; real uids are small, a pathological pair is clipped
+	browseNameMin    = 16 // the Name flex must stay at least this wide for a column to be promoted
+)
+
+// browseLayout sizes the browse table's columns to the total width. A two-cell
+// indicator, the Name flex, and the fixed Size column (plus their two-space gaps)
+// are always reserved. Modified then Perms then Owner are promoted in priority
+// order, each only while the Name flex would stay at least browseNameMin wide
+// afterwards; promotion stops at the first that won't fit so a lower-priority
+// column never appears without a higher one. It mirrors snapshotLayout.
+func browseLayout(width int) browseColLayout {
+	const indicator, gap = 2, 2 // the gutter, and the one gap before Size
+	baseFixed := indicator + browseSizeWidth + gap
+
+	var l browseColLayout
+	reservedExtra := 0
+	for _, c := range []struct {
+		width int
+		on    *bool
+	}{
+		{browseModWidth, &l.showMod},
+		{browsePermsWidth, &l.showPerms},
+		{browseOwnerWidth, &l.showOwner},
+	} {
+		cost := c.width + 2 // the column plus one more two-space separator
+		if width-baseFixed-reservedExtra-cost < browseNameMin {
+			break
+		}
+		reservedExtra += cost
+		*c.on = true
 	}
+
+	l.name = width - baseFixed - reservedExtra
+	if l.name < 1 {
+		l.name = 1
+	}
+	return l
+}
+
+// browseCells formats one row's worth of columns — header or data — into the
+// shared column order so both align: Name(l.name,left) · Size(10,right) ·
+// [Modified(16,left)] · [Perms(10,left)] · [Owner(11,right)]. Callers join the
+// result with two spaces. Variable-width text cells must be truncated by the
+// caller; browseCells pads but does not clip.
+func browseCells(l browseColLayout, name, size, mod, perms, owner string) []string {
+	cells := []string{
+		fmt.Sprintf("%-*s", l.name, name),
+		fmt.Sprintf("%*s", browseSizeWidth, size),
+	}
+	if l.showMod {
+		cells = append(cells, fmt.Sprintf("%-*s", browseModWidth, mod))
+	}
+	if l.showPerms {
+		cells = append(cells, fmt.Sprintf("%-*s", browsePermsWidth, perms))
+	}
+	if l.showOwner {
+		cells = append(cells, fmt.Sprintf("%*s", browseOwnerWidth, owner))
+	}
+	return cells
+}
+
+// browseHeaderRow is the dim column-label row, built from the same browseCells
+// layout as the data rows (plus the two-cell gutter the rows get from their
+// indicator) so labels line up with their values at every width.
+func browseHeaderRow(l browseColLayout) string {
+	return "  " + strings.Join(browseCells(l, "Name", "Size", "Modified", "Perms", "Owner"), "  ")
+}
+
+// browseRow renders one entry as a table row: an accent gutter on the cursor row,
+// then the width-promoted Name/Size/Modified/Perms/Owner cells. Directories show a
+// trailing slash and an em-dash size; missing metadata (no mtime, perms, or owner)
+// renders as an em-dash too. The whole row content is clipped to width so a long
+// name or value can't wrap, and the selected style covers the entire row.
+func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout, w int) string {
 	icon := "  "
 	name := e.Name
-	size := ""
 	if e.IsDir {
 		icon = "▸ "
 		name += "/"
-	} else {
+	}
+	// The name cell is icon + name, the name truncated so icon + name fits the flex.
+	nameCell := icon + truncate(name, l.name-2)
+
+	size := "—"
+	if !e.IsDir {
 		size = humanize.Bytes(e.Size)
 	}
+	mod := "—"
+	if !e.ModTime.IsZero() {
+		mod = e.ModTime.Format("2006-01-02 15:04")
+	}
+	perms := "—"
+	if e.Permissions != "" {
+		perms = truncate(e.Permissions, browsePermsWidth)
+	}
+	owner := "—"
+	if e.OwnerKnown {
+		owner = truncate(fmt.Sprintf("%d:%d", e.UID, e.GID), browseOwnerWidth)
+	}
 
-	avail := w - 2 /*indicator*/ - 2 /*icon*/ - 2 /*gap*/ - sizeCol
-	if avail < 1 {
-		avail = 1
-	}
-	nameCell := truncate(name, avail)
+	content := strings.Join(browseCells(l, nameCell, size, mod, perms, owner), "  ")
+	indicator := "  "
 	if selected {
-		nameCell = m.styles.selected.Render(nameCell)
+		indicator = m.styles.gutter.Render("▎") + " "
+		content = m.styles.selected.Render(content)
 	}
-	row := indicator + m.styles.dim.Render(icon) + padRight(nameCell, avail) +
-		"  " + m.styles.meta.Render(fmt.Sprintf("%*s", sizeCol, size))
-	return clip(row, w)
+	return clip(indicator+content, w)
 }
 
 // browseMoreRow renders the synthetic row that marks an incomplete directory, so
@@ -462,12 +558,20 @@ func (m Model) browseMoreRow(w int) string {
 	return clip("  "+m.styles.dim.Render("… more entries not loaded"), w)
 }
 
+// browseAuxRows is the worst-case number of fixed lines browseList renders around
+// the scrolling window: the column header, plus — for a scrolled, incomplete
+// directory — both the synthetic "… more entries not loaded" row and the
+// "showing N–M of T" note. browseVisible reserves all three so the footer is
+// never overlapped, even when every auxiliary line is present at once.
+const browseAuxRows = 3
+
 // browseVisible is how many entry rows the browse list shows at once: the height
-// minus the header, gaps, footer, the two browse meta rows, and a reserved line
-// for the scroll/more note. Floored at 1.
+// minus the app header, gaps, footer, the two browse meta rows, and the three
+// auxiliary table lines (column header + synthetic-more row + scroll note).
+// Floored at 1.
 func (m Model) browseVisible() int {
 	_, h := m.effSize()
-	overhead := headerRows + 2*gapRows + m.footerRows() + browseMetaRows + 1
+	overhead := headerRows + 2*gapRows + m.footerRows() + browseMetaRows + browseAuxRows
 	if n := h - overhead; n >= 1 {
 		return n
 	}

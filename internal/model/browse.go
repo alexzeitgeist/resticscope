@@ -17,9 +17,10 @@ import (
 
 // approxBytesPerEntry is a coarse per-node memory estimate used only to give the
 // user rough guidance on how much a tree is retaining. It is intentionally an
-// order-of-magnitude figure (path + name strings + struct overhead), not a
-// measured value, and is derived from the entry count rather than JSON bytes.
-const approxBytesPerEntry = 256
+// order-of-magnitude figure (path + name strings + a retained time.Time and
+// permissions string + struct overhead), not a measured value, and is derived
+// from the entry count rather than JSON bytes.
+const approxBytesPerEntry = 320
 
 // BrowseLimits are the five caps that bound one browse crawl. The initial caps
 // (MaxEntries/MaxJSONBytes/Timeout) bound a single run; the session ceilings
@@ -64,12 +65,18 @@ func (r PartialReason) Partial() bool { return r != BrowseComplete }
 
 // BrowseNode is one flat node as decoded from `restic ls --json`. Path is the
 // absolute path within the snapshot; the builder turns the flat stream into a
-// tree keyed by Path.
+// tree keyed by Path. OwnerKnown distinguishes a node that carried uid/gid (so
+// UID:GID is meaningful, including a real root-owned 0:0) from one that omitted
+// them (rendered as a missing value, never as 0:0).
 type BrowseNode struct {
-	Path  string
-	Name  string
-	IsDir bool
-	Size  int64
+	Path        string
+	Name        string
+	IsDir       bool
+	Size        int64
+	ModTime     time.Time
+	Permissions string
+	UID, GID    uint32
+	OwnerKnown  bool
 }
 
 // BrowseFrontier is the last node the scan decoded before it was cut off. It is
@@ -97,12 +104,16 @@ type BrowseScan struct {
 // ancestor/frontier of a truncated crawl); the renderer shows such a directory
 // with a "more entries not loaded" row so it is never presented as complete.
 type BrowseEntry struct {
-	Path       string
-	Name       string
-	IsDir      bool
-	Size       int64
-	Children   []*BrowseEntry
-	Incomplete bool
+	Path        string
+	Name        string
+	IsDir       bool
+	Size        int64
+	ModTime     time.Time
+	Permissions string
+	UID, GID    uint32
+	OwnerKnown  bool // the node carried uid/gid; distinguishes real 0:0 from missing
+	Children    []*BrowseEntry
+	Incomplete  bool
 }
 
 // HasMoreRow reports whether listing this directory should append the synthetic
@@ -214,10 +225,17 @@ func insertNode(tree *BrowseTree, n BrowseNode) {
 		e.Name = name
 		e.IsDir = n.IsDir
 		e.Size = n.Size
+		e.ModTime = n.ModTime
+		e.Permissions = n.Permissions
+		e.UID, e.GID, e.OwnerKnown = n.UID, n.GID, n.OwnerKnown
 		e.Incomplete = false
 		return
 	}
-	e := &BrowseEntry{Path: p, Name: name, IsDir: n.IsDir, Size: n.Size}
+	e := &BrowseEntry{
+		Path: p, Name: name, IsDir: n.IsDir, Size: n.Size,
+		ModTime: n.ModTime, Permissions: n.Permissions,
+		UID: n.UID, GID: n.GID, OwnerKnown: n.OwnerKnown,
+	}
 	tree.ByPath[p] = e
 	parent.Children = append(parent.Children, e)
 }
