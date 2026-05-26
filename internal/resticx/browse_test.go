@@ -189,6 +189,24 @@ func TestListSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
 	}
 }
 
+func TestListSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
+	// A genuine JSON decode failure (not a cap, not a clean EOF) must surface as
+	// KindParse, not a generically-classified run error.
+	fs := &fakeStream{data: snapLine + "\nnot json at all\n"}
+	c := &Client{Stream: fs}
+	scan, err := c.ListSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseLimits())
+	if err == nil {
+		t.Fatal("malformed JSON must return an error, not a scan")
+	}
+	var re *Error
+	if !asResticError(err, &re) || re.Kind != KindParse {
+		t.Fatalf("want KindParse error, got %v", err)
+	}
+	if len(scan.Nodes) != 0 {
+		t.Errorf("error path must return an empty scan, got %d nodes", len(scan.Nodes))
+	}
+}
+
 func TestListSnapshotTreeResticFailureClassifies(t *testing.T) {
 	fs := &fakeStream{err: fakeExit(10), stderr: []byte("repository does not exist")}
 	c := &Client{Stream: fs}

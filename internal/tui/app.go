@@ -427,7 +427,7 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if name, ok := m.actionRepo(); ok {
 				m.statusMsg = ""
 				var cmd tea.Cmd
-				m, cmd = m.startBrowse(name, snap.ID, browseLimits(m.app.Cfg.Browse))
+				m, cmd = m.startBrowse(name, snap.ID, m.app.Cfg.Browse.Limits())
 				return m, cmd
 			}
 		}

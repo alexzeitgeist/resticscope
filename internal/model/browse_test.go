@@ -168,6 +168,37 @@ func TestBuildBrowseTreeRealNodeClearsSynthetic(t *testing.T) {
 	}
 }
 
+func TestBuildBrowseTreeNormalizesPaths(t *testing.T) {
+	// A path missing its leading slash or carrying a trailing one must land on the
+	// same normalized key as its canonical spelling, so a directory is never split
+	// across two keys (or duplicated as a child).
+	scan := scanOf(BrowseComplete, BrowseFrontier{},
+		dir("home", "home"),        // missing leading slash
+		dir("/home/alex/", "alex"), // trailing slash
+		file("/home/alex/notes.txt", "notes.txt", 7),
+	)
+	tree := BuildBrowseTree(scan, BrowseLimits{}).Tree
+
+	for _, p := range []string{"/home", "/home/alex", "/home/alex/notes.txt"} {
+		if tree.ByPath[p] == nil {
+			t.Errorf("ByPath missing normalized key %s", p)
+		}
+	}
+	for _, p := range []string{"home", "/home/alex/"} {
+		if tree.ByPath[p] != nil {
+			t.Errorf("un-normalized key %q should not exist in the tree", p)
+		}
+	}
+	// One child each proves the spellings collapsed to a single directory rather
+	// than duplicating it.
+	if got := childNames(tree.ByPath["/home"]); !eq(got, []string{"alex"}) {
+		t.Errorf("/home children = %v, want [alex]", got)
+	}
+	if got := childNames(tree.ByPath["/home/alex"]); !eq(got, []string{"notes.txt"}) {
+		t.Errorf("/home/alex children = %v, want [notes.txt]", got)
+	}
+}
+
 func TestByPathResolvesEveryNode(t *testing.T) {
 	scan := scanOf(BrowseComplete, BrowseFrontier{},
 		dir("/a", "a"),

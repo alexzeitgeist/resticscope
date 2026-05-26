@@ -154,26 +154,61 @@ func BuildBrowseTree(scan BrowseScan, limits BrowseLimits) BrowseResult {
 		markFrontier(tree, scan.Frontier)
 	}
 
+	// LoadedEntries is normally set by resticx; fall back to the node count so an
+	// alternate/future scan source that leaves it zero still reports a sensible
+	// count and retained-memory estimate (a no-op for resticx, which always sets it).
+	loaded := scan.LoadedEntries
+	if loaded == 0 {
+		loaded = len(scan.Nodes)
+	}
+
 	return BrowseResult{
 		Tree:                tree,
 		Reason:              scan.Reason,
-		LoadedEntries:       scan.LoadedEntries,
+		LoadedEntries:       loaded,
 		JSONBytes:           scan.JSONBytes,
 		Limits:              limits,
 		Frontier:            scan.Frontier,
-		ApproxRetainedBytes: approxRetainedBytes(scan.LoadedEntries),
+		ApproxRetainedBytes: approxRetainedBytes(loaded),
 	}
+}
+
+// cleanBrowsePath normalizes a node path to a rooted, lexically clean key so the
+// tree is indexed consistently regardless of how restic spelled the path (a
+// missing leading slash or a trailing slash must not split a directory across
+// two keys). An empty path is treated as the root.
+func cleanBrowsePath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return path.Clean(p)
+}
+
+// browseName picks a display name for a node: its emitted name when present,
+// else the base of its (already cleaned) path, with the root shown as "/".
+func browseName(name, p string) string {
+	if name != "" {
+		return name
+	}
+	if p == "/" {
+		return "/"
+	}
+	return path.Base(p)
 }
 
 // insertNode places one node under its parent directory, creating the entry if
 // it is new or filling in real data over a previously synthesized placeholder.
 func insertNode(tree *BrowseTree, n BrowseNode) {
-	parent := ensureDir(tree, path.Dir(n.Path))
-	name := n.Name
-	if name == "" {
-		name = path.Base(n.Path)
+	p := cleanBrowsePath(n.Path)
+	if p == "/" {
+		return // the root record carries nothing to insert; root is pre-seeded
 	}
-	if e, ok := tree.ByPath[n.Path]; ok {
+	parent := ensureDir(tree, path.Dir(p))
+	name := browseName(n.Name, p)
+	if e, ok := tree.ByPath[p]; ok {
 		// A child arrived before this node and synthesized it as a placeholder;
 		// fill in the real metadata and clear the synthetic-incomplete flag.
 		e.Name = name
@@ -182,8 +217,8 @@ func insertNode(tree *BrowseTree, n BrowseNode) {
 		e.Incomplete = false
 		return
 	}
-	e := &BrowseEntry{Path: n.Path, Name: name, IsDir: n.IsDir, Size: n.Size}
-	tree.ByPath[n.Path] = e
+	e := &BrowseEntry{Path: p, Name: name, IsDir: n.IsDir, Size: n.Size}
+	tree.ByPath[p] = e
 	parent.Children = append(parent.Children, e)
 }
 
@@ -191,6 +226,7 @@ func insertNode(tree *BrowseTree, n BrowseNode) {
 // directories up to the root for any missing ancestor. The root always exists
 // (BuildBrowseTree seeds it), so recursion terminates there.
 func ensureDir(tree *BrowseTree, p string) *BrowseEntry {
+	p = cleanBrowsePath(p)
 	if e, ok := tree.ByPath[p]; ok {
 		return e
 	}
@@ -220,17 +256,18 @@ func sortChildren(children []*BrowseEntry) {
 // children. A frontier file is a fully-known leaf, so only its ancestors are
 // marked. An empty frontier (truncated before any node) marks the root.
 func markFrontier(tree *BrowseTree, f BrowseFrontier) {
-	if f.Path == "" || f.Path == "/" {
+	fp := cleanBrowsePath(f.Path)
+	if fp == "/" {
 		tree.Root.Incomplete = true
 		return
 	}
-	for _, d := range ancestorDirs(f.Path) {
+	for _, d := range ancestorDirs(fp) {
 		if e, ok := tree.ByPath[d]; ok {
 			e.Incomplete = true
 		}
 	}
 	if f.IsDir {
-		if e, ok := tree.ByPath[f.Path]; ok {
+		if e, ok := tree.ByPath[fp]; ok {
 			e.Incomplete = true
 		}
 	}

@@ -54,13 +54,25 @@ func Load(path string) (*Config, error) {
 }
 
 // Decode parses TOML into a Config. Value-normalization defaults live in
-// Normalize, not here; the sole exception is refresh_on_open, which must be
-// seeded before decoding because a plain bool cannot tell an absent key from an
-// explicit `false` afterward (so its default-true belongs pre-decode). It
+// Normalize, not here, with two deliberate exceptions seeded pre-decode:
+// refresh_on_open (a plain bool cannot tell an absent key from an explicit
+// `false` afterward, so its default-true must precede decoding) and the browse
+// caps. The browse caps are seeded here for the same reason in reverse: seeding
+// them before decode lets an explicit `0` overwrite the default and survive into
+// validation as a rejected value, while an omitted key keeps the default. It
 // rejects unknown keys so typos in config surface as errors rather than being
 // silently ignored.
 func Decode(data []byte) (*Config, error) {
-	cfg := Config{Global: Global{RefreshOnOpen: true}}
+	cfg := Config{
+		Global: Global{RefreshOnOpen: true},
+		Browse: Browse{
+			MaxEntries:          defaultBrowseMaxEntries,
+			MaxJSONBytes:        defaultBrowseMaxJSONBytes,
+			Timeout:             Duration(defaultBrowseTimeout),
+			MaxSessionEntries:   defaultBrowseMaxSessionEntries,
+			MaxSessionJSONBytes: defaultBrowseMaxSessionJSONBytes,
+		},
+	}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -104,22 +116,8 @@ func (c *Config) Normalize(home string) {
 		g.ResticCommandTimeout = Duration(defaultResticCommandTimeout)
 	}
 
-	b := &c.Browse
-	if b.MaxEntries == 0 {
-		b.MaxEntries = defaultBrowseMaxEntries
-	}
-	if b.MaxJSONBytes == 0 {
-		b.MaxJSONBytes = defaultBrowseMaxJSONBytes
-	}
-	if b.Timeout == 0 {
-		b.Timeout = Duration(defaultBrowseTimeout)
-	}
-	if b.MaxSessionEntries == 0 {
-		b.MaxSessionEntries = defaultBrowseMaxSessionEntries
-	}
-	if b.MaxSessionJSONBytes == 0 {
-		b.MaxSessionJSONBytes = defaultBrowseMaxSessionJSONBytes
-	}
+	// Browse caps are seeded with their defaults in Decode (not here) so an
+	// explicit `0` is distinguishable from an omitted key and reaches validation.
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {

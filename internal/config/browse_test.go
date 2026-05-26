@@ -3,7 +3,6 @@ package config
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestBrowseDefaultsApplied(t *testing.T) {
@@ -123,18 +122,19 @@ bogus = 5
 	}
 }
 
-// An explicit zero is treated like an omitted value: Normalize fills the default,
-// consistent with the rest of the config, so it validates cleanly.
-func TestBrowseZeroBecomesDefault(t *testing.T) {
-	cfg, err := load(t, minimalTOML+`
+// An explicit zero is no longer treated like an omitted value. Browse caps are
+// seeded with their defaults before decode, so a configured `0` overwrites the
+// default and survives into validation, where it is rejected — letting a typo'd
+// or deliberately-zeroed cap fail loudly instead of silently defaulting.
+func TestBrowseExplicitZeroRejected(t *testing.T) {
+	_, err := load(t, minimalTOML+`
 [browse]
 max_entries = 0
 `)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected validation error for explicit max_entries = 0, got nil")
 	}
-	if cfg.Browse.MaxEntries != defaultBrowseMaxEntries {
-		t.Errorf("explicit zero max_entries = %d, want default %d", cfg.Browse.MaxEntries, defaultBrowseMaxEntries)
+	if !strings.Contains(err.Error(), "browse.max_entries must be positive") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "browse.max_entries must be positive")
 	}
-	_ = time.Second
 }

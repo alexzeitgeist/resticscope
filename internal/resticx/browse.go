@@ -64,7 +64,7 @@ func (c *Client) ListSnapshotTree(ctx context.Context, t Target, creds Creds, sn
 
 	env := c.buildEnv(t, creds)
 	st := &browseStream{limits: limits, cancel: cancel}
-	stderr, runErr := c.Stream.RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
+	stderr, runErr := c.streamRunner().RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
 	case st.capped && len(st.nodes) > 0:
@@ -76,8 +76,30 @@ func (c *Client) ListSnapshotTree(ctx context.Context, t Target, creds Creds, sn
 		st.reason = model.BrowseComplete
 		return st.scan(), nil
 	default:
+		// A genuine JSON decode failure is the real cause when one occurred;
+		// surface it as KindParse rather than letting classify mislabel the
+		// generic run state (matching the snapshots-parse precedent).
+		if st.decodeErr != nil {
+			return model.BrowseScan{}, &Error{Kind: KindParse, Op: "ls", wrapped: st.decodeErr}
+		}
 		return model.BrowseScan{}, c.classify(bctx, "ls", runErr, stderr)
 	}
+}
+
+// streamRunner returns the StreamRunner to use for a browse crawl. The streaming
+// seam (Stream) is preferred; when it is unset, a Runner that also implements
+// StreamRunner is used, and finally the production ExecRunner. This lets a Client
+// wired with only Runner still browse without a separate Stream assignment.
+func (c *Client) streamRunner() StreamRunner {
+	if c.Stream != nil {
+		return c.Stream
+	}
+	if c.Runner != nil {
+		if sr, ok := c.Runner.(StreamRunner); ok {
+			return sr
+		}
+	}
+	return ExecRunner{}
 }
 
 // browseStream accumulates the streamed nodes and records why the crawl stopped.

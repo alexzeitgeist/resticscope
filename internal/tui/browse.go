@@ -9,7 +9,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"resticscope/internal/config"
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
 )
@@ -24,18 +23,6 @@ import (
 // browseMetaRows is the number of fixed lines the browse body renders above the
 // scrolling entry list (the current-path line and the loaded/retained summary).
 const browseMetaRows = 2
-
-// browseLimits converts the configured Browse block into the model's BrowseLimits
-// (the typed config units become plain ints/int64/Duration the model works in).
-func browseLimits(b config.Browse) model.BrowseLimits {
-	return model.BrowseLimits{
-		MaxEntries:          b.MaxEntries,
-		MaxJSONBytes:        b.MaxJSONBytes.Bytes(),
-		Timeout:             b.Timeout.Std(),
-		MaxSessionEntries:   b.MaxSessionEntries,
-		MaxSessionJSONBytes: b.MaxSessionJSONBytes.Bytes(),
-	}
-}
 
 // startBrowse begins an initial browse load for a snapshot at the given caps. It
 // switches to browseView immediately (showing a loading state with no tree yet)

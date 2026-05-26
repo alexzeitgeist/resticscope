@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"resticscope/internal/model"
 )
 
 // Config is the fully parsed, normalized, validated configuration.
@@ -33,6 +35,20 @@ type Browse struct {
 	Timeout             Duration `toml:"timeout"`
 	MaxSessionEntries   int      `toml:"max_session_entries"`
 	MaxSessionJSONBytes ByteSize `toml:"max_session_json_bytes"`
+}
+
+// Limits converts the configured Browse block into the model's BrowseLimits,
+// turning the typed config units (ByteSize/Duration) into the plain
+// ints/int64/Duration the model works in. It is the single conversion point so
+// the TUI and any other caller share one mapping.
+func (b Browse) Limits() model.BrowseLimits {
+	return model.BrowseLimits{
+		MaxEntries:          b.MaxEntries,
+		MaxJSONBytes:        b.MaxJSONBytes.Bytes(),
+		Timeout:             b.Timeout.Std(),
+		MaxSessionEntries:   b.MaxSessionEntries,
+		MaxSessionJSONBytes: b.MaxSessionJSONBytes.Bytes(),
+	}
 }
 
 // Global holds process-wide settings.

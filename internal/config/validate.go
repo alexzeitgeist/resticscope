@@ -81,8 +81,9 @@ func (c *Config) Validate() error {
 
 // validateBrowse checks the browse caps: all five must be positive, and each
 // session ceiling must be at least its matching initial cap (a load-more must
-// never be able to lower a cap). Zero values have already become defaults in
-// Normalize, so a value reaching here at <= 0 was set explicitly negative.
+// never be able to lower a cap). Defaults are seeded pre-decode (in Decode), so
+// a value reaching here at <= 0 was set explicitly — an explicit `0` or a
+// negative — and is rejected rather than silently defaulted.
 func (c *Config) validateBrowse() []error {
 	var errs []error
 	b := c.Browse
