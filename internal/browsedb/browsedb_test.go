@@ -159,7 +159,7 @@ func TestEmptySnapshot(t *testing.T) {
 	}
 	var n int64
 	if err := db.pool.QueryRowContext(ctx,
-		`SELECT entries FROM indexed_snapshots WHERE repo=? AND snapshot=?`, repo, snap).Scan(&n); err != nil {
+		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`, repo, snap).Scan(&n); err != nil {
 		t.Fatalf("marker query: %v", err)
 	}
 	if n != 0 {
@@ -241,7 +241,11 @@ func TestDedupeWithinBatch(t *testing.T) {
 	}
 }
 
-func TestUpsertAcrossFlushes(t *testing.T) {
+func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
+	// The unique constraint and the upsert are gone: restic emits each tree path
+	// exactly once, so the plain INSERT trusts that. A cross-flush duplicate is out
+	// of contract and is NOT collapsed — it lands as two rows. Within-batch dedupe
+	// (TestDedupeWithinBatch) is the only collapse that remains.
 	db, _, _ := newTestDB(t, 0)
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
@@ -255,11 +259,8 @@ func TestUpsertAcrossFlushes(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	entries, _ := db.ListDir(ctx, repo, snap, "/etc")
-	if len(entries) != 1 {
-		t.Fatalf("want 1 upserted row, got %d", len(entries))
-	}
-	if entries[0].Size != 2 {
-		t.Errorf("ON CONFLICT upsert size = %d, want 2", entries[0].Size)
+	if len(entries) != 2 {
+		t.Fatalf("want 2 rows (cross-flush dups are not collapsed), got %d", len(entries))
 	}
 }
 
@@ -294,7 +295,7 @@ func TestBatchFlush(t *testing.T) {
 	}
 	var n int64
 	db.pool.QueryRowContext(ctx,
-		`SELECT entries FROM indexed_snapshots WHERE repo=? AND snapshot=?`, repo, snap).Scan(&n)
+		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`, repo, snap).Scan(&n)
 	if n != int64(batchRows+1) {
 		t.Errorf("marker entries = %d, want %d", n, batchRows+1)
 	}
@@ -438,12 +439,17 @@ func TestMarkerConflict(t *testing.T) {
 
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret, Name: secret}})
 
-	// A caller that bypasses IsIndexed and re-indexes the same key hits the
-	// marker's PRIMARY KEY: a path-free store error, not a silent replace.
-	itx, _ := db.BeginIndex(ctx, repo, snap)
-	itx.Add(ctx, model.BrowseNode{Path: "/" + secret, Name: secret})
-	err := itx.Commit(ctx)
+	// A caller that bypasses IsIndexed and re-indexes an already-committed key is
+	// turned away at BeginIndex with a path-free errAlreadyIndexed — not a silent
+	// replace. The original index is untouched (the second run never opens a tx).
+	itx, err := db.BeginIndex(ctx, repo, snap)
 	assertErrPathFree(t, err, secret)
+	if !errors.Is(err, errAlreadyIndexed) {
+		t.Errorf("BeginIndex err = %v, want errAlreadyIndexed", err)
+	}
+	if itx != nil {
+		t.Error("BeginIndex returned a non-nil tx for an already-indexed snapshot")
+	}
 	if ok, _ := db.IsIndexed(ctx, repo, snap); !ok {
 		t.Error("original index lost after conflicting re-index")
 	}
@@ -488,21 +494,29 @@ func TestEncryptionAtRest(t *testing.T) {
 	// Committed: the filename lives only in the encrypted db.sqlite.
 	assertNoPlaintext(t, dir, secret1)
 
+	// secret1's sid backs the manual node inserts below (the stored path column is
+	// gone; a node row is keyed by sid + parent + name).
+	var sid int64
+	if err := db.pool.QueryRowContext(ctx,
+		`SELECT sid FROM snapshots WHERE repo=? AND snapshot=?`, repo, snap).Scan(&sid); err != nil {
+		t.Fatalf("sid lookup: %v", err)
+	}
 	// Force a rollback journal to exist while we grep, so the encryption proof is
-	// not a vacuous "no journal existed" pass.
+	// not a vacuous "no journal existed" pass. journal_mode=DELETE keeps the journal
+	// on disk (and encrypted by the adiantum VFS); the manual INSERT adds a fresh
+	// node and the UPDATE touches secret1's committed page, forcing its original
+	// (ciphertext) content into the journal.
 	tx, err := db.pool.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("manual BeginTx: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO nodes `+insertColumns+` VALUES `+rowPlaceholder,
-		repo, snap, "/"+secret2, "/", secret2, "file", 0, 0, 0, 0, 0, "", 0, 0, 0, "", strings.ToLower(secret2)); err != nil {
+		sid, "/", secret2, "file", 0, 0, 0, 0, 0, "", 0, 0, 0, "", strings.ToLower(secret2)); err != nil {
 		t.Fatalf("manual insert: %v", err)
 	}
-	// Touch the committed page too, forcing its original (ciphertext) page into
-	// the journal.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE nodes SET size = size + 1 WHERE repo=? AND snapshot=?`, repo, snap); err != nil {
+		`UPDATE nodes SET size = size + 1 WHERE sid=?`, sid); err != nil {
 		t.Fatalf("manual update: %v", err)
 	}
 	matches, _ := filepath.Glob(filepath.Join(dir, "db.sqlite-*"))

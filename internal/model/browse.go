@@ -83,6 +83,18 @@ func CleanBrowsePath(p string) string {
 	return path.Clean(p)
 }
 
+// JoinBrowsePath joins a cleaned parent directory and a child name into the
+// child's absolute browse path — the exact inverse of the path.Dir split done in
+// browsedb's Add at index time. Parent is always a cleaned, rooted path and name
+// is non-empty (the root node is never stored), so a direct concat is provably
+// exact and avoids a per-row re-Clean.
+func JoinBrowsePath(parent, name string) string {
+	if parent == "/" {
+		return "/" + name
+	}
+	return parent + "/" + name
+}
+
 // BrowseName picks a display name for a node: its emitted name when present,
 // else the base of its (already cleaned) path, with the root shown as "/".
 func BrowseName(name, p string) string {
