@@ -808,17 +808,18 @@ func TestIndexSnapshotSerializedBySessionOperationLock(t *testing.T) {
 	}
 }
 
-func TestBrowseSessionCloseWaitsForInFlightIndex(t *testing.T) {
+func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 	store := newFakeStore()
 	started := make(chan struct{})
 	a := browseApp(store, fakeRestic{})
 	a.Restic = blockingBrowseRestic{started: started}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
+	// Index with a context this test NEVER cancels, to prove Close does not depend
+	// on the caller: Close itself must interrupt the in-flight op so shutdown cannot
+	// hang behind a long stream wired to a context that is never cancelled.
 	indexDone := make(chan error, 1)
 	go func() {
-		indexDone <- a.IndexSnapshot(ctx, "repo-a", "snap123", nil)
+		indexDone <- a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
 	}()
 
 	select {
@@ -827,6 +828,8 @@ func TestBrowseSessionCloseWaitsForInFlightIndex(t *testing.T) {
 		t.Fatal("index never reached the blocking restic stream")
 	}
 
+	// Close must cancel the in-flight index and return on its own, with no external
+	// context cancellation.
 	closeDone := make(chan error, 1)
 	go func() {
 		closeDone <- a.Browse.Close()
@@ -834,11 +837,12 @@ func TestBrowseSessionCloseWaitsForInFlightIndex(t *testing.T) {
 
 	select {
 	case err := <-closeDone:
-		t.Fatalf("Close returned before the in-flight index was cancelled and unwound: %v", err)
-	case <-time.After(50 * time.Millisecond):
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not cancel the in-flight index and return")
 	}
-
-	cancel()
 
 	select {
 	case err := <-indexDone:
@@ -846,16 +850,7 @@ func TestBrowseSessionCloseWaitsForInFlightIndex(t *testing.T) {
 			t.Fatalf("IndexSnapshot err = %v, want context.Canceled", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("index did not exit after cancellation")
-	}
-
-	select {
-	case err := <-closeDone:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return after the index exited")
+		t.Fatal("index did not exit after Close cancelled it")
 	}
 
 	store.mu.Lock()

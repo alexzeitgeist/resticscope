@@ -74,14 +74,17 @@ type IndexWriter interface {
 type BrowseSession struct {
 	open func() (BrowseStore, error)
 
-	mu     sync.Mutex // protects lazy store creation/close
-	store  BrowseStore
-	closed bool
+	mu       sync.Mutex // protects store, closed, and inflight
+	store    BrowseStore
+	closed   bool
+	inflight context.CancelFunc // cancels the current store op so Close can interrupt it
 
-	// opMu serializes every store operation with Close. Bubble Tea does not wait for
-	// long-running Cmd goroutines on shutdown, so Close must be able to wait until an
-	// in-flight index/list has observed cancellation and released the store before it
-	// closes the SQLite pool and removes the session directory.
+	// opMu serializes every store operation with Close so shutdown never tears down
+	// the DB under an in-flight index/list. Bubble Tea does not wait for long-running
+	// Cmd goroutines on shutdown, so Close does not rely on the caller having
+	// cancelled the operation's context: it actively cancels the in-flight op (via
+	// inflight) and then waits on opMu for it to unwind and release the store before
+	// closing the SQLite pool and removing the session directory.
 	opMu sync.Mutex
 }
 
@@ -111,14 +114,59 @@ func (s *BrowseSession) ensureStore() (BrowseStore, error) {
 	return store, nil
 }
 
-// Close closes the underlying store if it was ever opened. It is idempotent.
+// beginOp acquires the session operation lock and returns the store together with
+// a context Close can cancel. The returned context is a child of ctx, so the op
+// still observes the caller's cancellation; registering it as the session's
+// in-flight op additionally lets Close interrupt the op without depending on the
+// caller. The returned release func unregisters the op and releases the lock, and
+// MUST be deferred. A closed session returns errBrowseSessionClosed.
+func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseStore, func(), error) {
+	s.opMu.Lock()
+	store, err := s.ensureStore()
+	if err != nil {
+		s.opMu.Unlock()
+		return nil, nil, nil, err
+	}
+	opCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	if s.closed { // Close raced in between ensureStore and registration
+		s.mu.Unlock()
+		cancel()
+		s.opMu.Unlock()
+		return nil, nil, nil, errBrowseSessionClosed
+	}
+	s.inflight = cancel
+	s.mu.Unlock()
+
+	release := func() {
+		s.mu.Lock()
+		s.inflight = nil
+		s.mu.Unlock()
+		cancel()
+		s.opMu.Unlock()
+	}
+	return opCtx, store, release, nil
+}
+
+// Close cancels any in-flight store op, waits for it to unwind, then closes the
+// underlying store if it was ever opened. It is idempotent.
 func (s *BrowseSession) Close() error {
+	// Mark closed and grab the in-flight op's cancel together under mu, so a
+	// concurrent beginOp either observes closed (and aborts) or has already
+	// registered its cancel here (and we interrupt it). Cancel outside the lock,
+	// then wait on opMu for the op to release the store.
+	s.mu.Lock()
+	s.closed = true
+	cancel := s.inflight
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.closed = true
 	if s.store == nil {
 		return nil
 	}
@@ -131,11 +179,12 @@ func (s *BrowseSession) Close() error {
 // short-circuiting if it is already indexed. It holds the session operation lock
 // across the whole IsIndexed → BeginIndex → stream → Commit/Rollback sequence so
 // two concurrent callers cannot open two index transactions on the one DB, and
-// Close cannot tear down the DB mid-write. The stream is rolled back on every path
-// until Commit succeeds; an incomplete stream (timeout) or any
-// store/disk-limit/restic error leaves the snapshot unmarked. progress, if non-nil,
-// is called with the running node count on a coarse cadence and once more with the
-// exact final count when the stream ends.
+// Close cannot tear down the DB mid-write. The op runs under a context Close can
+// cancel, so shutdown interrupts a long stream even if the caller never cancels.
+// The stream is rolled back on every path until Commit succeeds; an incomplete
+// stream (timeout) or any store/disk-limit/restic error leaves the snapshot
+// unmarked. progress, if non-nil, is called with the running node count on a coarse
+// cadence and once more with the exact final count when the stream ends.
 func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, progress func(n int)) error {
 	if a.Browse == nil {
 		return ErrBrowseNotEnabled
@@ -148,8 +197,8 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 
-	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE taking
-	// opMu so it runs LAST (after opMu is released): running it under the session
+	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE beginOp
+	// so it runs LAST (after release has dropped opMu): running it under the session
 	// lock would stall a concurrent Close/ListDir for the whole pause. It is gated
 	// on a committed large index only — on a cancel/error path the tx is discarded
 	// and ordinary GC reclaims the garbage, so a STW pause there would just stutter
@@ -161,13 +210,11 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		}
 	}()
 
-	a.Browse.opMu.Lock()
-	defer a.Browse.opMu.Unlock()
-
-	store, err := a.Browse.ensureStore()
+	ctx, store, release, err := a.Browse.beginOp(ctx)
 	if err != nil {
 		return err
 	}
+	defer release()
 
 	indexed, err := store.IsIndexed(ctx, r.Name, snapshotID)
 	if err != nil {
@@ -249,12 +296,10 @@ func (a *App) ListDir(ctx context.Context, repoName, snapshotID, dir string) ([]
 	if !ok {
 		return nil, fmt.Errorf("unknown repo %q", repoName)
 	}
-	a.Browse.opMu.Lock()
-	defer a.Browse.opMu.Unlock()
-
-	store, err := a.Browse.ensureStore()
+	ctx, store, release, err := a.Browse.beginOp(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return store.ListDir(ctx, r.Name, snapshotID, dir)
 }
