@@ -359,31 +359,14 @@ func removeFileIfExists(p string) error {
 }
 
 // ClosePreserveFiles closes the connection pool without deleting db.sqlite or
-// sidecars. Use it only when another owner will remove the containing session
-// directory (the cmd-level browse wrapper) or when an internal benchmark needs to
-// inspect DB files after a run; callers without a separate cleanup step should use
-// Close.
+// sidecars. The cmd-level browse wrapper uses this because it owns removal of the
+// whole containing session directory; callers without a separate cleanup step
+// should use Close.
 func (db *DB) ClosePreserveFiles() error {
 	if err := db.pool.Close(); err != nil {
 		return fmt.Errorf("browsedb close: %w", err)
 	}
 	return nil
-}
-
-// EntryCount returns the committed entry count recorded for a snapshot. A
-// never-indexed snapshot reports 0, nil to match ListDir's empty result contract.
-func (db *DB) EntryCount(ctx context.Context, repo, snapshot string) (int64, error) {
-	var entries int64
-	err := db.pool.QueryRowContext(ctx,
-		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`,
-		repo, snapshot).Scan(&entries)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("browsedb entry-count: %w", err)
-	}
-	return entries, nil
 }
 
 // dirSize totals the size of every regular file in the DB's directory. This
