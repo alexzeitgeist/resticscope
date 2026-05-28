@@ -128,6 +128,20 @@ func (b *blockingReader) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
+// cleanButExpiredStream feeds the whole tree, lets the browse deadline elapse, then
+// reports a clean exit (nil run error) — modelling restic finishing and exiting 0
+// just before the index deadline fired. The boundary must treat this as complete,
+// not discard a fully-streamed tree as a partial.
+type cleanButExpiredStream struct{ data string }
+
+func (f cleanButExpiredStream) RunStream(ctx context.Context, _ []string, _ string, onStdout func(io.Reader) error, _ ...string) ([]byte, error) {
+	if err := onStdout(strings.NewReader(f.data)); err != nil {
+		return nil, err
+	}
+	<-ctx.Done() // the deadline fires after a clean, complete read
+	return nil, nil
+}
+
 func TestStreamSnapshotTreeComplete(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
@@ -254,6 +268,79 @@ func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 	}
 	if fs.ctxErr == nil {
 		t.Error("a callback error should have cancelled the restic process")
+	}
+}
+
+// A user leaving the browser cancels the parent context; the in-flight store write
+// (tx.Add on the cancelled ctx) then fails with the store's own interrupt error,
+// NOT context.Canceled. The boundary must still classify this as a cancel so the
+// caller can tell it apart from a genuine store failure — which leaves the parent
+// ctx live and is surfaced verbatim (see TestStreamSnapshotTreeCallbackErrorCancels).
+func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
+	c := &Client{Stream: fs}
+	storeInterrupt := errors.New("interrupted (SQLITE_INTERRUPT)")
+	onNode := func(model.BrowseNode) error {
+		cancel() // the user left mid-index
+		return storeInterrupt
+	}
+	sum, err := c.StreamSnapshotTree(ctx, testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("user cancel must classify as context.Canceled, got %v", err)
+	}
+	if errors.Is(err, storeInterrupt) {
+		t.Fatalf("the store's interrupt error masked the user cancel: %v", err)
+	}
+	if sum.Complete {
+		t.Error("Complete must be false on cancel")
+	}
+}
+
+// A clean, complete restic exit must win even if the index deadline elapsed in the
+// gap between restic exiting 0 and the classification running; otherwise a fully
+// streamed tree is wrongly rolled back as a partial and re-indexed on the next browse.
+func TestStreamSnapshotTreeCleanExitBeatsExpiredDeadline(t *testing.T) {
+	c := &Client{Stream: cleanButExpiredStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}}
+	onNode, nodes := collect()
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
+	if err != nil {
+		t.Fatalf("a clean, complete exit must not error even if the deadline elapsed after it: %v", err)
+	}
+	if !sum.Complete {
+		t.Fatal("Complete = false: a fully-streamed snapshot was discarded because the deadline fired after the clean exit")
+	}
+	if sum.Entries != 3 || len(*nodes) != 3 {
+		t.Fatalf("entries = %d / nodes = %d, want 3", sum.Entries, len(*nodes))
+	}
+}
+
+// A genuine store error (e.g. the disk limit) that races the browse deadline after
+// ≥1 accepted node must surface verbatim, NOT be downgraded to an incomplete/partial
+// stream. The callback writes through the PARENT ctx (tx.Add(ctx, …)), which the
+// browse timeout never cancels, so a callback error with the parent ctx still live is
+// always a real failure — a non-retryable disk limit must not be masked as a
+// retryable timeout. Guards against st.cbErr being ordered after the deadline cases.
+func TestStreamSnapshotTreeCallbackErrorBeatsDeadline(t *testing.T) {
+	timeout := 40 * time.Millisecond
+	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
+	c := &Client{Stream: fs}
+	diskFull := errors.New("browse store disk limit exceeded")
+	calls := 0
+	onNode := func(model.BrowseNode) error {
+		calls++
+		if calls == 2 {
+			time.Sleep(timeout + 20*time.Millisecond) // let the browse deadline elapse first
+			return diskFull
+		}
+		return nil
+	}
+	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", timeout, onNode)
+	if !errors.Is(err, diskFull) {
+		t.Fatalf("a store error racing the deadline must surface verbatim, got %v", err)
+	}
+	if sum.Complete {
+		t.Error("Complete must be false when the store failed")
 	}
 }
 

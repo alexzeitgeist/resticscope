@@ -51,16 +51,29 @@ type lsNode struct {
 // legitimately run longer than a refresh. It retains nothing: the returned summary
 // reports only the node count and whether restic emitted the whole tree.
 //
-// Classification is deliberate and ordered:
-//  1. onNode returned an error → return it verbatim, so the caller can tell its own
-//     store/disk-limit/cancel failure (e.g. errors.Is(model.ErrBrowseDiskLimit))
-//     from a restic failure;
-//  2. the caller cancelled the browse context → context.Canceled;
-//  3. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream;
-//     the caller must not mark it indexed);
-//  4. any other deadline result → KindTimeout;
-//  5. a clean run (no run/decode error) → {Complete:true}, nil, including an empty
-//     snapshot (count 0) — a clean exit unambiguously means restic finished;
+// Classification is deliberate and ordered. It keys cancel off the parent ctx and
+// completion off the run result. The browse deadline lives on bctx, which restic
+// runs under but the onNode callback does NOT — the callback writes through the
+// parent ctx (app/browsesession.go: tx.Add(ctx, …)). So a deadline never interrupts
+// a store write; only a parent-ctx cancel does. That asymmetry drives the order:
+//  1. the caller cancelled the browse context → context.Canceled, even if onNode
+//     failed (a parent cancel reaches tx.Add and surfaces as the store's own
+//     interrupt error — a downstream symptom, not a real store failure; the parent
+//     ctx, not bctx, is what tells this apart from a genuine onNode failure in (2));
+//  2. onNode returned an error → return it verbatim, so the caller can tell its own
+//     store/disk-limit failure (e.g. errors.Is(model.ErrBrowseDiskLimit)) from a
+//     restic failure. This precedes the deadline checks because the callback never
+//     sees bctx: with the parent ctx still live, a callback error is always a real
+//     failure, so a store error racing the deadline must not be downgraded to a
+//     retryable partial;
+//  3. a clean run (no run or decode error) → {Complete:true}, nil, including an
+//     empty snapshot (count 0); precedes the deadline checks so a stream that exited
+//     0 just before the index deadline elapsed is reported complete, not rolled back
+//     as a partial;
+//  4. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream
+//     the caller must not mark indexed; reaching here means restic was killed by the
+//     deadline with no callback error — a genuine store error is handled in (2));
+//  5. any other deadline result → KindTimeout;
 //  6. a genuine JSON decode failure → KindParse;
 //  7. anything else (restic failure) → classify.
 func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
@@ -78,16 +91,38 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 	stderr, runErr := c.streamRunner().RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
-	case st.cbErr != nil:
-		return model.BrowseScanSummary{Entries: st.count}, st.cbErr
-	case errors.Is(bctx.Err(), context.Canceled):
+	case errors.Is(ctx.Err(), context.Canceled):
+		// The caller cancelled the browse (e.g. left the browser). Report a clean
+		// cancel even when st.cbErr is set: the cancel propagated into the in-flight
+		// onNode → tx.Add on the parent ctx, where the store returns its own interrupt
+		// error rather than context.Canceled. Keying off the parent ctx is what
+		// separates a user cancel from a genuine onNode failure below, which leaves
+		// the parent ctx live.
 		return model.BrowseScanSummary{Entries: st.count}, context.Canceled
+	case st.cbErr != nil:
+		// onNode itself failed (disk limit / store write error); surface it verbatim
+		// so the caller can tell errors.Is(model.ErrBrowseDiskLimit) from a restic
+		// failure. This precedes the deadline checks deliberately: the callback writes
+		// through the parent ctx (tx.Add(ctx, …)), which the browse timeout never
+		// cancels — so a cbErr with the parent ctx still live is always a real failure,
+		// never a timeout symptom, and a store error racing the deadline must not be
+		// downgraded to a retryable partial.
+		return model.BrowseScanSummary{Entries: st.count}, st.cbErr
+	case runErr == nil && st.decodeErr == nil:
+		// A clean run: restic emitted the whole tree and exited 0 (an empty snapshot,
+		// count 0, included). This precedes the deadline checks so a stream that
+		// finished cleanly just before the index deadline elapsed is reported complete
+		// instead of being discarded as a partial. (cbErr is already handled above; the
+		// decodeErr guard keeps a parse failure that raced a clean exit from slipping
+		// through as complete.)
+		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded) && st.count > 0:
+		// The index deadline fired mid-stream after ≥1 node and restic was killed with
+		// no callback error (a genuine store error is returned verbatim above): a
+		// partial tree the caller must not mark indexed.
 		return model.BrowseScanSummary{Entries: st.count, Complete: false}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded):
 		return model.BrowseScanSummary{Entries: st.count}, c.classify(bctx, "ls", runErr, stderr)
-	case runErr == nil && st.decodeErr == nil:
-		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
 	case st.decodeErr != nil:
 		// A genuine JSON decode failure is the real cause; surface it as KindParse
 		// rather than letting classify mislabel the generic run state.
