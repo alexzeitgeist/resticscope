@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"resticscope/internal/app"
+	"resticscope/internal/browsedb"
 	"resticscope/internal/cache"
 	"resticscope/internal/model"
 )
@@ -208,6 +209,33 @@ func TestCacheUnknownSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "unknown cache subcommand") {
 		t.Errorf("expected error message, got %q", errBuf.String())
+	}
+}
+
+func TestBrowseStoreCloseRemovesSessionDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "browse-session-test")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := browsedb.LockSession(dir)
+	if err != nil {
+		t.Fatalf("LockSession: %v", err)
+	}
+	db, err := browsedb.Open(filepath.Join(dir, "db.sqlite"), make([]byte, 32), 0)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("Open: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extra"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &browseStore{db: db, lock: lock, dir: dir}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("session dir survived Close, stat err = %v", err)
 	}
 }
 

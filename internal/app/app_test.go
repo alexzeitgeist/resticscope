@@ -125,6 +125,24 @@ func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c 
 	return summary, nil
 }
 
+type blockingBrowseRestic struct {
+	started chan struct{}
+}
+
+func (blockingBrowseRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.Creds) ([]model.Snapshot, error) {
+	return nil, nil
+}
+
+func (blockingBrowseRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
+	return nil
+}
+
+func (r blockingBrowseRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
+	close(r.started)
+	<-ctx.Done()
+	return model.BrowseScanSummary{}, ctx.Err()
+}
+
 // --- fake browse store / index writer ---
 
 func storeKey(repo, snap string) string { return repo + "\x00" + snap }
@@ -132,7 +150,8 @@ func storeKey(repo, snap string) string { return repo + "\x00" + snap }
 // fakeStore is an in-memory BrowseStore. It records the repo keys it is asked
 // about (to prove the app passes the configured repo name, not a target), tracks
 // commit/rollback/indexed state per snapshot, and counts the maximum number of
-// concurrently-open index transactions (which indexMu must hold to 1).
+// concurrently-open index transactions (which the session operation lock must hold
+// to 1).
 type fakeStore struct {
 	mu sync.Mutex
 
@@ -756,7 +775,7 @@ func TestIndexSnapshotSecretsErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestIndexSnapshotSerializedByIndexMu(t *testing.T) {
+func TestIndexSnapshotSerializedBySessionOperationLock(t *testing.T) {
 	store := newFakeStore()
 	a := browseApp(store, fakeRestic{
 		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
@@ -775,10 +794,79 @@ func TestIndexSnapshotSerializedByIndexMu(t *testing.T) {
 	}
 	wg.Wait()
 	if store.maxConc > 1 {
-		t.Errorf("max concurrent index transactions = %d, want 1 (indexMu must serialize)", store.maxConc)
+		t.Errorf("max concurrent index transactions = %d, want 1 (session operation lock must serialize)", store.maxConc)
 	}
 	if !store.indexed[storeKey("repo-a", "snapA")] || !store.indexed[storeKey("repo-a", "snapB")] {
 		t.Error("both snapshots should be indexed after serialized runs")
+	}
+}
+
+func TestBrowseSessionCloseWaitsForInFlightIndex(t *testing.T) {
+	store := newFakeStore()
+	started := make(chan struct{})
+	a := browseApp(store, fakeRestic{})
+	a.Restic = blockingBrowseRestic{started: started}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	indexDone := make(chan error, 1)
+	go func() {
+		indexDone <- a.IndexSnapshot(ctx, "repo-a", "snap123", nil)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("index never reached the blocking restic stream")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- a.Browse.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the in-flight index was cancelled and unwound: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case err := <-indexDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("IndexSnapshot err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("index did not exit after cancellation")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after the index exited")
+	}
+
+	store.mu.Lock()
+	closed := store.closed
+	concurrent := store.concurrent
+	rolledBack := store.rolledBack[storeKey("repo-a", "snap123")]
+	store.mu.Unlock()
+	if !closed {
+		t.Fatal("store was not closed")
+	}
+	if concurrent != 0 {
+		t.Fatalf("index transaction still open after Close: %d", concurrent)
+	}
+	if !rolledBack {
+		t.Fatal("in-flight index was not rolled back before Close returned")
+	}
+	if _, err := a.ListDir(context.Background(), "repo-a", "snap123", "/"); !errors.Is(err, errBrowseSessionClosed) {
+		t.Fatalf("ListDir after Close err = %v, want errBrowseSessionClosed", err)
 	}
 }
 

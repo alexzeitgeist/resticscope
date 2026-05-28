@@ -495,6 +495,28 @@ func TestBrowseIndexErrorReturnsToDetail(t *testing.T) {
 	}
 }
 
+func TestBrowseIndexErrorCancelsBrowseContext(t *testing.T) {
+	m := newTestModel(t, browseApp(t))
+	m.view = browseView
+	m.browseGen = 7
+	cancelled := false
+	m.browseCancel = func() { cancelled = true }
+
+	next, cmd := m.applyBrowseIndexed(browseIndexedMsg{gen: 7, err: errors.New("boom")})
+	if cmd != nil {
+		t.Fatal("index error should not start another command")
+	}
+	if !cancelled {
+		t.Fatal("index error did not call the active browse cancel func")
+	}
+	if next.browseCancel != nil {
+		t.Fatal("index error should clear the browse cancel func after calling it")
+	}
+	if next.view != detailView {
+		t.Fatalf("view = %d, want detailView", next.view)
+	}
+}
+
 // While the one-time index runs, the view must keep a visible cancel affordance:
 // a minutes-long crawl on a huge snapshot must never look hung. This is
 // non-negotiable.

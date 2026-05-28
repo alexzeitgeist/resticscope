@@ -67,6 +67,9 @@ var (
 	errInvalidKey       = errors.New("encryption key must be 32 bytes")
 	errInvalidDiskLimit = errors.New("max disk bytes must be >= 0")
 	errReadDBDir        = errors.New("read browse database directory")
+	errRemoveDBFile     = errors.New("remove browse database file")
+	errRemoveDBSidecar  = errors.New("remove browse database sidecar")
+	errListDBSidecars   = errors.New("list browse database sidecars")
 	errFilesystem       = errors.New("filesystem error")
 )
 
@@ -132,8 +135,9 @@ const listDirQuery = `SELECT name,type,is_dir,size,mtime_unix,mtime_offset_sec,m
 	`ORDER BY is_dir DESC, name_ci, name`
 
 // errAlreadyIndexed is the path-free sentinel BeginIndex returns when a
-// (repo,snapshot) is already committed. The app gates on IsIndexed under indexMu,
-// so this is the defensive path that preserves the "no silent replace" contract.
+// (repo,snapshot) is already committed. The app gates on IsIndexed under its
+// session operation lock, so this is the defensive path that preserves the "no
+// silent replace" contract.
 var errAlreadyIndexed = errors.New("snapshot already indexed")
 
 // DB is a handle to the session's encrypted browse store. One DB per app
@@ -295,25 +299,58 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 }
 
 // Close closes the connection pool and removes db.sqlite plus any SQLite sidecar
-// files for that basename (rollback-journal/temp leftovers). The cmd-level
-// session wrapper removes the whole session directory on clean shutdown.
+// files for that basename (rollback-journal/temp leftovers). It always attempts
+// every cleanup step and returns any path-free errors joined together. The
+// cmd-level session wrapper removes the whole session directory on clean shutdown.
 func (db *DB) Close() error {
-	err := db.pool.Close()
-	_ = os.Remove(db.sqlitePath)
-	if matches, gerr := filepath.Glob(db.sqlitePath + "-*"); gerr == nil {
-		for _, m := range matches {
-			_ = os.Remove(m)
+	var errs []error
+	if err := db.pool.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("browsedb close: %w", err))
+	}
+	if err := removeFileIfExists(db.sqlitePath); err != nil {
+		errs = append(errs, fmt.Errorf("%w: %w", errRemoveDBFile, err))
+	}
+	if err := db.removeSidecars(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (db *DB) removeSidecars() error {
+	dir := filepath.Dir(db.sqlitePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("%w: %w", errListDBSidecars, pathFreeFSError(err))
+	}
+	prefix := filepath.Base(db.sqlitePath) + "-"
+	var errs []error
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if err := removeFileIfExists(filepath.Join(dir, e.Name())); err != nil {
+			errs = append(errs, fmt.Errorf("%w: %w", errRemoveDBSidecar, err))
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("browsedb close: %w", err)
+	return errors.Join(errs...)
+}
+
+func removeFileIfExists(p string) error {
+	err := os.Remove(p)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	return nil
+	return pathFreeFSError(err)
 }
 
 // ClosePreserveFiles closes the connection pool without deleting db.sqlite or
-// sidecars. It exists for the internal benchmark command, which needs to inspect
-// DB files after a run; production callers should keep using Close.
+// sidecars. Use it only when another owner will remove the containing session
+// directory (the cmd-level browse wrapper) or when an internal benchmark needs to
+// inspect DB files after a run; callers without a separate cleanup step should use
+// Close.
 func (db *DB) ClosePreserveFiles() error {
 	if err := db.pool.Close(); err != nil {
 		return fmt.Errorf("browsedb close: %w", err)

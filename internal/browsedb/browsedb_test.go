@@ -693,6 +693,28 @@ func TestEncryptionAtRest(t *testing.T) {
 	}
 }
 
+func TestCloseReportsRemoveErrorPathFree(t *testing.T) {
+	db, dir, _ := newTestDB(t, 0)
+	const secret = "SECRET_db_path_component"
+	blockedPath := filepath.Join(dir, secret)
+	if err := os.MkdirAll(blockedPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blockedPath, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db.sqlitePath = blockedPath
+
+	err := db.Close()
+	if err == nil {
+		t.Fatal("expected Close to report the failed db.sqlite removal")
+	}
+	if !errors.Is(err, errRemoveDBFile) {
+		t.Fatalf("Close err = %v, want errRemoveDBFile", err)
+	}
+	assertErrPathFree(t, err, dir, secret)
+}
+
 func lockingSupported() bool {
 	f, err := os.CreateTemp("", "browsedb-lock-probe")
 	if err != nil {

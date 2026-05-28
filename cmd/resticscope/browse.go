@@ -49,12 +49,12 @@ func (s *browseStore) ListDir(ctx context.Context, repo, snapshot, dir string) (
 	return s.db.ListDir(ctx, repo, snapshot, dir)
 }
 
-// Close closes the DB pool (removing db.sqlite and its sidecar files), releases
-// the session lock, and removes the entire session directory. It always attempts
-// every step and joins any errors, so a failure in one does not leak the rest or
-// hide a later cleanup failure.
+// Close closes the DB pool, releases the session lock, and removes the entire
+// session directory. The cmd-level wrapper owns whole-directory cleanup, so the DB
+// is closed without its own per-file removals; RemoveAll is authoritative for
+// whether encrypted browse files actually survived.
 func (s *browseStore) Close() error {
-	dbErr := s.db.Close()
+	dbErr := s.db.ClosePreserveFiles()
 	lockErr := s.lock.Close()
 	rmErr := pathFreeFileError(os.RemoveAll(s.dir))
 	return errors.Join(dbErr, lockErr, rmErr)

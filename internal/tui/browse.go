@@ -153,6 +153,9 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.err != nil {
+		if m.browseCancel != nil {
+			m.browseCancel()
+		}
 		m.browseLoading = false
 		m.statusMsg = "browse: " + firstLine(msg.err.Error())
 		m.view = detailView

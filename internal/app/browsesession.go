@@ -31,6 +31,8 @@ var ErrBrowseNotEnabled = errors.New("browse is not enabled")
 // complete; the caller can retry or fall back to the scoped shell.
 var ErrBrowseIncomplete = errors.New("browse index did not complete")
 
+var errBrowseSessionClosed = errors.New("browse session is closed")
+
 // browseProgressCheckEvery avoids consulting the clock per node while keeping
 // progress responsive enough on very large snapshots.
 const browseProgressCheckEvery = 2000
@@ -65,19 +67,21 @@ type IndexWriter interface {
 }
 
 // BrowseSession owns the lazily-created store for one app run. The store is
-// opened on the first browse and reused for the rest of the session; indexMu
-// serializes index transactions so even future non-TUI callers cannot interleave
-// two writes against the one session DB.
+// opened on the first browse and reused for the rest of the session. The session
+// operation lock serializes store use with Close so shutdown cannot tear down the
+// DB under an in-flight browse command.
 type BrowseSession struct {
 	open func() (BrowseStore, error)
 
-	mu    sync.Mutex // protects lazy store creation/close
-	store BrowseStore
+	mu     sync.Mutex // protects lazy store creation/close
+	store  BrowseStore
+	closed bool
 
-	// indexMu serializes IndexSnapshot across callers. If browse grows a concurrent
-	// non-TUI caller, keep BeginIndex serialized but consider moving the fast
-	// already-indexed check outside this lock.
-	indexMu sync.Mutex
+	// opMu serializes every store operation with Close. Bubble Tea does not wait for
+	// long-running Cmd goroutines on shutdown, so Close must be able to wait until an
+	// in-flight index/list has observed cancellation and released the store before it
+	// closes the SQLite pool and removes the session directory.
+	opMu sync.Mutex
 }
 
 // NewBrowseSession returns a session whose store is opened lazily by open on the
@@ -92,6 +96,9 @@ func NewBrowseSession(open func() (BrowseStore, error)) *BrowseSession {
 func (s *BrowseSession) ensureStore() (BrowseStore, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errBrowseSessionClosed
+	}
 	if s.store != nil {
 		return s.store, nil
 	}
@@ -105,8 +112,12 @@ func (s *BrowseSession) ensureStore() (BrowseStore, error) {
 
 // Close closes the underlying store if it was ever opened. It is idempotent.
 func (s *BrowseSession) Close() error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	if s.store == nil {
 		return nil
 	}
@@ -116,12 +127,13 @@ func (s *BrowseSession) Close() error {
 }
 
 // IndexSnapshot indexes a snapshot's whole namespace into the session store,
-// short-circuiting if it is already indexed. It holds indexMu across the whole
-// IsIndexed → BeginIndex → stream → Commit/Rollback sequence so two concurrent
-// callers cannot open two index transactions on the one DB. The stream is rolled
-// back on every path until Commit succeeds; an incomplete stream (timeout) or any
-// store/disk-limit/restic error leaves the snapshot unmarked. progress, if
-// non-nil, is called with the running node count on a coarse cadence.
+// short-circuiting if it is already indexed. It holds the session operation lock
+// across the whole IsIndexed → BeginIndex → stream → Commit/Rollback sequence so
+// two concurrent callers cannot open two index transactions on the one DB, and
+// Close cannot tear down the DB mid-write. The stream is rolled back on every path
+// until Commit succeeds; an incomplete stream (timeout) or any
+// store/disk-limit/restic error leaves the snapshot unmarked. progress, if non-nil,
+// is called with the running node count on a coarse cadence.
 func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, progress func(n int)) error {
 	if a.Browse == nil {
 		return ErrBrowseNotEnabled
@@ -134,13 +146,13 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 
+	a.Browse.opMu.Lock()
+	defer a.Browse.opMu.Unlock()
+
 	store, err := a.Browse.ensureStore()
 	if err != nil {
 		return err
 	}
-
-	a.Browse.indexMu.Lock()
-	defer a.Browse.indexMu.Unlock()
 
 	indexed, err := store.IsIndexed(ctx, r.Name, snapshotID)
 	if err != nil {
@@ -220,6 +232,9 @@ func (a *App) ListDir(ctx context.Context, repoName, snapshotID, dir string) ([]
 	if !ok {
 		return nil, fmt.Errorf("unknown repo %q", repoName)
 	}
+	a.Browse.opMu.Lock()
+	defer a.Browse.opMu.Unlock()
+
 	store, err := a.Browse.ensureStore()
 	if err != nil {
 		return nil, err
