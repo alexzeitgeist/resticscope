@@ -466,6 +466,24 @@ func TestDiskLimit(t *testing.T) {
 	}
 }
 
+func TestDirSizeErrorPathFree(t *testing.T) {
+	base := t.TempDir()
+	const secret = "SECRET_cache_path_component"
+	db := &DB{dir: filepath.Join(base, secret)}
+
+	_, err := db.dirSize()
+	if err == nil {
+		t.Fatal("expected dirSize to fail for a missing directory")
+	}
+	assertErrPathFree(t, err, base, secret)
+	if !errors.Is(err, errReadDBDir) {
+		t.Errorf("dirSize error = %v, want errReadDBDir", err)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dirSize error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestMarkerConflict(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := context.Background()
@@ -751,6 +769,44 @@ func TestCleanStaleSessionsSkipsLocked(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Error("a live (locked) session was removed")
+	}
+}
+
+func TestLockSessionRejectsHeldLock(t *testing.T) {
+	if !lockingSupported() {
+		t.Skip("advisory locking unsupported on this platform")
+	}
+	dir := t.TempDir()
+	lock, err := LockSession(dir)
+	if err != nil {
+		t.Fatalf("first LockSession: %v", err)
+	}
+	defer lock.Close()
+
+	second, err := LockSession(dir)
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("second LockSession unexpectedly acquired an already-held lock")
+	}
+	if !errors.Is(err, errSessionLockUnavailable) {
+		t.Fatalf("second LockSession err = %v, want errSessionLockUnavailable", err)
+	}
+	assertErrPathFree(t, err, dir)
+}
+
+func TestLockSessionOpenErrorPathFree(t *testing.T) {
+	base := t.TempDir()
+	const secret = "SECRET_missing_session_dir"
+	dir := filepath.Join(base, secret)
+
+	lock, err := LockSession(dir)
+	if err == nil {
+		_ = lock.Close()
+		t.Fatal("expected LockSession to fail for a missing session directory")
+	}
+	assertErrPathFree(t, err, base, secret)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LockSession err = %v, want os.ErrNotExist", err)
 	}
 }
 

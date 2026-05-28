@@ -66,7 +66,10 @@ func (c *Client) classify(ctx context.Context, op string, err error, stderr []by
 		redacted = c.Redact(redacted)
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &Error{Kind: KindTimeout, Op: op, Stderr: redacted, wrapped: err}
 	}
 	if errors.Is(err, exec.ErrNotFound) {

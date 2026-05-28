@@ -55,12 +55,14 @@ type lsNode struct {
 //  1. onNode returned an error → return it verbatim, so the caller can tell its own
 //     store/disk-limit/cancel failure (e.g. errors.Is(model.ErrBrowseDiskLimit))
 //     from a restic failure;
-//  2. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream;
+//  2. the caller cancelled the browse context → context.Canceled;
+//  3. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream;
 //     the caller must not mark it indexed);
-//  3. a clean run (no run/decode error) → {Complete:true}, nil, including an empty
+//  4. any other deadline result → KindTimeout;
+//  5. a clean run (no run/decode error) → {Complete:true}, nil, including an empty
 //     snapshot (count 0) — a clean exit unambiguously means restic finished;
-//  4. a genuine JSON decode failure → KindParse;
-//  5. anything else (timeout during repo-open, restic failure) → classify.
+//  6. a genuine JSON decode failure → KindParse;
+//  7. anything else (restic failure) → classify.
 func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
 	bctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -78,8 +80,12 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 	switch {
 	case st.cbErr != nil:
 		return model.BrowseScanSummary{Entries: st.count}, st.cbErr
-	case bctx.Err() == context.DeadlineExceeded && st.count > 0:
+	case errors.Is(bctx.Err(), context.Canceled):
+		return model.BrowseScanSummary{Entries: st.count}, context.Canceled
+	case errors.Is(bctx.Err(), context.DeadlineExceeded) && st.count > 0:
 		return model.BrowseScanSummary{Entries: st.count, Complete: false}, nil
+	case errors.Is(bctx.Err(), context.DeadlineExceeded):
+		return model.BrowseScanSummary{Entries: st.count}, c.classify(bctx, "ls", runErr, stderr)
 	case runErr == nil && st.decodeErr == nil:
 		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
 	case st.decodeErr != nil:

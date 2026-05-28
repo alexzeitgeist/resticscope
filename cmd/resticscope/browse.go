@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"resticscope/internal/browsedb"
 	"resticscope/internal/model"
 )
+
+var errBrowseFilesystem = errors.New("filesystem error")
 
 // browse.go wires the session-scoped, encrypted browse store into the TUI. The
 // encryption key is a random 32-byte value that lives ONLY in memory — it is
@@ -48,20 +51,24 @@ func (s *browseStore) ListDir(ctx context.Context, repo, snapshot, dir string) (
 
 // Close closes the DB pool (removing db.sqlite and its sidecar files), releases
 // the session lock, and removes the entire session directory. It always attempts
-// every step and returns the first error, so a failure in one does not leak the
-// rest.
+// every step and joins any errors, so a failure in one does not leak the rest or
+// hide a later cleanup failure.
 func (s *browseStore) Close() error {
 	dbErr := s.db.Close()
 	lockErr := s.lock.Close()
-	rmErr := os.RemoveAll(s.dir)
-	switch {
-	case dbErr != nil:
-		return dbErr
-	case lockErr != nil:
-		return lockErr
-	default:
-		return rmErr
+	rmErr := pathFreeFileError(os.RemoveAll(s.dir))
+	return errors.Join(dbErr, lockErr, rmErr)
+}
+
+func pathFreeFileError(err error) error {
+	if err == nil {
+		return nil
 	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Err
+	}
+	return errBrowseFilesystem
 }
 
 // newBrowseOpen returns the lazy-open closure for the session-scoped encrypted
@@ -84,7 +91,7 @@ func newBrowseOpen(cacheDir string, maxDiskBytes int64) func() (app.BrowseStore,
 		}
 		dir := filepath.Join(cacheDir, browsedb.SessionPrefix+hex.EncodeToString(token))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("browse session dir: %w", err)
+			return nil, fmt.Errorf("browse session dir: %w", pathFreeFileError(err))
 		}
 
 		lock, err := browsedb.LockSession(dir)

@@ -31,7 +31,7 @@ shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWO
 # whole block is optional; the defaults below apply when it is omitted.
 [browse]
 index_timeout = "10m"   # cap the one-time full index of a snapshot (generous: huge snapshots take minutes)
-max_disk_bytes = "0"    # session-wide ceiling on the encrypted browse dir; "0" = unlimited (e.g. "2GiB")
+max_disk_bytes = "2GiB" # session-wide ceiling on the encrypted browse dir; "0" = unlimited
 
 # --- S3 credentials -----------------------------------------------------------
 # A credential is just a NAME for an access-key/secret-key pair; it carries no

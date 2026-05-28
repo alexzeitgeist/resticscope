@@ -75,6 +75,35 @@ func (f *fakeStream) RunStream(ctx context.Context, env []string, password strin
 	return f.stderr, f.err
 }
 
+// cancelingBadJSONStream simulates a stdout read/decode error racing with a user
+// cancellation. The browse boundary must report the cancellation, not a parse
+// error from the pipe closing under the decoder.
+type cancelingBadJSONStream struct {
+	cancel context.CancelFunc
+}
+
+func (f cancelingBadJSONStream) RunStream(ctx context.Context, _ []string, _ string, onStdout func(io.Reader) error, _ ...string) ([]byte, error) {
+	err := onStdout(&cancelingBadJSONReader{cancel: f.cancel})
+	if err != nil {
+		return nil, err
+	}
+	return nil, ctx.Err()
+}
+
+type cancelingBadJSONReader struct {
+	cancel context.CancelFunc
+	sent   bool
+}
+
+func (r *cancelingBadJSONReader) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.EOF
+	}
+	r.sent = true
+	r.cancel()
+	return copy(p, "{"), nil
+}
+
 // blockingReader yields its data once, then blocks until the context is done and
 // reports EOF — simulating restic stalling (in repo-open or mid-stream) until the
 // browse deadline kills it and the pipe closes.
@@ -255,6 +284,21 @@ func TestStreamSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("want KindTimeout error, got %v", err)
+	}
+}
+
+func TestStreamSnapshotTreeCancelBeatsDecodeError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Client{Stream: cancelingBadJSONStream{cancel: cancel}}
+	onNode, _ := collect()
+
+	_, err := c.StreamSnapshotTree(ctx, testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	var re *Error
+	if asResticError(err, &re) && re.Kind == KindParse {
+		t.Fatalf("cancel raced with decode and was misclassified as parse: %v", err)
 	}
 }
 

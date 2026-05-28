@@ -66,6 +66,8 @@ var dirRowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", dirInsertB
 var (
 	errInvalidKey       = errors.New("encryption key must be 32 bytes")
 	errInvalidDiskLimit = errors.New("max disk bytes must be >= 0")
+	errReadDBDir        = errors.New("read browse database directory")
+	errFilesystem       = errors.New("filesystem error")
 )
 
 // schemaSnapshots folds the dictionary (sid ⇄ repo+snapshot) and the indexed
@@ -341,7 +343,7 @@ func (db *DB) EntryCount(ctx context.Context, repo, snapshot string) (int64, err
 func (db *DB) dirSize() (int64, error) {
 	entries, err := os.ReadDir(db.dir)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", errReadDBDir, pathFreeFSError(err))
 	}
 	var total int64
 	for _, e := range entries {
@@ -355,6 +357,14 @@ func (db *DB) dirSize() (int64, error) {
 		total += info.Size()
 	}
 	return total, nil
+}
+
+func pathFreeFSError(err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Err
+	}
+	return errFilesystem
 }
 
 // nodeRow is one buffered row awaiting a batched flush.

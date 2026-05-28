@@ -74,7 +74,10 @@ type BrowseSession struct {
 	mu    sync.Mutex // protects lazy store creation/close
 	store BrowseStore
 
-	indexMu sync.Mutex // serializes IndexSnapshot across callers
+	// indexMu serializes IndexSnapshot across callers. If browse grows a concurrent
+	// non-TUI caller, keep BeginIndex serialized but consider moving the fast
+	// already-indexed check outside this lock.
+	indexMu sync.Mutex
 }
 
 // NewBrowseSession returns a session whose store is opened lazily by open on the

@@ -25,6 +25,8 @@ const lockName = "active.lock"
 // idle should never be reclaimed out from under a running TUI.
 const staleThreshold = 3 * time.Hour
 
+var errSessionLockUnavailable = errors.New("session lock unavailable")
+
 // SessionLock holds the open lock file for a live session. On Unix it owns a
 // non-blocking exclusive advisory lock; on unsupported platforms it is only a
 // marker file. Close releases the lock and closes the file.
@@ -37,13 +39,18 @@ type SessionLock struct {
 // The file is created unconditionally for a consistent session-dir shape; on
 // unsupported platforms no real lock is held, which only weakens stale-cleanup
 // liveness detection (a documented non-Unix disk leak, never a privacy bug since
-// the key is gone). Lock acquisition failure is not fatal.
+// the key is gone). On platforms where locking is supported, acquisition failure
+// is fatal because stale cleanup relies on that lock to identify live sessions.
 func LockSession(dir string) (*SessionLock, error) {
 	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("browsedb lock: %w", err)
+		return nil, fmt.Errorf("browsedb lock: %w", pathFreeFSError(err))
 	}
-	_, _ = tryLock(f)
+	ok, supported := tryLock(f)
+	if supported && !ok {
+		_ = f.Close()
+		return nil, fmt.Errorf("browsedb lock: %w", errSessionLockUnavailable)
+	}
 	return &SessionLock{f: f}, nil
 }
 
@@ -57,7 +64,7 @@ func (l *SessionLock) Close() error {
 	err := l.f.Close()
 	l.f = nil
 	if err != nil {
-		return fmt.Errorf("browsedb unlock: %w", err)
+		return fmt.Errorf("browsedb unlock: %w", pathFreeFSError(err))
 	}
 	return nil
 }
@@ -75,7 +82,7 @@ func CleanStaleSessions(cacheDir string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("browsedb clean: %w", err)
+		return fmt.Errorf("browsedb clean: %w", pathFreeFSError(err))
 	}
 	now := time.Now()
 	var firstErr error
@@ -88,7 +95,7 @@ func CleanStaleSessions(cacheDir string) error {
 			continue
 		}
 		if err := os.RemoveAll(dir); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("browsedb clean: %w", err)
+			firstErr = fmt.Errorf("browsedb clean: %w", pathFreeFSError(err))
 		}
 	}
 	return firstErr

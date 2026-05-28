@@ -22,11 +22,11 @@ const (
 	defaultShellPasswordMode     = "file"
 
 	// Browse index settings. IndexTimeout is generous because a one-time full
-	// index of a huge snapshot can take minutes; MaxDiskBytes defaults to 0
-	// (unlimited), leaving the index timeout as the primary bound. See
-	// config.Browse for the rationale.
+	// index of a huge snapshot can take minutes; MaxDiskBytes defaults to a
+	// finite session-wide safety cap. Users can still opt into unlimited browse
+	// DB growth with max_disk_bytes = "0".
 	defaultBrowseIndexTimeout = 10 * time.Minute
-	defaultBrowseMaxDiskBytes = 0
+	defaultBrowseMaxDiskBytes = 2 << 30
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -58,9 +58,9 @@ func Load(path string) (*Config, error) {
 // index settings. The browse settings are seeded here for the same reason in
 // reverse: seeding index_timeout before decode lets an explicit `0` overwrite
 // the default and survive into validation as a rejected value, while an omitted
-// key keeps the default (max_disk_bytes defaults to 0 = unlimited, so it has no
-// rejected zero). It rejects unknown keys so typos in config surface as errors
-// rather than being silently ignored.
+// key keeps the default. max_disk_bytes = "0" remains an accepted explicit
+// opt-in to unlimited growth. It rejects unknown keys so typos in config surface
+// as errors rather than being silently ignored.
 func Decode(data []byte) (*Config, error) {
 	cfg := Config{
 		Global: Global{RefreshOnOpen: true},
