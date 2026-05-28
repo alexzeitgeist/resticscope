@@ -1,6 +1,7 @@
 package resticx
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,10 @@ import (
 
 	json "github.com/goccy/go-json"
 )
+
+// browseStreamBuffer matches the benchmark harness' reader size. It keeps the
+// JSON decoder from reading tiny chunks from restic's stdout pipe on huge trees.
+const browseStreamBuffer = 1 << 20
 
 // browse.go is the streaming restic boundary for the in-app snapshot browser. It
 // runs a single `restic --no-lock ls --json --recursive <snap> /` and hands each
@@ -118,7 +123,7 @@ type browseStream struct {
 // returns. A clean EOF returns nil; a genuine decode error is recorded and
 // returned for the caller to classify.
 func (s *browseStream) consume(r io.Reader) error {
-	dec := json.NewDecoder(r)
+	dec := json.NewDecoder(bufio.NewReaderSize(r, browseStreamBuffer))
 	for {
 		var n lsNode
 		err := dec.Decode(&n)

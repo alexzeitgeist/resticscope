@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"resticscope/internal/model"
 )
@@ -30,9 +31,13 @@ var ErrBrowseNotEnabled = errors.New("browse is not enabled")
 // complete; the caller can retry or fall back to the scoped shell.
 var ErrBrowseIncomplete = errors.New("browse index did not complete")
 
-// progressEvery coalesces progress callbacks so the restic stdout consumer is
-// never throttled by per-node reporting.
-const progressEvery = 2000
+// browseProgressCheckEvery avoids consulting the clock per node while keeping
+// progress responsive enough on very large snapshots.
+const browseProgressCheckEvery = 2000
+
+// browseProgressInterval caps TUI progress redraws. The final count is still
+// emitted after commit, so this is only a live-display throttle.
+const browseProgressInterval = 250 * time.Millisecond
 
 // browseMemoryTrimAfterEntries is the point where the browse indexer has likely
 // grown the Go heap enough that returning idle spans to the OS is worth the
@@ -165,13 +170,18 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		}
 	}()
 
+	var lastProgressAt time.Time
 	onNode := func(n model.BrowseNode) error {
 		if err := tx.Add(ctx, n); err != nil {
 			return err
 		}
 		if progress != nil {
-			if c := tx.Count(); c%progressEvery == 0 {
-				progress(c)
+			if c := tx.Count(); c%browseProgressCheckEvery == 0 {
+				now := time.Now()
+				if lastProgressAt.IsZero() || now.Sub(lastProgressAt) >= browseProgressInterval {
+					lastProgressAt = now
+					progress(c)
+				}
 			}
 		}
 		return nil

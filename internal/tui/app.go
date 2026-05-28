@@ -8,6 +8,7 @@ package tui
 import (
 	"context"
 	"os/exec"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -69,6 +70,7 @@ type Model struct {
 	browseCursor   int                 // selected entry within the current directory
 	browseIndexed  bool                // the snapshot's one-time index has committed
 	browseIndexN   int                 // running node count shown while indexing
+	browseIndexAt  time.Time           // when the current one-time index started
 	browseLoading  bool                // an index or directory load is in flight (navigation paused)
 	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
 	browseGen      int                 // generation token; stale browse msgs are discarded

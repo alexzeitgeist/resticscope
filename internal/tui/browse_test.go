@@ -411,6 +411,44 @@ func TestBrowseProgressCoalescesMonotonically(t *testing.T) {
 	}
 }
 
+func TestBrowseIndexingSummaryShowsRate(t *testing.T) {
+	a := browseApp(t, bnode("/a", "a", true, 0))
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	next, _ := m.Update(press("b"))
+	m = next.(Model)
+	gen := m.browseGen
+
+	m.browseIndexAt = time.Now().Add(-10 * time.Second)
+	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 720000})
+
+	line := m.browseSummaryLine()
+	for _, want := range []string{"indexing", "720000 entries", "72k/s", "esc/back cancels"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("browseSummaryLine() = %q, missing %q", line, want)
+		}
+	}
+}
+
+func TestBrowseIndexRateLabel(t *testing.T) {
+	tests := []struct {
+		entries int
+		elapsed time.Duration
+		want    string
+	}{
+		{entries: 0, elapsed: 10 * time.Second, want: ""},
+		{entries: 1000, elapsed: 500 * time.Millisecond, want: ""},
+		{entries: 720000, elapsed: 10 * time.Second, want: "72k/s"},
+		{entries: 1250, elapsed: 10 * time.Second, want: "125/s"},
+		{entries: 12, elapsed: 10 * time.Second, want: "1.2/s"},
+	}
+	for _, tt := range tests {
+		if got := browseIndexRateLabel(tt.entries, tt.elapsed); got != tt.want {
+			t.Errorf("browseIndexRateLabel(%d, %v) = %q, want %q", tt.entries, tt.elapsed, got, tt.want)
+		}
+	}
+}
+
 // waitForIndexProgress turns a buffered value into a progress message and a closed
 // channel into a nil message that ends the wait loop.
 func TestWaitForIndexProgress(t *testing.T) {

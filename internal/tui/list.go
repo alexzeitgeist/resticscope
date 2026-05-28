@@ -79,10 +79,10 @@ func (m Model) View() tea.View {
 }
 
 // headerView is the top line: the app name, the at-a-glance status badges, the
-// repo count, the restic version, and (when active) the sort indicator on the
-// left; the clock on the right. The badges count the visible rows so they agree
-// with countLabel() under a filter. It is a plain line, not a bar — only the app
-// name is bold and only the badges carry color.
+// repo count, the restic version, and (when active) the sort indicator. The
+// badges count the visible rows so they agree with countLabel() under a filter.
+// It is a plain line, not a bar — only the app name is bold and only the badges
+// carry color.
 func (m Model) headerView() string {
 	parts := []string{m.styles.title.Render("resticscope")}
 	if badges := m.statusBadges(statusCounts(m.visibleRows())); badges != "" {
@@ -95,10 +95,8 @@ func (m Model) headerView() string {
 	if m.sortMode != sortConfig {
 		parts = append(parts, "sort: "+m.sortMode.label())
 	}
-	left := strings.Join(parts, " · ")
-	right := m.styles.dim.Render(m.app.Clock.Now().Format("15:04:05"))
 	w, _ := m.effSize()
-	return clip(m.spread(left, right), w)
+	return clip(strings.Join(parts, " · "), w)
 }
 
 // statusCounts tallies the rows by status across all five buckets.

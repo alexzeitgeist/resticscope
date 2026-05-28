@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -66,6 +67,7 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 	m.browseLoading = true
 	m.browseIndexed = false
 	m.browseIndexN = 0
+	m.browseIndexAt = time.Now()
 
 	gen := m.browseGen
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
@@ -206,6 +208,7 @@ func (m Model) clearBrowse() Model {
 	m.browseCursor = 0
 	m.browseIndexed = false
 	m.browseIndexN = 0
+	m.browseIndexAt = time.Time{}
 	m.browseLoading = false
 	m.browseCancel = nil
 	m.browseProgress = nil
@@ -352,9 +355,35 @@ func (m Model) browseBody() string {
 // Otherwise it reports the current directory's entry count.
 func (m Model) browseSummaryLine() string {
 	if m.browseLoading && !m.browseIndexed {
-		return fmt.Sprintf("indexing… %d entries · esc/back cancels", m.browseIndexN)
+		parts := []string{fmt.Sprintf("indexing… %d entries", m.browseIndexN)}
+		var elapsed time.Duration
+		if !m.browseIndexAt.IsZero() {
+			elapsed = time.Since(m.browseIndexAt)
+		}
+		if rate := browseIndexRateLabel(m.browseIndexN, elapsed); rate != "" {
+			parts = append(parts, rate)
+		}
+		parts = append(parts, "esc/back cancels")
+		return strings.Join(parts, " · ")
 	}
 	return fmt.Sprintf("%d entries", len(m.browseRows))
+}
+
+func browseIndexRateLabel(entries int, elapsed time.Duration) string {
+	if entries <= 0 || elapsed < time.Second {
+		return ""
+	}
+	rate := float64(entries) / elapsed.Seconds()
+	switch {
+	case rate >= 1_000_000:
+		return fmt.Sprintf("%.1fM/s", rate/1_000_000)
+	case rate >= 1_000:
+		return fmt.Sprintf("%.0fk/s", rate/1_000)
+	case rate >= 10:
+		return fmt.Sprintf("%.0f/s", rate)
+	default:
+		return fmt.Sprintf("%.1f/s", rate)
+	}
 }
 
 // browseList renders the scrolling window of the current directory's rows as a
