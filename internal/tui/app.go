@@ -63,18 +63,20 @@ type Model struct {
 	// underlying filenames live only in the session-scoped encrypted store
 	// (app.Browse), which survives until the app exits so returning to an
 	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
-	browseRows     []model.BrowseEntry // the current directory's children, or nil
-	browseRepo     string              // repo being browsed (pins the action target)
-	browseSnapshot string              // snapshot id being browsed
-	browseDir      string              // path of the directory currently listed
-	browseCursor   int                 // selected entry within the current directory
-	browseIndexed  bool                // the snapshot's one-time index has committed
-	browseIndexN   int                 // running node count shown while indexing
-	browseIndexAt  time.Time           // when the current one-time index started
-	browseLoading  bool                // an index or directory load is in flight (navigation paused)
-	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
-	browseGen      int                 // generation token; stale browse msgs are discarded
-	browseProgress chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
+	browseRows       []model.BrowseEntry // the current directory's children, or nil
+	browseRepo       string              // repo being browsed (pins the action target)
+	browseSnapshot   string              // snapshot id being browsed
+	browseDir        string              // path of the directory currently listed
+	browseCursor     int                 // selected entry within the current directory
+	browseIndexed    bool                // the snapshot's one-time index has committed
+	browseIndexN     int                 // running node count shown while indexing
+	browseIndexRate  float64             // recent indexed-entry rate, in entries/sec
+	browseRateBaseN  int                 // count at the start of the current rate window
+	browseRateBaseAt time.Time           // timestamp at the start of the current rate window
+	browseLoading    bool                // an index or directory load is in flight (navigation paused)
+	browseCancel     context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
+	browseGen        int                 // generation token; stale browse msgs are discarded
+	browseProgress   chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
 }
 
 // Run loads cached state for an instant first paint, then starts the program in

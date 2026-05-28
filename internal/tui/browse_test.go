@@ -393,18 +393,27 @@ func TestBrowseProgressCoalescesMonotonically(t *testing.T) {
 	if m.browseIndexN != 2000 {
 		t.Errorf("browseIndexN = %d, want 2000", m.browseIndexN)
 	}
+	if m.browseIndexRate != 0 {
+		t.Errorf("first progress tick should seed the rate window, got rate %.2f", m.browseIndexRate)
+	}
 	if cmd == nil {
 		t.Error("a live progress tick should re-arm the wait command")
 	}
 
+	m.browseRateBaseAt = time.Now().Add(-10 * time.Second)
+	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 722000})
+	if got := browseIndexRateLabel(m.browseIndexRate); got != "72k/s" {
+		t.Errorf("recent progress rate = %q, want 72k/s", got)
+	}
+
 	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 1000}) // out of order
-	if m.browseIndexN != 2000 {
-		t.Errorf("a lower out-of-order tick must not lower the count: got %d, want 2000", m.browseIndexN)
+	if m.browseIndexN != 722000 {
+		t.Errorf("a lower out-of-order tick must not lower the count: got %d, want 722000", m.browseIndexN)
 	}
 
 	m, staleCmd := m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen - 1, n: 9999})
-	if m.browseIndexN != 2000 {
-		t.Errorf("a stale tick must not change the count: got %d, want 2000", m.browseIndexN)
+	if m.browseIndexN != 722000 {
+		t.Errorf("a stale tick must not change the count: got %d, want 722000", m.browseIndexN)
 	}
 	if staleCmd != nil {
 		t.Error("a stale tick must not re-arm the wait command")
@@ -419,8 +428,8 @@ func TestBrowseIndexingSummaryShowsRate(t *testing.T) {
 	m = next.(Model)
 	gen := m.browseGen
 
-	m.browseIndexAt = time.Now().Add(-10 * time.Second)
 	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 720000})
+	m.browseIndexRate = 72000
 
 	line := m.browseSummaryLine()
 	for _, want := range []string{"indexing", "720000 entries", "72k/s", "esc/back cancels"} {
@@ -432,19 +441,17 @@ func TestBrowseIndexingSummaryShowsRate(t *testing.T) {
 
 func TestBrowseIndexRateLabel(t *testing.T) {
 	tests := []struct {
-		entries int
-		elapsed time.Duration
-		want    string
+		rate float64
+		want string
 	}{
-		{entries: 0, elapsed: 10 * time.Second, want: ""},
-		{entries: 1000, elapsed: 500 * time.Millisecond, want: ""},
-		{entries: 720000, elapsed: 10 * time.Second, want: "72k/s"},
-		{entries: 1250, elapsed: 10 * time.Second, want: "125/s"},
-		{entries: 12, elapsed: 10 * time.Second, want: "1.2/s"},
+		{rate: 0, want: ""},
+		{rate: 72000, want: "72k/s"},
+		{rate: 125, want: "125/s"},
+		{rate: 1.2, want: "1.2/s"},
 	}
 	for _, tt := range tests {
-		if got := browseIndexRateLabel(tt.entries, tt.elapsed); got != tt.want {
-			t.Errorf("browseIndexRateLabel(%d, %v) = %q, want %q", tt.entries, tt.elapsed, got, tt.want)
+		if got := browseIndexRateLabel(tt.rate); got != tt.want {
+			t.Errorf("browseIndexRateLabel(%f) = %q, want %q", tt.rate, got, tt.want)
 		}
 	}
 }

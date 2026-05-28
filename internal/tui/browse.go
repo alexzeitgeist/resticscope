@@ -30,6 +30,11 @@ import (
 // summary).
 const browseMetaRows = 2
 
+// browseRateWindow is the minimum sample span for the displayed recent indexing
+// rate. It avoids the misleading startup-amortized cumulative average while
+// keeping the number stable enough to read.
+const browseRateWindow = 2 * time.Second
+
 // browseProgressBuffer bounds the index-progress channel. Progress sends are
 // non-blocking, so the restic stdout consumer never stalls behind a full UI
 // channel: a dropped tick is harmless because a later tick (or the final count)
@@ -67,7 +72,9 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 	m.browseLoading = true
 	m.browseIndexed = false
 	m.browseIndexN = 0
-	m.browseIndexAt = time.Now()
+	m.browseIndexRate = 0
+	m.browseRateBaseN = 0
+	m.browseRateBaseAt = time.Time{}
 
 	gen := m.browseGen
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
@@ -113,9 +120,27 @@ func (m Model) applyBrowseIndexProgress(msg browseIndexProgressMsg) (Model, tea.
 		return m, nil
 	}
 	if msg.n > m.browseIndexN {
+		now := time.Now()
 		m.browseIndexN = msg.n
+		m = m.updateBrowseIndexRate(msg.n, now)
 	}
 	return m, waitForIndexProgress(msg.gen, m.browseProgress)
+}
+
+func (m Model) updateBrowseIndexRate(n int, now time.Time) Model {
+	if m.browseRateBaseAt.IsZero() {
+		m.browseRateBaseN = n
+		m.browseRateBaseAt = now
+		return m
+	}
+	elapsed := now.Sub(m.browseRateBaseAt)
+	if elapsed < browseRateWindow || n <= m.browseRateBaseN {
+		return m
+	}
+	m.browseIndexRate = float64(n-m.browseRateBaseN) / elapsed.Seconds()
+	m.browseRateBaseN = n
+	m.browseRateBaseAt = now
+	return m
 }
 
 // applyBrowseIndexed handles a finished one-time index. A result whose generation
@@ -208,7 +233,9 @@ func (m Model) clearBrowse() Model {
 	m.browseCursor = 0
 	m.browseIndexed = false
 	m.browseIndexN = 0
-	m.browseIndexAt = time.Time{}
+	m.browseIndexRate = 0
+	m.browseRateBaseN = 0
+	m.browseRateBaseAt = time.Time{}
 	m.browseLoading = false
 	m.browseCancel = nil
 	m.browseProgress = nil
@@ -356,11 +383,7 @@ func (m Model) browseBody() string {
 func (m Model) browseSummaryLine() string {
 	if m.browseLoading && !m.browseIndexed {
 		parts := []string{fmt.Sprintf("indexing… %d entries", m.browseIndexN)}
-		var elapsed time.Duration
-		if !m.browseIndexAt.IsZero() {
-			elapsed = time.Since(m.browseIndexAt)
-		}
-		if rate := browseIndexRateLabel(m.browseIndexN, elapsed); rate != "" {
+		if rate := browseIndexRateLabel(m.browseIndexRate); rate != "" {
 			parts = append(parts, rate)
 		}
 		parts = append(parts, "esc/back cancels")
@@ -369,11 +392,10 @@ func (m Model) browseSummaryLine() string {
 	return fmt.Sprintf("%d entries", len(m.browseRows))
 }
 
-func browseIndexRateLabel(entries int, elapsed time.Duration) string {
-	if entries <= 0 || elapsed < time.Second {
+func browseIndexRateLabel(rate float64) string {
+	if rate <= 0 {
 		return ""
 	}
-	rate := float64(entries) / elapsed.Seconds()
 	switch {
 	case rate >= 1_000_000:
 		return fmt.Sprintf("%.1fM/s", rate/1_000_000)
