@@ -117,8 +117,7 @@ const schemaNodes = `CREATE TABLE IF NOT EXISTS nodes (
 const schemaIndex = `CREATE INDEX IF NOT EXISTS idx_nodes_dir ON nodes (parent_did, is_dir DESC, name_ci, name)`
 
 // insertColumns lists the nodes columns in bind order, sid first, no path. The
-// upsert is gone: restic emits each tree path once, so a plain INSERT is correct
-// (within-batch dedupe stays as cheap insurance).
+// upsert is gone: restic emits each tree path once, so a plain INSERT is correct.
 const insertColumns = `(sid,parent_did,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target,name_ci)`
 
 // listDirDIDQuery resolves a requested committed directory path to its did. A
@@ -264,6 +263,7 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	defer rows.Close()
 
 	var out []model.BrowseEntry
+	var zones map[int]*time.Location
 	for rows.Next() {
 		var (
 			e          model.BrowseEntry
@@ -288,7 +288,15 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 		if mtimeKnown != 0 {
 			// FixedZone preserves the wall-clock minute the old browse table
 			// displayed; Location().String() is intentionally not meaningful.
-			e.ModTime = time.Unix(mtimeUnix, 0).In(time.FixedZone("", mtimeOff))
+			loc := zones[mtimeOff]
+			if loc == nil {
+				if zones == nil {
+					zones = make(map[int]*time.Location, 2)
+				}
+				loc = time.FixedZone("", mtimeOff)
+				zones[mtimeOff] = loc
+			}
+			e.ModTime = time.Unix(mtimeUnix, 0).In(loc)
 		}
 		out = append(out, e)
 	}
@@ -406,7 +414,6 @@ func pathFreeFSError(err error) error {
 
 // nodeRow is one buffered row awaiting a batched flush.
 type nodeRow struct {
-	path           string
 	parentDID      int64
 	name           string
 	typ            string
@@ -440,14 +447,16 @@ type IndexTx struct {
 	snapshot string
 	sid      int64 // allocated in BeginIndex; never leaks through the app API
 
-	buf            []nodeRow
-	dirBuf         []dirRow
-	count          int // accepted Add calls, for progress reporting
-	insertedRows   int64
-	nextDID        int64
-	sinceDiskCheck int
-	dirs           map[string]int64
-	failed         error // sticky, path-free; set on first failure
+	buf             []nodeRow
+	dirBuf          []dirRow
+	count           int // accepted Add calls, for progress reporting
+	insertedRows    int64
+	nextDID         int64
+	sinceDiskCheck  int
+	dirs            map[string]int64
+	cachedParent    string
+	cachedParentDID int64
+	failed          error // sticky, path-free; set on first failure
 }
 
 // BeginIndex starts an index transaction for (repo, snapshot). The caller must
@@ -471,10 +480,12 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 		return nil, err
 	}
 	itx.dirs = make(map[string]int64, 1024)
-	if _, err := itx.ensureCleanDir(ctx, "/"); err != nil {
+	rootDID, err := itx.ensureCleanDir(ctx, "/")
+	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}
+	itx.cacheParent("/", rootDID)
 	if err := itx.flushDirs(ctx); err != nil {
 		_ = tx.Rollback()
 		return nil, err
@@ -551,6 +562,37 @@ func (itx *IndexTx) ensureCleanDir(ctx context.Context, p string) (int64, error)
 	return did, nil
 }
 
+func (itx *IndexTx) parentDID(ctx context.Context, p string) (int64, error) {
+	if sameParentPath(p, itx.cachedParent) {
+		return itx.cachedParentDID, nil
+	}
+	parent := path.Dir(p)
+	did, err := itx.ensureCleanDir(ctx, parent)
+	if err != nil {
+		return 0, err
+	}
+	itx.cacheParent(parent, did)
+	return did, nil
+}
+
+func (itx *IndexTx) cacheParent(parent string, did int64) {
+	itx.cachedParent = parent
+	itx.cachedParentDID = did
+}
+
+func sameParentPath(p, parent string) bool {
+	if parent == "" {
+		return false
+	}
+	if parent == "/" {
+		return strings.LastIndexByte(p, '/') == 0
+	}
+	if len(p) <= len(parent) || p[len(parent)] != '/' || !strings.HasPrefix(p, parent) {
+		return false
+	}
+	return !strings.Contains(p[len(parent)+1:], "/")
+}
+
 // Add buffers one node for insertion. It cleans the path, skips the root record
 // (root is never its own child), resolves the parent directory ID, ensures a dir
 // ID for directory nodes, derives name/name_ci/type, normalizes is_dir, and
@@ -566,7 +608,7 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	if p == "/" {
 		return nil
 	}
-	parentDID, err := itx.ensureCleanDir(ctx, path.Dir(p))
+	parentDID, err := itx.parentDID(ctx, p)
 	if err != nil {
 		itx.failed = err
 		return err
@@ -575,13 +617,14 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	typ := normalizeType(n.Type, n.IsDir)
 	isDir := n.IsDir || typ == "dir"
 	if isDir {
-		if _, err := itx.ensureCleanDir(ctx, p); err != nil {
+		did, err := itx.ensureCleanDir(ctx, p)
+		if err != nil {
 			itx.failed = err
 			return err
 		}
+		itx.cacheParent(p, did)
 	}
 	row := nodeRow{
-		path:       p,
 		parentDID:  parentDID,
 		name:       name,
 		typ:        typ,
@@ -620,13 +663,12 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 }
 
 // Count reports the number of accepted Add calls, for live progress. The final
-// committed row count is tracked from successful deduped inserts.
+// committed row count is tracked from successful inserts.
 func (itx *IndexTx) Count() int { return itx.count }
 
-// flush writes the buffered rows as one multi-row plain INSERT. The batch is
-// de-duplicated by normalized path (last write wins, first-seen position kept) as
-// cheap within-batch insurance; restic emits each tree path once, so cross-batch
-// duplicates are out of contract (there is no unique constraint to upsert against).
+// flush writes the buffered rows as one multi-row plain INSERT. restic emits each
+// tree path once, so duplicate-path collapse is deliberately out of the hot path
+// (there is no unique constraint to upsert against).
 func (itx *IndexTx) flush(ctx context.Context) error {
 	if itx.failed != nil {
 		return itx.failed
@@ -634,7 +676,7 @@ func (itx *IndexTx) flush(ctx context.Context) error {
 	if len(itx.buf) == 0 {
 		return nil
 	}
-	rows := dedupeRows(itx.buf)
+	rows := itx.buf
 	itx.buf = itx.buf[:0]
 
 	query, args := buildInsert(itx.sid, rows)
@@ -730,22 +772,6 @@ func (itx *IndexTx) Rollback() error {
 		return nil
 	}
 	return fmt.Errorf("browsedb rollback: %w", err)
-}
-
-// dedupeRows collapses duplicate normalized paths within one batch, keeping the
-// last write's values at the first-seen position.
-func dedupeRows(buf []nodeRow) []nodeRow {
-	seen := make(map[string]int, len(buf))
-	out := make([]nodeRow, 0, len(buf))
-	for _, r := range buf {
-		if idx, ok := seen[r.path]; ok {
-			out[idx] = r
-			continue
-		}
-		seen[r.path] = len(out)
-		out = append(out, r)
-	}
-	return out
 }
 
 // buildInsert assembles the multi-row plain INSERT and its bound args for rows,

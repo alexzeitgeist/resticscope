@@ -254,7 +254,7 @@ func TestNameFallback(t *testing.T) {
 	}
 }
 
-func TestDedupeWithinBatch(t *testing.T) {
+func TestDuplicatePathsNotCollapsedWithinBatch(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
@@ -265,19 +265,22 @@ func TestDedupeWithinBatch(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	entries, _ := db.ListDir(ctx, repo, snap, "/etc")
-	if len(entries) != 1 {
-		t.Fatalf("want 1 deduped row, got %d", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("want 2 rows (duplicate paths are out of contract), got %d", len(entries))
 	}
-	if entries[0].Size != 2 {
-		t.Errorf("last-write-wins size = %d, want 2", entries[0].Size)
+	sizes := map[int64]bool{}
+	for _, e := range entries {
+		sizes[e.Size] = true
+	}
+	if !sizes[1] || !sizes[2] {
+		t.Errorf("duplicate sizes = %+v, want both 1 and 2", entries)
 	}
 }
 
 func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
 	// The unique constraint and the upsert are gone: restic emits each tree path
-	// exactly once, so the plain INSERT trusts that. A cross-flush duplicate is out
-	// of contract and is NOT collapsed — it lands as two rows. Within-batch dedupe
-	// (TestDedupeWithinBatch) is the only collapse that remains.
+	// exactly once, so the plain INSERT trusts that. Duplicates are out of contract
+	// and are NOT collapsed, even across flushes.
 	db, _, _ := newTestDB(t, 0)
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
@@ -293,6 +296,26 @@ func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
 	entries, _ := db.ListDir(ctx, repo, snap, "/etc")
 	if len(entries) != 2 {
 		t.Fatalf("want 2 rows (cross-flush dups are not collapsed), got %d", len(entries))
+	}
+}
+
+func TestSameParentPath(t *testing.T) {
+	tests := []struct {
+		p      string
+		parent string
+		want   bool
+	}{
+		{p: "/a", parent: "/", want: true},
+		{p: "/a/b", parent: "/", want: false},
+		{p: "/a/b", parent: "/a", want: true},
+		{p: "/a/b/c", parent: "/a", want: false},
+		{p: "/ab", parent: "/a", want: false},
+		{p: "/a", parent: "", want: false},
+	}
+	for _, tt := range tests {
+		if got := sameParentPath(tt.p, tt.parent); got != tt.want {
+			t.Errorf("sameParentPath(%q, %q) = %v, want %v", tt.p, tt.parent, got, tt.want)
+		}
 	}
 }
 

@@ -63,12 +63,7 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 // so quitting still cascades, but back can cancel just the browse. The index runs
 // in one Cmd while a second Cmd pumps progress ticks; both carry the generation.
 func (m Model) beginIndex() (Model, tea.Cmd) {
-	m.browseGen++
-	if m.browseCancel != nil {
-		m.browseCancel() // supersede any prior in-flight browse
-	}
-	bctx, bcancel := context.WithCancel(m.ctx)
-	m.browseCancel = bcancel
+	m, bctx, gen := m.beginBrowseOp()
 	m.browseLoading = true
 	m.browseIndexed = false
 	m.browseIndexN = 0
@@ -76,7 +71,6 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 	m.browseRateBaseN = 0
 	m.browseRateBaseAt = time.Time{}
 
-	gen := m.browseGen
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
 	progress := make(chan int, browseProgressBuffer)
 	m.browseProgress = progress
@@ -153,9 +147,7 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.err != nil {
-		if m.browseCancel != nil {
-			m.browseCancel()
-		}
+		m = m.supersedeBrowse()
 		m.browseLoading = false
 		m.statusMsg = "browse: " + firstLine(msg.err.Error())
 		m.view = detailView
@@ -171,15 +163,9 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 // supersedes any prior in-flight browse so a stale listing can never overwrite a
 // newer one.
 func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
-	m.browseGen++
-	if m.browseCancel != nil {
-		m.browseCancel()
-	}
-	bctx, bcancel := context.WithCancel(m.ctx)
-	m.browseCancel = bcancel
+	m, bctx, gen := m.beginBrowseOp()
 	m.browseLoading = true
 
-	gen := m.browseGen
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
 	cmd := func() tea.Msg {
 		rows, err := m.app.ListDir(bctx, repo, snapshotID, dir)
@@ -216,12 +202,29 @@ func (m Model) browseBack() Model {
 	// Drop any transient browse status so a restic/store message never lingers
 	// into the view we return to.
 	m.statusMsg = ""
-	m.browseGen++
-	if m.browseCancel != nil {
-		m.browseCancel()
-	}
+	m = m.supersedeBrowse()
 	m.view = detailView
 	return m.clearBrowse()
+}
+
+func (m Model) beginBrowseOp() (Model, context.Context, int) {
+	m = m.supersedeBrowse()
+	bctx, bcancel := context.WithCancel(m.ctx)
+	m.browseCancel = bcancel
+	return m, bctx, m.browseGen
+}
+
+func (m Model) supersedeBrowse() Model {
+	m.browseGen++
+	return m.cancelBrowse()
+}
+
+func (m Model) cancelBrowse() Model {
+	if m.browseCancel != nil {
+		m.browseCancel()
+		m.browseCancel = nil
+	}
+	return m
 }
 
 // clearBrowse drops all session browse UI state. It is called on every exit from
