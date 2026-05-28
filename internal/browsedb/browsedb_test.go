@@ -332,6 +332,9 @@ func TestBatchFlush(t *testing.T) {
 	if len(itx.buf) != 0 {
 		t.Errorf("buffer not flushed at batchRows: %d", len(itx.buf))
 	}
+	if itx.insertStmt == nil {
+		t.Error("full node batch did not prepare the reusable insert statement")
+	}
 	if err := itx.Add(ctx, model.BrowseNode{Path: "/extra"}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -353,6 +356,29 @@ func TestBatchFlush(t *testing.T) {
 		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`, repo, snap).Scan(&n)
 	if n != int64(batchRows+1) {
 		t.Errorf("marker entries = %d, want %d", n, batchRows+1)
+	}
+}
+
+func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	itx, err := db.BeginIndex(ctx, "repo", "snap")
+	if err != nil {
+		t.Fatalf("BeginIndex: %v", err)
+	}
+	for i := 0; i < dirBatchRows; i++ {
+		if _, err := itx.ensureCleanDir(ctx, fmt.Sprintf("/d%05d", i)); err != nil {
+			t.Fatalf("ensureCleanDir: %v", err)
+		}
+	}
+	if len(itx.dirBuf) != 0 {
+		t.Errorf("dir buffer not flushed at dirBatchRows: %d", len(itx.dirBuf))
+	}
+	if itx.dirInsertStmt == nil {
+		t.Error("full dir batch did not prepare the reusable insert statement")
+	}
+	if err := itx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
 	}
 }
 

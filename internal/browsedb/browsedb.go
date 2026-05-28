@@ -120,6 +120,10 @@ const schemaIndex = `CREATE INDEX IF NOT EXISTS idx_nodes_dir ON nodes (parent_d
 // upsert is gone: restic emits each tree path once, so a plain INSERT is correct.
 const insertColumns = `(sid,parent_did,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target,name_ci)`
 
+var fullInsertSQL = buildInsertSQL(batchRows)
+
+var fullDirInsertSQL = buildDirInsertSQL(dirBatchRows)
+
 // listDirDIDQuery resolves a requested committed directory path to its did. A
 // never-indexed snapshot or never-seen directory yields sql.ErrNoRows and an
 // empty listing.
@@ -449,6 +453,8 @@ type IndexTx struct {
 
 	buf             []nodeRow
 	dirBuf          []dirRow
+	insertStmt      *sql.Stmt
+	dirInsertStmt   *sql.Stmt
 	count           int // accepted Add calls, for progress reporting
 	insertedRows    int64
 	nextDID         int64
@@ -666,9 +672,11 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 // committed row count is tracked from successful inserts.
 func (itx *IndexTx) Count() int { return itx.count }
 
-// flush writes the buffered rows as one multi-row plain INSERT. restic emits each
-// tree path once, so duplicate-path collapse is deliberately out of the hot path
-// (there is no unique constraint to upsert against).
+// flush writes the buffered rows as one multi-row plain INSERT. Full batches
+// reuse a tx-scoped prepared statement; the final partial batch keeps its
+// dynamically-sized SQL. restic emits each tree path once, so duplicate-path
+// collapse is deliberately out of the hot path (there is no unique constraint to
+// upsert against).
 func (itx *IndexTx) flush(ctx context.Context) error {
 	if itx.failed != nil {
 		return itx.failed
@@ -679,7 +687,20 @@ func (itx *IndexTx) flush(ctx context.Context) error {
 	rows := itx.buf
 	itx.buf = itx.buf[:0]
 
-	query, args := buildInsert(itx.sid, rows)
+	args := buildInsertArgs(itx.sid, rows)
+	if len(rows) == batchRows {
+		stmt, err := itx.fullInsertStmt(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			itx.failed = fmt.Errorf("browsedb index: %w", err)
+			return itx.failed
+		}
+		itx.insertedRows += int64(len(rows))
+		return nil
+	}
+	query := buildInsertSQL(len(rows))
 	if _, err := itx.tx.ExecContext(ctx, query, args...); err != nil {
 		itx.failed = fmt.Errorf("browsedb index: %w", err)
 		return itx.failed
@@ -698,12 +719,50 @@ func (itx *IndexTx) flushDirs(ctx context.Context) error {
 	rows := itx.dirBuf
 	itx.dirBuf = nil
 
-	query, args := buildDirInsert(itx.sid, rows)
+	args := buildDirInsertArgs(itx.sid, rows)
+	if len(rows) == dirBatchRows {
+		stmt, err := itx.fullDirInsertStmt(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			itx.failed = fmt.Errorf("browsedb dir: %w", err)
+			return itx.failed
+		}
+		return nil
+	}
+	query := buildDirInsertSQL(len(rows))
 	if _, err := itx.tx.ExecContext(ctx, query, args...); err != nil {
 		itx.failed = fmt.Errorf("browsedb dir: %w", err)
 		return itx.failed
 	}
 	return nil
+}
+
+func (itx *IndexTx) fullInsertStmt(ctx context.Context) (*sql.Stmt, error) {
+	if itx.insertStmt != nil {
+		return itx.insertStmt, nil
+	}
+	stmt, err := itx.tx.PrepareContext(ctx, fullInsertSQL)
+	if err != nil {
+		itx.failed = fmt.Errorf("browsedb prepare index: %w", err)
+		return nil, itx.failed
+	}
+	itx.insertStmt = stmt
+	return stmt, nil
+}
+
+func (itx *IndexTx) fullDirInsertStmt(ctx context.Context) (*sql.Stmt, error) {
+	if itx.dirInsertStmt != nil {
+		return itx.dirInsertStmt, nil
+	}
+	stmt, err := itx.tx.PrepareContext(ctx, fullDirInsertSQL)
+	if err != nil {
+		itx.failed = fmt.Errorf("browsedb prepare dir: %w", err)
+		return nil, itx.failed
+	}
+	itx.dirInsertStmt = stmt
+	return stmt, nil
 }
 
 // checkDisk enforces the optional disk ceiling over all regular files in the DB
@@ -774,40 +833,49 @@ func (itx *IndexTx) Rollback() error {
 	return fmt.Errorf("browsedb rollback: %w", err)
 }
 
-// buildInsert assembles the multi-row plain INSERT and its bound args for rows,
-// binding sid plus parent_did and the 13 remaining node fields (the stored path
-// is gone — derived on read).
-func buildInsert(sid int64, rows []nodeRow) (string, []any) {
+func buildInsertSQL(n int) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO nodes ")
 	b.WriteString(insertColumns)
 	b.WriteString(" VALUES ")
-	args := make([]any, 0, len(rows)*insertBindParams)
-	for i, r := range rows {
+	for i := 0; i < n; i++ {
 		if i > 0 {
 			b.WriteByte(',')
 		}
 		b.WriteString(rowPlaceholder)
+	}
+	return b.String()
+}
+
+func buildInsertArgs(sid int64, rows []nodeRow) []any {
+	args := make([]any, 0, len(rows)*insertBindParams)
+	for _, r := range rows {
 		args = append(args,
 			sid, r.parentDID, r.name, r.typ, boolInt(r.isDir), r.size,
 			r.mtimeUnix, r.mtimeOffsetSec, boolInt(r.mtimeKnown), r.perms,
 			int64(r.uid), int64(r.gid), boolInt(r.ownerKnown), r.linkTarget, r.nameCI)
 	}
-	return b.String(), args
+	return args
 }
 
-func buildDirInsert(sid int64, rows []dirRow) (string, []any) {
+func buildDirInsertSQL(n int) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO dirs (did,sid,path) VALUES ")
-	args := make([]any, 0, len(rows)*dirInsertBindParams)
-	for i, r := range rows {
+	for i := 0; i < n; i++ {
 		if i > 0 {
 			b.WriteByte(',')
 		}
 		b.WriteString(dirRowPlaceholder)
+	}
+	return b.String()
+}
+
+func buildDirInsertArgs(sid int64, rows []dirRow) []any {
+	args := make([]any, 0, len(rows)*dirInsertBindParams)
+	for _, r := range rows {
 		args = append(args, r.did, sid, r.path)
 	}
-	return b.String(), args
+	return args
 }
 
 // normalizeType maps restic's raw node type to a stored type, defaulting empty
