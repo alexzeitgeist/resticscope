@@ -77,6 +77,14 @@ type Model struct {
 	browseCancel     context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
 	browseGen        int                 // generation token; stale browse msgs are discarded
 	browseProgress   chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
+
+	// browseCache memoizes visited directories' listings for the current browse so
+	// back/parent navigation is served synchronously (no async query, no loading
+	// hop). A committed snapshot is immutable, so an entry never goes stale — no
+	// invalidation. It holds filenames, so clearBrowse drops it on leaving browse
+	// (non-negotiable #1: no filenames linger), and startBrowse resets it so one
+	// snapshot's "/" can never serve another's.
+	browseCache map[string][]model.BrowseEntry
 }
 
 // Run loads cached state for an instant first paint, then starts the program in

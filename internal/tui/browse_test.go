@@ -30,13 +30,21 @@ func bnode(p, name string, isDir bool, size int64) model.BrowseNode {
 // returns only direct children, dirs-first then case-insensitive, mirroring
 // browsedb's contract (which has its own dedicated tests).
 type fakeBrowseStore struct {
-	mu      sync.Mutex
-	indexed map[string]bool
-	nodes   map[string][]model.BrowseNode
+	mu        sync.Mutex
+	indexed   map[string]bool
+	nodes     map[string][]model.BrowseNode
+	listCalls map[string]int // per-dir ListDir count, to prove the cache short-circuits requeries
 }
 
 func newFakeBrowseStore() *fakeBrowseStore {
-	return &fakeBrowseStore{indexed: map[string]bool{}, nodes: map[string][]model.BrowseNode{}}
+	return &fakeBrowseStore{indexed: map[string]bool{}, nodes: map[string][]model.BrowseNode{}, listCalls: map[string]int{}}
+}
+
+// listCount reports how many times ListDir was called for a directory.
+func (s *fakeBrowseStore) listCount(dir string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listCalls[dir]
 }
 
 func browseKey(repo, snap string) string { return repo + "\x00" + snap }
@@ -54,6 +62,7 @@ func (s *fakeBrowseStore) BeginIndex(_ context.Context, repo, snap string) (app.
 func (s *fakeBrowseStore) ListDir(_ context.Context, repo, snap, dir string) ([]model.BrowseEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.listCalls[model.CleanBrowsePath(dir)]++
 	key := browseKey(repo, snap)
 	if !s.indexed[key] {
 		return nil, nil
@@ -117,13 +126,21 @@ func (w *fakeBrowseWriter) Rollback() error { return nil }
 // the same snapshot short-circuits via IsIndexed.
 func browseApp(t *testing.T, nodes ...model.BrowseNode) *app.App {
 	t.Helper()
+	a, _ := browseAppWithStore(t, nodes...)
+	return a
+}
+
+// browseAppWithStore is browseApp but also returns the backing in-memory store so
+// a test can assert how many times ListDir was actually called (cache behaviour).
+func browseAppWithStore(t *testing.T, nodes ...model.BrowseNode) (*app.App, *fakeBrowseStore) {
+	t.Helper()
 	a := detailApp(t)
 	a.Cfg.Browse = config.Browse{IndexTimeout: config.Duration(10 * time.Minute)}
 	a.Restic = stubRestic{browseNodes: nodes}
 	store := newFakeBrowseStore()
 	a.Browse = app.NewBrowseSession(func() (app.BrowseStore, error) { return store, nil })
 	t.Cleanup(func() { _ = a.Browse.Close() })
-	return a
+	return a, store
 }
 
 // findBrowseIndexed runs the leaves of a browse command and returns the
@@ -264,6 +281,83 @@ func TestBrowseParentRestoresCursorOntoChild(t *testing.T) {
 	}
 	if m.browseCursor != 1 {
 		t.Errorf("parent should restore the cursor onto /b (index 1), got %d", m.browseCursor)
+	}
+}
+
+// A visited directory is served from the in-session listing cache: returning to it
+// dispatches no async query (so navigation is never paused) and the store is not
+// asked for it again. The snapshot is immutable, so the cached rows are still
+// correct. This holds for both back/parent and forward re-entry.
+func TestBrowseRevisitServedFromListingCache(t *testing.T) {
+	a, store := browseAppWithStore(t,
+		bnode("/a", "a", true, 0),
+		bnode("/b", "b", true, 0),
+		bnode("/b/inner.txt", "inner.txt", false, 1),
+	)
+	m := openBrowse(t, newTestModel(t, a))
+	if store.listCount("/") != 1 {
+		t.Fatalf("precondition: root listed %d times after opening, want 1", store.listCount("/"))
+	}
+
+	m = pressBrowse(t, m, "j")     // cursor onto /b (index 1 of a,b)
+	m = pressBrowse(t, m, "enter") // descend into /b (cache miss -> exactly one query)
+	if m.browseDir != "/b" || store.listCount("/b") != 1 {
+		t.Fatalf("precondition: dir=%q ListDir(/b)=%d, want /b and 1", m.browseDir, store.listCount("/b"))
+	}
+
+	// Back to /: served from cache, so no command is emitted, the model never enters
+	// the loading state, and the store is not re-queried for /.
+	next, cmd := m.Update(press("backspace"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("returning to a visited directory must be served synchronously, with no query command")
+	}
+	if m.browseLoading {
+		t.Error("a cache-served listing must not enter the loading state")
+	}
+	if m.browseDir != "/" {
+		t.Errorf("browseDir = %q, want / after parent", m.browseDir)
+	}
+	if store.listCount("/") != 1 {
+		t.Errorf("root was re-queried: ListDir(/) called %d times, want 1", store.listCount("/"))
+	}
+	if m.browseCursor != 1 {
+		t.Errorf("parent should restore the cursor onto /b (index 1), got %d", m.browseCursor)
+	}
+
+	// Re-descending into /b (cursor is already on it) is likewise cache-served — the
+	// optimization is not special to parent navigation.
+	next, cmd = m.Update(press("enter"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("re-entering a visited directory must be served from cache with no query")
+	}
+	if m.browseDir != "/b" || store.listCount("/b") != 1 {
+		t.Errorf("re-descent re-queried the store: dir=%q ListDir(/b)=%d, want /b and 1", m.browseDir, store.listCount("/b"))
+	}
+	if len(m.browseRows) != 1 || m.browseRows[0].Name != "inner.txt" {
+		t.Errorf("cache-served /b listing = %+v, want inner.txt", m.browseRows)
+	}
+}
+
+// Leaving browse drops the listing cache (which holds filenames) so nothing
+// lingers in the model — the same contract clearBrowse enforces for browseRows
+// (non-negotiable #1).
+func TestBrowseLeavingClearsListingCache(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/a", "a", true, 0),
+		bnode("/b", "b", true, 0),
+	)))
+	if len(m.browseCache) == 0 {
+		t.Fatal("precondition: the root listing should be cached after opening browse")
+	}
+
+	m = update(t, m, press("q")) // leave browse
+	if m.view != detailView {
+		t.Fatalf("q should return to detail, view = %d", m.view)
+	}
+	if m.browseCache != nil {
+		t.Errorf("leaving browse must drop the listing cache so no filenames linger, got %d entries", len(m.browseCache))
 	}
 }
 

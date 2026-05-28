@@ -49,6 +49,7 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 	m.browseSnapshot = snapshotID
 	m.browseDir = "/"
 	m.browseRows = nil
+	m.browseCache = nil // a fresh snapshot: never serve a previous one's cached dirs
 	m.browseCursor = 0
 	m.browseIndexed = false
 	m.browseIndexN = 0
@@ -163,6 +164,22 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 // supersedes any prior in-flight browse so a stale listing can never overwrite a
 // newer one.
 func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
+	// Serve an already-visited directory straight from the session listing cache.
+	// The snapshot is immutable once indexed, so a cached listing can never go
+	// stale; answering synchronously skips the async query and its loading hop, so
+	// rapid parent/back navigation stays crisp — handleBrowseKey pauses navigation
+	// while browseLoading, which would otherwise drop keystrokes during each query
+	// round-trip. supersedeBrowse advances the generation so any in-flight listing's
+	// late message is dropped; no new query is dispatched.
+	if rows, ok := m.browseCache[dir]; ok {
+		m = m.supersedeBrowse()
+		m.browseLoading = false
+		m.browseDir = dir
+		m.browseRows = rows
+		m.browseCursor = m.indexOfBrowsePath(selectPath)
+		return m, nil
+	}
+
 	m, bctx, gen := m.beginBrowseOp()
 	m.browseLoading = true
 
@@ -190,6 +207,13 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 	m.browseDir = msg.dir
 	m.browseRows = msg.rows
 	m.browseCursor = m.indexOfBrowsePath(msg.selectPath)
+	// Memoize the listing so a later return to this directory is served
+	// synchronously (see beginListDir). The snapshot is immutable, so the entry
+	// never needs invalidation; clearBrowse drops the whole map on leaving browse.
+	if m.browseCache == nil {
+		m.browseCache = make(map[string][]model.BrowseEntry)
+	}
+	m.browseCache[msg.dir] = msg.rows
 	return m
 }
 
@@ -233,6 +257,7 @@ func (m Model) cancelBrowse() Model {
 // so returning to the same snapshot in this run does not re-index.
 func (m Model) clearBrowse() Model {
 	m.browseRows = nil
+	m.browseCache = nil // filenames must not linger in the model after leaving browse
 	m.browseRepo = ""
 	m.browseSnapshot = ""
 	m.browseDir = ""
