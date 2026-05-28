@@ -51,9 +51,9 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 	m.browseRows = nil
 	m.browseCache = nil // a fresh snapshot: never serve a previous one's cached dirs
 	m.browseCursor = 0
-	m.browseIndexed = false
-	m.browseIndexN = 0
 	m.view = browseView
+	// beginIndex owns the index-counter reset (browseIndexed, browseIndexN, and
+	// the rate fields), so startBrowse only sets the navigation state here.
 	return m.beginIndex()
 }
 
