@@ -3,17 +3,17 @@
 // whole namespace is streamed into the DB once; all later directory navigation
 // is served by SQL queries.
 //
-// Privacy contract: filenames are persisted ONLY in this DB, which is encrypted
-// at rest by the adiantum VFS under a random 32-byte key that lives only in
-// memory (never derived from the repo password, never written anywhere). The DB
-// file is created lazily on first browse and removed on clean exit; a crash
-// leftover is unreadable because the key is gone, and conservative startup
-// cleanup scavenges demonstrably-stale leftovers. To uphold that contract every
-// error returned from this package is path-free: it wraps an operation name and
-// a sentinel/driver cause, never a node path, name, or directory string (those
-// only ever flow through bound query parameters, which SQLite never echoes into
-// error messages). The repo key is the validated configured repo name/ID passed
-// by the app, never a backend URL/bucket/credential-bearing target.
+// Privacy contract: filenames and directory paths are persisted ONLY in this DB,
+// which is encrypted at rest by the adiantum VFS under a random 32-byte key that
+// lives only in memory (never derived from the repo password, never written
+// anywhere). The DB file is created lazily on first browse and removed on clean
+// exit; a crash leftover is unreadable because the key is gone, and conservative
+// startup cleanup scavenges demonstrably-stale leftovers. To uphold that contract
+// every error returned from this package is path-free: it wraps an operation name
+// and a sentinel/driver cause, never a node path, name, or directory string
+// (those only ever flow through bound query parameters, which SQLite never echoes
+// into error messages). The repo key is the validated configured repo name/ID
+// passed by the app, never a backend URL/bucket/credential-bearing target.
 package browsedb
 
 import (
@@ -40,12 +40,16 @@ import (
 // below.
 const insertBindParams = 15
 
+const dirInsertBindParams = 3
+
 // batchRows is how many node rows accumulate before a single multi-row INSERT is
 // flushed inside the index transaction. The pinned driver's
 // LIMIT_VARIABLE_NUMBER = 32766 caps a batch at floor(32766/15) = 2184 rows; 1000
 // binds 15000 params/batch, ~4× fewer ExecContext round-trips than the old 250
 // with comfortable headroom under that cap.
 const batchRows = 1000
+
+const dirBatchRows = 1000
 
 // diskCheckRows is the coarse cadence (in accepted Add calls) at which the disk
 // ceiling is re-measured during indexing. The ceiling is a safety cap with
@@ -56,6 +60,8 @@ const diskCheckRows = 10000
 // rowPlaceholder is the "(?,?,...)" group bound for one node row, built once so
 // the bind count cannot drift from insertBindParams.
 var rowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", insertBindParams), ",") + ")"
+
+var dirRowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", dirInsertBindParams), ",") + ")"
 
 var (
 	errInvalidKey       = errors.New("encryption key must be 32 bytes")
@@ -76,13 +82,22 @@ const schemaSnapshots = `CREATE TABLE IF NOT EXISTS snapshots (
   UNIQUE (repo, snapshot)
 )`
 
+// schemaDirs interns directory paths once per snapshot. did is globally unique,
+// so nodes can key their browse lookup by parent_did alone.
+const schemaDirs = `CREATE TABLE IF NOT EXISTS dirs (
+  did INTEGER PRIMARY KEY,
+  sid INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  UNIQUE (sid, path)
+)`
+
 // schemaNodes is an implicit-rowid table (no WITHOUT ROWID): sid replaces the
-// repo+snapshot TEXT, parent+name replace the stored path (path is derived on
-// read), and the index locator is a ~5-byte rowid varint instead of the full
-// composite PK. name_ci is the precomputed lowercase fold (see "name_ci" in the
-// plan) sorted with native BINARY.
+// repo+snapshot TEXT, parent_did replaces repeated parent path text, and the
+// index locator is a ~5-byte rowid varint instead of the full composite PK.
+// name_ci is the precomputed lowercase fold (see "name_ci" in the plan) sorted
+// with native BINARY.
 const schemaNodes = `CREATE TABLE IF NOT EXISTS nodes (
-  sid INTEGER NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL,
+  sid INTEGER NOT NULL, parent_did INTEGER NOT NULL, name TEXT NOT NULL,
   type TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER NOT NULL,
   mtime_unix INTEGER NOT NULL, mtime_offset_sec INTEGER NOT NULL, mtime_known INTEGER NOT NULL,
   perms TEXT NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL,
@@ -94,19 +109,24 @@ const schemaNodes = `CREATE TABLE IF NOT EXISTS nodes (
 // all rows in the 256 MiB wasm heap and OOM on a multi-million-row snapshot).
 // No COLLATE clause: name_ci is precomputed lowercase, sorted BINARY, preserving
 // the pinned tie-break (see "name_ci" in the plan).
-const schemaIndex = `CREATE INDEX IF NOT EXISTS idx_nodes_dir ON nodes (sid, parent, is_dir DESC, name_ci, name)`
+const schemaIndex = `CREATE INDEX IF NOT EXISTS idx_nodes_dir ON nodes (parent_did, is_dir DESC, name_ci, name)`
 
 // insertColumns lists the nodes columns in bind order, sid first, no path. The
 // upsert is gone: restic emits each tree path once, so a plain INSERT is correct
 // (within-batch dedupe stays as cheap insurance).
-const insertColumns = `(sid,parent,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target,name_ci)`
+const insertColumns = `(sid,parent_did,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target,name_ci)`
 
-// listDirQuery resolves the committed sid via subquery (a never-indexed
-// repo/snapshot yields a NULL sid → no rows → empty listing) and derives each
-// row's path in Go from parent+name. The parent=? predicate scopes the listing to
-// one directory; omitting it would return the whole snapshot.
-const listDirQuery = `SELECT parent,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target ` +
-	`FROM nodes WHERE sid = (SELECT sid FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL) AND parent=? ` +
+// listDirDIDQuery resolves a requested committed directory path to its did. A
+// never-indexed snapshot or never-seen directory yields sql.ErrNoRows and an
+// empty listing.
+const listDirDIDQuery = `SELECT d.did FROM dirs d JOIN snapshots s ON s.sid=d.sid ` +
+	`WHERE s.repo=? AND s.snapshot=? AND s.indexed_at_unix IS NOT NULL AND d.path=?`
+
+// listDirQuery uses parent_did to fetch one directory's immediate children.
+// Paths are reconstructed in Go from the requested parent path plus each row's
+// name.
+const listDirQuery = `SELECT name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target ` +
+	`FROM nodes WHERE parent_did=? ` +
 	`ORDER BY is_dir DESC, name_ci, name`
 
 // errAlreadyIndexed is the path-free sentinel BeginIndex returns when a
@@ -116,8 +136,8 @@ var errAlreadyIndexed = errors.New("snapshot already indexed")
 
 // DB is a handle to the session's encrypted browse store. One DB per app
 // session backs every repo/snapshot indexed during that run; each snapshot gets
-// an integer sid (see the snapshots table) and node rows are keyed by
-// (sid, parent, name).
+// an integer sid (see the snapshots table) and node rows reference interned
+// directories by did.
 type DB struct {
 	pool         *sql.DB
 	sqlitePath   string
@@ -194,7 +214,7 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 func (db *DB) applySchema(ctx context.Context) error {
 	// Index last (IF NOT EXISTS): created once here and then maintained
 	// incrementally as rows are inserted (never dropped/rebuilt — see schemaIndex).
-	for _, stmt := range []string{schemaSnapshots, schemaNodes, schemaIndex} {
+	for _, stmt := range []string{schemaSnapshots, schemaDirs, schemaNodes, schemaIndex} {
 		if _, err := db.pool.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("browsedb schema: %w", err)
 		}
@@ -222,7 +242,16 @@ func (db *DB) IsIndexed(ctx context.Context, repo, snapshot string) (bool, error
 // error; callers that must distinguish "indexed but empty" use IsIndexed.
 func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.BrowseEntry, error) {
 	parent := model.CleanBrowsePath(dir)
-	rows, err := db.pool.QueryContext(ctx, listDirQuery, repo, snapshot, parent)
+	var did int64
+	err := db.pool.QueryRowContext(ctx, listDirDIDQuery, repo, snapshot, parent).Scan(&did)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("browsedb list-dir: %w", err)
+	}
+
+	rows, err := db.pool.QueryContext(ctx, listDirQuery, did)
 	if err != nil {
 		return nil, fmt.Errorf("browsedb list-dir: %w", err)
 	}
@@ -231,21 +260,21 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	var out []model.BrowseEntry
 	for rows.Next() {
 		var (
-			e            model.BrowseEntry
-			parent, name string
-			isDir        int
-			mtimeUnix    int64
-			mtimeOff     int
-			mtimeKnown   int
-			ownerKnown   int
-			uid, gid     int64
+			e          model.BrowseEntry
+			name       string
+			isDir      int
+			mtimeUnix  int64
+			mtimeOff   int
+			mtimeKnown int
+			ownerKnown int
+			uid, gid   int64
 		)
-		if err := rows.Scan(&parent, &name, &e.Type, &isDir, &e.Size,
+		if err := rows.Scan(&name, &e.Type, &isDir, &e.Size,
 			&mtimeUnix, &mtimeOff, &mtimeKnown, &e.Permissions, &uid, &gid, &ownerKnown, &e.LinkTarget); err != nil {
 			return nil, fmt.Errorf("browsedb list-dir scan: %w", err)
 		}
 		e.Name = name
-		// path is not stored; derive it as the exact inverse of Add's path.Dir split.
+		// path is not stored; derive it from the requested parent and row name.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
 		e.OwnerKnown = ownerKnown != 0
@@ -280,6 +309,32 @@ func (db *DB) Close() error {
 	return nil
 }
 
+// ClosePreserveFiles closes the connection pool without deleting db.sqlite or
+// sidecars. It exists for the internal benchmark command, which needs to inspect
+// DB files after a run; production callers should keep using Close.
+func (db *DB) ClosePreserveFiles() error {
+	if err := db.pool.Close(); err != nil {
+		return fmt.Errorf("browsedb close: %w", err)
+	}
+	return nil
+}
+
+// EntryCount returns the committed entry count recorded for a snapshot. A
+// never-indexed snapshot reports 0, nil to match ListDir's empty result contract.
+func (db *DB) EntryCount(ctx context.Context, repo, snapshot string) (int64, error) {
+	var entries int64
+	err := db.pool.QueryRowContext(ctx,
+		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`,
+		repo, snapshot).Scan(&entries)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("browsedb entry-count: %w", err)
+	}
+	return entries, nil
+}
+
 // dirSize totals the size of every regular file in the DB's directory. This
 // intentionally counts db.sqlite, rollback journals, SQLite temp files, and the
 // negligible session lock file, giving a conservative over-count for the ceiling.
@@ -305,7 +360,7 @@ func (db *DB) dirSize() (int64, error) {
 // nodeRow is one buffered row awaiting a batched flush.
 type nodeRow struct {
 	path           string
-	parent         string
+	parentDID      int64
 	name           string
 	typ            string
 	isDir          bool
@@ -318,6 +373,11 @@ type nodeRow struct {
 	ownerKnown     bool
 	linkTarget     string
 	nameCI         string
+}
+
+type dirRow struct {
+	did  int64
+	path string
 }
 
 // IndexTx is a single, terminal index transaction for one (repo, snapshot). Add
@@ -334,8 +394,12 @@ type IndexTx struct {
 	sid      int64 // allocated in BeginIndex; never leaks through the app API
 
 	buf            []nodeRow
+	dirBuf         []dirRow
 	count          int // accepted Add calls, for progress reporting
+	insertedRows   int64
+	nextDID        int64
 	sinceDiskCheck int
+	dirs           map[string]int64
 	failed         error // sticky, path-free; set on first failure
 }
 
@@ -352,6 +416,19 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 	}
 	itx := &IndexTx{db: db, tx: tx, repo: repo, snapshot: snapshot}
 	if err := itx.allocSID(ctx); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := itx.initNextDID(ctx); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	itx.dirs = make(map[string]int64, 1024)
+	if _, err := itx.ensureCleanDir(ctx, "/"); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := itx.flushDirs(ctx); err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}
@@ -394,11 +471,45 @@ func (itx *IndexTx) allocSID(ctx context.Context) error {
 	}
 }
 
+func (itx *IndexTx) initNextDID(ctx context.Context) error {
+	var maxDID int64
+	if err := itx.tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(did), 0) FROM dirs`).Scan(&maxDID); err != nil {
+		return fmt.Errorf("browsedb dir: %w", err)
+	}
+	itx.nextDID = maxDID + 1
+	return nil
+}
+
+// ensureCleanDir resolves or reserves an interned directory path for this
+// snapshot. New dirs are assigned dids in Go and written in batches to avoid a
+// SELECT/INSERT wasm round-trip per unique directory.
+func (itx *IndexTx) ensureCleanDir(ctx context.Context, p string) (int64, error) {
+	if did, ok := itx.dirs[p]; ok {
+		return did, nil
+	}
+	if p != "/" {
+		if _, err := itx.ensureCleanDir(ctx, path.Dir(p)); err != nil {
+			return 0, err
+		}
+	}
+	did := itx.nextDID
+	itx.nextDID++
+	itx.dirs[p] = did
+	itx.dirBuf = append(itx.dirBuf, dirRow{did: did, path: p})
+	if len(itx.dirBuf) >= dirBatchRows {
+		if err := itx.flushDirs(ctx); err != nil {
+			return 0, err
+		}
+	}
+	return did, nil
+}
+
 // Add buffers one node for insertion. It cleans the path, skips the root record
-// (root is never its own child), derives name/parent/name_ci/type, normalizes
-// is_dir, and records mtime as Unix seconds + zone offset + a known flag (a zero
-// time.Time stores mtime_known=0 and can't round-trip through UnixNano). When the
-// buffer reaches batchRows it flushes; the disk ceiling is re-checked on the
+// (root is never its own child), resolves the parent directory ID, ensures a dir
+// ID for directory nodes, derives name/name_ci/type, normalizes is_dir, and
+// records mtime as Unix seconds + zone offset + a known flag (a zero time.Time
+// stores mtime_known=0 and can't round-trip through UnixNano). When the buffer
+// reaches batchRows it flushes; the disk ceiling is re-checked on the
 // diskCheckRows cadence.
 func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	if itx.failed != nil {
@@ -408,14 +519,26 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	if p == "/" {
 		return nil
 	}
+	parentDID, err := itx.ensureCleanDir(ctx, path.Dir(p))
+	if err != nil {
+		itx.failed = err
+		return err
+	}
 	name := model.BrowseName(n.Name, p)
 	typ := normalizeType(n.Type, n.IsDir)
+	isDir := n.IsDir || typ == "dir"
+	if isDir {
+		if _, err := itx.ensureCleanDir(ctx, p); err != nil {
+			itx.failed = err
+			return err
+		}
+	}
 	row := nodeRow{
 		path:       p,
-		parent:     path.Dir(p),
+		parentDID:  parentDID,
 		name:       name,
 		typ:        typ,
-		isDir:      n.IsDir || typ == "dir",
+		isDir:      isDir,
 		size:       n.Size,
 		perms:      n.Permissions,
 		uid:        n.UID,
@@ -450,7 +573,7 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 }
 
 // Count reports the number of accepted Add calls, for live progress. The final
-// authoritative row count is computed at Commit and stored on the snapshots row.
+// committed row count is tracked from successful deduped inserts.
 func (itx *IndexTx) Count() int { return itx.count }
 
 // flush writes the buffered rows as one multi-row plain INSERT. The batch is
@@ -470,6 +593,25 @@ func (itx *IndexTx) flush(ctx context.Context) error {
 	query, args := buildInsert(itx.sid, rows)
 	if _, err := itx.tx.ExecContext(ctx, query, args...); err != nil {
 		itx.failed = fmt.Errorf("browsedb index: %w", err)
+		return itx.failed
+	}
+	itx.insertedRows += int64(len(rows))
+	return nil
+}
+
+func (itx *IndexTx) flushDirs(ctx context.Context) error {
+	if itx.failed != nil {
+		return itx.failed
+	}
+	if len(itx.dirBuf) == 0 {
+		return nil
+	}
+	rows := itx.dirBuf
+	itx.dirBuf = nil
+
+	query, args := buildDirInsert(itx.sid, rows)
+	if _, err := itx.tx.ExecContext(ctx, query, args...); err != nil {
+		itx.failed = fmt.Errorf("browsedb dir: %w", err)
 		return itx.failed
 	}
 	return nil
@@ -492,10 +634,11 @@ func (itx *IndexTx) checkDisk() error {
 }
 
 // Commit is terminal: it flushes the final batch, re-checks the disk ceiling,
-// counts the rows, marks the snapshots row indexed in the same tx, and commits.
-// Any failure rolls back the underlying tx and returns the path-free error without
-// marking the snapshot indexed. The index is maintained incrementally during the
-// load (see BeginIndex), so there is no post-load rebuild here.
+// stores the successful insert count, marks the snapshots row indexed in the same
+// tx, and commits. Any failure rolls back the underlying tx and returns the
+// path-free error without marking the snapshot indexed. The index is maintained
+// incrementally during the load (see BeginIndex), so there is no post-load
+// rebuild here.
 func (itx *IndexTx) Commit(ctx context.Context) error {
 	if itx.failed != nil {
 		_ = itx.tx.Rollback()
@@ -505,24 +648,21 @@ func (itx *IndexTx) Commit(ctx context.Context) error {
 		_ = itx.tx.Rollback()
 		return err
 	}
+	if err := itx.flushDirs(ctx); err != nil {
+		_ = itx.tx.Rollback()
+		return err
+	}
 	if err := itx.checkDisk(); err != nil {
 		itx.failed = err
 		_ = itx.tx.Rollback()
 		return err
-	}
-	var entries int64
-	if err := itx.tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM nodes WHERE sid=?`, itx.sid).Scan(&entries); err != nil {
-		itx.failed = fmt.Errorf("browsedb count: %w", err)
-		_ = itx.tx.Rollback()
-		return itx.failed
 	}
 	// Mark the reserved row indexed. The sid was reserved in this tx, so this is an
 	// UPDATE of our own row — no PK conflict path; IsIndexed/ListDir gate on the now
 	// non-NULL indexed_at_unix.
 	if _, err := itx.tx.ExecContext(ctx,
 		`UPDATE snapshots SET entries=?, indexed_at_unix=? WHERE sid=?`,
-		entries, time.Now().Unix(), itx.sid); err != nil {
+		itx.insertedRows, time.Now().Unix(), itx.sid); err != nil {
 		itx.failed = fmt.Errorf("browsedb marker: %w", err)
 		_ = itx.tx.Rollback()
 		return itx.failed
@@ -562,7 +702,8 @@ func dedupeRows(buf []nodeRow) []nodeRow {
 }
 
 // buildInsert assembles the multi-row plain INSERT and its bound args for rows,
-// binding sid plus the 14 node fields (the stored path is gone — derived on read).
+// binding sid plus parent_did and the 13 remaining node fields (the stored path
+// is gone — derived on read).
 func buildInsert(sid int64, rows []nodeRow) (string, []any) {
 	var b strings.Builder
 	b.WriteString("INSERT INTO nodes ")
@@ -575,9 +716,23 @@ func buildInsert(sid int64, rows []nodeRow) (string, []any) {
 		}
 		b.WriteString(rowPlaceholder)
 		args = append(args,
-			sid, r.parent, r.name, r.typ, boolInt(r.isDir), r.size,
+			sid, r.parentDID, r.name, r.typ, boolInt(r.isDir), r.size,
 			r.mtimeUnix, r.mtimeOffsetSec, boolInt(r.mtimeKnown), r.perms,
 			int64(r.uid), int64(r.gid), boolInt(r.ownerKnown), r.linkTarget, r.nameCI)
+	}
+	return b.String(), args
+}
+
+func buildDirInsert(sid int64, rows []dirRow) (string, []any) {
+	var b strings.Builder
+	b.WriteString("INSERT INTO dirs (did,sid,path) VALUES ")
+	args := make([]any, 0, len(rows)*dirInsertBindParams)
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(dirRowPlaceholder)
+		args = append(args, r.did, sid, r.path)
 	}
 	return b.String(), args
 }

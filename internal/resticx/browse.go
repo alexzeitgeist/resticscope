@@ -2,12 +2,13 @@ package resticx
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"time"
 
 	"resticscope/internal/model"
+
+	json "github.com/goccy/go-json"
 )
 
 // browse.go is the streaming restic boundary for the in-app snapshot browser. It

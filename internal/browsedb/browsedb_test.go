@@ -96,6 +96,38 @@ func assertErrPathFree(t *testing.T, err error, needles ...string) {
 	}
 }
 
+func countDirs(t *testing.T, db *DB) int {
+	t.Helper()
+	var n int
+	if err := db.pool.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM dirs`).Scan(&n); err != nil {
+		t.Fatalf("count dirs: %v", err)
+	}
+	return n
+}
+
+func dirPaths(t *testing.T, db *DB, repo, snap string) []string {
+	t.Helper()
+	rows, err := db.pool.QueryContext(context.Background(),
+		`SELECT d.path FROM dirs d JOIN snapshots s ON s.sid=d.sid WHERE s.repo=? AND s.snapshot=? ORDER BY d.path`,
+		repo, snap)
+	if err != nil {
+		t.Fatalf("dir paths: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("dir path scan: %v", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("dir path rows: %v", err)
+	}
+	return out
+}
+
 func TestOpenValidation(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "db.sqlite")
 	if _, err := Open(p, make([]byte, 16), 0); !errors.Is(err, errInvalidKey) {
@@ -429,6 +461,9 @@ func TestDiskLimit(t *testing.T) {
 	if ok, _ := db.IsIndexed(ctx, repo, snap); ok {
 		t.Error("disk-limited snapshot was marked indexed")
 	}
+	if n := countDirs(t, db); n != 0 {
+		t.Errorf("dirs remained after disk-limit rollback: %d", n)
+	}
 }
 
 func TestMarkerConflict(t *testing.T) {
@@ -452,6 +487,80 @@ func TestMarkerConflict(t *testing.T) {
 	}
 	if ok, _ := db.IsIndexed(ctx, repo, snap); !ok {
 		t.Error("original index lost after conflicting re-index")
+	}
+}
+
+func TestDirIDRootReservationRollback(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+
+	itx, err := db.BeginIndex(ctx, repo, snap)
+	if err != nil {
+		t.Fatalf("BeginIndex: %v", err)
+	}
+	var did int64
+	if err := itx.tx.QueryRowContext(ctx,
+		`SELECT did FROM dirs WHERE sid=? AND path='/'`, itx.sid).Scan(&did); err != nil {
+		t.Fatalf("root did query: %v", err)
+	}
+	if did == 0 {
+		t.Fatal("root did was not allocated")
+	}
+	if got := itx.dirs["/"]; got != did {
+		t.Fatalf("root did cache = %d, want %d", got, did)
+	}
+	if err := itx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if ok, _ := db.IsIndexed(ctx, repo, snap); ok {
+		t.Fatal("rolled-back snapshot was marked indexed")
+	}
+	if n := countDirs(t, db); n != 0 {
+		t.Fatalf("dirs remained after rollback: %d", n)
+	}
+}
+
+func TestDirIDsCreateParentDirectories(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+
+	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/a/b/file"}})
+	if got, want := dirPaths(t, db, repo, snap), []string{"/", "/a", "/a/b"}; !eqStrings(got, want) {
+		t.Fatalf("dir paths = %v, want %v", got, want)
+	}
+	rows, err := db.ListDir(ctx, repo, snap, "/a/b")
+	if err != nil {
+		t.Fatalf("ListDir(/a/b): %v", err)
+	}
+	if len(rows) != 1 || rows[0].Path != "/a/b/file" {
+		t.Fatalf("ListDir(/a/b) = %+v, want /a/b/file", rows)
+	}
+}
+
+func TestDirIDsOutOfOrderParentMetadata(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+
+	mustIndex(t, db, repo, snap, []model.BrowseNode{
+		{Path: "/parent/file"},
+		{Path: "/parent", IsDir: true},
+	})
+	root, err := db.ListDir(ctx, repo, snap, "/")
+	if err != nil {
+		t.Fatalf("ListDir(/): %v", err)
+	}
+	if got, want := paths(root), []string{"/parent"}; !eqStrings(got, want) {
+		t.Fatalf("root paths = %v, want %v", got, want)
+	}
+	child, err := db.ListDir(ctx, repo, snap, "/parent")
+	if err != nil {
+		t.Fatalf("ListDir(/parent): %v", err)
+	}
+	if got, want := paths(child), []string{"/parent/file"}; !eqStrings(got, want) {
+		t.Fatalf("child paths = %v, want %v", got, want)
 	}
 }
 
@@ -494,12 +603,16 @@ func TestEncryptionAtRest(t *testing.T) {
 	// Committed: the filename lives only in the encrypted db.sqlite.
 	assertNoPlaintext(t, dir, secret1)
 
-	// secret1's sid backs the manual node inserts below (the stored path column is
-	// gone; a node row is keyed by sid + parent + name).
-	var sid int64
+	// secret1's sid and root did back the manual node inserts below (the stored
+	// path column is gone; a node row references its parent directory by did).
+	var sid, rootDID int64
 	if err := db.pool.QueryRowContext(ctx,
 		`SELECT sid FROM snapshots WHERE repo=? AND snapshot=?`, repo, snap).Scan(&sid); err != nil {
 		t.Fatalf("sid lookup: %v", err)
+	}
+	if err := db.pool.QueryRowContext(ctx,
+		`SELECT did FROM dirs WHERE sid=? AND path='/'`, sid).Scan(&rootDID); err != nil {
+		t.Fatalf("root did lookup: %v", err)
 	}
 	// Force a rollback journal to exist while we grep, so the encryption proof is
 	// not a vacuous "no journal existed" pass. journal_mode=DELETE keeps the journal
@@ -512,7 +625,7 @@ func TestEncryptionAtRest(t *testing.T) {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO nodes `+insertColumns+` VALUES `+rowPlaceholder,
-		sid, "/", secret2, "file", 0, 0, 0, 0, 0, "", 0, 0, 0, "", strings.ToLower(secret2)); err != nil {
+		sid, rootDID, secret2, "file", 0, 0, 0, 0, 0, "", 0, 0, 0, "", strings.ToLower(secret2)); err != nil {
 		t.Fatalf("manual insert: %v", err)
 	}
 	if _, err := tx.ExecContext(ctx,

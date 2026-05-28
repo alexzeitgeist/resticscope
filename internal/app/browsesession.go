@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"resticscope/internal/model"
@@ -32,6 +33,11 @@ var ErrBrowseIncomplete = errors.New("browse index did not complete")
 // progressEvery coalesces progress callbacks so the restic stdout consumer is
 // never throttled by per-node reporting.
 const progressEvery = 2000
+
+// browseMemoryTrimAfterEntries is the point where the browse indexer has likely
+// grown the Go heap enough that returning idle spans to the OS is worth the
+// post-index GC cost.
+const browseMemoryTrimAfterEntries = 250000
 
 // BrowseStore is the consumer-side seam for the encrypted browse store. It is
 // satisfied by a thin cmd-level wrapper over *browsedb.DB, keeping app free of the
@@ -146,6 +152,11 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return err
 	}
 	committed := false
+	defer func() {
+		if tx.Count() >= browseMemoryTrimAfterEntries {
+			debug.FreeOSMemory()
+		}
+	}()
 	defer func() {
 		if !committed {
 			// Rollback is idempotent; safe even after Commit already rolled back a

@@ -9,6 +9,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.6
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/BurntSushi/toml v1.6.0
+	github.com/goccy/go-json v0.10.6
 	github.com/ncruces/go-sqlite3 v0.34.2
 )
 
