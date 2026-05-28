@@ -67,11 +67,13 @@ var (
 	errInvalidKey       = errors.New("encryption key must be 32 bytes")
 	errInvalidDiskLimit = errors.New("max disk bytes must be >= 0")
 	errReadDBDir        = errors.New("read browse database directory")
-	errRemoveDBFile     = errors.New("remove browse database file")
-	errRemoveDBSidecar  = errors.New("remove browse database sidecar")
-	errListDBSidecars   = errors.New("list browse database sidecars")
-	errFilesystem       = errors.New("filesystem error")
 )
+
+// ErrFilesystem is the path-free sentinel PathFreeFSError falls back to when a
+// filesystem error cannot be reduced to a bare *os.PathError.Err. Callers in any
+// layer can detect a browse filesystem failure without ever touching a string
+// that might contain a filename (privacy invariant: browse errors are path-free).
+var ErrFilesystem = errors.New("filesystem error")
 
 // schemaSnapshots folds the dictionary (sid ⇄ repo+snapshot) and the indexed
 // marker into one small table, one row per indexed snapshot. indexed_at_unix is
@@ -149,7 +151,6 @@ var errAlreadyIndexed = errors.New("snapshot already indexed")
 // directories by did.
 type DB struct {
 	pool         *sql.DB
-	sqlitePath   string
 	dir          string
 	maxDiskBytes int64
 }
@@ -226,7 +227,7 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
 
-	db := &DB{pool: pool, sqlitePath: path, dir: filepath.Dir(path), maxDiskBytes: maxDiskBytes}
+	db := &DB{pool: pool, dir: filepath.Dir(path), maxDiskBytes: maxDiskBytes}
 	if err := db.applySchema(context.Background()); err != nil {
 		_ = pool.Close()
 		return nil, err
@@ -324,59 +325,12 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	return out, nil
 }
 
-// Close closes the connection pool and removes db.sqlite plus any SQLite sidecar
-// files for that basename (rollback-journal/temp leftovers). It always attempts
-// every cleanup step and returns any path-free errors joined together. The
-// cmd-level session wrapper removes the whole session directory on clean shutdown.
+// Close closes the connection pool. It deliberately does NOT remove db.sqlite or
+// its sidecars: the cmd-level session wrapper owns teardown and removes the whole
+// session directory with a single authoritative os.RemoveAll on shutdown, which
+// is strictly more thorough (it also takes the directory and the lock file) than
+// per-file removal here would be.
 func (db *DB) Close() error {
-	var errs []error
-	if err := db.pool.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("browsedb close: %w", err))
-	}
-	if err := removeFileIfExists(db.sqlitePath); err != nil {
-		errs = append(errs, fmt.Errorf("%w: %w", errRemoveDBFile, err))
-	}
-	if err := db.removeSidecars(); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
-func (db *DB) removeSidecars() error {
-	dir := filepath.Dir(db.sqlitePath)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("%w: %w", errListDBSidecars, pathFreeFSError(err))
-	}
-	prefix := filepath.Base(db.sqlitePath) + "-"
-	var errs []error
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), prefix) {
-			continue
-		}
-		if err := removeFileIfExists(filepath.Join(dir, e.Name())); err != nil {
-			errs = append(errs, fmt.Errorf("%w: %w", errRemoveDBSidecar, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func removeFileIfExists(p string) error {
-	err := os.Remove(p)
-	if err == nil || errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return pathFreeFSError(err)
-}
-
-// ClosePreserveFiles closes the connection pool without deleting db.sqlite or
-// sidecars. The cmd-level browse wrapper uses this because it owns removal of the
-// whole containing session directory; callers without a separate cleanup step
-// should use Close.
-func (db *DB) ClosePreserveFiles() error {
 	if err := db.pool.Close(); err != nil {
 		return fmt.Errorf("browsedb close: %w", err)
 	}
@@ -389,7 +343,7 @@ func (db *DB) ClosePreserveFiles() error {
 func (db *DB) dirSize() (int64, error) {
 	entries, err := os.ReadDir(db.dir)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %w", errReadDBDir, pathFreeFSError(err))
+		return 0, fmt.Errorf("%w: %w", errReadDBDir, PathFreeFSError(err))
 	}
 	var total int64
 	for _, e := range entries {
@@ -405,12 +359,22 @@ func (db *DB) dirSize() (int64, error) {
 	return total, nil
 }
 
-func pathFreeFSError(err error) error {
+// PathFreeFSError reduces a filesystem error to a path-free form so a browse
+// failure never surfaces a filename. An *os.PathError is replaced by its bare
+// inner Err (a syscall errno such as "permission denied", which carries no path);
+// anything else — including a PathError whose inner Err is nil — collapses to
+// ErrFilesystem. A nil error returns nil. This is the single source of truth
+// shared by browsedb and the cmd-level session wrapper, both of which must honor
+// the path-free invariant.
+func PathFreeFSError(err error) error {
+	if err == nil {
+		return nil
+	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) && pathErr.Err != nil {
 		return pathErr.Err
 	}
-	return errFilesystem
+	return ErrFilesystem
 }
 
 // nodeRow is one buffered row awaiting a batched flush.

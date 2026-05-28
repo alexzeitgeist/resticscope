@@ -239,6 +239,45 @@ func TestBrowseStoreCloseRemovesSessionDir(t *testing.T) {
 	}
 }
 
+// TestBrowseStoreCloseErrorIsPathFree forces RemoveAll(sessionDir) to fail and
+// asserts the surfaced error never contains the session directory name — the
+// cmd-level wiring of the privacy invariant (#1: browse errors are path-free).
+// It makes the parent unwritable so RemoveAll can delete the dir's contents but
+// not the dir itself; that needs non-root, so it skips if removal still succeeds.
+func TestBrowseStoreCloseErrorIsPathFree(t *testing.T) {
+	parent := t.TempDir()
+	const secret = "SECRET_session_dir_marker"
+	dir := filepath.Join(parent, secret)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := browsedb.LockSession(dir)
+	if err != nil {
+		t.Fatalf("LockSession: %v", err)
+	}
+	db, err := browsedb.Open(filepath.Join(dir, "db.sqlite"), make([]byte, 32), 0)
+	if err != nil {
+		_ = lock.Close()
+		t.Fatalf("Open: %v", err)
+	}
+	store := &browseStore{db: db, lock: lock, dir: dir}
+
+	// Read-only parent: RemoveAll can unlink dir's contents but not dir itself,
+	// yielding an *os.PathError whose Path embeds the secret directory name.
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatalf("chmod parent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) }) // let t.TempDir cleanup succeed
+
+	err = store.Close()
+	if err == nil {
+		t.Skip("RemoveAll succeeded despite read-only parent (running as root?); path-free branch not exercised")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("Close error leaked the session dir name %q: %v", secret, err)
+	}
+}
+
 // seedResticCache creates a per-repo restic cache subdirectory with one file in
 // it, named exactly as a real run would, and returns its path.
 func seedResticCache(t *testing.T, cacheDir, repoName string) string {

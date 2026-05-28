@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -709,8 +710,8 @@ func TestEncryptionAtRest(t *testing.T) {
 		t.Fatalf("manual Rollback: %v", err)
 	}
 
-	// Close the pool WITHOUT removing the file (db.Close would delete it), then
-	// prove a different key cannot read it.
+	// Close only the pool so the file persists for the reopen below, then prove a
+	// different key cannot read it.
 	if err := db.pool.Close(); err != nil {
 		t.Fatalf("pool close: %v", err)
 	}
@@ -731,15 +732,10 @@ func TestEncryptionAtRest(t *testing.T) {
 		t.Errorf("reopened IsIndexed = %v, %v; want true, nil", ok, err)
 	}
 
-	// Close removes db.sqlite and its sidecar files.
+	// Close closes the pool only; whole-directory teardown is the session
+	// wrapper's job (covered by cmd's TestBrowseStoreCloseRemovesSessionDir).
 	if err := rdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "db.sqlite")); !os.IsNotExist(err) {
-		t.Errorf("db.sqlite not removed by Close (stat err = %v)", err)
-	}
-	if leftovers, _ := filepath.Glob(filepath.Join(dir, "db.sqlite-*")); len(leftovers) != 0 {
-		t.Errorf("Close left SQLite sidecar files: %v", leftovers)
 	}
 }
 
@@ -803,26 +799,33 @@ func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
 	}
 }
 
-func TestCloseReportsRemoveErrorPathFree(t *testing.T) {
-	db, dir, _ := newTestDB(t, 0)
-	const secret = "SECRET_db_path_component"
-	blockedPath := filepath.Join(dir, secret)
-	if err := os.MkdirAll(blockedPath, 0o700); err != nil {
-		t.Fatal(err)
+// TestPathFreeFSError is the durable anchor for the path-free invariant that both
+// browsedb and the cmd-level session wrapper now route through (a filesystem error
+// must never carry a filename). It is privilege-independent, unlike a forced
+// RemoveAll/Remove failure, so it always exercises the stripping logic.
+func TestPathFreeFSError(t *testing.T) {
+	if got := PathFreeFSError(nil); got != nil {
+		t.Errorf("PathFreeFSError(nil) = %v, want nil", got)
 	}
-	if err := os.WriteFile(filepath.Join(blockedPath, "child"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	db.sqlitePath = blockedPath
 
-	err := db.Close()
-	if err == nil {
-		t.Fatal("expected Close to report the failed db.sqlite removal")
+	const secret = "SECRET_db_path_component"
+	pe := &os.PathError{Op: "remove", Path: "/cache/" + secret + "/db.sqlite", Err: syscall.EACCES}
+	got := PathFreeFSError(pe)
+	if got == nil {
+		t.Fatal("PathFreeFSError(*os.PathError) = nil, want a path-free error")
 	}
-	if !errors.Is(err, errRemoveDBFile) {
-		t.Fatalf("Close err = %v, want errRemoveDBFile", err)
+	if strings.Contains(got.Error(), secret) {
+		t.Errorf("PathFreeFSError leaked the path component %q: %v", secret, got)
 	}
-	assertErrPathFree(t, err, dir, secret)
+	if !errors.Is(got, syscall.EACCES) {
+		t.Errorf("PathFreeFSError(*os.PathError) lost the inner errno: %v", got)
+	}
+
+	// A non-PathError (or a PathError whose inner Err is nil) collapses to the
+	// path-free ErrFilesystem sentinel rather than echoing the original string.
+	if got := PathFreeFSError(errors.New("boom /cache/" + secret)); !errors.Is(got, ErrFilesystem) {
+		t.Errorf("PathFreeFSError(generic) = %v, want ErrFilesystem", got)
+	}
 }
 
 func lockingSupported() bool {

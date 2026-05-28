@@ -44,7 +44,7 @@ type SessionLock struct {
 func LockSession(dir string) (*SessionLock, error) {
 	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("browsedb lock: %w", pathFreeFSError(err))
+		return nil, fmt.Errorf("browsedb lock: %w", PathFreeFSError(err))
 	}
 	ok, supported := tryLock(f)
 	if supported && !ok {
@@ -64,7 +64,7 @@ func (l *SessionLock) Close() error {
 	err := l.f.Close()
 	l.f = nil
 	if err != nil {
-		return fmt.Errorf("browsedb unlock: %w", pathFreeFSError(err))
+		return fmt.Errorf("browsedb unlock: %w", PathFreeFSError(err))
 	}
 	return nil
 }
@@ -82,7 +82,7 @@ func CleanStaleSessions(cacheDir string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("browsedb clean: %w", pathFreeFSError(err))
+		return fmt.Errorf("browsedb clean: %w", PathFreeFSError(err))
 	}
 	now := time.Now()
 	var firstErr error
@@ -95,7 +95,7 @@ func CleanStaleSessions(cacheDir string) error {
 			continue
 		}
 		if err := os.RemoveAll(dir); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("browsedb clean: %w", pathFreeFSError(err))
+			firstErr = fmt.Errorf("browsedb clean: %w", PathFreeFSError(err))
 		}
 	}
 	return firstErr

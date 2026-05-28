@@ -14,8 +14,6 @@ import (
 	"resticscope/internal/model"
 )
 
-var errBrowseFilesystem = errors.New("filesystem error")
-
 // browse.go wires the session-scoped, encrypted browse store into the TUI. The
 // encryption key is a random 32-byte value that lives ONLY in memory — it is
 // never derived from the repo password and never written to disk, the cache, or
@@ -50,25 +48,15 @@ func (s *browseStore) ListDir(ctx context.Context, repo, snapshot, dir string) (
 }
 
 // Close closes the DB pool, releases the session lock, and removes the entire
-// session directory. The cmd-level wrapper owns whole-directory cleanup, so the DB
-// is closed without its own per-file removals; RemoveAll is authoritative for
-// whether encrypted browse files actually survived.
+// session directory. This wrapper owns whole-directory cleanup, so db.Close only
+// closes the pool; RemoveAll is authoritative for whether encrypted browse files
+// actually survived. The RemoveAll error is reduced to a path-free form via the
+// shared browsedb.PathFreeFSError so a failure never surfaces the session path.
 func (s *browseStore) Close() error {
-	dbErr := s.db.ClosePreserveFiles()
+	dbErr := s.db.Close()
 	lockErr := s.lock.Close()
-	rmErr := pathFreeFileError(os.RemoveAll(s.dir))
+	rmErr := browsedb.PathFreeFSError(os.RemoveAll(s.dir))
 	return errors.Join(dbErr, lockErr, rmErr)
-}
-
-func pathFreeFileError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) && pathErr.Err != nil {
-		return pathErr.Err
-	}
-	return errBrowseFilesystem
 }
 
 // newBrowseOpen returns the lazy-open closure for the session-scoped encrypted
@@ -91,7 +79,7 @@ func newBrowseOpen(cacheDir string, maxDiskBytes int64) func() (app.BrowseStore,
 		}
 		dir := filepath.Join(cacheDir, browsedb.SessionPrefix+hex.EncodeToString(token))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("browse session dir: %w", pathFreeFileError(err))
+			return nil, fmt.Errorf("browse session dir: %w", browsedb.PathFreeFSError(err))
 		}
 
 		lock, err := browsedb.LockSession(dir)
