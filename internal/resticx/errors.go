@@ -19,6 +19,7 @@ const (
 	KindBinaryMissing           // restic not found on PATH
 	KindTimeout                 // context deadline exceeded
 	KindParse                   // restic ran but its JSON could not be parsed
+	KindCanceled                // the caller cancelled the context
 )
 
 // Error is a classified restic failure. Its message is a clear diagnostic
@@ -46,6 +47,8 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("restic %s: timed out", e.Op)
 	case KindParse:
 		return fmt.Sprintf("restic %s: could not parse JSON output: %v", e.Op, e.wrapped)
+	case KindCanceled:
+		return fmt.Sprintf("restic %s: canceled", e.Op)
 	default:
 		if e.Stderr != "" {
 			return fmt.Sprintf("restic %s failed: %v (stderr: %s)", e.Op, e.wrapped, e.Stderr)
@@ -67,7 +70,10 @@ func (c *Client) classify(ctx context.Context, op string, err error, stderr []by
 	}
 
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return context.Canceled
+		// Return a typed *Error (not the bare sentinel) so classify's contract —
+		// "always yields an *resticx.Error" — holds for every caller. It still
+		// unwraps to context.Canceled, so errors.Is(err, context.Canceled) works.
+		return &Error{Kind: KindCanceled, Op: op, wrapped: ctx.Err()}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &Error{Kind: KindTimeout, Op: op, Stderr: redacted, wrapped: err}

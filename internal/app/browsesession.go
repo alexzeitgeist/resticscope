@@ -146,6 +146,19 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 
+	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE taking
+	// opMu so it runs LAST (after opMu is released): running it under the session
+	// lock would stall a concurrent Close/ListDir for the whole pause. It is gated
+	// on a committed large index only — on a cancel/error path the tx is discarded
+	// and ordinary GC reclaims the garbage, so a STW pause there would just stutter
+	// interactive navigation for no lasting benefit.
+	trim := false
+	defer func() {
+		if trim {
+			debug.FreeOSMemory()
+		}
+	}()
+
 	a.Browse.opMu.Lock()
 	defer a.Browse.opMu.Unlock()
 
@@ -172,11 +185,6 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return err
 	}
 	committed := false
-	defer func() {
-		if tx.Count() >= browseMemoryTrimAfterEntries {
-			debug.FreeOSMemory()
-		}
-	}()
 	defer func() {
 		if !committed {
 			// Rollback is idempotent; safe even after Commit already rolled back a
@@ -216,6 +224,7 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return err
 	}
 	committed = true
+	trim = tx.Count() >= browseMemoryTrimAfterEntries
 	if progress != nil {
 		progress(tx.Count())
 	}

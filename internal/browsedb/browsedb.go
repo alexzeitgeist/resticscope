@@ -154,6 +154,20 @@ type DB struct {
 	maxDiskBytes int64
 }
 
+// sqliteURIPath percent-encodes the three characters SQLite treats specially
+// while parsing a "file:" URI: '%' (its percent-decode marker), '?' (the query
+// separator) and '#' (the fragment separator). The DB path is rooted at the
+// operator-supplied [global].cache_dir; without this, a directory name
+// containing any of these would terminate the URI before "?vfs=adiantum",
+// silently dropping the encrypting VFS so the DB would open on the default
+// PLAINTEXT VFS — persisting filenames in the clear, a privacy-contract breach.
+// SQLite percent-decodes the path, so each escaped char round-trips to the real
+// filename. strings.NewReplacer scans the input once and never re-examines its
+// own output, so '%' (listed first only for readability) is not double-encoded.
+func sqliteURIPath(p string) string {
+	return strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(p)
+}
+
 // Open opens (creating if absent) the encrypted browse DB at path, keyed by the
 // 32-byte key, and applies the schema. maxDiskBytes==0 means unlimited; a
 // positive value caps the total size of all regular files in the DB's directory,
@@ -168,7 +182,7 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 		return nil, fmt.Errorf("browsedb open: %w", errInvalidDiskLimit)
 	}
 	hexkey := hex.EncodeToString(key)
-	dsn := "file:" + path + "?vfs=adiantum"
+	dsn := "file:" + sqliteURIPath(path) + "?vfs=adiantum"
 	pool, err := driver.Open(dsn, func(c *sqlite3.Conn) error {
 		// hexkey must be the first PRAGMA so the key is in place before any page
 		// is read or written; the rest tune bulk ingest and keep temp B-trees off

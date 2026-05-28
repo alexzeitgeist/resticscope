@@ -2,6 +2,7 @@ package resticx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -262,6 +263,28 @@ func TestClassifyTimeout(t *testing.T) {
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestClassifyCanceled(t *testing.T) {
+	// A cancelled call must classify as a typed *resticx.Error (Kind KindCanceled)
+	// that still unwraps to context.Canceled — not the bare sentinel, which would
+	// break the "classify always returns *Error" contract every other caller relies
+	// on (see TestClassifyExitCodes / TestClassifyTimeout).
+	fr := &fakeRunner{block: true}
+	c := &Client{Runner: fr}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := c.Snapshots(ctx, testTarget, Creds{ResticPassword: "pw"})
+	var re *Error
+	if !asResticError(err, &re) {
+		t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
+	}
+	if re.Kind != KindCanceled {
+		t.Errorf("Kind = %v, want KindCanceled", re.Kind)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Error("errors.Is(err, context.Canceled) = false; want true (must unwrap to the sentinel)")
 	}
 }
 

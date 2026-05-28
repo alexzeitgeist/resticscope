@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -739,6 +740,66 @@ func TestEncryptionAtRest(t *testing.T) {
 	}
 	if leftovers, _ := filepath.Glob(filepath.Join(dir, "db.sqlite-*")); len(leftovers) != 0 {
 		t.Errorf("Close left SQLite sidecar files: %v", leftovers)
+	}
+}
+
+func TestSQLiteURIPathEscaping(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/plain/path/db.sqlite", "/plain/path/db.sqlite"},
+		{"/has?query", "/has%3Fquery"},
+		{"/has#frag", "/has%23frag"},
+		{"/has%literal", "/has%25literal"},
+		{"/a?b#c%d", "/a%3Fb%23c%25d"},
+		{"/already%3Fencoded", "/already%253Fencoded"}, // '%' must itself escape, no double-decode
+	}
+	for _, tc := range cases {
+		if got := sqliteURIPath(tc.in); got != tc.want {
+			t.Errorf("sqliteURIPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestEncryptionAtRestTrickyCacheDirPath proves the adiantum VFS is NOT dropped
+// when the DB path contains characters SQLite treats specially in a "file:" URI.
+// A dropped VFS would silently open the DB on the plaintext VFS, writing browsed
+// filenames to disk in the clear (privacy-contract breach).
+func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
+	// '#' and '%' are valid filename chars on every supported OS; '?' is valid on
+	// POSIX but not on Windows, so only add it off-Windows.
+	seg := "weird#dir%name"
+	if runtime.GOOS != "windows" {
+		seg += "?q"
+	}
+	dir := filepath.Join(t.TempDir(), seg)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir tricky dir: %v", err)
+	}
+	key := randomKey(t)
+	db, err := Open(filepath.Join(dir, "db.sqlite"), key, 0)
+	if err != nil {
+		t.Fatalf("Open under tricky path %q: %v", dir, err)
+	}
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+	const secret = "TOPSECRET_trickypath_marker_qux"
+	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret, Name: secret}})
+
+	// The DB must actually live where we asked (the '%'/'?'/'#' must round-trip,
+	// not redirect the open elsewhere) and must be ciphertext on disk.
+	if _, err := os.Stat(filepath.Join(dir, "db.sqlite")); err != nil {
+		t.Fatalf("db.sqlite not created under tricky path: %v", err)
+	}
+	assertNoPlaintext(t, dir, secret)
+
+	// Prove it is genuinely keyed: a different key cannot read it.
+	if err := db.pool.Close(); err != nil {
+		t.Fatalf("pool close: %v", err)
+	}
+	if wdb, err := Open(filepath.Join(dir, "db.sqlite"), randomKey(t), 0); err == nil {
+		if _, err := wdb.IsIndexed(ctx, repo, snap); err == nil {
+			t.Error("wrong key read succeeded; DB under tricky path is not encrypted")
+		}
+		_ = wdb.pool.Close()
 	}
 }
 
