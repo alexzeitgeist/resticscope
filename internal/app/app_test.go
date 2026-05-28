@@ -710,7 +710,8 @@ func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
 		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
 		browseSummary: model.BrowseScanSummary{Complete: false},
 	})
-	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
+	var lastProgress int
+	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", func(n int) { lastProgress = n })
 	if !errors.Is(err, ErrBrowseIncomplete) {
 		t.Fatalf("err = %v, want ErrBrowseIncomplete", err)
 	}
@@ -719,6 +720,12 @@ func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
 	}
 	if !store.rolledBack[storeKey("repo-a", "snap123")] {
 		t.Error("an incomplete stream must roll back")
+	}
+	// The exact final count is emitted even when the stream ends incomplete: the
+	// live ticks are throttled and sampled only every browseProgressCheckEvery
+	// nodes, so the last tick can lag the true total.
+	if lastProgress != 2 {
+		t.Errorf("final progress on incomplete index = %d, want 2", lastProgress)
 	}
 }
 

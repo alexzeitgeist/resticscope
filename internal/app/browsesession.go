@@ -37,8 +37,9 @@ var errBrowseSessionClosed = errors.New("browse session is closed")
 // progress responsive enough on very large snapshots.
 const browseProgressCheckEvery = 2000
 
-// browseProgressInterval caps TUI progress redraws. The final count is still
-// emitted after commit, so this is only a live-display throttle.
+// browseProgressInterval caps TUI progress redraws. The exact final count is
+// emitted once the stream ends (on both the commit and incomplete paths), so this
+// is only a live-display throttle.
 const browseProgressInterval = 250 * time.Millisecond
 
 // browseMemoryTrimAfterEntries is the point where the browse indexer has likely
@@ -133,7 +134,8 @@ func (s *BrowseSession) Close() error {
 // Close cannot tear down the DB mid-write. The stream is rolled back on every path
 // until Commit succeeds; an incomplete stream (timeout) or any
 // store/disk-limit/restic error leaves the snapshot unmarked. progress, if non-nil,
-// is called with the running node count on a coarse cadence.
+// is called with the running node count on a coarse cadence and once more with the
+// exact final count when the stream ends.
 func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, progress func(n int)) error {
 	if a.Browse == nil {
 		return ErrBrowseNotEnabled
@@ -217,6 +219,15 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		// failures; all leave the deferred rollback to discard the tx.
 		return err
 	}
+	// The stream ended without error (whole tree emitted, or a clean-but-incomplete
+	// timeout). Emit the exact final count now, before the completeness branch, so
+	// it lands on both the commit and the ErrBrowseIncomplete path: the live ticks
+	// are throttled and sampled only every browseProgressCheckEvery nodes, so the
+	// last one can lag the true total. Delivery stays best-effort (the TUI's send is
+	// non-blocking), which is fine for a display-only counter.
+	if progress != nil {
+		progress(tx.Count())
+	}
 	if !summary.Complete {
 		return ErrBrowseIncomplete
 	}
@@ -225,9 +236,6 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	}
 	committed = true
 	trim = tx.Count() >= browseMemoryTrimAfterEntries
-	if progress != nil {
-		progress(tx.Count())
-	}
 	return nil
 }
 

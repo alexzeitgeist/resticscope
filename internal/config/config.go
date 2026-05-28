@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -114,7 +115,7 @@ type ByteSize int64
 
 // UnmarshalText parses a byte-size string, satisfying encoding.TextUnmarshaler.
 // It accepts KiB/MiB/GiB (and the KB/MB/GB and bare K/M/G/B variants) and
-// rejects negative or unparseable values.
+// rejects negative, unparseable, or int64-overflowing values.
 func (b *ByteSize) UnmarshalText(text []byte) error {
 	n, err := parseByteSize(string(text))
 	if err != nil {
@@ -161,5 +162,16 @@ func parseByteSize(raw string) (int64, error) {
 	if n < 0 {
 		return 0, errors.New("byte size must be >= 0")
 	}
-	return int64(n * float64(mult)), nil
+	// Guard the float64→int64 conversion. Go does NOT saturate on an out-of-range
+	// float conversion — the result is implementation-defined (typically wraps to
+	// math.MinInt64), so an absurd value like "9000000000G" would otherwise become
+	// a negative or a finite-but-bogus cap rather than a clear error. float64 also
+	// can only represent the product exactly up to 2^53, so multi-PiB sizes round;
+	// that imprecision is irrelevant for a disk ceiling. float64(math.MaxInt64)
+	// rounds up to 2^63, so anything >= it (including +Inf) cannot fit in int64.
+	bytes := n * float64(mult)
+	if math.IsNaN(bytes) || bytes >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("byte size %q is out of range", raw)
+	}
+	return int64(bytes), nil
 }

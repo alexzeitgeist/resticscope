@@ -140,9 +140,11 @@ func (m Model) updateBrowseIndexRate(n int, now time.Time) Model {
 
 // applyBrowseIndexed handles a finished one-time index. A result whose generation
 // no longer matches is from a cancelled or superseded run and is dropped. On an
-// error there is no listing to show: the message — already-redacted restic/store
-// output carrying no path data — is surfaced and we fall back to the detail view.
-// On success the first directory is listed.
+// error there is no listing to show: the already-redacted restic/store message is
+// surfaced in the status line and we fall back to the detail view. Secrets are
+// redacted, but a restic-printed filesystem path can appear here transiently (by
+// design; the scoped shell is the path-free alternative); it is shown on screen
+// only and never persisted. On success the first directory is listed.
 func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 	if msg.gen != m.browseGen {
 		return m, nil

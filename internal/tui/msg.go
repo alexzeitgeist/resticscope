@@ -19,9 +19,12 @@ type browseIndexProgressMsg struct {
 // browseIndexedMsg is delivered when a snapshot's one-time index finishes (or
 // fails). gen tags it with the generation that started the index so Update can
 // discard a stale result from a cancelled or superseded crawl. err is non-nil on
-// failure — an already-redacted restic/secrets/store failure carrying no path
-// data; on success the index has committed and the first directory can be listed.
-// Nothing here is ever persisted to the cache, RepoState, or any log.
+// failure — a restic/secrets/store failure with secrets already redacted. It may
+// transiently carry a filesystem path that restic itself printed on stderr (the
+// secret redactor does not strip paths; the scoped shell is the path-free
+// alternative): that text is only ever shown in the status line, never persisted
+// to the cache, RepoState, or any log. On success the index has committed and
+// the first directory can be listed.
 type browseIndexedMsg struct {
 	gen int
 	err error

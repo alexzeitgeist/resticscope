@@ -81,6 +81,30 @@ func TestBrowseRejectsBadByteSizeAtDecode(t *testing.T) {
 	}
 }
 
+// parseByteSize must reject a byte count that would overflow int64 rather than
+// silently wrapping. Go's float64→int64 conversion does not saturate, so before
+// the guard "9000000000G" became math.MinInt64 and "8589934592G" (exactly 2^63)
+// wrapped too. NaN/Inf inputs are out of range as well. The largest in-range
+// value — (2^33-1) GiB, just under 2^63 — must still round-trip exactly, and
+// ordinary sizes are unaffected. Regression test for the parseByteSize guard.
+func TestParseByteSizeRange(t *testing.T) {
+	for _, bad := range []string{"9000000000G", "8589934592G", "nan", "inf"} {
+		if _, err := parseByteSize(bad); err == nil {
+			t.Errorf("parseByteSize(%q) = nil error, want out-of-range rejection", bad)
+		}
+	}
+	const wantMax = int64(8589934591) << 30 // largest value below 2^63
+	if got, err := parseByteSize("8589934591G"); err != nil || got != wantMax {
+		t.Errorf("parseByteSize(%q) = %d, %v; want %d, nil", "8589934591G", got, err, wantMax)
+	}
+	if got, err := parseByteSize("2GiB"); err != nil || got != 2<<30 {
+		t.Errorf("parseByteSize(%q) = %d, %v; want %d, nil", "2GiB", got, err, 2<<30)
+	}
+	if _, err := parseByteSize("-4MiB"); err == nil {
+		t.Errorf("parseByteSize(%q) = nil error, want negative rejection", "-4MiB")
+	}
+}
+
 func TestBrowseRejectsUnknownKey(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [browse]
