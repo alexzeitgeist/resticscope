@@ -14,9 +14,9 @@ import (
 // stale-cleanup convention both key off this single source of truth.
 const SessionPrefix = "browse-session-"
 
-// lockName is the marker/lock file created in every session directory. On Unix
-// it carries a real advisory lock for the session's lifetime; elsewhere it is
-// only a marker so the directory shape stays consistent.
+// lockName is the marker/lock file created in every session directory. On
+// supported platforms it carries a real advisory lock for the session's lifetime;
+// elsewhere it is only a marker so the directory shape stays consistent.
 const lockName = "active.lock"
 
 // staleThreshold is how long a session directory must be untouched before
@@ -27,9 +27,9 @@ const staleThreshold = 3 * time.Hour
 
 var errSessionLockUnavailable = errors.New("session lock unavailable")
 
-// SessionLock holds the open lock file for a live session. On Unix it owns a
-// non-blocking exclusive advisory lock; on unsupported platforms it is only a
-// marker file. Close releases the lock and closes the file.
+// SessionLock holds the open lock file for a live session. On supported
+// platforms it owns a non-blocking exclusive advisory lock; on unsupported
+// platforms it is only a marker file. Close releases the lock and closes the file.
 type SessionLock struct {
 	f *os.File
 }
@@ -38,9 +38,9 @@ type SessionLock struct {
 // platforms, takes a non-blocking exclusive lock held for the session lifetime.
 // The file is created unconditionally for a consistent session-dir shape; on
 // unsupported platforms no real lock is held, which only weakens stale-cleanup
-// liveness detection (a documented non-Unix disk leak, never a privacy bug since
-// the key is gone). On platforms where locking is supported, acquisition failure
-// is fatal because stale cleanup relies on that lock to identify live sessions.
+// liveness detection (a documented disk leak, never a privacy bug since the key
+// is gone). On platforms where locking is supported, acquisition failure is fatal
+// because stale cleanup relies on that lock to identify live sessions.
 func LockSession(dir string) (*SessionLock, error) {
 	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -73,9 +73,9 @@ func (l *SessionLock) Close() error {
 // cacheDir, but only when they are demonstrably stale: untouched past
 // staleThreshold AND not currently locked by a live session. If advisory locking
 // is unsupported on this platform, every candidate is skipped rather than risk
-// deleting a live sibling — so non-Unix builds accumulate stale (unreadable)
-// session dirs, a documented disk leak. Best-effort: a removal error on one
-// directory does not abort the sweep.
+// deleting a live sibling — so unsupported-platform builds accumulate stale
+// (unreadable) session dirs, a documented disk leak. Best-effort: a removal error
+// on one directory does not abort the sweep.
 func CleanStaleSessions(cacheDir string) error {
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
