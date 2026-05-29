@@ -577,20 +577,27 @@ func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
 // Emptying the query (backspace to nothing) clears the results synchronously with
 // no command — there is nothing to scan — while keeping the search input open.
 func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
-	m := openBrowse(t, newTestModel(t, browseApp(t,
+	a, store := browseAppWithStore(t,
 		bnode("/home", "home", true, 0),
 		bnode("/home/a.txt", "a.txt", false, 1),
-	)))
+	)
+	m := openBrowse(t, newTestModel(t, a))
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "a")
 	if len(m.browseSearchRows) == 0 {
 		t.Fatal("precondition: 'a' should match")
 	}
+	scansBefore := store.searchCalls()
 
 	next, cmd := m.Update(press("backspace")) // "a" -> ""
 	m = next.(Model)
 	if cmd != nil {
 		t.Error("emptying the query must clear synchronously, with no command")
+	}
+	// The no-scan contract: an empty query supersedes and clears in place; it must
+	// never reach the store (no command above, and no extra Search call here).
+	if got := store.searchCalls(); got != scansBefore {
+		t.Errorf("emptying the query must not scan the store: %d scans, want %d", got, scansBefore)
 	}
 	if m.browseSearchQuery != "" {
 		t.Errorf("query = %q, want empty", m.browseSearchQuery)

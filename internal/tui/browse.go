@@ -330,7 +330,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openBrowseDir()
 	case key.Matches(msg, m.keys.Parent):
 		return m.browseToParent()
-	case key.Matches(msg, m.keys.Filter):
+	case key.Matches(msg, m.keys.Search):
 		// `/` opens the global filename search, but only once the snapshot is
 		// indexed — there is nothing to search before the one-time crawl commits.
 		// It sits in the idle-only switch (below the browseLoading guard) so it
@@ -410,9 +410,7 @@ func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 	m.browseSearchCursor = 0
 	if strings.TrimSpace(m.browseSearchQuery) == "" {
 		m = m.supersedeBrowse()
-		m.browseSearchRows = nil
-		m.browseSearchTotal = 0
-		m.browseSearchErr = ""
+		m = m.clearBrowseSearchResults()
 		// The (empty) rows belong to the current query, so the accept gate matches:
 		// Enter on a whitespace-only query then behaves like an empty one (no
 		// selection → cancel), not a stale no-op. Setting this to "" instead would
@@ -447,9 +445,8 @@ func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 	// without this gate a stale row would remain selectable mid-edit).
 	m.browseSearchShownQuery = msg.query
 	if msg.err != nil {
+		m = m.clearBrowseSearchResults()
 		m.browseSearchErr = "browse search: " + firstLine(msg.err.Error())
-		m.browseSearchRows = nil
-		m.browseSearchTotal = 0
 		return m
 	}
 	m.browseSearchErr = ""
@@ -537,8 +534,16 @@ func (m Model) exitBrowseSearch() Model {
 	m.browseSearchSuspended = false
 	m.browseSearchQuery = ""
 	m.browseSearchShownQuery = ""
-	m.browseSearchRows = nil
 	m.browseSearchCursor = 0
+	return m.clearBrowseSearchResults()
+}
+
+// clearBrowseSearchResults zeros the result-bearing search fields — the ranked
+// rows, the match total, and the path-free error. It is shared by the
+// empty-query reset, the store-error branch, and the full overlay teardown so a
+// future result field can't leak by being cleared in only some of them.
+func (m Model) clearBrowseSearchResults() Model {
+	m.browseSearchRows = nil
 	m.browseSearchTotal = 0
 	m.browseSearchErr = ""
 	return m
