@@ -282,14 +282,7 @@ func (m Model) clearBrowse() Model {
 	// The search overlay carries filenames/paths too, so zero every field here on
 	// leaving browse (non-negotiable #1: no filenames linger in the model) — including
 	// a parked (suspended) result set, the one place search state outlives the overlay.
-	m.browseSearching = false
-	m.browseSearchSuspended = false
-	m.browseSearchQuery = ""
-	m.browseSearchShownQuery = ""
-	m.browseSearchRows = nil
-	m.browseSearchCursor = 0
-	m.browseSearchTotal = 0
-	m.browseSearchErr = ""
+	m = m.exitBrowseSearch()
 	return m
 }
 
@@ -343,14 +336,10 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// It sits in the idle-only switch (below the browseLoading guard) so it
 		// can't fire mid-index.
 		if m.browseIndexed {
+			// Start from a fully cleared overlay (also discards any parked result
+			// set), then open the input.
+			m = m.exitBrowseSearch()
 			m.browseSearching = true
-			m.browseSearchSuspended = false // a fresh search discards any parked result set
-			m.browseSearchQuery = ""
-			m.browseSearchShownQuery = ""
-			m.browseSearchRows = nil
-			m.browseSearchCursor = 0
-			m.browseSearchTotal = 0
-			m.browseSearchErr = ""
 		}
 		return m, nil
 	}
@@ -735,27 +724,7 @@ func browseIndexRateLabel(rate float64) string {
 // stretch the Name flex into a desert; the surrounding header/path/summary lines
 // keep using the full terminal width.
 func (m Model) browseList(w int) string {
-	tw := browseTableWidth(w)
-	l := browseLayout(tw)
-	header := clip(m.styles.dim.Render(browseHeaderRow(l, "Name")), tw)
-
-	total := len(m.browseRows)
-	if total == 0 {
-		return header + "\n" + clip(m.styles.meta.Render("  (empty)"), tw)
-	}
-
-	cur := clampCursor(m.browseCursor, total)
-	start, end := snapshotWindow(cur, total, m.browseVisible())
-
-	lines := make([]string, 0, end-start+2)
-	lines = append(lines, header)
-	for i := start; i < end; i++ {
-		lines = append(lines, m.browseRow(&m.browseRows[i], i == cur, l, tw, false))
-	}
-	if start > 0 || end < total {
-		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
-	}
-	return strings.Join(lines, "\n")
+	return m.browseTableList(w, m.browseRows, m.browseCursor, false, "(empty)")
 }
 
 // browseSearchList renders the ranked global-search matches with the same
@@ -765,22 +734,38 @@ func (m Model) browseList(w int) string {
 // untouched. The empty state is left to the summary line ("type to search",
 // "(no matches)", or the error), so here an empty result is just the header.
 func (m Model) browseSearchList(w int) string {
+	return m.browseTableList(w, m.browseSearchRows, m.browseSearchCursor, true, "")
+}
+
+// browseTableList renders a window of rows as the responsive browse table shared
+// by the directory listing and the global-search results. showPath swaps the flex
+// column (and its header label) between the bare Name and the full Path, so the
+// label can never disagree with the cell content. emptyNote is the meta line shown
+// when there are no rows ("" renders just the header, as the search list wants).
+func (m Model) browseTableList(w int, rows []model.BrowseEntry, cursor int, showPath bool, emptyNote string) string {
 	tw := browseTableWidth(w)
 	l := browseLayout(tw)
-	header := clip(m.styles.dim.Render(browseHeaderRow(l, "Path")), tw)
+	flexLabel := "Name"
+	if showPath {
+		flexLabel = "Path"
+	}
+	header := clip(m.styles.dim.Render(browseHeaderRow(l, flexLabel)), tw)
 
-	total := len(m.browseSearchRows)
+	total := len(rows)
 	if total == 0 {
-		return header
+		if emptyNote == "" {
+			return header
+		}
+		return header + "\n" + clip(m.styles.meta.Render("  "+emptyNote), tw)
 	}
 
-	cur := clampCursor(m.browseSearchCursor, total)
+	cur := clampCursor(cursor, total)
 	start, end := snapshotWindow(cur, total, m.browseVisible())
 
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {
-		lines = append(lines, m.browseRow(&m.browseSearchRows[i], i == cur, l, tw, true))
+		lines = append(lines, m.browseRow(&rows[i], i == cur, l, tw, showPath))
 	}
 	if start > 0 || end < total {
 		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
