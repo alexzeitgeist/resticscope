@@ -796,7 +796,10 @@ func (m Model) browseTableList(w int, rows []model.BrowseEntry, cursor int, show
 	if showPath {
 		flexLabel = "Path"
 	}
-	header := clip(m.styles.dim.Render(browseHeaderRow(l, flexLabel)), tw)
+	// The directory listing (showPath is false) marks its active sort column in the
+	// header; the fuzzy search results are relevance-ranked, not column-sorted, so
+	// they never carry an arrow.
+	header := clip(m.styles.dim.Render(browseHeaderRow(l, flexLabel, m.browseSortMode, !showPath)), tw)
 
 	total := len(rows)
 	if total == 0 {
@@ -943,9 +946,41 @@ func browseCells(l browseColLayout, name, size, mod, perms, owner string) []stri
 
 // browseHeaderRow is the dim column-label row, built from the same browseCells
 // layout as the data rows (plus the two-cell gutter the rows get from their
-// indicator) so labels line up with their values at every width.
-func browseHeaderRow(l browseColLayout, flexLabel string) string {
-	return "  " + strings.Join(browseCells(l, flexLabel, "Size", "Modified", "Perms", "Owner"), "  ")
+// indicator) so labels line up with their values at every width. When showSort is
+// set (the directory listing), the active sort column is flagged with a single down
+// arrow (↓) — every browse sort has one fixed direction, so the arrow marks which
+// column the listing is ordered by, not a reversible direction. The arrow sits on
+// the column's padding side — trailing the left-aligned Name/Modified, leading the
+// right-aligned Size — so the label text stays put when the marker appears instead
+// of sliding over to make room. Either way it only extends the label, never the
+// column width (browseCells pads to the fixed layout), so the data rows stay aligned
+// underneath. A collapsed Modified column shows no arrow; the summary still names the
+// sort.
+func browseHeaderRow(l browseColLayout, flexLabel string, sort browseSortMode, showSort bool) string {
+	name, size, mod := flexLabel, "Size", "Modified"
+	if showSort {
+		switch sort {
+		case browseSortName:
+			// Name is left-aligned: a trailing arrow grows into the right padding.
+			name += " " + browseSortArrow(sort)
+		case browseSortSize:
+			// Size is right-aligned, so a trailing arrow would shove the label left;
+			// lead with the arrow to keep "Size" pinned over the numbers below it.
+			size = browseSortArrow(sort) + " " + size
+		case browseSortModified:
+			// Modified is left-aligned like Name: trailing arrow into the right padding.
+			mod += " " + browseSortArrow(sort)
+		}
+	}
+	return "  " + strings.Join(browseCells(l, name, size, mod, "Perms", "Owner"), "  ")
+}
+
+// browseSortArrow is the marker appended to the active sort column's header. Each
+// browse sort mode has a single fixed direction (name A→Z, size largest-first,
+// modified newest-first), so one down arrow just flags which column the listing is
+// ordered by; it is not a reversible ascending/descending indicator.
+func browseSortArrow(browseSortMode) string {
+	return "↓"
 }
 
 // browseRow renders one entry as a table row: an accent gutter on the cursor row,

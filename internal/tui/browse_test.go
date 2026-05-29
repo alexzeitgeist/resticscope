@@ -1225,3 +1225,65 @@ func TestBrowseFooterAdvertisesSort(t *testing.T) {
 		t.Errorf("browse footer should advertise the sort key\n---\n%s", footer)
 	}
 }
+
+// The directory header marks the active sort column with a single down arrow that
+// follows the cycle: "Name ↓" in name mode, "↓ Size" in size mode (leading, because
+// Size is right-aligned), "Modified ↓" in modified mode — and only one column is
+// ever marked. The arrow lands on each column's padding side so the label never
+// shifts. The header line is located by the Owner label, which appears only in the
+// table header.
+func TestBrowseSortHeaderArrow(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	header := func() string { return lineContaining(t, stripANSI(m.View().Content), "Owner") }
+
+	// name mode (default): down arrow on Name only.
+	hdr := header()
+	if !strings.Contains(hdr, "Name ↓") {
+		t.Errorf("name sort should mark Name with ↓\n%q", hdr)
+	}
+	if strings.Contains(hdr, "↓ Size") || strings.Contains(hdr, "Modified ↓") {
+		t.Errorf("name sort should not mark Size/Modified\n%q", hdr)
+	}
+
+	// size mode: the arrow moves to Size, leading it (Size is right-aligned, so the
+	// arrow sits to the left to keep the label pinned over the numbers).
+	m = update(t, m, press("o"))
+	hdr = header()
+	if !strings.Contains(hdr, "↓ Size") {
+		t.Errorf("size sort should mark Size with a leading ↓\n%q", hdr)
+	}
+	if strings.Contains(hdr, "Name ↓") || strings.Contains(hdr, "Modified ↓") {
+		t.Errorf("size sort should mark only Size\n%q", hdr)
+	}
+
+	// modified mode: the arrow moves to Modified.
+	m = update(t, m, press("o"))
+	hdr = header()
+	if !strings.Contains(hdr, "Modified ↓") {
+		t.Errorf("modified sort should mark Modified with ↓\n%q", hdr)
+	}
+	if strings.Contains(hdr, "Name ↓") || strings.Contains(hdr, "↓ Size") {
+		t.Errorf("modified sort should mark only Modified\n%q", hdr)
+	}
+}
+
+// The global search results are relevance-ranked, not column-sorted, so their table
+// header must carry no sort arrow (even though the directory sort mode persists
+// underneath the parked listing).
+func TestBrowseSearchHeaderHasNoSortArrow(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+	)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = update(t, m, press("o")) // a non-default dir sort is active under the search
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	hdr := lineContaining(t, stripANSI(m.View().Content), "Owner")
+	if strings.ContainsAny(hdr, "↑↓") {
+		t.Errorf("search header must carry no sort arrow\n%q", hdr)
+	}
+}
