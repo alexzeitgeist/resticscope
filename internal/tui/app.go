@@ -88,10 +88,13 @@ type Model struct {
 
 	// Global filename search state, kept entirely SEPARATE from the directory
 	// listing above so cancelling search (esc) restores the prior listing untouched.
-	// browseSearchRows holds full paths/filenames for the lifetime of the model
-	// only; clearBrowse zeros every field here on leaving browse (non-negotiable #1:
-	// no filenames linger).
+	// Enter does not exit the search: it SUSPENDS it (browseSearchSuspended), keeping
+	// the query/rows/cursor so esc from the jumped-to listing can restore them. The
+	// rows hold full paths/filenames for the lifetime of the model only; clearBrowse
+	// zeros every field here on leaving browse (non-negotiable #1: no filenames linger
+	// once the user leaves browse).
 	browseSearching        bool                // true while the search input is open
+	browseSearchSuspended  bool                // a search result set is parked behind a jumped-to listing; esc restores it
 	browseSearchQuery      string              // the live search query
 	browseSearchShownQuery string              // query that produced browseSearchRows; gates accept against in-flight edits
 	browseSearchRows       []model.BrowseEntry // ranked matches (capped), full paths

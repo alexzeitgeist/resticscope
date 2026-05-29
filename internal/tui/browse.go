@@ -280,8 +280,10 @@ func (m Model) clearBrowse() Model {
 	m.browseCancel = nil
 	m.browseProgress = nil
 	// The search overlay carries filenames/paths too, so zero every field here on
-	// leaving browse (non-negotiable #1: no filenames linger in the model).
+	// leaving browse (non-negotiable #1: no filenames linger in the model) — including
+	// a parked (suspended) result set, the one place search state outlives the overlay.
 	m.browseSearching = false
+	m.browseSearchSuspended = false
 	m.browseSearchQuery = ""
 	m.browseSearchShownQuery = ""
 	m.browseSearchRows = nil
@@ -298,6 +300,13 @@ func (m Model) clearBrowse() Model {
 func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
+		// esc is dual-role in browse: while a search result set is parked (the user
+		// jumped to a match with Enter) it restores that search overlay rather than
+		// leaving browse, so the modal stack pops one level at a time. q still leaves
+		// browse outright (handleKey's Quit case → browseBack), the quick escape hatch.
+		if m.browseSearchSuspended {
+			return m.restoreBrowseSearch(), nil
+		}
 		return m.browseBack(), nil
 	case key.Matches(msg, m.keys.Shell):
 		if cmd := m.openShellCmd(m.browseSnapshotPtr()); cmd != nil {
@@ -335,6 +344,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// can't fire mid-index.
 		if m.browseIndexed {
 			m.browseSearching = true
+			m.browseSearchSuspended = false // a fresh search discards any parked result set
 			m.browseSearchQuery = ""
 			m.browseSearchShownQuery = ""
 			m.browseSearchRows = nil
@@ -460,11 +470,13 @@ func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 	return m
 }
 
-// acceptBrowseSearch jumps to the selected match in its own folder. The target
-// path is captured BEFORE exiting search (exitBrowseSearch zeroes the rows), then
-// the search overlay is closed and the parent directory is listed with the match
+// acceptBrowseSearch jumps to the selected match in its own folder. It SUSPENDS
+// the search rather than exiting it (suspendBrowseSearch keeps the query/rows/cursor
+// parked), closes the input, and lists the match's parent directory with the file
 // preselected — a cache hit serves it instantly, and indexOfBrowsePath lands the
-// cursor on the file. With no selection (empty results) it just cancels.
+// cursor on the file. esc from that listing restores the parked search so the user
+// can pick another match (restoreBrowseSearch). With no selection (empty results) it
+// just cancels, fully clearing search.
 func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
 	// The visible rows are kept between keystrokes (no per-edit flicker), so an
 	// Enter pressed after editing the query but before the new scan returns would
@@ -478,8 +490,42 @@ func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
 		return m.cancelBrowseSearch(), nil
 	}
 	target := e.Path
-	m = m.exitBrowseSearch()
+	m = m.suspendBrowseSearch()
 	return m.beginListDir(path.Dir(target), target)
+}
+
+// suspendBrowseSearch parks the open search: it closes the input but KEEPS the
+// query, ranked rows, and cursor so esc can later restore them (restoreBrowseSearch).
+// This is the deliberate relaxation of "no filenames linger after leaving search" —
+// Enter suspends rather than exits, so the result set stays in the model while the
+// user inspects the jumped-to directory. The broader invariant still holds: leaving
+// browse (q/back) calls clearBrowse, which wipes every search field, so no filename
+// lingers once the user leaves browse.
+func (m Model) suspendBrowseSearch() Model {
+	m.browseSearching = false
+	m.browseSearchSuspended = true
+	return m
+}
+
+// restoreBrowseSearch reopens the search overlay that Enter suspended, bringing back
+// the previous query, ranked rows, and cursor so the user can pick another match. The
+// directory listing underneath is wherever they navigated to; cancelling the restored
+// search returns there. It is the esc action while a suspended search is parked (q
+// still leaves browse entirely via browseBack).
+//
+// If the jump listing acceptBrowseSearch started is still in flight (browseLoading),
+// drop it first: re-entering search and then superseding it (a fresh query, or cancel)
+// would advance the generation past that listing's tag, so its browseDirMsg is dropped
+// before applyBrowseDir clears browseLoading — leaving navigation paused forever. The
+// user pressed esc to return to the results, so the half-finished jump is moot anyway.
+func (m Model) restoreBrowseSearch() Model {
+	if m.browseLoading {
+		m = m.supersedeBrowse()
+		m.browseLoading = false
+	}
+	m.browseSearching = true
+	m.browseSearchSuspended = false
+	return m
 }
 
 // cancelBrowseSearch closes the search with no navigation, leaving the underlying
@@ -493,11 +539,13 @@ func (m Model) cancelBrowseSearch() Model {
 
 // exitBrowseSearch clears only the search overlay state, leaving the directory
 // listing (browseRows/browseDir/browseCursor) untouched so Esc returns the user
-// exactly where they were. It does not bump the generation or cancel anything —
-// callers that need to drop an in-flight scan supersede first. The filenames the
-// search held are zeroed here so none linger past the overlay.
+// exactly where they were. It also drops any parked (suspended) result set. It does
+// not bump the generation or cancel anything — callers that need to drop an in-flight
+// scan supersede first. The filenames the search held are zeroed here so none linger
+// past the overlay.
 func (m Model) exitBrowseSearch() Model {
 	m.browseSearching = false
+	m.browseSearchSuspended = false
 	m.browseSearchQuery = ""
 	m.browseSearchShownQuery = ""
 	m.browseSearchRows = nil
@@ -592,11 +640,15 @@ func (m Model) browseHeaderView() string {
 		label += " · " + id
 	}
 	left := m.styles.title.Render(label)
-	// While the search input is open q is literal text and esc cancels, so the
-	// header must not keep advertising "q back" — that affordance is suspended.
+	// The back affordance is contextual: while the search input is open q is literal
+	// text and esc cancels, so "q back" would mislead; while a search is parked behind
+	// a jumped-to listing, esc returns to those results (q still leaves browse).
 	right := m.styles.dim.Render("q back")
-	if m.browseSearching {
+	switch {
+	case m.browseSearching:
 		right = m.styles.dim.Render("esc cancel")
+	case m.browseSearchSuspended:
+		right = m.styles.dim.Render("esc results · q back")
 	}
 	return clip(m.spread(left, right), w)
 }

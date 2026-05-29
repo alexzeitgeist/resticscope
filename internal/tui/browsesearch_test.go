@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"testing"
 
@@ -174,8 +175,9 @@ func TestBrowseSearchEscRestoresListing(t *testing.T) {
 	}
 }
 
-// Enter on a match opens that match's parent directory with the file preselected,
-// and closes the search — so a global hit lands the user in the right folder.
+// Enter on a match opens that match's parent directory with the file preselected and
+// suspends the search (the input closes but the result set is parked so esc can
+// restore it) — so a global hit lands the user in the right folder.
 func TestBrowseSearchEnterNavigatesToMatch(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -201,7 +203,13 @@ func TestBrowseSearchEnterNavigatesToMatch(t *testing.T) {
 	m = update(t, m, msg)
 
 	if m.browseSearching {
-		t.Error("enter should close the search")
+		t.Error("enter should close the search input")
+	}
+	if !m.browseSearchSuspended {
+		t.Error("enter should suspend (park) the search so esc can restore the results")
+	}
+	if len(m.browseSearchRows) == 0 {
+		t.Error("a suspended search must keep its result rows for restore")
 	}
 	if m.browseDir != "/home/sub" {
 		t.Errorf("enter should open the match's parent dir, browseDir = %q want /home/sub", m.browseDir)
@@ -235,6 +243,257 @@ func TestBrowseSearchEnterNoMatchCloses(t *testing.T) {
 	}
 	if m.browseDir != dirBefore {
 		t.Errorf("enter with no match should leave the listing unchanged, dir = %q", m.browseDir)
+	}
+}
+
+// Enter suspends (parks) the search rather than exiting it: esc from the jumped-to
+// listing restores the overlay with the same query, rows, and cursor, and a second
+// Enter jumps again. This is the "open a result, go back to the result set, pick
+// another" file-picker flow, kept within the no-filenames-linger-after-browse rule.
+func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/proj", "proj", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+		bnode("/proj/report.md", "report.md", false, 8),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+	if len(m.browseSearchRows) != 2 {
+		t.Fatalf("precondition: 'report' should match 2 files across dirs, got %d", len(m.browseSearchRows))
+	}
+
+	// Move onto the second match so the restored cursor is provably preserved (not 0),
+	// and capture its path without assuming a ranking order.
+	m = update(t, m, press("down"))
+	wantCursor := m.browseSearchCursor
+	if wantCursor != 1 {
+		t.Fatalf("precondition: cursor should be on the second match, got %d", wantCursor)
+	}
+	wantQuery := m.browseSearchQuery
+	sel := m.selectedBrowseSearchEntry()
+	if sel == nil {
+		t.Fatal("precondition: a match should be selected")
+	}
+	wantPath, wantDir := sel.Path, path.Dir(sel.Path)
+
+	// Enter suspends the search and jumps to the match's parent directory.
+	next, cmd := m.Update(press("enter"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter on a match should kick off a directory list")
+	}
+	msg, ok := cmd().(browseDirMsg)
+	if !ok {
+		t.Fatalf("enter produced %T, want browseDirMsg", cmd())
+	}
+	m = update(t, m, msg)
+	if m.browseSearching || !m.browseSearchSuspended {
+		t.Fatalf("enter should suspend the search: searching=%v suspended=%v", m.browseSearching, m.browseSearchSuspended)
+	}
+	if m.browseDir != wantDir {
+		t.Errorf("enter should open the match's parent dir, browseDir = %q want %q", m.browseDir, wantDir)
+	}
+	if cur := m.selectedBrowseEntry(); cur == nil || cur.Path != wantPath {
+		t.Errorf("the cursor should land on the match, got %+v want %q", cur, wantPath)
+	}
+
+	// esc restores the parked search overlay with the same query, rows, and cursor.
+	m = update(t, m, press("esc"))
+	if !m.browseSearching || m.browseSearchSuspended {
+		t.Fatalf("esc should restore the search overlay: searching=%v suspended=%v", m.browseSearching, m.browseSearchSuspended)
+	}
+	if m.browseSearchQuery != wantQuery {
+		t.Errorf("restored query = %q, want %q", m.browseSearchQuery, wantQuery)
+	}
+	if len(m.browseSearchRows) != 2 {
+		t.Errorf("restored search should keep its 2 rows, got %d", len(m.browseSearchRows))
+	}
+	if m.browseSearchCursor != wantCursor {
+		t.Errorf("restored cursor = %d, want %d", m.browseSearchCursor, wantCursor)
+	}
+
+	// A second Enter from the restored search jumps again (the shown/live accept gate
+	// still matches). It may serve a cached dir synchronously, so accept either a
+	// command or no command; only the suspend transition is asserted.
+	next, cmd = m.Update(press("enter"))
+	m = next.(Model)
+	if cmd != nil {
+		if msg, ok := cmd().(browseDirMsg); ok {
+			m = update(t, m, msg)
+		}
+	}
+	if m.browseSearching || !m.browseSearchSuspended {
+		t.Errorf("a second enter should suspend the search again: searching=%v suspended=%v", m.browseSearching, m.browseSearchSuspended)
+	}
+}
+
+// q is the escape hatch out of a parked search: unlike esc (which restores the
+// results), q leaves browse outright and clearBrowse wipes every search field, so no
+// filename lingers once the user leaves browse.
+func TestBrowseSearchSuspendedQuitLeavesBrowse(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	next, cmd := m.Update(press("enter")) // suspend + navigate
+	m = next.(Model)
+	if cmd != nil {
+		if msg, ok := cmd().(browseDirMsg); ok {
+			m = update(t, m, msg)
+		}
+	}
+	if !m.browseSearchSuspended {
+		t.Fatal("precondition: search should be suspended after enter on a match")
+	}
+
+	m = update(t, m, press("q"))
+	if m.view != detailView {
+		t.Errorf("q should leave browse to the detail view, view = %d", m.view)
+	}
+	if m.browseSearchSuspended || m.browseSearchRows != nil || m.browseSearchQuery != "" {
+		t.Errorf("leaving browse must wipe parked search state: suspended=%v rows=%v q=%q",
+			m.browseSearchSuspended, m.browseSearchRows, m.browseSearchQuery)
+	}
+}
+
+// While a search is parked the header advertises esc → results (and still q → back),
+// not the open-input "esc cancel" — the back affordance tracks the modal state.
+func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+	)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	next, cmd := m.Update(press("enter")) // suspend + navigate
+	m = next.(Model)
+	if cmd != nil {
+		if msg, ok := cmd().(browseDirMsg); ok {
+			m = update(t, m, msg)
+		}
+	}
+	if !m.browseSearchSuspended {
+		t.Fatal("precondition: search should be suspended")
+	}
+
+	h := stripANSI(m.browseHeaderView())
+	if !strings.Contains(h, "esc results") {
+		t.Errorf("a parked search header should advertise esc → results\n---\n%s", h)
+	}
+	if !strings.Contains(h, "q back") {
+		t.Errorf("a parked search header should still advertise q → back\n---\n%s", h)
+	}
+	if strings.Contains(h, "esc cancel") {
+		t.Errorf("a parked search header is not the open-input state\n---\n%s", h)
+	}
+}
+
+// Restoring the search while the jumped-to directory listing is still in flight, then
+// cancelling, must not leave browseLoading stuck true. Enter starts an async load of
+// the (unlisted) parent dir; esc restores the parked search and esc cancels it, both
+// before the listing returns; the stale browseDirMsg is then dropped on its old
+// generation. Without restoreBrowseSearch dropping the in-flight listing, browseLoading
+// would never clear and navigation would be paused forever.
+func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/etc", "etc", true, 0), // a second top-level row so navigation can be proven
+		bnode("/home/report.txt", "report.txt", false, 10),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	// Enter jumps to /home (never listed → a real async load). Capture the command but
+	// do NOT deliver its browseDirMsg, so the listing stays in flight.
+	next, cmd := m.Update(press("enter"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter on a match in an unlisted dir should start an async listing")
+	}
+	if !m.browseLoading {
+		t.Fatal("precondition: the jumped-to listing should be in flight (browseLoading)")
+	}
+	stale := cmd().(browseDirMsg) // delivered last, after the generation has moved on
+
+	// esc restores the parked search — and must drop the in-flight jump, clearing loading.
+	m = update(t, m, press("esc"))
+	if !m.browseSearching {
+		t.Fatal("first esc should restore the search overlay")
+	}
+	if m.browseLoading {
+		t.Error("restoring search must drop the in-flight jump listing and clear browseLoading")
+	}
+
+	// esc again cancels the restored search; the stale listing then returns and is
+	// dropped on its old generation.
+	m = update(t, m, press("esc"))
+	if m.browseSearching {
+		t.Fatal("second esc should cancel the restored search")
+	}
+	m = update(t, m, stale)
+	if m.browseLoading {
+		t.Error("browseLoading must stay cleared after the stale jump listing is dropped, not stuck true")
+	}
+
+	// Navigation is paused while browseLoading; moving the cursor proves it is not frozen.
+	m = update(t, m, press("j"))
+	if m.browseCursor != 1 {
+		t.Errorf("browse navigation should work after restore+cancel, cursor = %d want 1", m.browseCursor)
+	}
+}
+
+// Restoring the search while the jump listing is in flight, then typing a new query
+// (which supersedes that listing) and cancelling, must also not leave browseLoading
+// stuck — the new search never sets loading, so only restoreBrowseSearch clearing it
+// keeps navigation alive.
+func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/etc", "etc", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+		bnode("/home/reportx.txt", "reportx.txt", false, 10),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	next, cmd := m.Update(press("enter")) // jump to /home → async load, loading=true
+	m = next.(Model)
+	if cmd == nil || !m.browseLoading {
+		t.Fatal("precondition: enter should start an in-flight jump listing")
+	}
+	stale := cmd().(browseDirMsg)
+
+	m = update(t, m, press("esc")) // restore (drops the jump, clears loading)
+	if !m.browseSearching || m.browseLoading {
+		t.Fatalf("restore should reopen search and clear loading: searching=%v loading=%v", m.browseSearching, m.browseLoading)
+	}
+
+	// Type a further character; the new search dispatches and its result lands.
+	m = typeSearch(t, m, "x") // "report" -> "reportx"
+	if m.browseLoading {
+		t.Error("a refired search must not set browseLoading")
+	}
+
+	// The original jump listing finally returns and is dropped (old generation).
+	m = update(t, m, stale)
+
+	// Cancel and confirm navigation works.
+	m = update(t, m, press("esc"))
+	if m.browseSearching {
+		t.Fatal("esc should cancel the restored search")
+	}
+	if m.browseLoading {
+		t.Error("browseLoading must be clear after restore→type→cancel, not stuck true")
+	}
+	m = update(t, m, press("j"))
+	if m.browseCursor != 1 {
+		t.Errorf("browse navigation should work afterward, cursor = %d want 1", m.browseCursor)
 	}
 }
 
@@ -510,15 +769,18 @@ func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
 	if len(m.browseSearchRows) == 0 || !m.browseSearching {
 		t.Fatal("precondition: search should be open with matches")
 	}
+	// Park the search (as Enter would) so clearBrowse is exercised against the one
+	// state where search data is meant to outlive the overlay — it must still be wiped.
+	m.browseSearchSuspended = true
 
 	c := m.clearBrowse()
 	if c.browseSearching {
 		t.Error("clearBrowse must close search")
 	}
-	if c.browseSearchQuery != "" || c.browseSearchShownQuery != "" || c.browseSearchRows != nil ||
+	if c.browseSearchSuspended || c.browseSearchQuery != "" || c.browseSearchShownQuery != "" || c.browseSearchRows != nil ||
 		c.browseSearchCursor != 0 || c.browseSearchTotal != 0 || c.browseSearchErr != "" {
-		t.Errorf("clearBrowse must zero every browseSearch* field (privacy): q=%q shown=%q rows=%v cur=%d total=%d err=%q",
-			c.browseSearchQuery, c.browseSearchShownQuery, c.browseSearchRows, c.browseSearchCursor, c.browseSearchTotal, c.browseSearchErr)
+		t.Errorf("clearBrowse must zero every browseSearch* field (privacy): suspended=%v q=%q shown=%q rows=%v cur=%d total=%d err=%q",
+			c.browseSearchSuspended, c.browseSearchQuery, c.browseSearchShownQuery, c.browseSearchRows, c.browseSearchCursor, c.browseSearchTotal, c.browseSearchErr)
 	}
 }
 
