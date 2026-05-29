@@ -44,6 +44,19 @@ type browseDirMsg struct {
 	err        error
 }
 
+// browseSearchMsg carries the result of one global filename search against the
+// session store. gen guards against a superseded keystroke's result, and query
+// is the exact query the search ran for, so applyBrowseSearch can drop a result
+// the user has since edited past. result holds matched filenames/paths for the
+// lifetime of the model state only (cleared on leaving search/browse); err is a
+// path-free store error surfaced in the footer while search stays open.
+type browseSearchMsg struct {
+	gen    int
+	query  string
+	result model.BrowseSearchResult
+	err    error
+}
+
 // repoRefreshedMsg is delivered when a single repo's background refresh
 // finishes. row carries the freshly evaluated status; err is non-nil only when
 // the result could not be persisted to the cache — the row is still the live

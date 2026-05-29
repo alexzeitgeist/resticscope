@@ -248,12 +248,23 @@ func tookDuration(snaps []model.Snapshot) string {
 
 func (m Model) footerView() string {
 	w, _ := m.effSize()
-	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering}), w)
+	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: m.browseSearching}), w)
 	switch {
 	case m.filtering:
 		// Show the live query (vim-style) with a block cursor so the input mode
 		// is obvious. The "/<query>" stays unstyled so it reads as one token.
 		return clip("/"+m.filter+m.styles.dim.Render("▏"), w) + "\n" + help
+	case m.browseSearching:
+		// The global filename search mirrors the filter prompt, with the live
+		// match count (or the result-cap note) trailing it. A path-free search
+		// error takes the count's place in error styling — placed before statusMsg
+		// so it is not hidden behind input-mode precedence.
+		prompt := "/" + m.browseSearchQuery + m.styles.dim.Render("▏")
+		summary := m.browseSearchSummary()
+		if m.browseSearchErr != "" {
+			return clip(prompt+"  "+m.styles.errText.Render(summary), w) + "\n" + help
+		}
+		return clip(prompt+m.styles.meta.Render("  "+summary), w) + "\n" + help
 	case m.statusMsg != "":
 		return clip(m.styles.errText.Render(m.statusMsg), w) + "\n" + help
 	}

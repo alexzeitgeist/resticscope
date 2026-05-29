@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -138,6 +139,25 @@ const listDirDIDQuery = `SELECT d.did FROM dirs d JOIN snapshots s ON s.sid=d.si
 const listDirQuery = `SELECT name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target ` +
 	`FROM nodes WHERE parent_did=? ` +
 	`ORDER BY is_dir DESC, name_ci, name`
+
+// searchQuery is the global filename search prefilter: a subsequence LIKE over
+// the precomputed name_ci column across one committed snapshot, joined to dirs so
+// each matched node carries its own parent path for full-path reconstruction. It
+// deliberately has NO LIMIT and NO ORDER BY — the LIKE is only a coarse prefilter
+// and the result cap is applied after fuzzy scoring (see Search), so the returned
+// rows are the true top matches rather than an arbitrary prefix of the scan order.
+// ESCAPE '\' makes the LIKE specials escaped by likeSubsequence match literally.
+const searchQuery = `SELECT d.path,n.name,n.type,n.is_dir,n.size,n.mtime_unix,n.mtime_offset_sec,n.mtime_known,n.perms,n.uid,n.gid,n.owner_known,n.link_target ` +
+	`FROM nodes n ` +
+	`JOIN snapshots s ON s.sid=n.sid ` +
+	`JOIN dirs d ON d.did=n.parent_did ` +
+	`WHERE s.repo=? AND s.snapshot=? AND s.indexed_at_unix IS NOT NULL AND n.name_ci LIKE ? ESCAPE '\'`
+
+// defaultSearchLimit caps how many ranked rows a search returns when the caller
+// passes a non-positive limit. It bounds the result slice (and the UI state built
+// from it) even when a broad query matches a large fraction of the snapshot; Total
+// still reports every match so the UI can show "showing N of Total".
+const defaultSearchLimit = 200
 
 // errAlreadyIndexed is the path-free sentinel BeginIndex returns when a
 // (repo,snapshot) is already committed. The app gates on IsIndexed under its
@@ -323,6 +343,138 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 		return nil, fmt.Errorf("browsedb list-dir rows: %w", err)
 	}
 	return out, nil
+}
+
+// Search finds nodes anywhere in (repo, snapshot) whose name is a case-folded
+// fuzzy (subsequence) match for query, ranked best-first and capped to limit (the
+// default cap when limit <= 0). It returns the ranked rows plus Total, the count
+// of every match before the cap, so the caller can report a truncated result.
+//
+// A blank or whitespace-only query returns a zero result with no scan: there is
+// nothing to rank. Otherwise the query is lowercased to build a subsequence LIKE
+// pattern over name_ci (byte-identical to how name_ci was written, so the
+// prefilter never rejects a true match), then every prefiltered row is re-scored
+// with model.FuzzyScore on its original name and kept in a bounded top-N using the
+// shared model.BetterFuzzy ordering — so DB search and the pure-model ranking
+// cannot drift. The original query (not the lowercased pattern) is scored so the
+// exact-case bonus still applies. Errors are path-free: they wrap the operation
+// name and the driver/scan cause, never a node name or path (those flow only
+// through bound parameters, which SQLite never echoes into error text).
+func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error) {
+	if strings.TrimSpace(query) == "" {
+		return model.BrowseSearchResult{}, nil
+	}
+	if limit <= 0 {
+		limit = defaultSearchLimit
+	}
+	pattern := likeSubsequence(strings.ToLower(query))
+
+	rows, err := db.pool.QueryContext(ctx, searchQuery, repo, snapshot, pattern)
+	if err != nil {
+		return model.BrowseSearchResult{}, fmt.Errorf("browsedb search: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		top   []model.FuzzyRank // best-first, length bounded by limit
+		total int
+		zones map[int]*time.Location
+	)
+	for rows.Next() {
+		var (
+			e          model.BrowseEntry
+			parent     string
+			name       string
+			isDir      int
+			mtimeUnix  int64
+			mtimeOff   int
+			mtimeKnown int
+			ownerKnown int
+			uid, gid   int64
+		)
+		if err := rows.Scan(&parent, &name, &e.Type, &isDir, &e.Size,
+			&mtimeUnix, &mtimeOff, &mtimeKnown, &e.Permissions, &uid, &gid, &ownerKnown, &e.LinkTarget); err != nil {
+			return model.BrowseSearchResult{}, fmt.Errorf("browsedb search scan: %w", err)
+		}
+		match, ok := model.FuzzyScore(name, query)
+		if !ok {
+			// The LIKE prefilter and the subsequence test are equivalent conditions,
+			// so this is defensive; skip anything the scorer rejects.
+			continue
+		}
+		total++
+		e.Name = name
+		// path is not stored on the node; each row carries its own parent.
+		e.Path = model.JoinBrowsePath(parent, name)
+		e.IsDir = isDir != 0
+		e.OwnerKnown = ownerKnown != 0
+		e.UID, e.GID = uint32(uid), uint32(gid)
+		if mtimeKnown != 0 {
+			loc := zones[mtimeOff]
+			if loc == nil {
+				if zones == nil {
+					zones = make(map[int]*time.Location, 2)
+				}
+				loc = time.FixedZone("", mtimeOff)
+				zones[mtimeOff] = loc
+			}
+			e.ModTime = time.Unix(mtimeUnix, 0).In(loc)
+		}
+		top = insertTopN(top, model.FuzzyRank{Entry: e, Match: match}, limit)
+	}
+	if err := rows.Err(); err != nil {
+		return model.BrowseSearchResult{}, fmt.Errorf("browsedb search rows: %w", err)
+	}
+
+	out := make([]model.BrowseEntry, len(top))
+	for i, r := range top {
+		out[i] = r.Entry
+	}
+	return model.BrowseSearchResult{Rows: out, Total: total}, nil
+}
+
+// likeSubsequence builds a LIKE pattern matching q as a subsequence: each rune of
+// q wrapped in '%' wildcards, so "abc" → "%a%b%c%". The LIKE specials (% _ \) are
+// prefixed with a backslash so they match literally under ESCAPE '\'. q is the
+// already-lowercased query, matching the BINARY-sorted name_ci column.
+func likeSubsequence(q string) string {
+	var b strings.Builder
+	b.Grow(len(q)*2 + 1)
+	b.WriteByte('%')
+	for _, r := range q {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+		b.WriteByte('%')
+	}
+	return b.String()
+}
+
+// insertTopN keeps top as a best-first slice of at most limit ranks, using the
+// shared model.BetterFuzzy ordering. The slice stays sorted, so once it is full a
+// candidate that cannot beat the current worst (the last element) is dropped in
+// O(1); otherwise it is inserted at its ordered position and the worst is evicted.
+// This bounds memory to limit even when a broad query matches a huge fraction of
+// the snapshot, while still yielding the exact global top-N.
+func insertTopN(top []model.FuzzyRank, r model.FuzzyRank, limit int) []model.FuzzyRank {
+	if len(top) >= limit && !model.BetterFuzzy(r, top[len(top)-1]) {
+		return top
+	}
+	// First position r outranks: the predicate is false…false,true…true because top
+	// is sorted best-first, so sort.Search finds the correct insertion index.
+	i := sort.Search(len(top), func(i int) bool { return model.BetterFuzzy(r, top[i]) })
+	if len(top) < limit {
+		top = append(top, model.FuzzyRank{})
+		copy(top[i+1:], top[i:])
+		top[i] = r
+		return top
+	}
+	// Full: shift [i, len-1) down by one (dropping the old worst), then place r.
+	copy(top[i+1:], top[i:len(top)-1])
+	top[i] = r
+	return top
 }
 
 // Close closes the connection pool. It deliberately does NOT remove db.sqlite or

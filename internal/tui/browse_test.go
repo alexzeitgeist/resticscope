@@ -34,6 +34,8 @@ type fakeBrowseStore struct {
 	indexed   map[string]bool
 	nodes     map[string][]model.BrowseNode
 	listCalls map[string]int // per-dir ListDir count, to prove the cache short-circuits requeries
+	searchErr error          // when set, Search returns it (to exercise the path-free error path)
+	searchN   int            // number of Search calls (to prove supersede / no-scan behaviour)
 }
 
 func newFakeBrowseStore() *fakeBrowseStore {
@@ -91,6 +93,53 @@ func (s *fakeBrowseStore) ListDir(_ context.Context, repo, snap, dir string) ([]
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// Search mirrors browsedb.Search's contract using the shared model scorer: it
+// matches every indexed node by name, ranks with model.RankFuzzy, caps Rows to
+// limit, and reports Total as the full match count before the cap. It never
+// returns a path in its error (searchErr, if set, is a plain canned error), so the
+// TUI's path-free handling can be exercised without leaking a filename.
+func (s *fakeBrowseStore) Search(_ context.Context, repo, snap, query string, limit int) (model.BrowseSearchResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchN++
+	if s.searchErr != nil {
+		return model.BrowseSearchResult{}, s.searchErr
+	}
+	key := browseKey(repo, snap)
+	if !s.indexed[key] {
+		return model.BrowseSearchResult{}, nil
+	}
+	var entries []model.BrowseEntry
+	for _, n := range s.nodes[key] {
+		p := model.CleanBrowsePath(n.Path)
+		if p == "/" {
+			continue
+		}
+		entries = append(entries, model.BrowseEntry{
+			Path: p, Name: model.BrowseName(n.Name, p), Type: n.Type, LinkTarget: n.LinkTarget,
+			IsDir: n.IsDir, Size: n.Size, ModTime: n.ModTime, Permissions: n.Permissions,
+			UID: n.UID, GID: n.GID, OwnerKnown: n.OwnerKnown,
+		})
+	}
+	total := len(model.RankFuzzy(entries, query, 0))
+	rows := model.RankFuzzy(entries, query, limit)
+	return model.BrowseSearchResult{Rows: rows, Total: total}, nil
+}
+
+func (s *fakeBrowseStore) searchCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.searchN
+}
+
+// failSearches makes every subsequent Search return err, so a test can exercise
+// the TUI's path-free error handling.
+func (s *fakeBrowseStore) failSearches(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.searchErr = err
 }
 
 func (s *fakeBrowseStore) Close() error { return nil }

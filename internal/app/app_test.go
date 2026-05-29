@@ -162,6 +162,11 @@ type fakeStore struct {
 	beginErr     error
 	listErr      error
 
+	searchResult model.BrowseSearchResult // canned Search result
+	searchErr    error
+	searchQuery  string // last query Search was asked for
+	searchLimit  int    // last limit Search was asked for
+
 	addErrAt  int   // if >0, the writer's Add fails on this call number
 	addErr    error // error Add returns at addErrAt
 	commitErr error
@@ -218,6 +223,18 @@ func (s *fakeStore) ListDir(ctx context.Context, repo, snap, dir string) ([]mode
 		return nil, s.listErr
 	}
 	return s.entries[storeKey(repo, snap)+"\x00"+dir], nil
+}
+
+func (s *fakeStore) Search(ctx context.Context, repo, snap, query string, limit int) (model.BrowseSearchResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = append(s.repos, repo)
+	s.searchQuery = query
+	s.searchLimit = limit
+	if s.searchErr != nil {
+		return model.BrowseSearchResult{}, s.searchErr
+	}
+	return s.searchResult, nil
 }
 
 func (s *fakeStore) Close() error {
@@ -935,6 +952,56 @@ func TestListDirUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
 	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); err == nil {
 		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestSearchSnapshotDelegates(t *testing.T) {
+	store := newFakeStore()
+	store.searchResult = model.BrowseSearchResult{
+		Rows:  []model.BrowseEntry{{Path: "/etc/report.txt", Name: "report.txt"}},
+		Total: 5,
+	}
+	a := browseApp(store, fakeRestic{})
+
+	got, err := a.SearchSnapshot(context.Background(), "repo-a", "snap123", "rpt", 200)
+	if err != nil {
+		t.Fatalf("SearchSnapshot: %v", err)
+	}
+	if got.Total != 5 || len(got.Rows) != 1 || got.Rows[0].Name != "report.txt" {
+		t.Errorf("SearchSnapshot = %+v, want the store's result", got)
+	}
+	// The store must see the configured repo name (never a backend target) plus the
+	// verbatim query and limit.
+	if store.searchQuery != "rpt" || store.searchLimit != 200 {
+		t.Errorf("store saw query=%q limit=%d, want rpt/200", store.searchQuery, store.searchLimit)
+	}
+	for _, r := range store.repos {
+		if r != "repo-a" {
+			t.Errorf("store saw repo key %q, want repo-a", r)
+		}
+	}
+}
+
+func TestSearchSnapshotNilBrowseGuard(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	if _, err := a.SearchSnapshot(context.Background(), "repo-a", "s1", "q", 200); !errors.Is(err, ErrBrowseNotEnabled) {
+		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
+	}
+}
+
+func TestSearchSnapshotUnknownRepo(t *testing.T) {
+	a := browseApp(newFakeStore(), fakeRestic{})
+	if _, err := a.SearchSnapshot(context.Background(), "nope", "s1", "q", 200); err == nil {
+		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestSearchSnapshotPropagatesStoreError(t *testing.T) {
+	store := newFakeStore()
+	store.searchErr = errors.New("boom")
+	a := browseApp(store, fakeRestic{})
+	if _, err := a.SearchSnapshot(context.Background(), "repo-a", "snap123", "q", 200); err == nil {
+		t.Fatal("expected the store error to propagate")
 	}
 }
 

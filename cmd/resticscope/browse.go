@@ -47,6 +47,10 @@ func (s *browseStore) ListDir(ctx context.Context, repo, snapshot, dir string) (
 	return s.db.ListDir(ctx, repo, snapshot, dir)
 }
 
+func (s *browseStore) Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error) {
+	return s.db.Search(ctx, repo, snapshot, query, limit)
+}
+
 // Close closes the DB pool, releases the session lock, and removes the entire
 // session directory. This wrapper owns whole-directory cleanup, so db.Close only
 // closes the pool; RemoveAll is authoritative for whether encrypted browse files

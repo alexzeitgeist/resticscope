@@ -1,0 +1,522 @@
+package tui
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"resticscope/internal/model"
+)
+
+// browsesearch_test.go drives the global fuzzy filename search added to the
+// snapshot browser. The tests are state-transition tests (no pixels): they press
+// keys, run the resulting commands through the in-memory fakeBrowseStore — which
+// ranks with the real model scorer so DB and TUI ranking cannot drift — and assert
+// the model's search state and the rendered footer/list. Two invariants are guarded
+// directly: filenames never linger once search/browse is left, and a store error
+// surfaces path-free.
+
+// openSearch opens the global filename search from an indexed, idle browse view.
+func openSearch(t *testing.T, m Model) Model {
+	t.Helper()
+	m = update(t, m, press("/"))
+	if !m.browseSearching {
+		t.Fatal("/ should open the global filename search in an indexed browse view")
+	}
+	return m
+}
+
+// typeSearch sends each rune of q to the open search input, runs the search
+// command, and delivers its browseSearchMsg so the model lands on the result for
+// the full query. A keystroke that emits no command (a whitespace-only query that
+// clears synchronously) is skipped, mirroring the live behaviour.
+func typeSearch(t *testing.T, m Model, q string) Model {
+	t.Helper()
+	for _, r := range q {
+		next, cmd := m.Update(press(string(r)))
+		m = next.(Model)
+		if cmd == nil {
+			continue
+		}
+		msg, ok := cmd().(browseSearchMsg)
+		if !ok {
+			t.Fatalf("typing %q produced %T, want browseSearchMsg", string(r), cmd())
+		}
+		m = update(t, m, msg)
+	}
+	return m
+}
+
+// Activation is gated on an indexed, idle browse: there is nothing to search
+// before the one-time crawl commits, and navigation (including opening search) is
+// paused while a load is in flight.
+func TestBrowseSearchActivationRequiresIndexedIdle(t *testing.T) {
+	// Mid-index: "/" must not open search.
+	m := newTestModel(t, browseApp(t, bnode("/a", "a", true, 0)))
+	m = update(t, m, press("enter"))
+	next, _ := m.Update(press("b")) // start indexing; do not run the index command
+	m = next.(Model)
+	if !m.browseLoading || m.browseIndexed {
+		t.Fatal("precondition: should be mid-index (loading, not indexed)")
+	}
+	if mid := update(t, m, press("/")); mid.browseSearching {
+		t.Error("/ must not open search while indexing")
+	}
+
+	// Indexed and idle: "/" opens the search input, reset to an empty query.
+	indexed := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a", "a", true, 0))))
+	indexed = update(t, indexed, press("/"))
+	if !indexed.browseSearching {
+		t.Error("/ should open search once the snapshot is indexed and idle")
+	}
+	if indexed.browseSearchQuery != "" || indexed.browseSearchRows != nil || indexed.browseSearchCursor != 0 {
+		t.Errorf("opening search should start from a clean slate: q=%q rows=%v cur=%d",
+			indexed.browseSearchQuery, indexed.browseSearchRows, indexed.browseSearchCursor)
+	}
+}
+
+// Typing fires a live search and populates the ranked matches and the true total,
+// drawn from anywhere in the snapshot (not just the current directory).
+func TestBrowseSearchTypePopulates(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+		bnode("/home/photo.jpg", "photo.jpg", false, 20),
+		bnode("/etc", "etc", true, 0),
+		bnode("/etc/report.conf", "report.conf", false, 5),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+
+	if m.browseSearchTotal != 2 {
+		t.Errorf("'report' should match 2 files across dirs, total = %d", m.browseSearchTotal)
+	}
+	got := map[string]bool{}
+	for _, e := range m.browseSearchRows {
+		got[e.Path] = true
+	}
+	for _, want := range []string{"/home/report.txt", "/etc/report.conf"} {
+		if !got[want] {
+			t.Errorf("search result missing %q, got %+v", want, m.browseSearchRows)
+		}
+	}
+	if got["/home/photo.jpg"] {
+		t.Errorf("non-matching file leaked into results: %+v", m.browseSearchRows)
+	}
+}
+
+// A late search result whose generation or query no longer matches the model (a
+// superseded keystroke, or one the user has since edited past) is dropped and
+// never overwrites fresher state or leaks into the view.
+func TestBrowseSearchStaleResultsDropped(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/alpha.txt", "alpha.txt", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "alpha")
+	if len(m.browseSearchRows) != 1 {
+		t.Fatalf("precondition: 'alpha' should match once, got %d", len(m.browseSearchRows))
+	}
+	gen, query := m.browseGen, m.browseSearchQuery
+	leak := model.BrowseSearchResult{Rows: []model.BrowseEntry{{Path: "/zzz/secret.txt", Name: "secret.txt"}}, Total: 1}
+
+	m = update(t, m, browseSearchMsg{gen: gen + 99, query: query, result: leak})    // stale generation
+	m = update(t, m, browseSearchMsg{gen: gen, query: query + "zzz", result: leak}) // edited-past query
+
+	if len(m.browseSearchRows) != 1 || m.browseSearchRows[0].Path != "/home/alpha.txt" {
+		t.Errorf("a stale/mismatched result must not replace the rows: %+v", m.browseSearchRows)
+	}
+	if strings.Contains(m.View().Content, "secret") {
+		t.Errorf("a dropped result leaked into the view\n---\n%s", m.View().Content)
+	}
+}
+
+// Esc cancels the search and restores the underlying directory listing exactly —
+// the separate search state never disturbs browseDir/browseRows/browseCursor.
+func TestBrowseSearchEscRestoresListing(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/a", "a", true, 0),
+		bnode("/b", "b", true, 0),
+		bnode("/b/inner.txt", "inner.txt", false, 1),
+	)))
+	m = pressBrowse(t, m, "j")     // cursor onto /b
+	m = pressBrowse(t, m, "enter") // descend into /b
+	dirBefore, curBefore := m.browseDir, m.browseCursor
+	rowsBefore := m.browseRows
+	if dirBefore != "/b" {
+		t.Fatalf("precondition: browseDir = %q, want /b", dirBefore)
+	}
+
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "inner")
+	m = update(t, m, press("esc")) // cancel
+
+	if m.browseSearching {
+		t.Error("esc should close the search")
+	}
+	if m.view != browseView {
+		t.Errorf("esc should stay in browse, view = %d", m.view)
+	}
+	if m.browseDir != dirBefore || m.browseCursor != curBefore {
+		t.Errorf("esc must restore the listing exactly: dir=%q cursor=%d, want %q/%d",
+			m.browseDir, m.browseCursor, dirBefore, curBefore)
+	}
+	if len(m.browseRows) != len(rowsBefore) || (len(rowsBefore) > 0 && m.browseRows[0].Path != rowsBefore[0].Path) {
+		t.Errorf("esc must leave the directory rows untouched: %+v", m.browseRows)
+	}
+	if m.browseSearchQuery != "" || m.browseSearchRows != nil {
+		t.Errorf("esc must clear search state: q=%q rows=%v", m.browseSearchQuery, m.browseSearchRows)
+	}
+}
+
+// Enter on a match opens that match's parent directory with the file preselected,
+// and closes the search — so a global hit lands the user in the right folder.
+func TestBrowseSearchEnterNavigatesToMatch(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/sub", "sub", true, 0),
+		bnode("/home/sub/target.txt", "target.txt", false, 5),
+		bnode("/home/other.txt", "other.txt", false, 3),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "target")
+	if len(m.browseSearchRows) != 1 || m.browseSearchRows[0].Path != "/home/sub/target.txt" {
+		t.Fatalf("precondition: search should find the target, got %+v", m.browseSearchRows)
+	}
+
+	next, cmd := m.Update(press("enter"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter on a match should kick off a directory list")
+	}
+	msg, ok := cmd().(browseDirMsg)
+	if !ok {
+		t.Fatalf("enter produced %T, want browseDirMsg", cmd())
+	}
+	m = update(t, m, msg)
+
+	if m.browseSearching {
+		t.Error("enter should close the search")
+	}
+	if m.browseDir != "/home/sub" {
+		t.Errorf("enter should open the match's parent dir, browseDir = %q want /home/sub", m.browseDir)
+	}
+	if sel := m.selectedBrowseEntry(); sel == nil || sel.Path != "/home/sub/target.txt" {
+		t.Errorf("the cursor should land on the match, got %+v", sel)
+	}
+}
+
+// Enter with no selected match (an empty result) just closes the search, leaving
+// the prior listing in place and emitting no navigation command.
+func TestBrowseSearchEnterNoMatchCloses(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/a.txt", "a.txt", false, 1),
+	)))
+	dirBefore := m.browseDir
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "zzznomatch")
+	if len(m.browseSearchRows) != 0 {
+		t.Fatalf("precondition: query should have no matches, got %+v", m.browseSearchRows)
+	}
+
+	next, cmd := m.Update(press("enter"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("enter with no match should emit no command")
+	}
+	if m.browseSearching {
+		t.Error("enter with no match should close the search")
+	}
+	if m.browseDir != dirBefore {
+		t.Errorf("enter with no match should leave the listing unchanged, dir = %q", m.browseDir)
+	}
+}
+
+// Backspace trims the query and refires the search, broadening the matches.
+func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 1),
+		bnode("/home/rep.md", "rep.md", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "repo") // 'o' narrows to report.txt only (rep.md has no 'o')
+	if len(m.browseSearchRows) != 1 || m.browseSearchRows[0].Path != "/home/report.txt" {
+		t.Fatalf("precondition: 'repo' should match only report.txt, got %+v", m.browseSearchRows)
+	}
+
+	next, cmd := m.Update(press("backspace"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("backspace should refire the search")
+	}
+	m = update(t, m, cmd().(browseSearchMsg))
+
+	if m.browseSearchQuery != "rep" {
+		t.Errorf("query = %q, want rep after one backspace", m.browseSearchQuery)
+	}
+	if len(m.browseSearchRows) != 2 {
+		t.Errorf("'rep' should broaden to both files, got %d: %+v", len(m.browseSearchRows), m.browseSearchRows)
+	}
+}
+
+// Emptying the query (backspace to nothing) clears the results synchronously with
+// no command — there is nothing to scan — while keeping the search input open.
+func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/a.txt", "a.txt", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "a")
+	if len(m.browseSearchRows) == 0 {
+		t.Fatal("precondition: 'a' should match")
+	}
+
+	next, cmd := m.Update(press("backspace")) // "a" -> ""
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("emptying the query must clear synchronously, with no command")
+	}
+	if m.browseSearchQuery != "" {
+		t.Errorf("query = %q, want empty", m.browseSearchQuery)
+	}
+	if m.browseSearchRows != nil || m.browseSearchTotal != 0 {
+		t.Errorf("emptying the query must clear results: rows=%v total=%d", m.browseSearchRows, m.browseSearchTotal)
+	}
+	if !m.browseSearching {
+		t.Error("emptying the query keeps the search open (just empties it)")
+	}
+}
+
+// ctrl+c is a hard quit from anywhere, including the search input.
+func TestBrowseSearchHardQuitQuits(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/a.txt", "a.txt", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "a")
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	m = next.(Model)
+	if !m.quitting {
+		t.Error("ctrl+c while searching should quit")
+	}
+	if cmd == nil {
+		t.Error("ctrl+c while searching should emit a quit command")
+	}
+}
+
+// Keys that drive actions in normal browse (q quit/back, s shell, ? help, h
+// parent, l open) are literal query characters while the search input is open.
+func TestBrowseSearchPrintableKeysAreLiteral(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/qsh", "qsh", true, 0),
+	)))
+	m = openSearch(t, m)
+	for _, k := range []string{"q", "s", "?", "h", "l"} {
+		next, cmd := m.Update(press(k))
+		m = next.(Model)
+		if !m.browseSearching {
+			t.Fatalf("%q must not leave search mode", k)
+		}
+		if m.view != browseView {
+			t.Fatalf("%q must not change the view while searching (view = %d)", k, m.view)
+		}
+		if cmd != nil {
+			m = update(t, m, cmd().(browseSearchMsg))
+		}
+	}
+	if m.browseSearchQuery != "qs?hl" {
+		t.Errorf("printable keys should accumulate as literal text: query = %q, want qs?hl", m.browseSearchQuery)
+	}
+}
+
+// clearBrowse zeroes every browseSearch* field: the search rows carry filenames,
+// which must not linger in the model once browse is left (non-negotiable #1).
+func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/secret.txt", "secret.txt", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "secret")
+	if len(m.browseSearchRows) == 0 || !m.browseSearching {
+		t.Fatal("precondition: search should be open with matches")
+	}
+
+	c := m.clearBrowse()
+	if c.browseSearching {
+		t.Error("clearBrowse must close search")
+	}
+	if c.browseSearchQuery != "" || c.browseSearchRows != nil || c.browseSearchCursor != 0 ||
+		c.browseSearchTotal != 0 || c.browseSearchErr != "" {
+		t.Errorf("clearBrowse must zero every browseSearch* field (privacy): q=%q rows=%v cur=%d total=%d err=%q",
+			c.browseSearchQuery, c.browseSearchRows, c.browseSearchCursor, c.browseSearchTotal, c.browseSearchErr)
+	}
+}
+
+// browseSearchSummary reports each search state for the body summary line.
+func TestBrowseSearchSummaryStates(t *testing.T) {
+	m := newTestModel(t, browseApp(t))
+	m.browseSearching = true
+
+	if got := m.browseSearchSummary(); got != "type to search" {
+		t.Errorf("empty query summary = %q, want 'type to search'", got)
+	}
+	m.browseSearchQuery = "zzz"
+	if got := m.browseSearchSummary(); got != "(no matches)" {
+		t.Errorf("no-match summary = %q, want '(no matches)'", got)
+	}
+	m.browseSearchRows = []model.BrowseEntry{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}}
+	m.browseSearchTotal = 2
+	if got := m.browseSearchSummary(); got != "2 matches" {
+		t.Errorf("all-shown summary = %q, want '2 matches'", got)
+	}
+	m.browseSearchTotal = 250
+	if got := m.browseSearchSummary(); got != "showing 2 of 250 matches" {
+		t.Errorf("capped summary = %q, want 'showing 2 of 250 matches'", got)
+	}
+	m.browseSearchErr = "browse search: store unavailable"
+	if got := m.browseSearchSummary(); got != "browse search: store unavailable" {
+		t.Errorf("error summary = %q, want the error to take precedence", got)
+	}
+}
+
+// A broad query whose matches exceed the result cap returns the capped rows but the
+// true total, and the footer reports "showing N of Total" so a truncated result
+// never masquerades as complete.
+func TestBrowseSearchFooterShowsCappedNote(t *testing.T) {
+	nodes := []model.BrowseNode{bnode("/home", "home", true, 0)}
+	for i := 0; i < browseSearchResultLimit+5; i++ {
+		name := fmt.Sprintf("match-%04d.log", i)
+		nodes = append(nodes, bnode("/home/"+name, name, false, 1))
+	}
+	m := openBrowse(t, newTestModel(t, browseApp(t, nodes...)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "match")
+
+	if m.browseSearchTotal != browseSearchResultLimit+5 {
+		t.Fatalf("Total = %d, want %d", m.browseSearchTotal, browseSearchResultLimit+5)
+	}
+	if len(m.browseSearchRows) != browseSearchResultLimit {
+		t.Fatalf("rows should be capped to %d, got %d", browseSearchResultLimit, len(m.browseSearchRows))
+	}
+	footer := stripANSI(m.footerView())
+	want := fmt.Sprintf("showing %d of %d", browseSearchResultLimit, browseSearchResultLimit+5)
+	if !strings.Contains(footer, want) {
+		t.Errorf("footer should show the capped note %q\n---\n%s", want, footer)
+	}
+}
+
+// A store search error is shown in the footer while the search stays open, and the
+// error never carries a filename (path-free invariant).
+func TestBrowseSearchErrorVisibleAndPathFree(t *testing.T) {
+	a, store := browseAppWithStore(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/topsecret.txt", "topsecret.txt", false, 1),
+	)
+	m := openBrowse(t, newTestModel(t, a))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = openSearch(t, m)
+	store.failSearches(errors.New("browse store unavailable"))
+	// Query "secret" against the file "topsecret.txt": the footer echoes the user's
+	// query ("/secret"), which is fine, but the filename ("topsecret") must never
+	// appear — a store error is path-free.
+	m = typeSearch(t, m, "secret")
+
+	if m.browseSearchErr == "" {
+		t.Error("a failed search should set a visible error")
+	}
+	if !m.browseSearching {
+		t.Error("a failed search should keep search open so the error is visible")
+	}
+	if len(m.browseSearchRows) != 0 || m.browseSearchTotal != 0 {
+		t.Errorf("a failed search should clear rows/total: rows=%v total=%d", m.browseSearchRows, m.browseSearchTotal)
+	}
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "browse search: browse store unavailable") {
+		t.Errorf("footer should surface the path-free search error\n---\n%s", footer)
+	}
+	if strings.Contains(footer, "topsecret") {
+		t.Errorf("the search error/footer must not leak a filename\n---\n%s", footer)
+	}
+}
+
+// Search results render each match's full path (not just its bare name) under a
+// "Path" column header, and an overlong path is clipped to the table width rather
+// than wrapping.
+func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
+	full := "/home/deep/needle.txt"
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode(full, "needle.txt", false, 1),
+	)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "needle")
+
+	wide := stripANSI(m.View().Content)
+	if !strings.Contains(wide, full) {
+		t.Errorf("a search result should render its full path %q\n---\n%s", full, wide)
+	}
+	hdr := lineContaining(t, wide, "Size") // the table header row
+	if !strings.Contains(hdr, "Path") {
+		t.Errorf("the search list flex column should be labelled 'Path', got %q", hdr)
+	}
+
+	// Narrow terminal: the path is clipped (ellipsis) and the row stays within the
+	// table width on a single line — never wrapped.
+	m = update(t, m, tea.WindowSizeMsg{Width: 32, Height: 20})
+	narrow := stripANSI(m.View().Content)
+	tw := browseTableWidth(32)
+	row := lineContaining(t, narrow, "/home/deep")
+	if w := lipgloss.Width(strings.TrimRight(row, " ")); w > tw {
+		t.Errorf("a clipped search row width = %d, want <= %d: %q", w, tw, row)
+	}
+	if !strings.Contains(row, "…") {
+		t.Errorf("an overlong path should be clipped with an ellipsis: %q", row)
+	}
+}
+
+// The browse footer advertises search and the help overlay documents it, so the
+// feature is discoverable from the browse view.
+func TestBrowseHelpDocumentsSearch(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+
+	if footer := stripANSI(m.footerView()); !strings.Contains(footer, "search") {
+		t.Errorf("browse footer should advertise search\n---\n%s", footer)
+	}
+
+	_, right := m.helpColumns()
+	var browse helpSection
+	for _, s := range right {
+		if s.title == "Browse" {
+			browse = s
+		}
+	}
+	if browse.title == "" {
+		t.Fatal("help overlay missing the Browse section")
+	}
+	found := false
+	for _, e := range browse.entries {
+		if e.desc == "search filenames" {
+			found = true
+			if e.keys != "/" {
+				t.Errorf("Browse search row keys = %q, want /", e.keys)
+			}
+		}
+	}
+	if !found {
+		t.Error("Browse help section missing the 'search filenames' row")
+	}
+}

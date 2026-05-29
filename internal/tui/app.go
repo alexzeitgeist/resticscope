@@ -85,6 +85,18 @@ type Model struct {
 	// (non-negotiable #1: no filenames linger), and startBrowse resets it so one
 	// snapshot's "/" can never serve another's.
 	browseCache map[string][]model.BrowseEntry
+
+	// Global filename search state, kept entirely SEPARATE from the directory
+	// listing above so cancelling search (esc) restores the prior listing untouched.
+	// browseSearchRows holds full paths/filenames for the lifetime of the model
+	// only; clearBrowse zeros every field here on leaving browse (non-negotiable #1:
+	// no filenames linger).
+	browseSearching    bool                // true while the search input is open
+	browseSearchQuery  string              // the live search query
+	browseSearchRows   []model.BrowseEntry // ranked matches (capped), full paths
+	browseSearchCursor int                 // selected match within browseSearchRows
+	browseSearchTotal  int                 // total matches before the result cap
+	browseSearchErr    string              // path-free search error, shown while searching
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -187,6 +199,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyBrowseIndexed(msg)
 	case browseDirMsg:
 		return m.applyBrowseDir(msg), nil
+	case browseSearchMsg:
+		return m.applyBrowseSearch(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case spinner.TickMsg:
@@ -213,6 +227,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// literal text); only apply/clear and ctrl+c escape it.
 	if m.filtering {
 		return m.handleFilterKey(msg)
+	}
+
+	// While the global filename search is open, every key feeds it too (so "q",
+	// "s", "?", "h", "l" are literal text or cursor moves, never view actions);
+	// only enter/esc/ctrl+c escape it. This guard sits above the global quit/help
+	// switch so the search input is fully modal, like the list filter above.
+	if m.browseSearching {
+		return m.handleBrowseSearchKey(msg)
 	}
 
 	// The hard quit, the context-aware q, and the help overlay toggle are matched

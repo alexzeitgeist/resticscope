@@ -41,6 +41,13 @@ const browseRateWindow = 2 * time.Second
 // carries a fresher number.
 const browseProgressBuffer = 64
 
+// browseSearchResultLimit caps how many ranked matches one global filename
+// search returns. The store ranks across every prefiltered match and keeps only
+// the best this many, so the UI state stays bounded even when a broad query
+// matches a large fraction of the snapshot; the footer reports the true total so
+// the user knows the list was trimmed.
+const browseSearchResultLimit = 200
+
 // startBrowse begins browsing a snapshot. It switches to browseView immediately
 // (showing the indexing state with no listing yet) and kicks off the one-time
 // index; the first directory listing arrives later, after the index commits.
@@ -272,6 +279,14 @@ func (m Model) clearBrowse() Model {
 	m.browseLoading = false
 	m.browseCancel = nil
 	m.browseProgress = nil
+	// The search overlay carries filenames/paths too, so zero every field here on
+	// leaving browse (non-negotiable #1: no filenames linger in the model).
+	m.browseSearching = false
+	m.browseSearchQuery = ""
+	m.browseSearchRows = nil
+	m.browseSearchCursor = 0
+	m.browseSearchTotal = 0
+	m.browseSearchErr = ""
 	return m
 }
 
@@ -312,8 +327,172 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openBrowseDir()
 	case key.Matches(msg, m.keys.Parent):
 		return m.browseToParent()
+	case key.Matches(msg, m.keys.Filter):
+		// `/` opens the global filename search, but only once the snapshot is
+		// indexed — there is nothing to search before the one-time crawl commits.
+		// It sits in the idle-only switch (below the browseLoading guard) so it
+		// can't fire mid-index.
+		if m.browseIndexed {
+			m.browseSearching = true
+			m.browseSearchQuery = ""
+			m.browseSearchRows = nil
+			m.browseSearchCursor = 0
+			m.browseSearchTotal = 0
+			m.browseSearchErr = ""
+		}
+		return m, nil
 	}
 	return m, nil
+}
+
+// handleBrowseSearchKey consumes keys while the global filename search input is
+// open. It mirrors handleFilterKey, but Up/Down move the result cursor instead of
+// editing text and there is no Parent/Open binding, so h/l are literal query
+// characters. HardQuit is matched first because the m.browseSearching guard in
+// handleKey sits above the global quit. Accept jumps to the selected match; cancel
+// restores the prior listing untouched; every other printable key edits the query
+// and refires the live search.
+func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.HardQuit):
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.FilterAccept):
+		return m.acceptBrowseSearch()
+	case key.Matches(msg, m.keys.FilterCancel):
+		return m.cancelBrowseSearch(), nil
+	case key.Matches(msg, m.keys.Up):
+		if m.browseSearchCursor > 0 {
+			m.browseSearchCursor--
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Down):
+		if m.browseSearchCursor < len(m.browseSearchRows)-1 {
+			m.browseSearchCursor++
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.PageUp):
+		m.browseSearchCursor = clampCursor(m.browseSearchCursor-m.browseVisible(), len(m.browseSearchRows))
+		return m, nil
+	case key.Matches(msg, m.keys.PageDown):
+		m.browseSearchCursor = clampCursor(m.browseSearchCursor+m.browseVisible(), len(m.browseSearchRows))
+		return m, nil
+	case key.Matches(msg, m.keys.FilterDelete):
+		if r := []rune(m.browseSearchQuery); len(r) > 0 {
+			m.browseSearchQuery = string(r[:len(r)-1])
+			return m.fireBrowseSearch()
+		}
+		return m, nil
+	default:
+		// Text is non-empty only for printable keys, so this ignores stray control
+		// keys (arrows handled above, etc.) rather than inserting garbage.
+		if msg.Text != "" {
+			m.browseSearchQuery += msg.Text
+			return m.fireBrowseSearch()
+		}
+		return m, nil
+	}
+}
+
+// fireBrowseSearch runs the current query against the session store. The cursor
+// resets to the top on every query change so it never points past the matches. An
+// empty/whitespace-only query has nothing to scan: it supersedes any in-flight
+// search and clears the results synchronously, with no command. Otherwise it
+// supersedes the prior keystroke's scan (advancing the generation and cancelling
+// its context so the single connection frees immediately) and dispatches a
+// gen-tagged search. It deliberately does NOT set browseLoading: the search list
+// must stay live and navigable as results arrive, never paused like a directory
+// load. Ranking and the result cap happen in the store, never here.
+func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
+	m.browseSearchCursor = 0
+	if strings.TrimSpace(m.browseSearchQuery) == "" {
+		m = m.supersedeBrowse()
+		m.browseSearchRows = nil
+		m.browseSearchTotal = 0
+		m.browseSearchErr = ""
+		return m, nil
+	}
+
+	m, bctx, gen := m.beginBrowseOp()
+	repo, snapshotID, query := m.browseRepo, m.browseSnapshot, m.browseSearchQuery
+	cmd := func() tea.Msg {
+		result, err := m.app.SearchSnapshot(bctx, repo, snapshotID, query, browseSearchResultLimit)
+		return browseSearchMsg{gen: gen, query: query, result: result, err: err}
+	}
+	return m, cmd
+}
+
+// applyBrowseSearch installs one search result. It is dropped unless it matches
+// the current generation, search is still open, and the query is exactly the one
+// the model now holds — so a superseded keystroke's late result, or one the user
+// has since edited past, never overwrites fresher state. On error the path-free
+// store message is shown in the footer and the rows are cleared, but search stays
+// open so the error is visible. On success the ranked rows and true total replace
+// the prior result and the cursor is clamped into range.
+func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
+	if msg.gen != m.browseGen || !m.browseSearching || msg.query != m.browseSearchQuery {
+		return m
+	}
+	if msg.err != nil {
+		m.browseSearchErr = "browse search: " + firstLine(msg.err.Error())
+		m.browseSearchRows = nil
+		m.browseSearchTotal = 0
+		return m
+	}
+	m.browseSearchErr = ""
+	m.browseSearchRows = msg.result.Rows
+	m.browseSearchTotal = msg.result.Total
+	m.browseSearchCursor = clampCursor(m.browseSearchCursor, len(m.browseSearchRows))
+	return m
+}
+
+// acceptBrowseSearch jumps to the selected match in its own folder. The target
+// path is captured BEFORE exiting search (exitBrowseSearch zeroes the rows), then
+// the search overlay is closed and the parent directory is listed with the match
+// preselected — a cache hit serves it instantly, and indexOfBrowsePath lands the
+// cursor on the file. With no selection (empty results) it just cancels.
+func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
+	e := m.selectedBrowseSearchEntry()
+	if e == nil {
+		return m.cancelBrowseSearch(), nil
+	}
+	target := e.Path
+	m = m.exitBrowseSearch()
+	return m.beginListDir(path.Dir(target), target)
+}
+
+// cancelBrowseSearch closes the search with no navigation, leaving the underlying
+// directory listing exactly as it was. It supersedes any in-flight search (so a
+// late result is dropped and its scan is cancelled) and then clears only the
+// search state.
+func (m Model) cancelBrowseSearch() Model {
+	m = m.supersedeBrowse()
+	return m.exitBrowseSearch()
+}
+
+// exitBrowseSearch clears only the search overlay state, leaving the directory
+// listing (browseRows/browseDir/browseCursor) untouched so Esc returns the user
+// exactly where they were. It does not bump the generation or cancel anything —
+// callers that need to drop an in-flight scan supersede first. The filenames the
+// search held are zeroed here so none linger past the overlay.
+func (m Model) exitBrowseSearch() Model {
+	m.browseSearching = false
+	m.browseSearchQuery = ""
+	m.browseSearchRows = nil
+	m.browseSearchCursor = 0
+	m.browseSearchTotal = 0
+	m.browseSearchErr = ""
+	return m
+}
+
+// selectedBrowseSearchEntry returns the match under the search cursor, or nil when
+// the cursor is out of range (e.g. no matches yet).
+func (m Model) selectedBrowseSearchEntry() *model.BrowseEntry {
+	if m.browseSearchCursor < 0 || m.browseSearchCursor >= len(m.browseSearchRows) {
+		return nil
+	}
+	return &m.browseSearchRows[m.browseSearchCursor]
 }
 
 // openBrowseDir descends into the selected entry when it is a directory; files
@@ -406,6 +585,12 @@ func (m Model) browseBody() string {
 	if m.browseLoading && !m.browseIndexed {
 		return strings.Join([]string{pathLine, summary}, "\n")
 	}
+	// In global search the listing is replaced by the ranked matches, which show
+	// each result's full path (not just its name) in the flex column. The path
+	// line still names the directory esc will return to.
+	if m.browseSearching {
+		return strings.Join([]string{pathLine, summary, m.browseSearchList(w)}, "\n")
+	}
 	return strings.Join([]string{pathLine, summary, m.browseList(w)}, "\n")
 }
 
@@ -422,7 +607,30 @@ func (m Model) browseSummaryLine() string {
 		parts = append(parts, "esc/back cancels")
 		return strings.Join(parts, " · ")
 	}
+	if m.browseSearching {
+		return m.browseSearchSummary()
+	}
 	return fmt.Sprintf("%d entries", len(m.browseRows))
+}
+
+// browseSearchSummary reports the state of the global filename search for the body
+// summary line: a path-free error if the last search failed; "type to search"
+// before anything is typed; "(no matches)" for an empty result; "showing N of
+// Total matches" when the result cap trimmed the list; otherwise "N matches".
+func (m Model) browseSearchSummary() string {
+	if m.browseSearchErr != "" {
+		return m.browseSearchErr
+	}
+	if m.browseSearchTotal == 0 {
+		if strings.TrimSpace(m.browseSearchQuery) == "" {
+			return "type to search"
+		}
+		return "(no matches)"
+	}
+	if shown := len(m.browseSearchRows); shown < m.browseSearchTotal {
+		return fmt.Sprintf("showing %d of %d matches", shown, m.browseSearchTotal)
+	}
+	return fmt.Sprintf("%d matches", m.browseSearchTotal)
 }
 
 func browseIndexRateLabel(rate float64) string {
@@ -451,7 +659,7 @@ func browseIndexRateLabel(rate float64) string {
 func (m Model) browseList(w int) string {
 	tw := browseTableWidth(w)
 	l := browseLayout(tw)
-	header := clip(m.styles.dim.Render(browseHeaderRow(l)), tw)
+	header := clip(m.styles.dim.Render(browseHeaderRow(l, "Name")), tw)
 
 	total := len(m.browseRows)
 	if total == 0 {
@@ -464,7 +672,37 @@ func (m Model) browseList(w int) string {
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {
-		lines = append(lines, m.browseRow(&m.browseRows[i], i == cur, l, tw))
+		lines = append(lines, m.browseRow(&m.browseRows[i], i == cur, l, tw, false))
+	}
+	if start > 0 || end < total {
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// browseSearchList renders the ranked global-search matches with the same
+// responsive table as browseList, but the flex column shows each match's full
+// path (so results from anywhere in the snapshot are unambiguous) and it scrolls
+// by the separate browseSearchCursor so esc can restore the directory listing
+// untouched. The empty state is left to the summary line ("type to search",
+// "(no matches)", or the error), so here an empty result is just the header.
+func (m Model) browseSearchList(w int) string {
+	tw := browseTableWidth(w)
+	l := browseLayout(tw)
+	header := clip(m.styles.dim.Render(browseHeaderRow(l, "Path")), tw)
+
+	total := len(m.browseSearchRows)
+	if total == 0 {
+		return header
+	}
+
+	cur := clampCursor(m.browseSearchCursor, total)
+	start, end := snapshotWindow(cur, total, m.browseVisible())
+
+	lines := make([]string, 0, end-start+2)
+	lines = append(lines, header)
+	for i := start; i < end; i++ {
+		lines = append(lines, m.browseRow(&m.browseSearchRows[i], i == cur, l, tw, true))
 	}
 	if start > 0 || end < total {
 		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
@@ -596,18 +834,23 @@ func browseCells(l browseColLayout, name, size, mod, perms, owner string) []stri
 // browseHeaderRow is the dim column-label row, built from the same browseCells
 // layout as the data rows (plus the two-cell gutter the rows get from their
 // indicator) so labels line up with their values at every width.
-func browseHeaderRow(l browseColLayout) string {
-	return "  " + strings.Join(browseCells(l, "Name", "Size", "Modified", "Perms", "Owner"), "  ")
+func browseHeaderRow(l browseColLayout, flexLabel string) string {
+	return "  " + strings.Join(browseCells(l, flexLabel, "Size", "Modified", "Perms", "Owner"), "  ")
 }
 
 // browseRow renders one entry as a table row: an accent gutter on the cursor row,
 // then the width-promoted Name/Size/Modified/Perms/Owner cells. Directories show a
 // trailing slash and an em-dash size; missing metadata (no mtime, perms, or owner)
-// renders as an em-dash too. The whole row content is clipped to width so a long
-// name or value can't wrap, and the selected style covers the entire row.
-func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout, tw int) string {
+// renders as an em-dash too. When showPath is set the flex column shows the
+// entry's full path instead of its bare name (used by the global search list, whose
+// matches come from anywhere in the snapshot). The whole row content is clipped to
+// width so a long name or path can't wrap, and the selected style covers the row.
+func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout, tw int, showPath bool) string {
 	icon := "  "
 	name := e.Name
+	if showPath {
+		name = e.Path
+	}
 	if e.IsDir {
 		icon = "▸ "
 		name += "/"

@@ -19,6 +19,7 @@ type keyMap struct {
 	Refresh    key.Binding
 	RefreshAll key.Binding
 	Filter     key.Binding
+	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
 	Sort       key.Binding
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
@@ -47,6 +48,7 @@ func defaultKeys() keyMap {
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
@@ -70,6 +72,7 @@ type viewHelp struct {
 	keys      keyMap
 	view      view
 	filtering bool
+	searching bool // browse global filename search input is open
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
@@ -77,11 +80,16 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	if h.filtering {
 		return []key.Binding{k.FilterAccept, k.FilterCancel}
 	}
+	// While the global filename search is open the cursor keys move through the
+	// matches and enter/esc open/cancel; the regular browse keys are suspended.
+	if h.searching {
+		return []key.Binding{k.Up, k.Down, k.FilterAccept, k.FilterCancel}
+	}
 	switch h.view {
 	case detailView:
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Browse, k.Refresh, k.Back}
 	case browseView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Shell, k.Back}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Search, k.Shell, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -96,6 +104,12 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.FilterAccept, k.FilterCancel},
 		}
 	}
+	if h.searching {
+		return [][]key.Binding{
+			{k.Up, k.Down, k.PageUp, k.PageDown},
+			{k.FilterAccept, k.FilterCancel},
+		}
+	}
 	switch h.view {
 	case detailView:
 		return [][]key.Binding{
@@ -106,7 +120,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Parent, k.Shell},
+			{k.Enter, k.Parent, k.Search, k.Shell},
 			{k.Back},
 		}
 	case helpView:

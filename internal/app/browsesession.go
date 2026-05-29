@@ -54,6 +54,7 @@ type BrowseStore interface {
 	IsIndexed(ctx context.Context, repo, snapshot string) (bool, error)
 	BeginIndex(ctx context.Context, repo, snapshot string) (IndexWriter, error)
 	ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.BrowseEntry, error)
+	Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error)
 	Close() error
 }
 
@@ -302,4 +303,25 @@ func (a *App) ListDir(ctx context.Context, repoName, snapshotID, dir string) ([]
 	}
 	defer release()
 	return store.ListDir(ctx, r.Name, snapshotID, dir)
+}
+
+// SearchSnapshot returns the best fuzzy filename matches for query anywhere in the
+// indexed snapshot, capped to limit. Like ListDir it performs no restic call and
+// resolves no secrets — the search runs entirely against the session store, which
+// ranks the matches with the pure model scorer. App stays a thin delegate so the
+// TUI only renders the result; the store's error is already path-free.
+func (a *App) SearchSnapshot(ctx context.Context, repoName, snapshotID, query string, limit int) (model.BrowseSearchResult, error) {
+	if a.Browse == nil {
+		return model.BrowseSearchResult{}, ErrBrowseNotEnabled
+	}
+	r, ok := a.repo(repoName)
+	if !ok {
+		return model.BrowseSearchResult{}, fmt.Errorf("unknown repo %q", repoName)
+	}
+	ctx, store, release, err := a.Browse.beginOp(ctx)
+	if err != nil {
+		return model.BrowseSearchResult{}, err
+	}
+	defer release()
+	return store.Search(ctx, r.Name, snapshotID, query, limit)
 }
