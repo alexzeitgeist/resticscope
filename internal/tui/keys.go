@@ -8,6 +8,8 @@ import "charm.land/bubbles/v2/key"
 type keyMap struct {
 	Up         key.Binding
 	Down       key.Binding
+	SearchUp   key.Binding // search: move the result cursor up (arrows + ctrl+k, never plain k)
+	SearchDown key.Binding // search: move the result cursor down (arrows + ctrl+j, never plain j)
 	PageUp     key.Binding
 	PageDown   key.Binding
 	Enter      key.Binding
@@ -35,8 +37,12 @@ type keyMap struct {
 
 func defaultKeys() keyMap {
 	return keyMap{
-		Up:         key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:       key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		Up:   key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		// Search-result navigation excludes plain j/k so they stay literal query
+		// characters (json, java, kernel, …); arrows and ctrl+j/ctrl+k move instead.
+		SearchUp:   key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
+		SearchDown: key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
 		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
 		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
@@ -83,7 +89,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	// While the global filename search is open the cursor keys move through the
 	// matches and enter/esc open/cancel; the regular browse keys are suspended.
 	if h.searching {
-		return []key.Binding{k.Up, k.Down, k.FilterAccept, k.FilterCancel}
+		return []key.Binding{k.SearchUp, k.SearchDown, k.FilterAccept, k.FilterCancel}
 	}
 	switch h.view {
 	case detailView:
@@ -106,7 +112,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	}
 	if h.searching {
 		return [][]key.Binding{
-			{k.Up, k.Down, k.PageUp, k.PageDown},
+			{k.SearchUp, k.SearchDown, k.PageUp, k.PageDown},
 			{k.FilterAccept, k.FilterCancel},
 		}
 	}

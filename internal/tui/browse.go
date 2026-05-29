@@ -283,6 +283,7 @@ func (m Model) clearBrowse() Model {
 	// leaving browse (non-negotiable #1: no filenames linger in the model).
 	m.browseSearching = false
 	m.browseSearchQuery = ""
+	m.browseSearchShownQuery = ""
 	m.browseSearchRows = nil
 	m.browseSearchCursor = 0
 	m.browseSearchTotal = 0
@@ -335,6 +336,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.browseIndexed {
 			m.browseSearching = true
 			m.browseSearchQuery = ""
+			m.browseSearchShownQuery = ""
 			m.browseSearchRows = nil
 			m.browseSearchCursor = 0
 			m.browseSearchTotal = 0
@@ -346,12 +348,13 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleBrowseSearchKey consumes keys while the global filename search input is
-// open. It mirrors handleFilterKey, but Up/Down move the result cursor instead of
-// editing text and there is no Parent/Open binding, so h/l are literal query
-// characters. HardQuit is matched first because the m.browseSearching guard in
-// handleKey sits above the global quit. Accept jumps to the selected match; cancel
-// restores the prior listing untouched; every other printable key edits the query
-// and refires the live search.
+// open. It mirrors handleFilterKey, but the arrows (plus ctrl+k/ctrl+j) move the
+// result cursor instead of editing text. Result navigation deliberately avoids the
+// plain Up/Down letters (j/k) and there is no Parent/Open binding, so j/k/h/l stay
+// literal query characters (json, java, kernel, …). HardQuit is matched first
+// because the m.browseSearching guard in handleKey sits above the global quit.
+// Accept jumps to the selected match; cancel restores the prior listing untouched;
+// every other printable key edits the query and refires the live search.
 func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
@@ -362,12 +365,12 @@ func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.acceptBrowseSearch()
 	case key.Matches(msg, m.keys.FilterCancel):
 		return m.cancelBrowseSearch(), nil
-	case key.Matches(msg, m.keys.Up):
+	case key.Matches(msg, m.keys.SearchUp):
 		if m.browseSearchCursor > 0 {
 			m.browseSearchCursor--
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Down):
+	case key.Matches(msg, m.keys.SearchDown):
 		if m.browseSearchCursor < len(m.browseSearchRows)-1 {
 			m.browseSearchCursor++
 		}
@@ -411,6 +414,7 @@ func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 		m.browseSearchRows = nil
 		m.browseSearchTotal = 0
 		m.browseSearchErr = ""
+		m.browseSearchShownQuery = "" // the now-empty rows belong to the empty query
 		return m, nil
 	}
 
@@ -434,6 +438,11 @@ func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 	if msg.gen != m.browseGen || !m.browseSearching || msg.query != m.browseSearchQuery {
 		return m
 	}
+	// Record the query these rows belong to in both branches: acceptBrowseSearch
+	// gates on it so Enter can never act on rows from a query the user has since
+	// edited past (the search list stays visible between keystrokes by design, so
+	// without this gate a stale row would remain selectable mid-edit).
+	m.browseSearchShownQuery = msg.query
 	if msg.err != nil {
 		m.browseSearchErr = "browse search: " + firstLine(msg.err.Error())
 		m.browseSearchRows = nil
@@ -453,6 +462,13 @@ func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 // preselected — a cache hit serves it instantly, and indexOfBrowsePath lands the
 // cursor on the file. With no selection (empty results) it just cancels.
 func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
+	// The visible rows are kept between keystrokes (no per-edit flicker), so an
+	// Enter pressed after editing the query but before the new scan returns would
+	// otherwise act on the previous query's rows. Gate on the query that actually
+	// produced the visible rows: while it lags the live query, Enter is a no-op.
+	if m.browseSearchShownQuery != m.browseSearchQuery {
+		return m, nil
+	}
 	e := m.selectedBrowseSearchEntry()
 	if e == nil {
 		return m.cancelBrowseSearch(), nil
@@ -479,6 +495,7 @@ func (m Model) cancelBrowseSearch() Model {
 func (m Model) exitBrowseSearch() Model {
 	m.browseSearching = false
 	m.browseSearchQuery = ""
+	m.browseSearchShownQuery = ""
 	m.browseSearchRows = nil
 	m.browseSearchCursor = 0
 	m.browseSearchTotal = 0
@@ -571,7 +588,12 @@ func (m Model) browseHeaderView() string {
 		label += " · " + id
 	}
 	left := m.styles.title.Render(label)
+	// While the search input is open q is literal text and esc cancels, so the
+	// header must not keep advertising "q back" — that affordance is suspended.
 	right := m.styles.dim.Render("q back")
+	if m.browseSearching {
+		right = m.styles.dim.Render("esc cancel")
+	}
 	return clip(m.spread(left, right), w)
 }
 

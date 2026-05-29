@@ -91,12 +91,13 @@ type Model struct {
 	// browseSearchRows holds full paths/filenames for the lifetime of the model
 	// only; clearBrowse zeros every field here on leaving browse (non-negotiable #1:
 	// no filenames linger).
-	browseSearching    bool                // true while the search input is open
-	browseSearchQuery  string              // the live search query
-	browseSearchRows   []model.BrowseEntry // ranked matches (capped), full paths
-	browseSearchCursor int                 // selected match within browseSearchRows
-	browseSearchTotal  int                 // total matches before the result cap
-	browseSearchErr    string              // path-free search error, shown while searching
+	browseSearching        bool                // true while the search input is open
+	browseSearchQuery      string              // the live search query
+	browseSearchShownQuery string              // query that produced browseSearchRows; gates accept against in-flight edits
+	browseSearchRows       []model.BrowseEntry // ranked matches (capped), full paths
+	browseSearchCursor     int                 // selected match within browseSearchRows
+	browseSearchTotal      int                 // total matches before the result cap
+	browseSearchErr        string              // path-free search error, shown while searching
 }
 
 // Run loads cached state for an instant first paint, then starts the program in

@@ -238,6 +238,55 @@ func TestBrowseSearchEnterNoMatchCloses(t *testing.T) {
 	}
 }
 
+// Enter pressed after editing the query but before the new scan returns must not
+// accept a row from the previous query. The visible rows are kept between
+// keystrokes (no per-edit flicker), so without a guard the stale row would stay
+// selectable in that window; Enter is gated on the query that produced the rows.
+func TestBrowseSearchEnterDropsStaleRowAfterEdit(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/report.txt", "report.txt", false, 10),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report") // settle: the visible row belongs to "report"
+	if len(m.browseSearchRows) != 1 || m.browseSearchShownQuery != "report" {
+		t.Fatalf("precondition: 'report' should be the shown query with one row, got shown=%q rows=%+v",
+			m.browseSearchShownQuery, m.browseSearchRows)
+	}
+
+	// Edit the query to "reportz" but do NOT deliver the new scan's result, so the
+	// visible row still belongs to "report" while the live query has moved on.
+	next, cmd := m.Update(press("z"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("editing the query should dispatch a new search")
+	}
+	if m.browseSearchQuery != "reportz" || m.browseSearchShownQuery != "report" {
+		t.Fatalf("after edit: query=%q shown=%q, want reportz/report", m.browseSearchQuery, m.browseSearchShownQuery)
+	}
+
+	// Enter now, before the "reportz" result returns, must be a no-op: no navigation
+	// command, and the search stays open so the user can keep typing.
+	next, navCmd := m.Update(press("enter"))
+	m = next.(Model)
+	if navCmd != nil {
+		t.Error("Enter on a query whose result is still in flight must not navigate")
+	}
+	if !m.browseSearching {
+		t.Error("Enter on stale rows must keep the search open, not accept and close it")
+	}
+	if m.browseDir != "/" {
+		t.Errorf("Enter must not change the listing, browseDir = %q want /", m.browseDir)
+	}
+
+	// Once the fresh "reportz" result (no match) arrives, the shown query catches up
+	// to the live query so Enter is live again.
+	m = update(t, m, cmd().(browseSearchMsg))
+	if m.browseSearchShownQuery != "reportz" {
+		t.Errorf("after the scan returns, shown query = %q, want reportz", m.browseSearchShownQuery)
+	}
+}
+
 // Backspace trims the query and refires the search, broadening the matches.
 func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -314,14 +363,16 @@ func TestBrowseSearchHardQuitQuits(t *testing.T) {
 	}
 }
 
-// Keys that drive actions in normal browse (q quit/back, s shell, ? help, h
-// parent, l open) are literal query characters while the search input is open.
+// Keys that drive actions or navigation in normal browse (q quit/back, s shell, ?
+// help, h parent, l open, and the j/k Up/Down letters) are all literal query
+// characters while the search input is open — a fuzzy input must let text entry win
+// so common searches like json/java/kernel are typable.
 func TestBrowseSearchPrintableKeysAreLiteral(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/qsh", "qsh", true, 0),
 	)))
 	m = openSearch(t, m)
-	for _, k := range []string{"q", "s", "?", "h", "l"} {
+	for _, k := range []string{"q", "s", "?", "h", "l", "j", "k"} {
 		next, cmd := m.Update(press(k))
 		m = next.(Model)
 		if !m.browseSearching {
@@ -334,8 +385,62 @@ func TestBrowseSearchPrintableKeysAreLiteral(t *testing.T) {
 			m = update(t, m, cmd().(browseSearchMsg))
 		}
 	}
-	if m.browseSearchQuery != "qs?hl" {
-		t.Errorf("printable keys should accumulate as literal text: query = %q, want qs?hl", m.browseSearchQuery)
+	if m.browseSearchQuery != "qs?hljk" {
+		t.Errorf("printable keys should accumulate as literal text: query = %q, want qs?hljk", m.browseSearchQuery)
+	}
+}
+
+// Result navigation in search uses the arrows plus ctrl+k/ctrl+j (never plain
+// k/j, which stay literal text): each moves the result cursor without editing the
+// query, while a plain j/k edits the query and refires the live search.
+func TestBrowseSearchResultNavigationKeys(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/job1.txt", "job1.txt", false, 1),
+		bnode("/home/job2.txt", "job2.txt", false, 1),
+		bnode("/home/job3.txt", "job3.txt", false, 1),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "job")
+	if len(m.browseSearchRows) != 3 {
+		t.Fatalf("precondition: 'job' should match 3 files, got %d", len(m.browseSearchRows))
+	}
+
+	// Arrows and ctrl+j/ctrl+k move the result cursor, emit no command, and never
+	// touch the query.
+	ctrl := func(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl} }
+	steps := []struct {
+		name    string
+		msg     tea.KeyPressMsg
+		wantCur int
+	}{
+		{"down", press("down"), 1},
+		{"ctrl+j", ctrl('j'), 2},
+		{"up", press("up"), 1},
+		{"ctrl+k", ctrl('k'), 0},
+	}
+	for _, s := range steps {
+		next, cmd := m.Update(s.msg)
+		m = next.(Model)
+		if cmd != nil {
+			t.Errorf("%s should be a cursor move, not a search dispatch", s.name)
+		}
+		if m.browseSearchCursor != s.wantCur {
+			t.Errorf("after %s cursor = %d, want %d", s.name, m.browseSearchCursor, s.wantCur)
+		}
+		if m.browseSearchQuery != "job" {
+			t.Errorf("%s must not edit the query, got %q", s.name, m.browseSearchQuery)
+		}
+	}
+
+	// A plain k is NOT navigation: it is appended to the query and refires the search.
+	next, cmd := m.Update(press("k"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("plain k should be typed into the query and refire the search")
+	}
+	if m.browseSearchQuery != "jobk" {
+		t.Errorf("plain k should append to the query, got %q want jobk", m.browseSearchQuery)
 	}
 }
 
@@ -484,6 +589,27 @@ func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 	}
 	if !strings.Contains(row, "…") {
 		t.Errorf("an overlong path should be clipped with an ellipsis: %q", row)
+	}
+}
+
+// The browse header advertises "q back" normally, but while the search input is
+// open q is literal text and esc cancels — so the header must switch to "esc
+// cancel" rather than keep a contradictory affordance.
+func TestBrowseSearchHeaderShowsCancelLabel(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	if h := stripANSI(m.browseHeaderView()); !strings.Contains(h, "q back") {
+		t.Errorf("browse header should advertise 'q back' when not searching\n---\n%s", h)
+	}
+
+	m = openSearch(t, m)
+	h := stripANSI(m.browseHeaderView())
+	if strings.Contains(h, "q back") {
+		t.Errorf("while searching the header must not say 'q back' (q is literal)\n---\n%s", h)
+	}
+	if !strings.Contains(h, "esc cancel") {
+		t.Errorf("while searching the header should say 'esc cancel'\n---\n%s", h)
 	}
 }
 
