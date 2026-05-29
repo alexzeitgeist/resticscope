@@ -361,9 +361,9 @@ func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		m.cancel()
 		return m, tea.Quit
-	case key.Matches(msg, m.keys.FilterAccept):
+	case key.Matches(msg, m.keys.SearchAccept):
 		return m.acceptBrowseSearch()
-	case key.Matches(msg, m.keys.FilterCancel):
+	case key.Matches(msg, m.keys.SearchCancel):
 		return m.cancelBrowseSearch(), nil
 	case key.Matches(msg, m.keys.SearchUp):
 		if m.browseSearchCursor > 0 {
@@ -414,7 +414,11 @@ func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 		m.browseSearchRows = nil
 		m.browseSearchTotal = 0
 		m.browseSearchErr = ""
-		m.browseSearchShownQuery = "" // the now-empty rows belong to the empty query
+		// The (empty) rows belong to the current query, so the accept gate matches:
+		// Enter on a whitespace-only query then behaves like an empty one (no
+		// selection → cancel), not a stale no-op. Setting this to "" instead would
+		// leave a literal space query gated out of Enter.
+		m.browseSearchShownQuery = m.browseSearchQuery
 		return m, nil
 	}
 

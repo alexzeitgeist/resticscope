@@ -33,6 +33,13 @@ type keyMap struct {
 	FilterAccept key.Binding
 	FilterCancel key.Binding
 	FilterDelete key.Binding
+
+	// Search-input-mode bindings. Matched only while the global filename search is
+	// open (m.browseSearching); they reuse enter/esc like the filter bindings but
+	// carry search-accurate help text — Enter opens the selected match, esc cancels
+	// the search and restores the listing (it does not "clear" a query in place).
+	SearchAccept key.Binding
+	SearchCancel key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -63,6 +70,9 @@ func defaultKeys() keyMap {
 		FilterAccept: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
 		FilterCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
 		FilterDelete: key.NewBinding(key.WithKeys("backspace")),
+
+		SearchAccept: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		SearchCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 	}
 }
 
@@ -89,7 +99,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	// While the global filename search is open the cursor keys move through the
 	// matches and enter/esc open/cancel; the regular browse keys are suspended.
 	if h.searching {
-		return []key.Binding{k.SearchUp, k.SearchDown, k.FilterAccept, k.FilterCancel}
+		return []key.Binding{k.SearchUp, k.SearchDown, k.SearchAccept, k.SearchCancel}
 	}
 	switch h.view {
 	case detailView:
@@ -113,7 +123,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	if h.searching {
 		return [][]key.Binding{
 			{k.SearchUp, k.SearchDown, k.PageUp, k.PageDown},
-			{k.FilterAccept, k.FilterCancel},
+			{k.SearchAccept, k.SearchCancel},
 		}
 	}
 	switch h.view {

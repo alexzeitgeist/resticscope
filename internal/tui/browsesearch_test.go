@@ -344,6 +344,60 @@ func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
 	}
 }
 
+// A whitespace-only query renders the empty "type to search" state, so Enter must
+// behave exactly like an empty query: no selection → close the search and leave the
+// listing untouched, never a stale no-op left over from the accept gate.
+func TestBrowseSearchWhitespaceQueryEnterCloses(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/a.txt", "a.txt", false, 1),
+	)))
+	dirBefore := m.browseDir
+	m = openSearch(t, m)
+
+	next, cmd := m.Update(press(" ")) // whitespace-only: clears synchronously, no scan
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("a whitespace-only query must clear synchronously, with no command")
+	}
+	if m.browseSearchQuery != " " {
+		t.Fatalf("query = %q, want a single space", m.browseSearchQuery)
+	}
+
+	next, navCmd := m.Update(press("enter"))
+	m = next.(Model)
+	if navCmd != nil {
+		t.Error("Enter on a whitespace-only query should emit no navigation command")
+	}
+	if m.browseSearching {
+		t.Error("Enter on a whitespace-only query should close the search, like an empty one")
+	}
+	if m.browseDir != dirBefore {
+		t.Errorf("Enter on a whitespace-only query must leave the listing unchanged, dir = %q", m.browseDir)
+	}
+}
+
+// While searching, the footer help reflects the search semantics — Enter opens the
+// selected match and esc cancels — rather than the filter's borrowed "apply"/"clear"
+// wording (esc exits search and restores the listing; it does not clear a query in
+// place).
+func TestBrowseSearchFooterHelpWording(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	m = openSearch(t, m)
+
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "open") {
+		t.Errorf("search footer should advertise enter → open\n---\n%s", footer)
+	}
+	if !strings.Contains(footer, "cancel") {
+		t.Errorf("search footer should advertise esc → cancel\n---\n%s", footer)
+	}
+	if strings.Contains(footer, "apply") || strings.Contains(footer, "clear") {
+		t.Errorf("search footer must not reuse the filter's apply/clear wording\n---\n%s", footer)
+	}
+}
+
 // ctrl+c is a hard quit from anywhere, including the search input.
 func TestBrowseSearchHardQuitQuits(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -461,10 +515,10 @@ func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
 	if c.browseSearching {
 		t.Error("clearBrowse must close search")
 	}
-	if c.browseSearchQuery != "" || c.browseSearchRows != nil || c.browseSearchCursor != 0 ||
-		c.browseSearchTotal != 0 || c.browseSearchErr != "" {
-		t.Errorf("clearBrowse must zero every browseSearch* field (privacy): q=%q rows=%v cur=%d total=%d err=%q",
-			c.browseSearchQuery, c.browseSearchRows, c.browseSearchCursor, c.browseSearchTotal, c.browseSearchErr)
+	if c.browseSearchQuery != "" || c.browseSearchShownQuery != "" || c.browseSearchRows != nil ||
+		c.browseSearchCursor != 0 || c.browseSearchTotal != 0 || c.browseSearchErr != "" {
+		t.Errorf("clearBrowse must zero every browseSearch* field (privacy): q=%q shown=%q rows=%v cur=%d total=%d err=%q",
+			c.browseSearchQuery, c.browseSearchShownQuery, c.browseSearchRows, c.browseSearchCursor, c.browseSearchTotal, c.browseSearchErr)
 	}
 }
 
