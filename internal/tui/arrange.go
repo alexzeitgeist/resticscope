@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"resticscope/internal/app"
+	"resticscope/internal/model"
 )
 
 // sortMode orders the list view. sortConfig is the natural config order;
@@ -38,6 +39,87 @@ func sortRows(rows []app.RepoStatus, mode sortMode) {
 		sort.SliceStable(rows, func(i, j int) bool {
 			return rows[i].State.LastSnapshot.Before(rows[j].State.LastSnapshot)
 		})
+	}
+}
+
+// browseSortMode orders the snapshot browser's current directory listing. It is a
+// transient TUI display mode for the active browse session, kept distinct from the
+// list view's sortMode so the two sort idioms never get mixed. browseSortName is
+// the canonical store order browsedb.ListDir returns (dirs first, case-insensitive
+// name); size and modified reorder within the dirs/files groups.
+type browseSortMode int
+
+const (
+	browseSortName      browseSortMode = iota // canonical store order (default)
+	browseSortSize                            // largest first
+	browseSortModified                        // newest first
+	browseSortModeCount                       // sentinel: number of modes, for cycling
+)
+
+// label is the human name shown in the browse summary when a non-default sort is
+// active.
+func (s browseSortMode) label() string {
+	switch s {
+	case browseSortSize:
+		return "size"
+	case browseSortModified:
+		return "modified"
+	default:
+		return "name"
+	}
+}
+
+// sortedBrowseRows returns the rows in display order for mode. browseSortName is
+// the canonical ListDir order, so it returns canonical unchanged — no copy, no
+// reorder, so browseRows aliases the cached slice in name mode (it is never mutated
+// in place), mirroring sortRows leaving sortConfig untouched. size/modified sort a
+// COPY (sort.SliceStable) so the canonical cached slice (browseCache) is never
+// mutated. Net: the cache is never mutated in any mode.
+func sortedBrowseRows(canonical []model.BrowseEntry, mode browseSortMode) []model.BrowseEntry {
+	if mode == browseSortName {
+		return canonical
+	}
+	rows := make([]model.BrowseEntry, len(canonical))
+	copy(rows, canonical)
+	sort.SliceStable(rows, browseLess(rows, mode))
+	return rows
+}
+
+// browseLess is the comparator used with sort.SliceStable (matching arrange.go's
+// sortRows): dirs first; then by the mode's key; tie-break ToLower(name) → name →
+// Path. The name tie-break is byte-identical to the DB's name_ci, name ordering
+// (name_ci = strings.ToLower(name), and Go string < matches SQLite BINARY), so it
+// reproduces canonical order for equal keys. The unique Path final tie-break makes
+// the order total for a directory listing (paths are unique), so cycling is
+// deterministic; SliceStable keeps any exact tie in canonical order.
+func browseLess(rows []model.BrowseEntry, mode browseSortMode) func(i, j int) bool {
+	return func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.IsDir != b.IsDir {
+			return a.IsDir // dirs first in every mode
+		}
+		switch mode {
+		case browseSortSize:
+			if a.Size != b.Size {
+				return a.Size > b.Size // largest first
+			}
+		case browseSortModified:
+			// Unknown (zero) mtimes sort last: a known time orders before an unknown
+			// one, and two unknowns fall through to the name tie-break.
+			if a.ModTime.IsZero() != b.ModTime.IsZero() {
+				return !a.ModTime.IsZero()
+			}
+			if !a.ModTime.IsZero() && !a.ModTime.Equal(b.ModTime) {
+				return a.ModTime.After(b.ModTime) // newest first
+			}
+		}
+		if la, lb := strings.ToLower(a.Name), strings.ToLower(b.Name); la != lb {
+			return la < lb
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.Path < b.Path
 	}
 }
 

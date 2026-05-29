@@ -58,6 +58,7 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 	m.browseRows = nil
 	m.browseCache = nil // a fresh snapshot: never serve a previous one's cached dirs
 	m.browseCursor = 0
+	m.browseSortMode = browseSortName // a prior session's sort must not leak in
 	m.view = browseView
 	// beginIndex owns the index-counter reset (browseIndexed, browseIndexN, and
 	// the rate fields), so startBrowse only sets the navigation state here.
@@ -184,7 +185,10 @@ func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 		m = m.supersedeBrowse()
 		m.browseLoading = false
 		m.browseDir = dir
-		m.browseRows = rows
+		// Install the listing under the active sort while the cache keeps the
+		// canonical rows (sortedBrowseRows copies for non-name modes), so the chosen
+		// order persists across navigation without mutating the cache.
+		m.browseRows = sortedBrowseRows(rows, m.browseSortMode)
 		m.browseCursor = m.indexOfBrowsePath(selectPath)
 		return m, nil
 	}
@@ -214,15 +218,17 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 		return m
 	}
 	m.browseDir = msg.dir
-	m.browseRows = msg.rows
-	m.browseCursor = m.indexOfBrowsePath(msg.selectPath)
-	// Memoize the listing so a later return to this directory is served
+	// Memoize the canonical listing so a later return to this directory is served
 	// synchronously (see beginListDir). The snapshot is immutable, so the entry
 	// never needs invalidation; clearBrowse drops the whole map on leaving browse.
 	if m.browseCache == nil {
 		m.browseCache = make(map[string][]model.BrowseEntry)
 	}
 	m.browseCache[msg.dir] = msg.rows
+	// Display rows derive from the canonical rows under the active sort; for
+	// non-name modes sortedBrowseRows copies, so the cached slice stays canonical.
+	m.browseRows = sortedBrowseRows(msg.rows, m.browseSortMode)
+	m.browseCursor = m.indexOfBrowsePath(msg.selectPath)
 	return m
 }
 
@@ -271,6 +277,7 @@ func (m Model) clearBrowse() Model {
 	m.browseSnapshot = ""
 	m.browseDir = ""
 	m.browseCursor = 0
+	m.browseSortMode = browseSortName // no sort state survives leaving browse
 	m.browseIndexed = false
 	m.browseIndexN = 0
 	m.browseIndexRate = 0
@@ -330,6 +337,13 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openBrowseDir()
 	case key.Matches(msg, m.keys.Parent):
 		return m.browseToParent()
+	case key.Matches(msg, m.keys.Sort):
+		// Cycle the display sort of the current directory listing. It sits in the
+		// idle-only switch (below the browseLoading guard) so it can't fire
+		// mid-index/mid-load. While the search input is open handleKey routes to
+		// handleBrowseSearchKey first, so `o` is literal query text there; while a
+		// search is suspended it sorts only the visible directory listing.
+		return m.cycleBrowseSort(), nil
 	case key.Matches(msg, m.keys.Search):
 		// `/` opens the global filename search, but only once the snapshot is
 		// indexed — there is nothing to search before the one-time crawl commits.
@@ -344,6 +358,30 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// cycleBrowseSort advances the browse display sort (name → size → modified → name)
+// and keeps the cursor on the same entry across the reorder, mirroring the list
+// view's cycleSort. It re-derives the listing from the canonical cached rows so
+// cycling back to name restores canonical order rather than re-sorting an
+// already-permuted slice. The current dir is cached whenever browse is idle
+// (applyBrowseDir caches every successful load; the loading guard blocks `o` until
+// then; even the error path leaves browseDir on the last cached dir). The ok guard
+// makes that explicit and turns any future violation into a safe no-op instead of
+// blanking the listing.
+func (m Model) cycleBrowseSort() Model {
+	rows, ok := m.browseCache[m.browseDir]
+	if !ok {
+		return m
+	}
+	sel := ""
+	if e := m.selectedBrowseEntry(); e != nil {
+		sel = e.Path
+	}
+	m.browseSortMode = (m.browseSortMode + 1) % browseSortModeCount
+	m.browseRows = sortedBrowseRows(rows, m.browseSortMode)
+	m.browseCursor = m.indexOfBrowsePath(sel)
+	return m
 }
 
 // handleBrowseSearchKey consumes keys while the global filename search input is
@@ -682,7 +720,11 @@ func (m Model) browseSummaryLine() string {
 	if m.browseSearching {
 		return m.browseSearchSummary()
 	}
-	return fmt.Sprintf("%d entries", len(m.browseRows))
+	parts := []string{fmt.Sprintf("%d entries", len(m.browseRows))}
+	if m.browseSortMode != browseSortName {
+		parts = append(parts, "sort: "+m.browseSortMode.label())
+	}
+	return strings.Join(parts, " · ")
 }
 
 // browseSearchSummary reports the state of the global filename search for the body

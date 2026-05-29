@@ -105,7 +105,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case detailView:
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Browse, k.Refresh, k.Back}
 	case browseView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Search, k.Shell, k.Back}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Search, k.Sort, k.Shell, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -136,7 +136,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Parent, k.Search, k.Shell},
+			{k.Enter, k.Parent, k.Search, k.Sort, k.Shell},
 			{k.Back},
 		}
 	case helpView:

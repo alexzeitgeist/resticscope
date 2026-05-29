@@ -93,6 +93,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Enter) + "/" + keyLabel(k.Open), "open directory"},
 			{keyLabel(k.Parent), "parent directory"},
 			{keyLabel(k.Search), "search filenames"},
+			{keyLabel(k.Sort), "cycle sort order"},
 			{keyLabel(k.Shell), "shell at snapshot"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},

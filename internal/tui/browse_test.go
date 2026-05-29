@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -391,7 +392,8 @@ func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 
 // Leaving browse drops the listing cache (which holds filenames) so nothing
 // lingers in the model — the same contract clearBrowse enforces for browseRows
-// (non-negotiable #1).
+// (non-negotiable #1) — and resets the transient browse sort so a prior session's
+// order can't leak into the next one.
 func TestBrowseLeavingClearsListingCache(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/a", "a", true, 0),
@@ -401,12 +403,20 @@ func TestBrowseLeavingClearsListingCache(t *testing.T) {
 		t.Fatal("precondition: the root listing should be cached after opening browse")
 	}
 
+	m = update(t, m, press("o")) // move off the default sort so the reset is observable
+	if m.browseSortMode == browseSortName {
+		t.Fatal("precondition: pressing o should leave the default sort")
+	}
+
 	m = update(t, m, press("q")) // leave browse
 	if m.view != detailView {
 		t.Fatalf("q should return to detail, view = %d", m.view)
 	}
 	if m.browseCache != nil {
 		t.Errorf("leaving browse must drop the listing cache so no filenames linger, got %d entries", len(m.browseCache))
+	}
+	if m.browseSortMode != browseSortName {
+		t.Errorf("leaving browse must reset the sort to name, got %q", m.browseSortMode.label())
 	}
 }
 
@@ -931,6 +941,36 @@ func TestBrowseHelpDocumentsOpenAliasFooterHidesIt(t *testing.T) {
 	}
 }
 
+// The full keybinding overlay documents the browse sort cycle under Browse, so the
+// reference agrees with the o sort the compact footer advertises (and does not bury
+// sort under List alone).
+func TestBrowseHelpDocumentsSort(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
+
+	_, right := m.helpColumns()
+	var browse helpSection
+	for _, s := range right {
+		if s.title == "Browse" {
+			browse = s
+		}
+	}
+	if browse.title == "" {
+		t.Fatal("help overlay missing Browse section")
+	}
+	found := false
+	for _, e := range browse.entries {
+		if e.desc == "cycle sort order" {
+			found = true
+			if e.keys != keyLabel(m.keys.Sort) {
+				t.Errorf("Browse sort row keys = %q, want %q", e.keys, keyLabel(m.keys.Sort))
+			}
+		}
+	}
+	if !found {
+		t.Error("Browse section missing the 'cycle sort order' row")
+	}
+}
+
 // The browse footer advertises navigation, open, shell, and back — and never the
 // removed load-more affordance.
 func TestBrowseFooterHasNoLoadMore(t *testing.T) {
@@ -954,5 +994,234 @@ func TestDetailFooterBrowseWording(t *testing.T) {
 	}
 	if strings.Contains(footer, "browse files") {
 		t.Errorf("detail footer should read 'b browse', not 'browse files'\n---\n%s", footer)
+	}
+}
+
+// --- browse sort ---
+
+// sortBrowseApp builds a browse app whose root directory holds one dir plus three
+// files whose name order (a→b→c) disagrees with both their size order and their
+// mtime order, so each browse sort mode produces a provably distinct permutation.
+func sortBrowseApp(t *testing.T) *app.App {
+	t.Helper()
+	mid := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	return browseApp(t,
+		model.BrowseNode{Path: "/dir", Name: "dir", IsDir: true},
+		model.BrowseNode{Path: "/a.txt", Name: "a.txt", Size: 100, ModTime: mid},
+		model.BrowseNode{Path: "/b.txt", Name: "b.txt", Size: 300, ModTime: old},
+		model.BrowseNode{Path: "/c.txt", Name: "c.txt", Size: 200, ModTime: newt},
+	)
+}
+
+// Pressing o cycles the directory listing name → size → modified → name, reordering
+// browseRows each step, and keeps the cursor on the same entry across the reorder.
+func TestBrowseSortCyclesAndPreservesCursor(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
+
+	nameOrder := []string{"/dir", "/a.txt", "/b.txt", "/c.txt"}
+	sizeOrder := []string{"/dir", "/b.txt", "/c.txt", "/a.txt"} // dirs first, then largest
+	modOrder := []string{"/dir", "/c.txt", "/a.txt", "/b.txt"}  // dirs first, then newest
+	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, nameOrder) {
+		t.Fatalf("initial listing = %v, want canonical %v", got, nameOrder)
+	}
+
+	m = update(t, m, press("j")) // cursor onto /a.txt (index 1)
+	if sel := m.selectedBrowseEntry(); sel == nil || sel.Path != "/a.txt" {
+		t.Fatalf("precondition: cursor should be on /a.txt, got %+v", sel)
+	}
+
+	steps := []struct {
+		mode browseSortMode
+		want []string
+	}{
+		{browseSortSize, sizeOrder},
+		{browseSortModified, modOrder},
+		{browseSortName, nameOrder},
+	}
+	for _, step := range steps {
+		m = update(t, m, press("o"))
+		if m.browseSortMode != step.mode {
+			t.Fatalf("after o: mode = %q, want %q", m.browseSortMode.label(), step.mode.label())
+		}
+		if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, step.want) {
+			t.Errorf("%s listing = %v, want %v", step.mode.label(), got, step.want)
+		}
+		if sel := m.selectedBrowseEntry(); sel == nil || sel.Path != "/a.txt" {
+			t.Errorf("%s should keep the cursor on /a.txt, got %+v", step.mode.label(), sel)
+		}
+	}
+}
+
+// o is part of the idle-only switch, below the loading guard, so it can't cycle the
+// sort mid-index/mid-load (the rows are about to be replaced).
+func TestBrowseSortIgnoredWhileLoading(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
+	m = update(t, m, press("o")) // size
+	if m.browseSortMode != browseSortSize {
+		t.Fatalf("precondition: first o should select size, got %q", m.browseSortMode.label())
+	}
+	frozen := browseRowPaths(m.browseRows)
+
+	m.browseLoading = true
+	m = update(t, m, press("o")) // ignored while loading
+	if m.browseSortMode != browseSortSize {
+		t.Errorf("o while loading should not advance the sort, got %q", m.browseSortMode.label())
+	}
+	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, frozen) {
+		t.Errorf("o while loading should not reorder rows: got %v want %v", got, frozen)
+	}
+}
+
+// The active sort persists across navigation: descending into a subdirectory lists
+// its children under the same sort, not back at canonical name order.
+func TestBrowseSortInheritedIntoSubdir(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/dir", "dir", true, 0),
+		bnode("/dir/a.txt", "a.txt", false, 100),
+		bnode("/dir/z.bin", "z.bin", false, 300),
+	)))
+	m = update(t, m, press("o")) // size
+	if m.browseSortMode != browseSortSize {
+		t.Fatalf("precondition: o should select size, got %q", m.browseSortMode.label())
+	}
+
+	m = pressBrowse(t, m, "enter") // descend into /dir (cursor is on it)
+	if m.browseDir != "/dir" {
+		t.Fatalf("should have descended into /dir, browseDir = %q", m.browseDir)
+	}
+	if m.browseSortMode != browseSortSize {
+		t.Errorf("descending should keep the active sort, got %q", m.browseSortMode.label())
+	}
+	want := []string{"/dir/z.bin", "/dir/a.txt"} // largest first, not name order
+	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, want) {
+		t.Errorf("subdir listing = %v, want size order %v", got, want)
+	}
+}
+
+// Sorting only ever reorders a copy: browseCache keeps the canonical ListDir order
+// in every mode (so re-cycling never compounds a previous sort), name mode lands
+// back on canonical order, and a cached directory is never re-queried.
+func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
+	a, store := browseAppWithStore(t,
+		model.BrowseNode{Path: "/dir", Name: "dir", IsDir: true},
+		model.BrowseNode{Path: "/dir/inner.txt", Name: "inner.txt", Size: 1},
+		model.BrowseNode{Path: "/a.txt", Name: "a.txt", Size: 100},
+		model.BrowseNode{Path: "/b.txt", Name: "b.txt", Size: 300},
+		model.BrowseNode{Path: "/c.txt", Name: "c.txt", Size: 200},
+	)
+	m := openBrowse(t, newTestModel(t, a))
+	canonical := browseRowPaths(m.browseCache["/"])
+
+	// size and modified each display a distinct backing array and never touch the cache.
+	for _, want := range []browseSortMode{browseSortSize, browseSortModified} {
+		m = update(t, m, press("o"))
+		if m.browseSortMode != want {
+			t.Fatalf("cycle landed on %q, want %q", m.browseSortMode.label(), want.label())
+		}
+		if &m.browseRows[0] == &m.browseCache["/"][0] {
+			t.Errorf("%s must display a copy, not alias the canonical cache", want.label())
+		}
+		if got := browseRowPaths(m.browseCache["/"]); !reflect.DeepEqual(got, canonical) {
+			t.Errorf("%s mutated the cache: %v want canonical %v", want.label(), got, canonical)
+		}
+	}
+
+	m = update(t, m, press("o")) // back to name
+	if m.browseSortMode != browseSortName {
+		t.Fatalf("three cycles should return to name, got %q", m.browseSortMode.label())
+	}
+	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, canonical) {
+		t.Errorf("name mode should restore canonical order: %v want %v", got, canonical)
+	}
+
+	// Navigating away and back is still served from the listing cache — sorting did
+	// not invalidate it — so the store is not re-queried for a visited directory.
+	m = pressBrowse(t, m, "enter")     // into /dir (cursor on it in name mode)
+	m = pressBrowse(t, m, "backspace") // back to /
+	if m.browseDir != "/" {
+		t.Fatalf("should be back at /, browseDir = %q", m.browseDir)
+	}
+	if store.listCount("/") != 1 {
+		t.Errorf("/ was re-queried after sorting+navigation: ListDir(/) = %d, want 1", store.listCount("/"))
+	}
+}
+
+// While a search is suspended (the user jumped to a match with Enter), o sorts the
+// visible directory listing only; the parked fuzzy-ranked browseSearchRows are never
+// reordered.
+func TestBrowseSortLeavesSuspendedSearchUntouched(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/home", "home", true, 0),
+		bnode("/home/a-report.txt", "a-report.txt", false, 100),
+		bnode("/home/z-report.bin", "z-report.bin", false, 300),
+	)))
+	m = openSearch(t, m)
+	m = typeSearch(t, m, "report")
+	if len(m.browseSearchRows) != 2 {
+		t.Fatalf("precondition: 'report' should match 2 files, got %d", len(m.browseSearchRows))
+	}
+
+	// Enter suspends the search and jumps to the match's parent directory (/home).
+	next, cmd := m.Update(press("enter"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("enter on a match should kick off a directory list")
+	}
+	msg, ok := cmd().(browseDirMsg)
+	if !ok {
+		t.Fatalf("enter produced %T, want browseDirMsg", cmd())
+	}
+	m = update(t, m, msg)
+	if !m.browseSearchSuspended || m.browseDir != "/home" {
+		t.Fatalf("precondition: search suspended over /home, got suspended=%v dir=%q", m.browseSearchSuspended, m.browseDir)
+	}
+	searchBefore := browseRowPaths(m.browseSearchRows)
+
+	m = update(t, m, press("o")) // sort the visible /home listing
+	if m.browseSortMode != browseSortSize {
+		t.Errorf("o should sort the directory listing while a search is suspended, mode = %q", m.browseSortMode.label())
+	}
+	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, []string{"/home/z-report.bin", "/home/a-report.txt"}) {
+		t.Errorf("o should reorder the directory listing, got %v", got)
+	}
+	if got := browseRowPaths(m.browseSearchRows); !reflect.DeepEqual(got, searchBefore) {
+		t.Errorf("o must not reorder the parked search results: got %v want %v", got, searchBefore)
+	}
+}
+
+// The summary line shows the active non-default sort and omits the indicator in
+// name mode, mirroring the list view's header.
+func TestBrowseSortSummaryIndicator(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
+
+	if line := m.browseSummaryLine(); strings.Contains(line, "sort:") {
+		t.Errorf("name mode should omit the sort indicator, got %q", line)
+	}
+
+	m = update(t, m, press("o")) // size
+	if line := m.browseSummaryLine(); !strings.Contains(line, "sort: size") {
+		t.Errorf("summary should show the size sort, got %q", line)
+	}
+
+	m = update(t, m, press("o")) // modified
+	if line := m.browseSummaryLine(); !strings.Contains(line, "sort: modified") {
+		t.Errorf("summary should show the modified sort, got %q", line)
+	}
+
+	m = update(t, m, press("o")) // back to name
+	if line := m.browseSummaryLine(); strings.Contains(line, "sort:") {
+		t.Errorf("cycling back to name should drop the sort indicator, got %q", line)
+	}
+}
+
+// The browse footer advertises the sort key so the cycle is discoverable.
+func TestBrowseFooterAdvertisesSort(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "sort") {
+		t.Errorf("browse footer should advertise the sort key\n---\n%s", footer)
 	}
 }

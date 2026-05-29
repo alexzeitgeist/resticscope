@@ -68,6 +68,7 @@ type Model struct {
 	browseSnapshot   string              // snapshot id being browsed
 	browseDir        string              // path of the directory currently listed
 	browseCursor     int                 // selected entry within the current directory
+	browseSortMode   browseSortMode      // display order for the current dir listing; resets on leaving browse
 	browseIndexed    bool                // the snapshot's one-time index has committed
 	browseIndexN     int                 // running node count shown while indexing
 	browseIndexRate  float64             // recent indexed-entry rate, in entries/sec
