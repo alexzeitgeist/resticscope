@@ -253,8 +253,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Refresh-all, shell, and per-repo refresh act on repos regardless of view, so
 	// they are matched here, after browse (which owns s) but before the list/detail
 	// handlers.
-	if nm, cmd, handled := m.handleRepoActionKey(msg); handled {
-		return nm, cmd
+	if res := m.handleRepoCommandKey(msg); res.handled {
+		return res.model, res.cmd
 	}
 
 	if m.view == detailView {
@@ -263,10 +263,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleListKey(msg)
 }
 
-// handleRepoActionKey handles the keys that act on repos regardless of view
-// (refresh-all, shell, per-repo refresh). The bool reports whether the key was
-// consumed; false means handleKey should fall through to the view handler.
-func (m Model) handleRepoActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
+// keyResult carries a key handler's outcome: the (possibly updated) model, an
+// optional command, and whether the key was consumed. handled=false tells the
+// caller to fall through to the active view's handler.
+type keyResult struct {
+	model   Model
+	cmd     tea.Cmd
+	handled bool
+}
+
+// handleRepoCommandKey handles the keys that launch repo commands regardless of
+// view (refresh-all, shell, per-repo refresh) from the list and detail views.
+// keyResult.handled reports whether the key was consumed; false means handleKey
+// should fall through to the view handler.
+func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) keyResult {
 	switch {
 	case key.Matches(msg, m.keys.RefreshAll):
 		// Refresh-all acts on every repo, so it needs no per-view cursor and works
@@ -284,14 +294,14 @@ func (m Model) handleRepoActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 		if wasIdle && len(cmds) > 0 {
 			cmds = append(cmds, m.spinner.Tick)
 		}
-		return m, tea.Batch(cmds...), true
+		return keyResult{model: m, cmd: tea.Batch(cmds...), handled: true}
 	case key.Matches(msg, m.keys.Shell):
 		// `s` shells into the active repo with no snapshot context.
 		if cmd := m.openShellCmd(nil); cmd != nil {
 			m.statusMsg = ""
-			return m, cmd, true
+			return keyResult{model: m, cmd: cmd, handled: true}
 		}
-		return m, nil, true
+		return keyResult{model: m, handled: true}
 	case key.Matches(msg, m.keys.Refresh):
 		if name, ok := m.actionRepo(); ok {
 			m.statusMsg = ""
@@ -300,13 +310,13 @@ func (m Model) handleRepoActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 			// On the idle->refreshing edge, (re)start the spinner alongside the
 			// refresh; if one was already in flight its tick loop is still running.
 			if cmd != nil && wasIdle {
-				return m, tea.Batch(cmd, m.spinner.Tick), true
+				return keyResult{model: m, cmd: tea.Batch(cmd, m.spinner.Tick), handled: true}
 			}
-			return m, cmd, true
+			return keyResult{model: m, cmd: cmd, handled: true}
 		}
-		return m, nil, true
+		return keyResult{model: m, handled: true}
 	}
-	return m, nil, false
+	return keyResult{model: m}
 }
 
 // goBack steps one screen toward the list: the detail view returns to the list
