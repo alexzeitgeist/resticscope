@@ -364,23 +364,32 @@ func TestBatchFlush(t *testing.T) {
 func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := context.Background()
-	itx, err := db.BeginIndex(ctx, "repo", "snap")
+	repo, snap := "repo", "snap"
+	itx, err := db.BeginIndex(ctx, repo, snap)
 	if err != nil {
 		t.Fatalf("BeginIndex: %v", err)
 	}
+	// Dirs are now held until Commit (so their subtree sizes can be folded), so the
+	// buffer is never trimmed mid-stream: reserving a full dirBatchRows worth leaves
+	// root + dirBatchRows rows buffered.
 	for i := 0; i < dirBatchRows; i++ {
 		if _, err := itx.ensureCleanDir(ctx, fmt.Sprintf("/d%05d", i)); err != nil {
 			t.Fatalf("ensureCleanDir: %v", err)
 		}
 	}
-	if len(itx.dirBuf) != 0 {
-		t.Errorf("dir buffer not flushed at dirBatchRows: %d", len(itx.dirBuf))
+	if len(itx.dirBuf) != dirBatchRows+1 {
+		t.Errorf("dir buffer = %d, want %d (held until Commit)", len(itx.dirBuf), dirBatchRows+1)
 	}
+	if err := itx.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	// The first commit-time chunk is a full dirBatchRows batch, so it prepares and
+	// reuses the statement.
 	if itx.dirInsertStmt == nil {
 		t.Error("full dir batch did not prepare the reusable insert statement")
 	}
-	if err := itx.Rollback(); err != nil {
-		t.Fatalf("Rollback: %v", err)
+	if n := countDirs(t, db); n != dirBatchRows+1 {
+		t.Errorf("dirs persisted = %d, want %d", n, dirBatchRows+1)
 	}
 }
 
@@ -568,16 +577,14 @@ func TestDirIDRootReservationRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginIndex: %v", err)
 	}
-	var did int64
-	if err := itx.tx.QueryRowContext(ctx,
-		`SELECT did FROM dirs WHERE sid=? AND path='/'`, itx.sid).Scan(&did); err != nil {
-		t.Fatalf("root did query: %v", err)
-	}
+	// The root dir is reserved in memory (its did + dirBuf row) but not written to
+	// the DB until Commit, so check the in-memory reservation rather than the table.
+	did := itx.dirs["/"]
 	if did == 0 {
 		t.Fatal("root did was not allocated")
 	}
-	if got := itx.dirs["/"]; got != did {
-		t.Fatalf("root did cache = %d, want %d", got, did)
+	if did != itx.firstDID {
+		t.Fatalf("root did = %d, want firstDID %d", did, itx.firstDID)
 	}
 	if err := itx.Rollback(); err != nil {
 		t.Fatalf("Rollback: %v", err)
@@ -630,6 +637,167 @@ func TestDirIDsOutOfOrderParentMetadata(t *testing.T) {
 	}
 	if got, want := paths(child), []string{"/parent/file"}; !eqStrings(got, want) {
 		t.Fatalf("child paths = %v, want %v", got, want)
+	}
+}
+
+// dirSubtreeSize reads the persisted recursive subtree size for an interned
+// directory path. The path always exists for a committed snapshot (including the
+// root, which ListDir never returns), so any query error is fatal.
+func dirSubtreeSize(t *testing.T, db *DB, repo, snap, p string) int64 {
+	t.Helper()
+	var size int64
+	if err := db.pool.QueryRowContext(context.Background(),
+		`SELECT d.subtree_size FROM dirs d JOIN snapshots s ON s.sid=d.sid WHERE s.repo=? AND s.snapshot=? AND d.path=?`,
+		repo, snap, p).Scan(&size); err != nil {
+		t.Fatalf("dir subtree size %q: %v", p, err)
+	}
+	return size
+}
+
+func byPath(entries []model.BrowseEntry) map[string]model.BrowseEntry {
+	m := make(map[string]model.BrowseEntry, len(entries))
+	for _, e := range entries {
+		m[e.Path] = e
+	}
+	return m
+}
+
+func TestSubtreeSizesRollUp(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+	mustIndex(t, db, repo, snap, []model.BrowseNode{
+		{Path: "/home", IsDir: true},
+		{Path: "/home/alex", IsDir: true},
+		{Path: "/home/alex/f.txt", Size: 42},
+		{Path: "/home/alex/sub", IsDir: true},
+		{Path: "/home/alex/sub/h.txt", Size: 8},
+		{Path: "/home/bob", IsDir: true},
+		{Path: "/home/bob/g.txt", Size: 100},
+		{Path: "/home/empty", IsDir: true, Size: 999}, // empty dir with a non-zero raw node size
+	})
+
+	home, err := db.ListDir(ctx, repo, snap, "/home")
+	if err != nil {
+		t.Fatalf("ListDir(/home): %v", err)
+	}
+	h := byPath(home)
+	if got := h["/home/alex"].Size; got != 50 { // 42 + 8
+		t.Errorf("/home/alex size = %d, want 50", got)
+	}
+	if got := h["/home/bob"].Size; got != 100 {
+		t.Errorf("/home/bob size = %d, want 100", got)
+	}
+	// An empty directory reports 0, never its raw node size (999).
+	if got := h["/home/empty"].Size; got != 0 {
+		t.Errorf("/home/empty size = %d, want 0", got)
+	}
+
+	alex, err := db.ListDir(ctx, repo, snap, "/home/alex")
+	if err != nil {
+		t.Fatalf("ListDir(/home/alex): %v", err)
+	}
+	a := byPath(alex)
+	if got := a["/home/alex/f.txt"].Size; got != 42 { // file size is unchanged
+		t.Errorf("/home/alex/f.txt size = %d, want 42", got)
+	}
+	if got := a["/home/alex/sub"].Size; got != 8 {
+		t.Errorf("/home/alex/sub size = %d, want 8", got)
+	}
+
+	// /home rolls up everything beneath it (50 + 100 + 0).
+	if got := dirSubtreeSize(t, db, repo, snap, "/home"); got != 150 {
+		t.Errorf("/home subtree = %d, want 150", got)
+	}
+	// The root is not returned by ListDir (root nodes are skipped at index time), so
+	// assert its total directly. It equals the whole tree's file bytes.
+	if got := dirSubtreeSize(t, db, repo, snap, "/"); got != 150 {
+		t.Errorf("/ subtree = %d, want 150", got)
+	}
+}
+
+func TestSearchDirCarriesSubtreeSize(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+	mustIndex(t, db, repo, snap, []model.BrowseNode{
+		{Path: "/home", IsDir: true},
+		{Path: "/home/alex", IsDir: true},
+		{Path: "/home/alex/f.txt", Size: 42},
+		{Path: "/home/empty", IsDir: true, Size: 999},
+	})
+
+	find := func(query, wantPath string) model.BrowseEntry {
+		t.Helper()
+		res, err := db.Search(ctx, repo, snap, query, 0)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		for _, e := range res.Rows {
+			if e.IsDir && e.Path == wantPath {
+				return e
+			}
+		}
+		t.Fatalf("Search(%q) did not return the %q directory", query, wantPath)
+		return model.BrowseEntry{}
+	}
+
+	if got := find("alex", "/home/alex").Size; got != 42 {
+		t.Errorf("matched dir /home/alex size = %d, want 42", got)
+	}
+	// A zero-subtree matched directory reports 0, not its raw nodes.size (999).
+	if got := find("empty", "/home/empty").Size; got != 0 {
+		t.Errorf("matched empty dir size = %d, want 0", got)
+	}
+}
+
+// TestDirCommitChunkingExceedsParamCap indexes more unique directories than a
+// single 4-column dir INSERT could bind (floor(32766/4) = 8191), pinning the
+// commit-time flushDirs chunking so Option A can never silently become one
+// oversized INSERT. The big root listing also exercises dirSizes path chunking.
+func TestDirCommitChunkingExceedsParamCap(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	ctx := context.Background()
+	repo, snap := "repo", "snap"
+	const dirCount = 9000 // > 8191, and several dirBatchRows chunks
+	itx, err := db.BeginIndex(ctx, repo, snap)
+	if err != nil {
+		t.Fatalf("BeginIndex: %v", err)
+	}
+	if err := itx.Add(ctx, model.BrowseNode{Path: "/base", IsDir: true}); err != nil {
+		t.Fatalf("Add(/base): %v", err)
+	}
+	// Each subdirectory is a real node (so it lists under /base) holding one file,
+	// so /base has dirCount children and ListDir(/base) drives dirSizes path
+	// chunking past dirSizePathChunk.
+	for i := 0; i < dirCount; i++ {
+		if err := itx.Add(ctx, model.BrowseNode{Path: fmt.Sprintf("/base/d%05d", i), IsDir: true}); err != nil {
+			t.Fatalf("Add(dir): %v", err)
+		}
+		if err := itx.Add(ctx, model.BrowseNode{Path: fmt.Sprintf("/base/d%05d/f", i), Size: int64(i + 1)}); err != nil {
+			t.Fatalf("Add(file): %v", err)
+		}
+	}
+	if err := itx.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if n := countDirs(t, db); n != dirCount+2 { // + root + /base
+		t.Errorf("dirs persisted = %d, want %d", n, dirCount+2)
+	}
+	base, err := db.ListDir(ctx, repo, snap, "/base")
+	if err != nil {
+		t.Fatalf("ListDir(/base): %v", err)
+	}
+	if len(base) != dirCount {
+		t.Fatalf("/base entries = %d, want %d", len(base), dirCount)
+	}
+	// Each dir holds exactly one file of size i+1, so /base/d00042 rolls up to 43.
+	if got := byPath(base)["/base/d00042"].Size; got != 43 {
+		t.Errorf("/base/d00042 size via ListDir = %d, want 43", got)
+	}
+	// /base rolls up the sum of 1..dirCount.
+	if got := dirSubtreeSize(t, db, repo, snap, "/base"); got != dirCount*(dirCount+1)/2 {
+		t.Errorf("/base subtree = %d, want %d", got, dirCount*(dirCount+1)/2)
 	}
 }
 

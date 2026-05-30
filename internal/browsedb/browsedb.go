@@ -41,7 +41,7 @@ import (
 // below.
 const insertBindParams = 15
 
-const dirInsertBindParams = 3
+const dirInsertBindParams = 4
 
 // batchRows is how many node rows accumulate before a single multi-row INSERT is
 // flushed inside the index transaction. The pinned driver's
@@ -91,11 +91,14 @@ const schemaSnapshots = `CREATE TABLE IF NOT EXISTS snapshots (
 )`
 
 // schemaDirs interns directory paths once per snapshot. did is globally unique,
-// so nodes can key their browse lookup by parent_did alone.
+// so nodes can key their browse lookup by parent_did alone. subtree_size carries
+// the recursive total of every file byte beneath the directory (folded bottom-up
+// at Commit); 0 for an empty directory.
 const schemaDirs = `CREATE TABLE IF NOT EXISTS dirs (
   did INTEGER PRIMARY KEY,
   sid INTEGER NOT NULL,
   path TEXT NOT NULL,
+  subtree_size INTEGER NOT NULL DEFAULT 0,
   UNIQUE (sid, path)
 )`
 
@@ -302,6 +305,7 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	defer rows.Close()
 
 	var out []model.BrowseEntry
+	var dirPaths []string
 	var zones map[int]*time.Location
 	for rows.Next() {
 		var (
@@ -322,6 +326,13 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 		// path is not stored; derive it from the requested parent and row name.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
+		if e.IsDir {
+			// A directory's listed size is its recursive subtree total, filled in
+			// below; clear the raw nodes.size inode value so a zero-subtree dir never
+			// leaks it.
+			e.Size = 0
+			dirPaths = append(dirPaths, e.Path)
+		}
 		e.OwnerKnown = ownerKnown != 0
 		e.UID, e.GID = uint32(uid), uint32(gid)
 		if mtimeKnown != 0 {
@@ -341,6 +352,17 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("browsedb list-dir rows: %w", err)
+	}
+	sizes, err := db.dirSizes(ctx, repo, snapshot, dirPaths)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].IsDir {
+			if sz, ok := sizes[out[i].Path]; ok {
+				out[i].Size = sz
+			}
+		}
 	}
 	return out, nil
 }
@@ -427,10 +449,98 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 	}
 
 	out := make([]model.BrowseEntry, len(top))
+	var dirPaths []string
 	for i, r := range top {
 		out[i] = r.Entry
+		if out[i].IsDir {
+			// Mirror ListDir: a matched directory reports its recursive subtree size,
+			// not the raw nodes.size inode value. Zero first, fill from dirSizes below.
+			out[i].Size = 0
+			dirPaths = append(dirPaths, out[i].Path)
+		}
+	}
+	sizes, err := db.dirSizes(ctx, repo, snapshot, dirPaths)
+	if err != nil {
+		return model.BrowseSearchResult{}, err
+	}
+	for i := range out {
+		if out[i].IsDir {
+			if sz, ok := sizes[out[i].Path]; ok {
+				out[i].Size = sz
+			}
+		}
 	}
 	return model.BrowseSearchResult{Rows: out, Total: total}, nil
+}
+
+// dirSizePathChunk caps how many directory paths are bound into one dirSizes
+// query. At one param per path plus the two fixed repo/snapshot binds, this stays
+// far under the driver's LIMIT_VARIABLE_NUMBER even though callers (ListDir on a
+// huge directory) may ask about thousands of children at once.
+const dirSizePathChunk = 900
+
+// dirSizes returns the recursive subtree size for each of paths within
+// (repo, snapshot), keyed on the exact dirs.path the writer stored (the same
+// model.JoinBrowsePath output ListDir/Search build), so no SQL path
+// reconstruction is needed. Only directories with a positive subtree size appear
+// in the map; an empty directory (or any path not present) is simply absent, and
+// the caller leaves its size at the explicit zero it set. The path list is
+// chunked to stay under the bind cap. A never-indexed snapshot yields an empty
+// map.
+func (db *DB) dirSizes(ctx context.Context, repo, snapshot string, paths []string) (map[string]int64, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int64, len(paths))
+	for start := 0; start < len(paths); start += dirSizePathChunk {
+		end := start + dirSizePathChunk
+		if end > len(paths) {
+			end = len(paths)
+		}
+		chunk := paths[start:end]
+		args := make([]any, 0, len(chunk)+2)
+		args = append(args, repo, snapshot)
+		for _, p := range chunk {
+			args = append(args, p)
+		}
+		rows, err := db.pool.QueryContext(ctx, buildDirSizesSQL(len(chunk)), args...)
+		if err != nil {
+			return nil, fmt.Errorf("browsedb dir-sizes: %w", err)
+		}
+		for rows.Next() {
+			var (
+				p    string
+				size int64
+			)
+			if err := rows.Scan(&p, &size); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("browsedb dir-sizes scan: %w", err)
+			}
+			out[p] = size
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("browsedb dir-sizes rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// buildDirSizesSQL builds the dirSizes query for a chunk of n directory paths,
+// with n bound placeholders in the IN clause after the fixed repo/snapshot binds.
+func buildDirSizesSQL(n int) string {
+	var b strings.Builder
+	b.WriteString(`SELECT d.path,d.subtree_size FROM dirs d JOIN snapshots s ON s.sid=d.sid ` +
+		`WHERE s.repo=? AND s.snapshot=? AND s.indexed_at_unix IS NOT NULL AND d.subtree_size>0 AND d.path IN (`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('?')
+	}
+	b.WriteByte(')')
+	return b.String()
 }
 
 // likeSubsequence builds a LIKE pattern matching q as a subsequence: each rune of
@@ -546,9 +656,14 @@ type nodeRow struct {
 	nameCI         string
 }
 
+// dirRow is one buffered directory awaiting a batched flush. parentDID is kept
+// in memory only (for the bottom-up subtree-size fold at Commit); subtreeSize is
+// set just before the flush and is the only one of the two persisted.
 type dirRow struct {
-	did  int64
-	path string
+	did         int64
+	parentDID   int64
+	path        string
+	subtreeSize int64
 }
 
 // IndexTx is a single, terminal index transaction for one (repo, snapshot). Add
@@ -571,6 +686,8 @@ type IndexTx struct {
 	count           int // accepted Add calls, for progress reporting
 	insertedRows    int64
 	nextDID         int64
+	firstDID        int64   // first did allocated in this tx (== rootDID); dids are contiguous [firstDID..nextDID-1]
+	subtreeSizes    []int64 // accumulated recursive file bytes per dir, indexed by did-firstDID
 	sinceDiskCheck  int
 	dirs            map[string]int64
 	cachedParent    string
@@ -598,6 +715,10 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 		_ = tx.Rollback()
 		return nil, err
 	}
+	// Capture the first did before any dir is reserved: within this tx all dids are
+	// contiguous from firstDID, so subtreeSizes can be indexed by did-firstDID. The
+	// root is the first dir created below, so firstDID == rootDID.
+	itx.firstDID = itx.nextDID
 	itx.dirs = make(map[string]int64, 1024)
 	rootDID, err := itx.ensureCleanDir(ctx, "/")
 	if err != nil {
@@ -605,10 +726,8 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 		return nil, err
 	}
 	itx.cacheParent("/", rootDID)
-	if err := itx.flushDirs(ctx); err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
+	// Dir rows are held in memory until Commit (their subtree sizes are folded
+	// bottom-up there), so there is no mid-stream flush here.
 	return itx, nil
 }
 
@@ -664,20 +783,22 @@ func (itx *IndexTx) ensureCleanDir(ctx context.Context, p string) (int64, error)
 	if did, ok := itx.dirs[p]; ok {
 		return did, nil
 	}
+	// The root's parent is 0 (no parent); every other dir records its parent did so
+	// Commit can fold subtree sizes bottom-up.
+	var parentDID int64
 	if p != "/" {
-		if _, err := itx.ensureCleanDir(ctx, path.Dir(p)); err != nil {
+		var err error
+		if parentDID, err = itx.ensureCleanDir(ctx, path.Dir(p)); err != nil {
 			return 0, err
 		}
 	}
 	did := itx.nextDID
 	itx.nextDID++
 	itx.dirs[p] = did
-	itx.dirBuf = append(itx.dirBuf, dirRow{did: did, path: p})
-	if len(itx.dirBuf) >= dirBatchRows {
-		if err := itx.flushDirs(ctx); err != nil {
-			return 0, err
-		}
-	}
+	itx.dirBuf = append(itx.dirBuf, dirRow{did: did, parentDID: parentDID, path: p})
+	// Keep the accumulator slot index equal to did-firstDID; dir rows are flushed
+	// only at Commit so the buffer is never trimmed mid-stream.
+	itx.subtreeSizes = append(itx.subtreeSizes, 0)
 	return did, nil
 }
 
@@ -742,6 +863,13 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 			return err
 		}
 		itx.cacheParent(p, did)
+	} else {
+		// Accumulate file (and symlink/special) bytes into the immediate parent's
+		// subtree total; dir nodes are skipped so a directory's size is "bytes of
+		// files beneath it", not its own ~0 inode size. The fold at Commit rolls
+		// these into every ancestor. parentDID is a dir resolved in this tx, so
+		// parentDID-firstDID is always a valid accumulator index.
+		itx.subtreeSizes[parentDID-itx.firstDID] += n.Size
 	}
 	row := nodeRow{
 		parentDID:  parentDID,
@@ -822,16 +950,52 @@ func (itx *IndexTx) flush(ctx context.Context) error {
 	return nil
 }
 
+// foldSubtreeSizes rolls each directory's accumulated file bytes up into all of
+// its ancestors and stamps the total onto every buffered dir row. dirBuf is in
+// did-ascending order (ensureCleanDir assigns a child a strictly larger did than
+// its parent), so iterating in reverse visits children before parents: adding a
+// child's complete subtree to its parent is therefore safe in a single pass. The
+// root (parentDID 0, below firstDID) has no parent to add into.
+func (itx *IndexTx) foldSubtreeSizes() {
+	for i := len(itx.dirBuf) - 1; i >= 0; i-- {
+		did := itx.dirBuf[i].did
+		if pd := itx.dirBuf[i].parentDID; pd >= itx.firstDID {
+			itx.subtreeSizes[pd-itx.firstDID] += itx.subtreeSizes[did-itx.firstDID]
+		}
+	}
+	for i := range itx.dirBuf {
+		itx.dirBuf[i].subtreeSize = itx.subtreeSizes[itx.dirBuf[i].did-itx.firstDID]
+	}
+}
+
+// flushDirs writes every buffered dir row in chunks of at most dirBatchRows.
+// Because all dir rows are held until Commit (so their subtree sizes can be
+// folded), the buffer can far exceed one INSERT's parameter budget; chunking
+// keeps each statement at most dirBatchRows*dirInsertBindParams params, well
+// under the driver's LIMIT_VARIABLE_NUMBER.
 func (itx *IndexTx) flushDirs(ctx context.Context) error {
 	if itx.failed != nil {
 		return itx.failed
 	}
-	if len(itx.dirBuf) == 0 {
-		return nil
+	for len(itx.dirBuf) > 0 {
+		n := len(itx.dirBuf)
+		if n > dirBatchRows {
+			n = dirBatchRows
+		}
+		chunk := itx.dirBuf[:n]
+		if err := itx.flushDirRows(ctx, chunk); err != nil {
+			return err
+		}
+		itx.dirBuf = itx.dirBuf[n:]
 	}
-	rows := itx.dirBuf
 	itx.dirBuf = nil
+	return nil
+}
 
+// flushDirRows writes exactly one chunk of dir rows. A full dirBatchRows chunk
+// reuses the tx-scoped prepared statement; a shorter final chunk builds a partial
+// INSERT sized to its row count.
+func (itx *IndexTx) flushDirRows(ctx context.Context, rows []dirRow) error {
 	args := buildDirInsertArgs(itx.sid, rows)
 	if len(rows) == dirBatchRows {
 		stmt, err := itx.fullDirInsertStmt(ctx)
@@ -909,6 +1073,7 @@ func (itx *IndexTx) Commit(ctx context.Context) error {
 		_ = itx.tx.Rollback()
 		return err
 	}
+	itx.foldSubtreeSizes()
 	if err := itx.flushDirs(ctx); err != nil {
 		_ = itx.tx.Rollback()
 		return err
@@ -973,7 +1138,7 @@ func buildInsertArgs(sid int64, rows []nodeRow) []any {
 
 func buildDirInsertSQL(n int) string {
 	var b strings.Builder
-	b.WriteString("INSERT INTO dirs (did,sid,path) VALUES ")
+	b.WriteString("INSERT INTO dirs (did,sid,path,subtree_size) VALUES ")
 	for i := 0; i < n; i++ {
 		if i > 0 {
 			b.WriteByte(',')
@@ -986,7 +1151,7 @@ func buildDirInsertSQL(n int) string {
 func buildDirInsertArgs(sid int64, rows []dirRow) []any {
 	args := make([]any, 0, len(rows)*dirInsertBindParams)
 	for _, r := range rows {
-		args = append(args, r.did, sid, r.path)
+		args = append(args, r.did, sid, r.path, r.subtreeSize)
 	}
 	return args
 }

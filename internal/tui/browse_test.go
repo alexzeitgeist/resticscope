@@ -16,6 +16,7 @@ import (
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
+	"resticscope/internal/humanize"
 	"resticscope/internal/model"
 )
 
@@ -905,6 +906,28 @@ func TestBrowseOwnerRendersRootVersusMissing(t *testing.T) {
 	}
 	if !strings.Contains(anonLine, "—") {
 		t.Errorf("a node with missing owner metadata must render an em-dash owner\n---\n%s", anonLine)
+	}
+}
+
+// Directories now carry a real recursive subtree size, so a directory row renders
+// its size with humanize.Bytes rather than the old em-dash — and an empty
+// directory (subtree size 0) renders "0 B", not "—". The store supplies the
+// rolled-up size; the renderer no longer special-cases dirs.
+func TestBrowseRendersDirectorySize(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t,
+		bnode("/big", "big", true, 4096),  // a directory carrying a rolled-up size
+		bnode("/empty", "empty", true, 0), // an empty directory rolls up to 0
+	)))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := stripANSI(m.View().Content)
+
+	bigLine := lineContaining(t, view, "big")
+	if want := humanize.Bytes(4096); !strings.Contains(bigLine, want) {
+		t.Errorf("directory row must render its size %q\n---\n%s", want, bigLine)
+	}
+	emptyLine := lineContaining(t, view, "empty")
+	if !strings.Contains(emptyLine, "0 B") {
+		t.Errorf("an empty directory must render 0 B, not an em-dash\n---\n%s", emptyLine)
 	}
 }
 

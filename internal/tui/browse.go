@@ -988,8 +988,8 @@ func markSortColumn(label string, rightAligned bool) string {
 
 // browseRow renders one entry as a table row: an accent gutter on the cursor row,
 // then the width-promoted Name/Size/Modified/Perms/Owner cells. Directories show a
-// trailing slash and an em-dash size; missing metadata (no mtime, perms, or owner)
-// renders as an em-dash too. When showPath is set the flex column shows the
+// trailing slash and their recursive subtree size (0 B when empty); missing
+// metadata (no mtime, perms, or owner) renders as an em-dash. When showPath is set the flex column shows the
 // entry's full path instead of its bare name (used by the global search list, whose
 // matches come from anywhere in the snapshot). The whole row content is clipped to
 // width so a long name or path can't wrap, and the selected style covers the row.
@@ -1007,10 +1007,9 @@ func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout,
 	// width by display width so wide-rune names don't misalign the columns.
 	nameCell := icon + name
 
-	size := "—"
-	if !e.IsDir {
-		size = humanize.Bytes(e.Size)
-	}
+	// Directories now carry a real recursive subtree size, so render every entry's
+	// size unconditionally; an empty directory's 0 renders as "0 B".
+	size := humanize.Bytes(e.Size)
 	mod := "—"
 	if !e.ModTime.IsZero() {
 		mod = e.ModTime.Format("2006-01-02 15:04")

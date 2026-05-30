@@ -78,6 +78,24 @@ func TestSortedBrowseRowsOrders(t *testing.T) {
 	}
 }
 
+// With recursive directory sizes, directories now carry real (non-zero) sizes.
+// They must still group above files regardless of size — here a file (9999) is
+// larger than every directory — and order largest-first within the directory
+// block (big 5000 before small 10).
+func TestSortedBrowseRowsSizeDirsRealSizes(t *testing.T) {
+	in := []model.BrowseEntry{
+		{Path: "/small", Name: "small", IsDir: true, Size: 10},
+		{Path: "/big", Name: "big", IsDir: true, Size: 5000},
+		{Path: "/huge.txt", Name: "huge.txt", Size: 9999},
+		{Path: "/tiny.txt", Name: "tiny.txt", Size: 1},
+	}
+	got := browseRowPaths(sortedBrowseRows(in, browseSortSize))
+	want := []string{"/big", "/small", "/huge.txt", "/tiny.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("size order with real dir sizes = %v, want %v", got, want)
+	}
+}
+
 // Equal sort keys fall through to the case-insensitive name tie-break, so cycling
 // is reproducible (the order is total). Two files share a size and two share an
 // mtime; each pair must come out in name order.
