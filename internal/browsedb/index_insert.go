@@ -40,16 +40,27 @@ var dirRowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", dirInsertB
 
 // batchInsertSpec carries everything the shared batch-insert path needs that
 // differs between the node and dir families: the table name and column list, the
-// one-row placeholder group, the error-message prefix, and the full-batch row
-// count. Two values exist (nodeInsertSpec, dirInsertSpec); the shared code never
-// switches on which — all table-specific detail rides in the spec.
+// one-row placeholder group, the error-message prefix, the full-batch row count,
+// and the full-batch INSERT SQL (precomputed once by newBatchInsertSpec). Two
+// values exist (nodeInsertSpec, dirInsertSpec); the shared code never switches on
+// which — all table-specific detail rides in the spec.
 type batchInsertSpec struct {
 	table, columns, placeholder, errPrefix string
 	batchRows                              int
+	fullSQL                                string
 }
 
-var nodeInsertSpec = batchInsertSpec{"nodes", insertColumns, rowPlaceholder, "index", batchRows}
-var dirInsertSpec = batchInsertSpec{"dirs", dirInsertColumns, dirRowPlaceholder, "dir", dirBatchRows}
+// newBatchInsertSpec builds a spec and precomputes its full-batch INSERT SQL once
+// at package init, so cachedFullStmt prepares from a ready string rather than
+// rebuilding it on the first full batch of every transaction.
+func newBatchInsertSpec(table, columns, placeholder, errPrefix string, batchRows int) batchInsertSpec {
+	s := batchInsertSpec{table: table, columns: columns, placeholder: placeholder, errPrefix: errPrefix, batchRows: batchRows}
+	s.fullSQL = buildBatchInsertSQL(s, batchRows)
+	return s
+}
+
+var nodeInsertSpec = newBatchInsertSpec("nodes", insertColumns, rowPlaceholder, "index", batchRows)
+var dirInsertSpec = newBatchInsertSpec("dirs", dirInsertColumns, dirRowPlaceholder, "dir", dirBatchRows)
 
 // flush writes the buffered rows as one multi-row plain INSERT. Full batches
 // reuse a tx-scoped prepared statement; the final partial batch keeps its
@@ -125,15 +136,16 @@ func buildBatchInsertSQL(spec batchInsertSpec, n int) string {
 	return b.String()
 }
 
-// cachedFullStmt lazily prepares spec's full-batch INSERT through *cache and
-// reuses it on later calls within the transaction (so the SQL is built and
-// prepared at most once per tx, not per batch). On prepare failure it sets the
-// sticky itx.failed = "browsedb prepare <errPrefix>: %w" and returns it.
+// cachedFullStmt lazily prepares spec's full-batch INSERT (spec.fullSQL, built
+// once at package init) through *cache and reuses it on later calls within the
+// transaction, so the statement is prepared at most once per tx, not per batch.
+// On prepare failure it sets the sticky itx.failed = "browsedb prepare
+// <errPrefix>: %w" and returns it.
 func (itx *IndexTx) cachedFullStmt(ctx context.Context, spec batchInsertSpec, cache **sql.Stmt) (*sql.Stmt, error) {
 	if *cache != nil {
 		return *cache, nil
 	}
-	stmt, err := itx.tx.PrepareContext(ctx, buildBatchInsertSQL(spec, spec.batchRows))
+	stmt, err := itx.tx.PrepareContext(ctx, spec.fullSQL)
 	if err != nil {
 		itx.failed = fmt.Errorf("browsedb prepare %s: %w", spec.errPrefix, err)
 		return nil, itx.failed
