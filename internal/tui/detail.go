@@ -173,6 +173,105 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	return strings.Join(lines, "\n")
 }
 
+// snapInfoHeaderView is the title bar of the full snapshot-details modal: the
+// app name and the selected snapshot's short id, plus a dim close hint, modeled
+// on helpHeaderView. A background refresh can empty or replace the detail repo's
+// snapshots while the modal is open, so it renders a path-free fallback when the
+// open-time selection is gone rather than assuming it is still present.
+func (m Model) snapInfoHeaderView() string {
+	w, _ := m.effSize()
+	title := "resticscope · snapshot"
+	if s := m.selectedSnapshot(); s != nil {
+		title += " " + s.ShortID
+	}
+	return clip(m.spread(
+		m.styles.title.Render(title),
+		m.styles.dim.Render("i/esc close"),
+	), w)
+}
+
+// snapInfoBody renders the full per-snapshot record already in the model as a
+// label/value list: identity (id, time, host, user, tags, version) and, when the
+// summary is present, file counts, sizes, and the backup window. It surfaces
+// fields the detail sub-panel can't fit — notably Username — but adds no new
+// model fields (Paths is deliberately omitted, see the plan). It guards a nil
+// selection (a refresh can drop the snapshot while the modal is open), a nil
+// summary (pre-0.17), and zero backup timestamps so Go's zero time is never
+// formatted.
+func (m Model) snapInfoBody() string {
+	w, _ := m.effSize()
+	s := m.selectedSnapshot()
+	if s == nil {
+		return clip(m.styles.meta.Render("  no snapshot selected"), w)
+	}
+
+	ver := s.ProgramVersion
+	if ver == "" {
+		ver = "unknown version"
+	}
+
+	lines := []string{
+		m.field("ID", s.ID, w),
+		m.field("Time", s.Time.Format("2006-01-02 15:04:05"), w),
+		m.field("Host", s.Hostname, w),
+	}
+	if s.Username != "" {
+		lines = append(lines, m.field("User", s.Username, w))
+	}
+	if len(s.Tags) > 0 {
+		lines = append(lines, m.field("Tags", strings.Join(s.Tags, ", "), w))
+	}
+	lines = append(lines, m.field("Version", ver, w))
+
+	if sum := s.Summary; sum != nil {
+		lines = append(lines,
+			m.field("Files", snapInfoFiles(sum), w),
+			m.field("Size", snapInfoSize(sum), w),
+		)
+		// Render the backup window only when both timestamps are real and the
+		// duration resolves; otherwise show "unavailable" rather than Go's zero
+		// time.
+		if d, ok := model.SnapshotBackupDuration(*s); ok &&
+			!sum.BackupStart.IsZero() && !sum.BackupEnd.IsZero() {
+			window := sum.BackupStart.Format("2006-01-02 15:04:05") + " → " +
+				sum.BackupEnd.Format("2006-01-02 15:04:05") + " (" + humanize.Duration(d) + ")"
+			lines = append(lines, m.field("Backup", window, w))
+		} else {
+			lines = append(lines, m.field("Backup", "unavailable", w))
+		}
+	} else {
+		lines = append(lines, m.field("Summary", "no summary", w))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// snapInfoFiles renders the modal's Files line: new / changed / total, guarding
+// each nil pointer with an em-dash so a partial summary still reads cleanly.
+func snapInfoFiles(sum *model.SnapshotSummary) string {
+	count := func(p *uint64) string {
+		if p == nil {
+			return "—"
+		}
+		return fmt.Sprintf("%d", *p)
+	}
+	return fmt.Sprintf("%s new · %s changed · %s total",
+		count(sum.FilesNew), count(sum.FilesChanged), count(sum.TotalFilesProcessed))
+}
+
+// snapInfoSize renders the modal's Size line: the logical size processed plus the
+// deduped/packed bytes this run added, each guarded for an absent pointer.
+func snapInfoSize(sum *model.SnapshotSummary) string {
+	parts := []string{humanize.Bytes(sum.TotalBytesProcessed) + " logical"}
+	if sum.DataAdded != nil {
+		parts = append(parts, "+"+humanize.Bytes(*sum.DataAdded)+" added")
+	}
+	if sum.DataAddedPacked != nil {
+		parts = append(parts, humanize.Bytes(*sum.DataAddedPacked)+" packed")
+	}
+	return strings.Join(parts, " · ")
+}
+
 // snapshotChurn renders the per-backup churn line for the bottom panel. When
 // includeAdded is true the panel owns the added bytes (no Added column), so it
 // leads with "+X added (Y packed)"; when false the Added column already shows

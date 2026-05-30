@@ -914,6 +914,247 @@ func TestDetailSnapshotCursorNavigatesAndClamps(t *testing.T) {
 	}
 }
 
+// i opens the full snapshot-details modal, but only from the detail view and
+// only when a snapshot exists under the cursor.
+func TestSnapInfoOpensOnlyFromDetailWithSnapshot(t *testing.T) {
+	// From the list view, i does nothing (the binding is detail-scoped).
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("i"))
+	if m.view != listView {
+		t.Errorf("i from the list should not open snapshot info, view = %d", m.view)
+	}
+
+	// repo-b has no cached snapshots; i in its detail view must stay put.
+	m = newTestModel(t, detailApp(t))
+	m = update(t, m, press("j"))     // cursor: repo-a -> repo-b
+	m = update(t, m, press("enter")) // open repo-b detail (no snapshots)
+	m = update(t, m, press("i"))
+	if m.view != detailView {
+		t.Errorf("i with no snapshot should not open the modal, view = %d", m.view)
+	}
+
+	// repo-a has snapshots; i opens the modal.
+	m = newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	if m.view != snapInfoView {
+		t.Errorf("i from detail with a snapshot should open snapInfoView, view = %d", m.view)
+	}
+}
+
+// i, esc, and q all close the modal back to the detail view (not the list),
+// without setting quitting or emitting a command.
+func TestSnapInfoCloseKeysReturnToDetail(t *testing.T) {
+	for _, k := range []string{"i", "esc", "q"} {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter"))
+		m = update(t, m, press("i"))
+		if m.view != snapInfoView {
+			t.Fatalf("precondition: i should open snapInfoView, view = %d", m.view)
+		}
+		next, cmd := m.Update(press(k))
+		nm := next.(Model)
+		if nm.view != detailView {
+			t.Errorf("%q should close the modal to the detail view, view = %d", k, nm.view)
+		}
+		if nm.quitting {
+			t.Errorf("%q from the modal should not set quitting", k)
+		}
+		if cmd != nil {
+			t.Errorf("%q from the modal should emit no command", k)
+		}
+	}
+}
+
+// The snapshot-info modal is fully modal: every action key behind it — including
+// the help toggle ?, refresh, shell, browse, and enter — does nothing and leaves
+// the modal open.
+func TestSnapInfoSwallowsActionKeys(t *testing.T) {
+	for _, k := range []string{"?", "R", "r", "s", "b", "enter"} {
+		m := newTestModel(t, detailApp(t))
+		m = update(t, m, press("enter"))
+		m = update(t, m, press("i"))
+		next, cmd := m.Update(press(k))
+		nm := next.(Model)
+		if nm.view != snapInfoView {
+			t.Errorf("%q should not leave the snapshot-info modal, view = %d", k, nm.view)
+		}
+		if len(nm.pending) != 0 {
+			t.Errorf("%q should not start a refresh behind the modal: %v", k, nm.pending)
+		}
+		if cmd != nil {
+			t.Errorf("%q behind the modal should emit no command", k)
+		}
+	}
+}
+
+// ctrl+c still hard-quits from inside the modal.
+func TestSnapInfoCtrlCStillQuits(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if !next.(Model).quitting {
+		t.Error("ctrl+c should quit from the snapshot-info modal")
+	}
+	if cmd == nil {
+		t.Fatal("expected a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c did not produce tea.QuitMsg")
+	}
+}
+
+// The modal renders the full record in hand, including the newly surfaced
+// Username and every summary field, formatted from real data (no Go zero time).
+func TestSnapInfoRendersFullRecord(t *testing.T) {
+	a := detailApp(t)
+	cache := a.Cache.(stubCache)
+	state := cache.states["repo-a"]
+	state.Snapshots[2].Username = "backup-user" // id-newest, the cursor row
+	cache.states["repo-a"] = state
+
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+
+	view := m.View().Content
+	for _, want := range []string{
+		"snapshot s3",     // header short id
+		"i/esc close",     // close hint
+		"id-newest",       // full id
+		"backup-user",     // newly surfaced Username
+		"restic 0.18.1",   // version
+		"daily",           // tags
+		"12 new",          // files new
+		"34 changed",      // files changed
+		"4096 total",      // total files
+		"4.1 GiB logical", // logical size (4404019200 bytes)
+		"+5.0 MiB added",  // deduped bytes
+		"4.0 MiB packed",  // packed bytes
+		"28s",             // backup duration
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("snapshot-info modal missing %q\n---\n%s", want, view)
+		}
+	}
+}
+
+// A snapshot without a summary (pre-0.17) renders "no summary" rather than
+// panicking on the nil summary pointer.
+func TestSnapInfoNilSummary(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1,
+			Snapshots: []model.Snapshot{
+				{ID: "id-old", ShortID: "old", Time: testNow.Add(-time.Hour), Hostname: "h"},
+			},
+		},
+	})
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	if !strings.Contains(m.View().Content, "no summary") {
+		t.Errorf("modal should show 'no summary' for a summary-less snapshot\n---\n%s", m.View().Content)
+	}
+}
+
+// A non-nil summary with zero backup timestamps must not format Go's zero time;
+// it shows the backup window as unavailable instead.
+func TestSnapInfoZeroBackupWindow(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1,
+			Snapshots: []model.Snapshot{
+				{ID: "id-z", ShortID: "z", Time: testNow.Add(-time.Hour), Hostname: "h",
+					Summary: &model.SnapshotSummary{TotalBytesProcessed: 1024}},
+			},
+		},
+	})
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	view := m.View().Content
+	if strings.Contains(view, "0001-01-01") || strings.Contains(view, "00:00:00") {
+		t.Errorf("modal formatted Go zero time for an empty backup window\n---\n%s", view)
+	}
+	if !strings.Contains(view, "unavailable") {
+		t.Errorf("modal should mark the missing backup window as unavailable\n---\n%s", view)
+	}
+}
+
+// A backup that crosses midnight (or spans days) must render the end timestamp
+// with its own full date, not a bare clock time, so the completion date is never
+// ambiguous.
+func TestSnapInfoBackupWindowCrossesDate(t *testing.T) {
+	start := time.Date(2026, 5, 23, 23, 30, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 24, 0, 10, 0, 0, time.UTC)
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name: "repo-a", RefreshedAt: testNow, LastSnapshot: start, SnapshotCount: 1,
+			Snapshots: []model.Snapshot{
+				{ID: "id-cross", ShortID: "x", Time: start, Hostname: "h",
+					Summary: &model.SnapshotSummary{
+						TotalBytesProcessed: 1024, BackupStart: start, BackupEnd: end,
+					}},
+			},
+		},
+	})
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	view := m.View().Content
+	if !strings.Contains(view, "2026-05-23 23:30:00 → 2026-05-24 00:10:00") {
+		t.Errorf("modal should show the end date on a midnight-crossing backup\n---\n%s", view)
+	}
+}
+
+// A refresh that empties the detail repo's snapshots while the modal is open must
+// not panic; it renders the path-free nil-selection fallback.
+func TestSnapInfoSurvivesSnapshotDropDuringRefresh(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	if m.view != snapInfoView {
+		t.Fatalf("precondition: modal should be open, view = %d", m.view)
+	}
+
+	// A background refresh replaces repo-a with an empty snapshot list.
+	emptied := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: emptied})
+
+	view := m.View().Content // must not panic
+	if !strings.Contains(view, "no snapshot selected") {
+		t.Errorf("modal should render the nil-selection fallback after the snapshot drops\n---\n%s", view)
+	}
+	if strings.Contains(stripANSI(m.snapInfoHeaderView()), "snapshot id-") {
+		t.Errorf("header should drop the stale short id when no snapshot remains")
+	}
+}
+
+// The full `?` help overlay opened from the detail view documents the i binding
+// under the Detail section.
+func TestHelpOverlayDocumentsSnapInfo(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	_, right := m.helpColumns()
+	var detail helpSection
+	for _, s := range right {
+		if s.title == "Detail" {
+			detail = s
+		}
+	}
+	found := false
+	for _, e := range detail.entries {
+		if e.keys == "i" && e.desc == "snapshot info" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Detail help section should document 'i snapshot info', got %+v", detail.entries)
+	}
+}
+
 func TestShellKeyReturnsCommand(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	_, cmd := m.Update(press("s"))

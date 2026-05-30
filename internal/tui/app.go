@@ -28,6 +28,7 @@ const (
 	detailView
 	browseView
 	helpView
+	snapInfoView
 )
 
 // Model is the root Bubble Tea model. It drives both the list view and the
@@ -242,8 +243,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleBrowseSearchKey(msg)
 	}
 
-	// The hard quit, the context-aware q, and the help overlay toggle are matched
-	// from every view, including the overlay itself.
+	// The hard quit and the context-aware q are matched from every view,
+	// including the modal overlays, so ctrl+c always exits and q always closes a
+	// nested view back toward the list. They sit above the snapshot-info guard so
+	// that modal keeps those two escape hatches.
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
 		// Unconditional hard quit from anywhere.
@@ -264,7 +267,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.goBack(), nil
-	case key.Matches(msg, m.keys.Help):
+	}
+
+	// The snapshot-info overlay is modal and, unlike the help overlay, swallows
+	// the help toggle too: only Back (esc) and SnapInfo (i) close it; every other
+	// key — including ?, R, r, s, b, and enter — does nothing behind it. This must
+	// precede the global Help toggle below so ? cannot open help over the modal.
+	if m.view == snapInfoView {
+		if key.Matches(msg, m.keys.Back) || key.Matches(msg, m.keys.SnapInfo) {
+			m = m.goBack()
+		}
+		return m, nil
+	}
+
+	// The help overlay toggle is matched from every other view, including the help
+	// overlay itself.
+	if key.Matches(msg, m.keys.Help) {
 		return m.toggleHelp(), nil
 	}
 
@@ -339,6 +357,8 @@ func (m Model) goBack() Model {
 		m.view = listView
 	case helpView:
 		m.view = m.prevView
+	case snapInfoView:
+		m.view = detailView
 	}
 	return m
 }
@@ -468,6 +488,13 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.snapCursor = clampCursor(m.snapCursor-m.detailSnapVisible(), m.snapCount())
 	case key.Matches(msg, m.keys.PageDown):
 		m.snapCursor = clampCursor(m.snapCursor+m.detailSnapVisible(), m.snapCount())
+	case key.Matches(msg, m.keys.SnapInfo):
+		// i opens the full snapshot-details modal for the selected snapshot. It
+		// opens only from detail, so goBack returns straight here — no prevView
+		// dance is needed.
+		if m.selectedSnapshot() != nil {
+			m.view = snapInfoView
+		}
 	case key.Matches(msg, m.keys.Browse):
 		// b opens the in-app file browser for the selected snapshot, kicking off
 		// the one-time index of its namespace.
