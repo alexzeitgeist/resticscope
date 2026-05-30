@@ -82,10 +82,6 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Browse), "browse snapshot files"},
 			{keyLabel(k.Shell), "shell with repo env"},
 			{keyLabel(k.Refresh), "refresh this repo"},
-			// Both keys back out of the detail view: Back (esc) and the
-			// context-aware Quit (q, via goBack). The full reference shows both,
-			// derived from the live bindings, so it documents q's back role that
-			// the compact footer abbreviates to just "q".
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to the list"},
 		}},
 		{"Browse", []helpEntry{

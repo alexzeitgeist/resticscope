@@ -1,9 +1,3 @@
-// Package cache persists one model.RepoState JSON file per repository under the
-// cache directory. It is the only state resticscope writes to disk.
-//
-// Two invariants matter most: writes are atomic (write a temp file, then
-// rename), and the files never contain credentials. The second is structural —
-// RepoState carries no secret fields — but the tests assert it anyway.
 package cache
 
 import (

@@ -123,9 +123,6 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 	cmd.Stderr = stderr
 
 	if interactive {
-		// While the shell holds the foreground, terminal signals (Ctrl-C) should
-		// reach the shell, not terminate resticscope. Catch and discard them for
-		// the duration; the shell's own handling does the right thing.
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt)
 		defer func() {

@@ -104,10 +104,6 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	now := a.Clock.Now()
 	params := a.statusParams(r)
 
-	// The prior cache entry is the last-known-good state to fall back on. A
-	// miss/corrupt entry (or any load error) just means there is nothing to
-	// preserve: prior stays the zero value and fail() degrades to the original
-	// "empty error state" behavior.
 	prior, _ := a.Cache.Load(ctx, r.Name)
 
 	// fail builds the state for an unsuccessful refresh. It keeps prior's observed
@@ -137,10 +133,6 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 
 	snaps, err := a.Restic.Snapshots(ctx, target, creds)
 	if err != nil {
-		// Any restic failure (including a lock) is recorded as an error against
-		// the preserved data. The lock-age branch in EvaluateStatus stays
-		// unit-tested but dormant here; populating LockedSince for it remains
-		// future work.
 		return fail(err.Error())
 	}
 

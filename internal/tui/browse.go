@@ -15,16 +15,6 @@ import (
 	"resticscope/internal/model"
 )
 
-// browse.go is the TUI's in-app snapshot file browser: the controller that
-// starts/cancels indexing and directory listings, and the renderer for
-// browseView. The first time a snapshot is browsed its whole namespace is
-// streamed once into the session-scoped encrypted store (app.Browse); all later
-// navigation is a SQL directory query. The on-screen rows (m.browseRows) hold
-// filenames only for the lifetime of the model and are cleared on leaving browse;
-// the underlying store is encrypted at rest with an ephemeral in-memory key and
-// torn down on clean exit. Leaving browse clears the UI rows but NOT the session
-// DB, so returning to an already-indexed snapshot in the same run is instant.
-
 // browseMetaRows is the number of fixed lines the browse body renders above the
 // scrolling entry list (the current-path line and the entry-count/indexing
 // summary).
@@ -86,9 +76,6 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 
 	indexCmd := func() tea.Msg {
 		err := m.app.IndexSnapshot(bctx, repo, snapshotID, func(n int) {
-			// Non-blocking coalesced send: the restic stdout consumer must never
-			// stall behind a full UI channel. If the buffer is full, drop this tick;
-			// a later tick (or the final count) carries a fresher number.
 			select {
 			case progress <- n:
 			default:
@@ -185,9 +172,6 @@ func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 		m = m.supersedeBrowse()
 		m.browseLoading = false
 		m.browseDir = dir
-		// Install the listing under the active sort while the cache keeps the
-		// canonical rows (sortedBrowseRows copies for non-name modes), so the chosen
-		// order persists across navigation without mutating the cache.
 		m.browseRows = sortedBrowseRows(rows, m.browseSortMode)
 		m.browseCursor = m.indexOfBrowsePath(selectPath)
 		return m, nil
@@ -218,9 +202,6 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 		return m
 	}
 	m.browseDir = msg.dir
-	// Memoize the canonical listing so a later return to this directory is served
-	// synchronously (see beginListDir). The snapshot is immutable, so the entry
-	// never needs invalidation; clearBrowse drops the whole map on leaving browse.
 	if m.browseCache == nil {
 		m.browseCache = make(map[string][]model.BrowseEntry)
 	}
@@ -286,9 +267,6 @@ func (m Model) clearBrowse() Model {
 	m.browseLoading = false
 	m.browseCancel = nil
 	m.browseProgress = nil
-	// The search overlay carries filenames/paths too, so zero every field here on
-	// leaving browse (non-negotiable #1: no filenames linger in the model) — including
-	// a parked (suspended) result set, the one place search state outlives the overlay.
 	m = m.exitBrowseSearch()
 	return m
 }
@@ -300,10 +278,6 @@ func (m Model) clearBrowse() Model {
 func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
-		// esc is dual-role in browse: while a search result set is parked (the user
-		// jumped to a match with Enter) it restores that search overlay rather than
-		// leaving browse, so the modal stack pops one level at a time. q still leaves
-		// browse outright (handleKey's Quit case → browseBack), the quick escape hatch.
 		if m.browseSearchSuspended {
 			return m.restoreBrowseSearch(), nil
 		}
@@ -449,10 +423,6 @@ func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 	if strings.TrimSpace(m.browseSearchQuery) == "" {
 		m = m.supersedeBrowse()
 		m = m.clearBrowseSearchResults()
-		// The (empty) rows belong to the current query, so the accept gate matches:
-		// Enter on a whitespace-only query then behaves like an empty one (no
-		// selection → cancel), not a stale no-op. Setting this to "" instead would
-		// leave a literal space query gated out of Enter.
 		m.browseSearchShownQuery = m.browseSearchQuery
 		return m, nil
 	}
@@ -663,8 +633,6 @@ func (m Model) indexOfBrowsePath(p string) int {
 	return 0
 }
 
-// --- rendering ---
-
 func (m Model) browseHeaderView() string {
 	w, _ := m.effSize()
 	label := "browse: " + m.browseRepo
@@ -672,9 +640,6 @@ func (m Model) browseHeaderView() string {
 		label += " · " + id
 	}
 	left := m.styles.title.Render(label)
-	// The back affordance is contextual: while the search input is open q is literal
-	// text and esc cancels, so "q back" would mislead; while a search is parked behind
-	// a jumped-to listing, esc returns to those results (q still leaves browse).
 	right := m.styles.dim.Render("q back")
 	switch {
 	case m.browseSearching:
@@ -689,15 +654,9 @@ func (m Model) browseBody() string {
 	w, _ := m.effSize()
 	pathLine := clip(m.styles.label.Render("Path")+m.styles.name.Render(browseDirLabel(m.browseDir)), w)
 	summary := clip(m.styles.meta.Render("  "+m.browseSummaryLine()), w)
-	// While the one-time index is still running there is no directory listing yet;
-	// show only the path and the indexing summary (which keeps the cancel
-	// affordance visible). Once indexed, the directory list joins them.
 	if m.browseLoading && !m.browseIndexed {
 		return strings.Join([]string{pathLine, summary}, "\n")
 	}
-	// In global search the listing is replaced by the ranked matches, which show
-	// each result's full path (not just its name) in the flex column. The path
-	// line still names the directory esc will return to.
 	if m.browseSearching {
 		return strings.Join([]string{pathLine, summary, m.browseSearchList(w)}, "\n")
 	}
@@ -796,9 +755,6 @@ func (m Model) browseTableList(w int, rows []model.BrowseEntry, cursor int, show
 	if showPath {
 		flexLabel = "Path"
 	}
-	// The directory listing (showPath is false) marks its active sort column in the
-	// header; the fuzzy search results are relevance-ranked, not column-sorted, so
-	// they never carry an arrow.
 	header := clip(m.styles.dim.Render(browseHeaderRow(l, flexLabel, m.browseSortMode, !showPath)), tw)
 
 	total := len(rows)

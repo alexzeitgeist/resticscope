@@ -70,9 +70,6 @@ func (c *Client) classify(ctx context.Context, op string, err error, stderr []by
 	}
 
 	if errors.Is(ctx.Err(), context.Canceled) {
-		// Return a typed *Error (not the bare sentinel) so classify's contract —
-		// "always yields an *resticx.Error" — holds for every caller. It still
-		// unwraps to context.Canceled, so errors.Is(err, context.Canceled) works.
 		return &Error{Kind: KindCanceled, Op: op, wrapped: ctx.Err()}
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {

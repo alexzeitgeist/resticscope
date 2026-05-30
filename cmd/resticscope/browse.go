@@ -14,13 +14,6 @@ import (
 	"resticscope/internal/model"
 )
 
-// browse.go wires the session-scoped, encrypted browse store into the TUI. The
-// encryption key is a random 32-byte value that lives ONLY in memory — it is
-// never derived from the repo password and never written to disk, the cache, or
-// any log. The DB and its session directory are created lazily on the first
-// browse and torn down on clean exit; a crash leftover is unreadable (the key is
-// gone with the process) and is reclaimed by conservative startup cleanup.
-
 // browseStore adapts *browsedb.DB to app.BrowseStore. It bridges BeginIndex's
 // concrete *browsedb.IndexTx to the app.IndexWriter seam and, on Close, tears down
 // the whole session — pool, advisory lock, and the encrypted session directory —

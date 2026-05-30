@@ -255,10 +255,6 @@ func (m Model) footerView() string {
 		// is obvious. The "/<query>" stays unstyled so it reads as one token.
 		return clip("/"+m.filter+m.styles.dim.Render("▏"), w) + "\n" + help
 	case m.browseSearching:
-		// The global filename search mirrors the filter prompt, with the live
-		// match count (or the result-cap note) trailing it. A path-free search
-		// error takes the count's place in error styling — placed before statusMsg
-		// so it is not hidden behind input-mode precedence.
 		prompt := "/" + m.browseSearchQuery + m.styles.dim.Render("▏")
 		summary := m.browseSearchSummary()
 		if m.browseSearchErr != "" {

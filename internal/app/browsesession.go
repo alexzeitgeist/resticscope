@@ -152,10 +152,6 @@ func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseSto
 // Close cancels any in-flight store op, waits for it to unwind, then closes the
 // underlying store if it was ever opened. It is idempotent.
 func (s *BrowseSession) Close() error {
-	// Mark closed and grab the in-flight op's cancel together under mu, so a
-	// concurrent beginOp either observes closed (and aborts) or has already
-	// registered its cancel here (and we interrupt it). Cancel outside the lock,
-	// then wait on opMu for the op to release the store.
 	s.mu.Lock()
 	s.closed = true
 	cancel := s.inflight
@@ -198,12 +194,6 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 
-	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE beginOp
-	// so it runs LAST (after release has dropped opMu): running it under the session
-	// lock would stall a concurrent Close/ListDir for the whole pause. It is gated
-	// on a committed large index only — on a cancel/error path the tx is discarded
-	// and ordinary GC reclaims the garbage, so a STW pause there would just stutter
-	// interactive navigation for no lasting benefit.
 	trim := false
 	defer func() {
 		if trim {
@@ -267,12 +257,6 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		// failures; all leave the deferred rollback to discard the tx.
 		return err
 	}
-	// The stream ended without error (whole tree emitted, or a clean-but-incomplete
-	// timeout). Emit the exact final count now, before the completeness branch, so
-	// it lands on both the commit and the ErrBrowseIncomplete path: the live ticks
-	// are throttled and sampled only every browseProgressCheckEvery nodes, so the
-	// last one can lag the true total. Delivery stays best-effort (the TUI's send is
-	// non-blocking), which is fine for a display-only counter.
 	if progress != nil {
 		progress(tx.Count())
 	}

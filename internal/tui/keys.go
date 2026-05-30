@@ -27,17 +27,10 @@ type keyMap struct {
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
 
-	// Filter-input-mode bindings. They are matched only while the user is typing
-	// a filter (m.filtering), so they may safely reuse keys like enter and esc
-	// that mean something else in the normal list view.
 	FilterAccept key.Binding
 	FilterCancel key.Binding
 	FilterDelete key.Binding
 
-	// Search-input-mode bindings. Matched only while the global filename search is
-	// open (m.browseSearching); they reuse enter/esc like the filter bindings but
-	// carry search-accurate help text — Enter opens the selected match, esc cancels
-	// the search and restores the listing (it does not "clear" a query in place).
 	SearchAccept key.Binding
 	SearchCancel key.Binding
 }

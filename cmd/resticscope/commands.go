@@ -64,9 +64,6 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		a.Restic = client
 		states, err := a.RefreshAll(ctx)
 		if err != nil {
-			// The live states are still valid. A persistence failure must not
-			// silently downgrade us to stale cache, so warn and render the
-			// fresh results directly; the exit code reflects live health.
 			fmt.Fprintf(stderr, "refresh: %v\n", err)
 		}
 		rows := a.RowsFromStates(states)
@@ -229,10 +226,6 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Restic:  client,
 	}
 
-	// Reclaim demonstrably-stale browse session dirs left by crashed prior runs
-	// before opening our own. It is lock-aware and never removes a live sibling,
-	// and the leftovers are unreadable anyway (their key died with the process),
-	// so a failure here is logged and ignored.
 	if err := browsedb.CleanStaleSessions(cfg.Global.CacheDir); err != nil {
 		logger.Warn("browse stale-session cleanup", "err", err)
 	}

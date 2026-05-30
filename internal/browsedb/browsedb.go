@@ -215,21 +215,8 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 			return fmt.Errorf("hexkey: %w", err)
 		}
 		for _, p := range []string{
-			// adiantum encrypts in fixed 4096-byte blocks keyed on file offset
-			// (vfs/adiantum/hbsh.go:72), so one page == one block — the most aligned
-			// choice and zero crypto saving from a larger page. Set explicitly as a
-			// guard.
 			"PRAGMA page_size = 4096",
-			// temp_store=memory keeps any transient B-tree off a temp file. Index
-			// maintenance is incremental (see schemaIndex), so no large sorter runs
-			// here — the heavy spill goes to the encrypted main DB via the page cache.
 			"PRAGMA temp_store = memory",
-			// journal_mode=DELETE keeps the rollback journal on disk (encrypted by the
-			// adiantum VFS), NOT in the wasm heap. The driver's SQLite runs in a wasm
-			// module capped at 256 MiB (ncruces sqlite3_wrap.Memory{Max:4096}); a
-			// MEMORY journal for a multi-million-row index tx would exhaust that heap
-			// and the wrapper panics on the failed alloc (alloc.go OOMErr), so the
-			// journal must stay off-heap.
 			"PRAGMA journal_mode = DELETE",
 			"PRAGMA synchronous = OFF",
 			// 64 MiB cache: dirty pages spill to the encrypted main DB file as the
@@ -715,9 +702,6 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 		_ = tx.Rollback()
 		return nil, err
 	}
-	// Capture the first did before any dir is reserved: within this tx all dids are
-	// contiguous from firstDID, so subtreeSizes can be indexed by did-firstDID. The
-	// root is the first dir created below, so firstDID == rootDID.
 	itx.firstDID = itx.nextDID
 	itx.dirs = make(map[string]int64, 1024)
 	rootDID, err := itx.ensureCleanDir(ctx, "/")
@@ -864,11 +848,6 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 		}
 		itx.cacheParent(p, did)
 	} else {
-		// Accumulate file (and symlink/special) bytes into the immediate parent's
-		// subtree total; dir nodes are skipped so a directory's size is "bytes of
-		// files beneath it", not its own ~0 inode size. The fold at Commit rolls
-		// these into every ancestor. parentDID is a dir resolved in this tx, so
-		// parentDID-firstDID is always a valid accumulator index.
 		itx.subtreeSizes[parentDID-itx.firstDID] += n.Size
 	}
 	row := nodeRow{
@@ -1083,9 +1062,6 @@ func (itx *IndexTx) Commit(ctx context.Context) error {
 		_ = itx.tx.Rollback()
 		return err
 	}
-	// Mark the reserved row indexed. The sid was reserved in this tx, so this is an
-	// UPDATE of our own row — no PK conflict path; IsIndexed/ListDir gate on the now
-	// non-NULL indexed_at_unix.
 	if _, err := itx.tx.ExecContext(ctx,
 		`UPDATE snapshots SET entries=?, indexed_at_unix=? WHERE sid=?`,
 		itx.insertedRows, time.Now().Unix(), itx.sid); err != nil {

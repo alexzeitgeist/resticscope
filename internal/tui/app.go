@@ -1,8 +1,3 @@
-// Package tui is resticscope's Bubble Tea front end. It is a thin
-// renderer/controller over the headless internal/app core: it holds no domain
-// logic of its own, only view state (cursor, which repos are refreshing) and
-// the commands that drive app.RefreshRow concurrently. Per the engineering
-// rules it is tested via state transitions, not pixels.
 package tui
 
 import (
@@ -58,11 +53,6 @@ type Model struct {
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 
-	// Browse state. The on-screen rows are session-only — they are never persisted
-	// to the cache, RepoState, or any log, and leaving browse clears them. The
-	// underlying filenames live only in the session-scoped encrypted store
-	// (app.Browse), which survives until the app exits so returning to an
-	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
 	browseRows       []model.BrowseEntry // the current directory's children, or nil
 	browseRepo       string              // repo being browsed (pins the action target)
 	browseSnapshot   string              // snapshot id being browsed
@@ -87,13 +77,6 @@ type Model struct {
 	// snapshot's "/" can never serve another's.
 	browseCache map[string][]model.BrowseEntry
 
-	// Global filename search state, kept entirely SEPARATE from the directory
-	// listing above so cancelling search (esc) restores the prior listing untouched.
-	// Enter does not exit the search: it SUSPENDS it (browseSearchSuspended), keeping
-	// the query/rows/cursor so esc from the jumped-to listing can restore them. The
-	// rows hold full paths/filenames for the lifetime of the model only; clearBrowse
-	// zeros every field here on leaving browse (non-negotiable #1: no filenames linger
-	// once the user leaves browse).
 	browseSearching        bool                // true while the search input is open
 	browseSearchSuspended  bool                // a search result set is parked behind a jumped-to listing; esc restores it
 	browseSearchQuery      string              // the live search query
@@ -176,11 +159,6 @@ func (m Model) Init() tea.Cmd {
 			cmds = append(cmds, m.refreshCmd(name))
 		}
 	}
-	// The spinner is only visible while a repo is refreshing, so run its tick
-	// loop only when one is pending (refresh_on_open seeds pending in newModel).
-	// Leaving it ticking at idle would re-render a hidden frame 12×/second and
-	// burn CPU for nothing; Update stops the loop when pending drains and the
-	// refresh keys restart it.
 	if len(m.pending) > 0 {
 		cmds = append(cmds, m.spinner.Tick)
 	}
@@ -211,9 +189,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		// Stop the tick loop once nothing is refreshing: the spinner glyph is
-		// hidden when no repo is pending, so re-arming would just re-render an
-		// invisible frame 12×/second. A refresh key restarts it (see handleKey).
 		if len(m.pending) == 0 {
 			return m, nil
 		}
@@ -234,10 +209,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
-	// While the global filename search is open, every key feeds it too (so "q",
-	// "s", "?", "h", "l" are literal text or cursor moves, never view actions);
-	// only enter/esc/ctrl+c escape it. This guard sits above the global quit/help
-	// switch so the search input is fully modal, like the list filter above.
 	if m.browseSearching {
 		return m.handleBrowseSearchKey(msg)
 	}
@@ -251,10 +222,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Quit):
-		// q quits only on the main list; on any nested view it steps back one
-		// screen like esc, so repeated q walks home and then exits. Browse needs a
-		// load-aware back (cancel-and-stay during a load-more), so it routes there
-		// rather than through the generic goBack.
 		if m.view == browseView {
 			return m.browseBack(), nil
 		}
@@ -508,9 +475,6 @@ func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
 	args := sess.InteractiveArgs()
 	c := exec.Command(args[0], args[1:]...)
 	c.Env = sess.Env
-	// tea.ExecProcess drops out of the alt-screen, attaches the child to the
-	// real terminal, and restores the TUI on exit. Cleanup removes the temp
-	// password file once the shell is gone.
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		_ = sess.Cleanup()
 		return shellExitedMsg{err: err}
@@ -536,9 +500,6 @@ func (m Model) startRefresh(name string) tea.Cmd {
 
 func (m Model) refreshCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		// Bound concurrency so a refresh-all doesn't spawn one restic process
-		// per repo at once and trip Hetzner's 503 throttling (plan §10). Never
-		// block past quit: a cancelled ctx abandons the queued slot.
 		select {
 		case m.sem <- struct{}{}:
 		case <-m.ctx.Done():
