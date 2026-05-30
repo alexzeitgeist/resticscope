@@ -15,11 +15,6 @@ import (
 // subtracts it from the height to size the scrolling snapshot window.
 const detailMetaRows = 7
 
-// detailSnapDetailRows is the fixed height of the selected-snapshot sub-panel
-// (its heading plus two clipped field lines). detailSnapVisible subtracts it,
-// like detailMetaRows, so the snapshot window stays correctly sized.
-const detailSnapDetailRows = 3
-
 // snapIDWidth is the fixed width of the short-id column in the snapshot table;
 // restic short ids are 8 hex chars. snapHeader, snapCells, and snapshotLayout all
 // reserve exactly this width so the columns stay aligned.
@@ -129,14 +124,14 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 	return strings.Join(lines, "\n")
 }
 
-// snapshotDetail renders a fixed-height sub-panel describing the snapshot under
+// snapshotDetail renders a compact sub-panel describing the snapshot under
 // the cursor — the per-backup data restic records that isn't already a table
-// column: full id, restic version, packed size, and file counts, plus the
-// duration and added bytes only while their columns are off (snapshotLayout decides,
-// so columns and panel never duplicate or drop a fact). detailBody calls it only
-// when the repo has snapshots and the panel can fit. Every value is clipped to
-// one line, so the height is always detailSnapDetailRows and the snapshot window
-// above stays correctly sized.
+// column: full id, restic version, username, backup window, packed size, and
+// file counts, plus added bytes only while their column is off (snapshotLayout
+// decides, so columns and panel never duplicate or drop that fact). detailBody
+// calls it only when the repo has snapshots and the panel can fit. Every value
+// is clipped to one line; detailSnapDetailRows mirrors the conditional rows so
+// the snapshot window above stays correctly sized.
 func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	s := m.selectedSnapshotFrom(snaps)
 	if s == nil {
@@ -149,15 +144,14 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 		ver = "unknown version"
 	}
 
-	// Duration lives in the Took column when it's present; surface it in the
-	// heading only when it isn't, so it's never shown twice or lost.
+	backupWindow, hasBackupWindow := snapshotBackupWindow(*s)
+
+	// Duration lives in the backup-window row when it is available, and otherwise
+	// in the Took column when that column is present. Surface it in the heading
+	// only when neither place already owns it.
 	heading := fmt.Sprintf("Selected · %s · %s", s.ShortID, ver)
-	if !l.showTook {
-		dur := "—"
-		if d, ok := model.SnapshotBackupDuration(*s); ok {
-			dur = humanize.Duration(d)
-		}
-		heading += " · took " + dur
+	if !l.showTook && !hasBackupWindow {
+		heading += " · took " + snapshotDurationLabel(*s)
 	}
 
 	churn := "no summary"
@@ -168,108 +162,35 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	lines := []string{
 		clip(m.styles.heading.Render(heading), width),
 		m.field("ID", s.ID, width),
-		m.field("Churn", churn, width),
-	}
-	return strings.Join(lines, "\n")
-}
-
-// snapInfoHeaderView is the title bar of the full snapshot-details modal: the
-// app name and the selected snapshot's short id, plus a dim close hint, modeled
-// on helpHeaderView. A background refresh can empty or replace the detail repo's
-// snapshots while the modal is open, so it renders a path-free fallback when the
-// open-time selection is gone rather than assuming it is still present.
-func (m Model) snapInfoHeaderView() string {
-	w, _ := m.effSize()
-	title := "resticscope · snapshot"
-	if s := m.selectedSnapshot(); s != nil {
-		title += " " + s.ShortID
-	}
-	return clip(m.spread(
-		m.styles.title.Render(title),
-		m.styles.dim.Render("i/esc close"),
-	), w)
-}
-
-// snapInfoBody renders the full per-snapshot record already in the model as a
-// label/value list: identity (id, time, host, user, tags, version) and, when the
-// summary is present, file counts, sizes, and the backup window. It surfaces
-// fields the detail sub-panel can't fit — notably Username — but adds no new
-// model fields (Paths is deliberately omitted, see the plan). It guards a nil
-// selection (a refresh can drop the snapshot while the modal is open), a nil
-// summary (pre-0.17), and zero backup timestamps so Go's zero time is never
-// formatted.
-func (m Model) snapInfoBody() string {
-	w, _ := m.effSize()
-	s := m.selectedSnapshot()
-	if s == nil {
-		return clip(m.styles.meta.Render("  no snapshot selected"), w)
-	}
-
-	ver := s.ProgramVersion
-	if ver == "" {
-		ver = "unknown version"
-	}
-
-	lines := []string{
-		m.field("ID", s.ID, w),
-		m.field("Time", s.Time.Format("2006-01-02 15:04:05"), w),
-		m.field("Host", s.Hostname, w),
 	}
 	if s.Username != "" {
-		lines = append(lines, m.field("User", s.Username, w))
+		lines = append(lines, m.field("User", s.Username, width))
 	}
-	if len(s.Tags) > 0 {
-		lines = append(lines, m.field("Tags", strings.Join(s.Tags, ", "), w))
+	if hasBackupWindow {
+		lines = append(lines, m.field("Backup", backupWindow, width))
 	}
-	lines = append(lines, m.field("Version", ver, w))
-
-	if sum := s.Summary; sum != nil {
-		lines = append(lines,
-			m.field("Files", snapInfoFiles(sum), w),
-			m.field("Size", snapInfoSize(sum), w),
-		)
-		// Render the backup window only when both timestamps are real and the
-		// duration resolves; otherwise show "unavailable" rather than Go's zero
-		// time.
-		if d, ok := model.SnapshotBackupDuration(*s); ok &&
-			!sum.BackupStart.IsZero() && !sum.BackupEnd.IsZero() {
-			window := sum.BackupStart.Format("2006-01-02 15:04:05") + " → " +
-				sum.BackupEnd.Format("2006-01-02 15:04:05") + " (" + humanize.Duration(d) + ")"
-			lines = append(lines, m.field("Backup", window, w))
-		} else {
-			lines = append(lines, m.field("Backup", "unavailable", w))
-		}
-	} else {
-		lines = append(lines, m.field("Summary", "no summary", w))
-	}
-
+	lines = append(lines, m.field("Churn", churn, width))
 	return strings.Join(lines, "\n")
 }
 
-// snapInfoFiles renders the modal's Files line: new / changed / total, guarding
-// each nil pointer with an em-dash so a partial summary still reads cleanly.
-func snapInfoFiles(sum *model.SnapshotSummary) string {
-	count := func(p *uint64) string {
-		if p == nil {
-			return "—"
-		}
-		return fmt.Sprintf("%d", *p)
+func snapshotDurationLabel(s model.Snapshot) string {
+	if d, ok := model.SnapshotBackupDuration(s); ok {
+		return humanize.Duration(d)
 	}
-	return fmt.Sprintf("%s new · %s changed · %s total",
-		count(sum.FilesNew), count(sum.FilesChanged), count(sum.TotalFilesProcessed))
+	return "—"
 }
 
-// snapInfoSize renders the modal's Size line: the logical size processed plus the
-// deduped/packed bytes this run added, each guarded for an absent pointer.
-func snapInfoSize(sum *model.SnapshotSummary) string {
-	parts := []string{humanize.Bytes(sum.TotalBytesProcessed) + " logical"}
-	if sum.DataAdded != nil {
-		parts = append(parts, "+"+humanize.Bytes(*sum.DataAdded)+" added")
+func snapshotBackupWindow(s model.Snapshot) (string, bool) {
+	if s.Summary == nil {
+		return "", false
 	}
-	if sum.DataAddedPacked != nil {
-		parts = append(parts, humanize.Bytes(*sum.DataAddedPacked)+" packed")
+	d, ok := model.SnapshotBackupDuration(s)
+	if !ok {
+		return "", false
 	}
-	return strings.Join(parts, " · ")
+	const layout = "2006-01-02 15:04:05"
+	return s.Summary.BackupStart.Format(layout) + " → " +
+		s.Summary.BackupEnd.Format(layout) + " (" + humanize.Duration(d) + ")", true
 }
 
 // snapshotChurn renders the per-backup churn line for the bottom panel. When
@@ -511,6 +432,21 @@ func (m Model) detailWindowNoteVisible(withSnapDetail bool) bool {
 	return h >= m.detailOverhead(withSnapDetail, true)+1
 }
 
+func (m Model) detailSnapDetailRows() int {
+	s := m.selectedSnapshot()
+	if s == nil {
+		return 0
+	}
+	rows := 3 // heading, ID, Churn
+	if s.Username != "" {
+		rows++
+	}
+	if _, ok := snapshotBackupWindow(*s); ok {
+		rows++
+	}
+	return rows
+}
+
 func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 	overhead := headerRows + 2*gapRows + m.footerRows() +
 		detailMetaRows + // the seven meta lines
@@ -522,7 +458,7 @@ func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 	}
 	if withSnapDetail {
 		overhead += 1 + // the blank line between the table and the snapshot sub-panel
-			detailSnapDetailRows // the selected-snapshot sub-panel
+			m.detailSnapDetailRows() // the selected-snapshot sub-panel
 	}
 	return overhead
 }

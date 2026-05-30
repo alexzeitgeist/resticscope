@@ -15,7 +15,6 @@ type keyMap struct {
 	Enter      key.Binding
 	Back       key.Binding
 	Shell      key.Binding
-	SnapInfo   key.Binding // detail: open the full snapshot-details modal
 	Browse     key.Binding
 	Parent     key.Binding // browse: step to the parent directory (backspace/left)
 	Open       key.Binding // browse: open the selected directory (right/l), alias for enter
@@ -56,7 +55,6 @@ func defaultKeys() keyMap {
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
-		SnapInfo:   key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "snapshot info")),
 		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
 		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
 		Open:       key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "open")),
@@ -105,10 +103,10 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.SnapInfo, k.Shell, k.Browse, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Browse, k.Refresh, k.Back}
 	case browseView:
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Search, k.Sort, k.Shell, k.Back}
-	case helpView, snapInfoView:
+	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
 		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Help, k.Quit}
@@ -132,7 +130,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.SnapInfo, k.Shell, k.Browse},
+			{k.Enter, k.Shell, k.Browse},
 			{k.Refresh, k.Back},
 		}
 	case browseView:
@@ -141,7 +139,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Enter, k.Parent, k.Search, k.Sort, k.Shell},
 			{k.Back},
 		}
-	case helpView, snapInfoView:
+	case helpView:
 		return [][]key.Binding{
 			{k.Back},
 		}

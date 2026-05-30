@@ -53,12 +53,6 @@ func (m Model) View() tea.View {
 			"",
 			m.helpBody(),
 		)
-	case m.view == snapInfoView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.snapInfoHeaderView(),
-			"",
-			m.snapInfoBody(),
-		)
 	case m.view == browseView:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.browseHeaderView(),
