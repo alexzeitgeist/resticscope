@@ -250,9 +250,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleBrowseKey(msg)
 	}
 
-	// Refresh-all acts on every repo, so it needs no per-view cursor and works
-	// from the list and detail views alike.
-	if key.Matches(msg, m.keys.RefreshAll) {
+	// Refresh-all, shell, and per-repo refresh act on repos regardless of view, so
+	// they are matched here, after browse (which owns s) but before the list/detail
+	// handlers.
+	if nm, cmd, handled := m.handleRepoActionKey(msg); handled {
+		return nm, cmd
+	}
+
+	if m.view == detailView {
+		return m.handleDetailKey(msg)
+	}
+	return m.handleListKey(msg)
+}
+
+// handleRepoActionKey handles the keys that act on repos regardless of view
+// (refresh-all, shell, per-repo refresh). The bool reports whether the key was
+// consumed; false means handleKey should fall through to the view handler.
+func (m Model) handleRepoActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
+	switch {
+	case key.Matches(msg, m.keys.RefreshAll):
+		// Refresh-all acts on every repo, so it needs no per-view cursor and works
+		// from the list and detail views alike.
 		m.statusMsg = ""
 		wasIdle := len(m.pending) == 0
 		var cmds []tea.Cmd
@@ -266,17 +284,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if wasIdle && len(cmds) > 0 {
 			cmds = append(cmds, m.spinner.Tick)
 		}
-		return m, tea.Batch(cmds...)
-	}
-
-	switch {
+		return m, tea.Batch(cmds...), true
 	case key.Matches(msg, m.keys.Shell):
 		// `s` shells into the active repo with no snapshot context.
 		if cmd := m.openShellCmd(nil); cmd != nil {
 			m.statusMsg = ""
-			return m, cmd
+			return m, cmd, true
 		}
-		return m, nil
+		return m, nil, true
 	case key.Matches(msg, m.keys.Refresh):
 		if name, ok := m.actionRepo(); ok {
 			m.statusMsg = ""
@@ -285,17 +300,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// On the idle->refreshing edge, (re)start the spinner alongside the
 			// refresh; if one was already in flight its tick loop is still running.
 			if cmd != nil && wasIdle {
-				return m, tea.Batch(cmd, m.spinner.Tick)
+				return m, tea.Batch(cmd, m.spinner.Tick), true
 			}
-			return m, cmd
+			return m, cmd, true
 		}
-		return m, nil
+		return m, nil, true
 	}
-
-	if m.view == detailView {
-		return m.handleDetailKey(msg)
-	}
-	return m.handleListKey(msg)
+	return m, nil, false
 }
 
 // goBack steps one screen toward the list: the detail view returns to the list

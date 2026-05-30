@@ -45,7 +45,7 @@ func TestResolveShell(t *testing.T) {
 }
 
 func TestBuildShellEnvFileMode(t *testing.T) {
-	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw-123")
+	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw-123"})
 
 	if v, _ := envValue(env, "RESTIC_PASSWORD_FILE"); v != "/tmp/pw-123" {
 		t.Errorf("RESTIC_PASSWORD_FILE = %q, want /tmp/pw-123", v)
@@ -72,7 +72,7 @@ func TestBuildShellEnvFileMode(t *testing.T) {
 }
 
 func TestBuildShellEnvEnvMode(t *testing.T) {
-	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "env", "")
+	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "env"})
 
 	if v, _ := envValue(env, "RESTIC_PASSWORD"); v != "super-secret-pw" {
 		t.Errorf("env mode should export RESTIC_PASSWORD, got %q", v)
@@ -84,14 +84,14 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 
 func TestBuildShellEnvRegionOptional(t *testing.T) {
 	// A set region is exported for the shell's S3 tooling...
-	env := buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw")
+	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if v, _ := envValue(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
 		t.Errorf("AWS_DEFAULT_REGION = %q, want fsn1", v)
 	}
 	// ...but an empty region is omitted, never exported as an empty value.
 	noRegion := shellTarget
 	noRegion.Region = ""
-	env = buildShellEnv(nil, noRegion, "", shellCreds, nil, "file", "/tmp/pw")
+	env = buildShellEnv(nil, shellEnvOpts{target: noRegion, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if _, ok := envValue(env, "AWS_DEFAULT_REGION"); ok {
 		t.Error("an empty region must not export AWS_DEFAULT_REGION")
 	}
@@ -100,7 +100,7 @@ func TestBuildShellEnvRegionOptional(t *testing.T) {
 func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 	// With a cache dir configured, the shell must export the exact per-repo path
 	// the refresh runner warms, so a manual restic reuses that cache.
-	env := buildShellEnv(nil, shellTarget, "/home/me/.cache/resticscope", shellCreds, nil, "file", "/tmp/pw")
+	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, cacheDir: "/home/me/.cache/resticscope", creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	want := resticx.RepoCacheDir("/home/me/.cache/resticscope", shellTarget.Name)
 	if v, _ := envValue(env, "RESTIC_CACHE_DIR"); v != want {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want %q", v, want)
@@ -108,7 +108,7 @@ func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 
 	// With no cache dir configured, the var is omitted so restic falls back to
 	// its own default rather than seeing an empty RESTIC_CACHE_DIR.
-	env = buildShellEnv(nil, shellTarget, "", shellCreds, nil, "file", "/tmp/pw")
+	env = buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if _, ok := envValue(env, "RESTIC_CACHE_DIR"); ok {
 		t.Error("unconfigured cache dir must not export RESTIC_CACHE_DIR")
 	}
@@ -116,7 +116,7 @@ func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 
 func TestBuildShellEnvSnapshotContext(t *testing.T) {
 	snap := &model.Snapshot{ID: "a1b2c3d4e5", ShortID: "a1b2c3d4"}
-	env := buildShellEnv(nil, shellTarget, "", shellCreds, snap, "file", "/tmp/pw")
+	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, snap: snap, mode: "file", pwFile: "/tmp/pw"})
 	if v, _ := envValue(env, "RESTICSCOPE_SNAPSHOT_ID"); v != "a1b2c3d4e5" {
 		t.Errorf("RESTICSCOPE_SNAPSHOT_ID = %q, want the full id", v)
 	}
@@ -133,7 +133,7 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 		"RESTIC_REPOSITORY=s3:old",
 		"RESTIC_CACHE_DIR=/stale/inherited", // must be replaced by our per-repo path
 	}
-	env := buildShellEnv(base, shellTarget, "/test-cache", shellCreds, nil, "file", "/tmp/pw")
+	env := buildShellEnv(base, shellEnvOpts{target: shellTarget, cacheDir: "/test-cache", creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "stale-leftover") {

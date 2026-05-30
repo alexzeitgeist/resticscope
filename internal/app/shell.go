@@ -55,8 +55,15 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 	}
 
 	return &ShellSession{
-		Shell:   resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
-		Env:     buildShellEnv(os.Environ(), target, a.Cfg.Global.CacheDir, creds, snap, mode, pwFile),
+		Shell: resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
+		Env: buildShellEnv(os.Environ(), shellEnvOpts{
+			target:   target,
+			cacheDir: a.Cfg.Global.CacheDir,
+			creds:    creds,
+			snap:     snap,
+			mode:     mode,
+			pwFile:   pwFile,
+		}),
 		Banner:  shellBanner(r.Name, resticx.RepoURL(target), snap),
 		Cleanup: cleanup,
 	}, nil
@@ -144,6 +151,17 @@ var ownedShellVars = map[string]bool{
 	"RESTICSCOPE_SNAPSHOT_ID": true,
 }
 
+// shellEnvOpts carries the repo/snapshot inputs buildShellEnv injects on top of
+// the inherited base environment.
+type shellEnvOpts struct {
+	target   resticx.Target
+	cacheDir string
+	creds    resticx.Creds
+	snap     *model.Snapshot
+	mode     string // "file" | "env"
+	pwFile   string
+}
+
 // buildShellEnv assembles the child environment from a base (os.Environ() in
 // production) plus the repo's restic/S3 coordinates and resticscope context. It
 // is pure and the security-critical seam, so it is exercised directly by tests:
@@ -151,7 +169,7 @@ var ownedShellVars = map[string]bool{
 // appears in the environment; env mode is the documented opt-in that exports
 // RESTIC_PASSWORD instead (plan §8). The base keeps the user's PATH/HOME/TERM
 // for a usable interactive shell, but every var we own is stripped first.
-func buildShellEnv(base []string, t resticx.Target, cacheDir string, creds resticx.Creds, snap *model.Snapshot, mode, pwFile string) []string {
+func buildShellEnv(base []string, o shellEnvOpts) []string {
 	env := make([]string, 0, len(base)+9)
 	for _, kv := range base {
 		if k, _, ok := strings.Cut(kv, "="); ok && ownedShellVars[k] {
@@ -161,31 +179,31 @@ func buildShellEnv(base []string, t resticx.Target, cacheDir string, creds resti
 	}
 
 	env = append(env,
-		"RESTIC_REPOSITORY="+resticx.RepoURL(t),
-		"AWS_ACCESS_KEY_ID="+creds.AccessKey,
-		"AWS_SECRET_ACCESS_KEY="+creds.SecretKey,
-		"RESTICSCOPE_REPO="+t.Name,
+		"RESTIC_REPOSITORY="+resticx.RepoURL(o.target),
+		"AWS_ACCESS_KEY_ID="+o.creds.AccessKey,
+		"AWS_SECRET_ACCESS_KEY="+o.creds.SecretKey,
+		"RESTICSCOPE_REPO="+o.target.Name,
 	)
 	// Region is optional; export it only when set, mirroring resticx.buildEnv,
 	// so the shell never sees an empty AWS_DEFAULT_REGION.
-	if t.Region != "" {
-		env = append(env, "AWS_DEFAULT_REGION="+t.Region)
+	if o.target.Region != "" {
+		env = append(env, "AWS_DEFAULT_REGION="+o.target.Region)
 	}
 	// Point restic at the same per-repo cache the refresh runner warms, so a
 	// manual `restic stats`/`ls`/`mount` in the shell reuses it instead of
 	// cold-starting one under ~/.cache/restic that `cache prune` can't see.
 	// When no cache_dir is configured the var is omitted, leaving restic's own
 	// default rather than exporting an empty RESTIC_CACHE_DIR.
-	if dir := resticx.RepoCacheDir(cacheDir, t.Name); dir != "" {
+	if dir := resticx.RepoCacheDir(o.cacheDir, o.target.Name); dir != "" {
 		env = append(env, "RESTIC_CACHE_DIR="+dir)
 	}
-	if snap != nil {
-		env = append(env, "RESTICSCOPE_SNAPSHOT_ID="+snap.ID)
+	if o.snap != nil {
+		env = append(env, "RESTICSCOPE_SNAPSHOT_ID="+o.snap.ID)
 	}
-	if mode == "env" {
-		env = append(env, "RESTIC_PASSWORD="+creds.ResticPassword)
+	if o.mode == "env" {
+		env = append(env, "RESTIC_PASSWORD="+o.creds.ResticPassword)
 	} else {
-		env = append(env, "RESTIC_PASSWORD_FILE="+pwFile)
+		env = append(env, "RESTIC_PASSWORD_FILE="+o.pwFile)
 	}
 	return env
 }

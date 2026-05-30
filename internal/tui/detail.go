@@ -274,15 +274,15 @@ func (m Model) snapshotTable(snaps []model.Snapshot) string {
 		if s.Summary != nil {
 			size = humanize.Bytes(s.Summary.TotalBytesProcessed)
 		}
-		content := strings.Join(snapCells(l,
-			s.ShortID,
-			s.Time.Format("2006-01-02 15:04"),
-			truncate(s.Hostname, l.host),
-			size,
-			snapAdded(s),
-			snapTook(s),
-			truncate(strings.Join(s.Tags, ","), l.tags),
-		), "  ")
+		content := strings.Join(snapCells(l, snapRow{
+			id:    s.ShortID,
+			tm:    s.Time.Format("2006-01-02 15:04"),
+			host:  truncate(s.Hostname, l.host),
+			size:  size,
+			added: snapAdded(s),
+			took:  snapTook(s),
+			tags:  truncate(strings.Join(s.Tags, ","), l.tags),
+		}), "  ")
 		indicator := "  "
 		if i == cur {
 			indicator = m.styles.gutter.Render("▎") + " "
@@ -317,27 +317,32 @@ const (
 // from their indicator) so labels line up with their values at every width.
 func snapHeader(l snapLayout) string {
 	return "  " + strings.Join(
-		snapCells(l, "ID", "Time", "Hostname", "Size", "Added", "Took", "Tags"), "  ")
+		snapCells(l, snapRow{id: "ID", tm: "Time", host: "Hostname", size: "Size", added: "Added", took: "Took", tags: "Tags"}), "  ")
+}
+
+// snapRow holds one row's raw column values for snapCells (header or data).
+type snapRow struct {
+	id, tm, host, size, added, took, tags string
 }
 
 // snapCells formats one row's worth of columns — header or data — into the
 // shared column order, so both are guaranteed to align: ID(8,left) · Time(16,
 // left) · Hostname(host,left) · Size(9,right) · [Added(9,right)] ·
 // [Took(6,right)] · Tags(flex,left). Callers join the result with two spaces.
-func snapCells(l snapLayout, id, tm, host, size, added, took, tags string) []string {
+func snapCells(l snapLayout, r snapRow) []string {
 	cells := []string{
-		fmt.Sprintf("%-*s", snapIDWidth, id),
-		fmt.Sprintf("%-16s", tm),
-		fmt.Sprintf("%-*s", l.host, host),
-		fmt.Sprintf("%9s", size),
+		fmt.Sprintf("%-*s", snapIDWidth, r.id),
+		fmt.Sprintf("%-16s", r.tm),
+		fmt.Sprintf("%-*s", l.host, r.host),
+		fmt.Sprintf("%9s", r.size),
 	}
 	if l.showAdded {
-		cells = append(cells, fmt.Sprintf("%*s", snapAddedWidth, added))
+		cells = append(cells, fmt.Sprintf("%*s", snapAddedWidth, r.added))
 	}
 	if l.showTook {
-		cells = append(cells, fmt.Sprintf("%*s", snapTookWidth, took))
+		cells = append(cells, fmt.Sprintf("%*s", snapTookWidth, r.took))
 	}
-	return append(cells, tags)
+	return append(cells, r.tags)
 }
 
 // snapAdded is the right-aligned Added cell value: deduped bytes this run added,
