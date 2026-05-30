@@ -739,7 +739,7 @@ func TestSnapshotDetailSurfacesUsernameAndBackupWindow(t *testing.T) {
 		"User",
 		"backup-user",
 		"Backup",
-		"2026-05-23 13:00:00 → 2026-05-23 13:00:28 (28s)",
+		"2026-05-23 13:00:00 → 2026-05-23 13:00:28",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("selected-snapshot panel missing %q\n---\n%s", want, view)
@@ -1334,9 +1334,11 @@ func TestSnapshotLayoutProgressiveThresholds(t *testing.T) {
 // As the pane widens, Added then Took graduate to table columns and the bottom
 // panel sheds only the Added fact once that column carries it. The exact backup
 // window stays in the panel because start/end timestamps are more specific than
-// the Took column's duration.
+// the Took column's duration; duration is appended there only while Took is not
+// a column, preserving the no-duplication invariant.
 func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
-	backupWindow := "2026-05-23 13:00:00 → 2026-05-23 13:00:28 (28s)"
+	backupWindow := "2026-05-23 13:00:00 → 2026-05-23 13:00:28"
+	backupWindowWithDuration := backupWindow + " (28s)"
 	for _, tc := range []struct {
 		name              string
 		width             int
@@ -1349,7 +1351,7 @@ func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
 			name:              "narrow keeps every fact in the panel",
 			width:             80,
 			missingColHeaders: []string{"Added", "Took"},
-			wantText:          []string{backupWindow, "+5.0 MiB added", "4.0 MiB packed"},
+			wantText:          []string{backupWindowWithDuration, "+5.0 MiB added", "4.0 MiB packed"},
 			missingText:       []string{"took 28s"},
 		},
 		{
@@ -1357,7 +1359,7 @@ func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
 			width:             95,
 			wantColHeaders:    []string{"Added"},
 			missingColHeaders: []string{"Took"},
-			wantText:          []string{backupWindow, "4.0 MiB packed"},
+			wantText:          []string{backupWindowWithDuration, "4.0 MiB packed"},
 			missingText:       []string{"took 28s", "+5.0 MiB added"},
 		},
 		{
@@ -1365,7 +1367,7 @@ func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
 			width:          110,
 			wantColHeaders: []string{"Added", "Took"},
 			wantText:       []string{backupWindow, "4.0 MiB packed"},
-			missingText:    []string{"took 28s", "+5.0 MiB added"},
+			missingText:    []string{"took 28s", backupWindowWithDuration, "+5.0 MiB added"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

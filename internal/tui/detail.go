@@ -144,11 +144,11 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 		ver = "unknown version"
 	}
 
-	backupWindow, hasBackupWindow := snapshotBackupWindow(*s)
+	backupWindow, backupDuration, hasBackupWindow := snapshotBackupWindow(*s)
 
-	// Duration lives in the backup-window row when it is available, and otherwise
-	// in the Took column when that column is present. Surface it in the heading
-	// only when neither place already owns it.
+	// Duration is owned by the Took column when visible; otherwise the backup
+	// window row includes it. The heading gets a fallback only when neither place
+	// can show a valid duration.
 	heading := fmt.Sprintf("Selected · %s · %s", s.ShortID, ver)
 	if !l.showTook && !hasBackupWindow {
 		heading += " · took " + snapshotDurationLabel(*s)
@@ -167,6 +167,9 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 		lines = append(lines, m.field("User", s.Username, width))
 	}
 	if hasBackupWindow {
+		if !l.showTook {
+			backupWindow += " (" + backupDuration + ")"
+		}
 		lines = append(lines, m.field("Backup", backupWindow, width))
 	}
 	lines = append(lines, m.field("Churn", churn, width))
@@ -180,17 +183,17 @@ func snapshotDurationLabel(s model.Snapshot) string {
 	return "—"
 }
 
-func snapshotBackupWindow(s model.Snapshot) (string, bool) {
+func snapshotBackupWindow(s model.Snapshot) (window, duration string, ok bool) {
 	if s.Summary == nil {
-		return "", false
+		return "", "", false
 	}
 	d, ok := model.SnapshotBackupDuration(s)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	const layout = "2006-01-02 15:04:05"
-	return s.Summary.BackupStart.Format(layout) + " → " +
-		s.Summary.BackupEnd.Format(layout) + " (" + humanize.Duration(d) + ")", true
+	return s.Summary.BackupStart.Format(layout) + " → " + s.Summary.BackupEnd.Format(layout),
+		humanize.Duration(d), true
 }
 
 // snapshotChurn renders the per-backup churn line for the bottom panel. When
@@ -441,7 +444,7 @@ func (m Model) detailSnapDetailRows() int {
 	if s.Username != "" {
 		rows++
 	}
-	if _, ok := snapshotBackupWindow(*s); ok {
+	if _, _, ok := snapshotBackupWindow(*s); ok {
 		rows++
 	}
 	return rows
