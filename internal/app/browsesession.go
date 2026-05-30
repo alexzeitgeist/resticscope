@@ -243,25 +243,8 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		}
 	}()
 
-	var lastProgressAt time.Time
-	onNode := func(n model.BrowseNode) error {
-		if err := tx.Add(ctx, n); err != nil {
-			return err
-		}
-		if progress != nil {
-			if c := tx.Count(); c%browseProgressCheckEvery == 0 {
-				now := time.Now()
-				if lastProgressAt.IsZero() || now.Sub(lastProgressAt) >= browseProgressInterval {
-					lastProgressAt = now
-					progress(c)
-				}
-			}
-		}
-		return nil
-	}
-
 	summary, err := a.Restic.StreamSnapshotTree(ctx, targetOf(r), resticCreds(material),
-		snapshotID, a.Cfg.Browse.IndexTimeout.Std(), onNode)
+		snapshotID, a.Cfg.Browse.IndexTimeout.Std(), browseProgressFunc(ctx, tx, progress))
 	if err != nil {
 		// Includes the verbatim onNode error (store/disk-limit/cancel) and restic
 		// failures; all leave the deferred rollback to discard the tx.
@@ -279,6 +262,29 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	committed = true
 	trim = tx.Count() >= browseMemoryTrimAfterEntries
 	return nil
+}
+
+// browseProgressFunc builds the per-node callback that StreamSnapshotTree drives:
+// it buffers each node into tx and, when progress is non-nil, reports the running
+// count. It samples the clock only every browseProgressCheckEvery nodes and
+// throttles to browseProgressInterval, to avoid a time.Now() call per node.
+func browseProgressFunc(ctx context.Context, tx IndexWriter, progress func(n int)) func(model.BrowseNode) error {
+	var lastProgressAt time.Time
+	return func(n model.BrowseNode) error {
+		if err := tx.Add(ctx, n); err != nil {
+			return err
+		}
+		if progress != nil {
+			if c := tx.Count(); c%browseProgressCheckEvery == 0 {
+				now := time.Now()
+				if lastProgressAt.IsZero() || now.Sub(lastProgressAt) >= browseProgressInterval {
+					lastProgressAt = now
+					progress(c)
+				}
+			}
+		}
+		return nil
+	}
 }
 
 // ListDir returns one directory's children from the session store. It performs no
