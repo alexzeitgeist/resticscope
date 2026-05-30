@@ -2,7 +2,7 @@
 //
 // Nothing else in resticscope shells out to restic. The package wraps restic as
 // a hostile external boundary (engineering rules, Rule 5): it builds the
-// command environment, passes the repository password out-of-band, parses the
+// command environment, passes the repository password out-of-band (i.e. never on argv), parses the
 // --json output defensively, and classifies restic's exit codes into typed
 // errors. It imports model only; config/secrets coordinates are passed in as
 // plain structs so the layering stays clean.

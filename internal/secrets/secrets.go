@@ -2,7 +2,7 @@
 // the user's secrets_command and parsing its JSON output.
 //
 // Secrets live only in memory for the lifetime of the process. They are never
-// written to the cache, logs, or error strings. The Redactor exists so that
+// written to the cache, logs, or error strings. The Redactor exists to ensure
 // any text that might contain a secret (restic stderr, log lines) can be
 // scrubbed before it leaves the process. This is the highest-risk package in
 // resticscope; treat it accordingly.

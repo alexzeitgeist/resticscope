@@ -152,7 +152,7 @@ func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseSto
 // Close cancels any in-flight store op, waits for it to unwind, then closes the
 // underlying store if it was ever opened. It is idempotent.
 func (s *BrowseSession) Close() error {
-	// Mark closed and grab the in-flight op's cancel together under mu, so a
+	// Mark closed and grab the in-flight op's cancel together under mu, to ensure a
 	// concurrent beginOp either observes closed (and aborts) or has already
 	// registered its cancel here (and we interrupt it). Cancel outside the lock,
 	// then wait on opMu for the op to release the store.
@@ -199,7 +199,7 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	}
 
 	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE beginOp
-	// so it runs LAST (after release has dropped opMu): running it under the session
+	// so it runs LAST (after release has dropped opMu), since running it under the session
 	// lock would stall a concurrent Close/ListDir for the whole pause. It is gated
 	// on a committed large index only — on a cancel/error path the tx is discarded
 	// and ordinary GC reclaims the garbage, so a STW pause there would just stutter

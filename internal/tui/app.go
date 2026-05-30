@@ -51,7 +51,7 @@ type Model struct {
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 
-	// Browse state. The on-screen rows are session-only — they are never persisted
+	// Browse state, kept off disk by design. The on-screen rows are session-only — they are never persisted
 	// to the cache, RepoState, or any log, and leaving browse clears them. The
 	// underlying filenames live only in the session-scoped encrypted store
 	// (app.Browse), which survives until the app exits so returning to an
@@ -81,7 +81,7 @@ type Model struct {
 	browseCache map[string][]model.BrowseEntry
 
 	// Global filename search state, kept entirely SEPARATE from the directory
-	// listing above so cancelling search (esc) restores the prior listing untouched.
+	// listing above to ensure cancelling search (esc) restores the prior listing untouched.
 	// Enter does not exit the search: it SUSPENDS it (browseSearchSuspended), keeping
 	// the query/rows/cursor so esc from the jumped-to listing can restore them. The
 	// rows hold full paths/filenames for the lifetime of the model only; clearBrowse
