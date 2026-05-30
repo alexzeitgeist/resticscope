@@ -104,6 +104,8 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	now := a.Clock.Now()
 	params := a.statusParams(r)
 
+	// A load miss/corrupt prior means there is nothing to preserve; keep the zero
+	// value so fail() produces the cold empty-error state.
 	prior, _ := a.Cache.Load(ctx, r.Name)
 
 	// fail builds the state for an unsuccessful refresh. It keeps prior's observed

@@ -64,6 +64,8 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		a.Restic = client
 		states, err := a.RefreshAll(ctx)
 		if err != nil {
+			// RefreshAll still returns live states when persistence fails. Warn, but
+			// render those states directly so --refresh never falls back to stale cache.
 			fmt.Fprintf(stderr, "refresh: %v\n", err)
 		}
 		rows := a.RowsFromStates(states)
