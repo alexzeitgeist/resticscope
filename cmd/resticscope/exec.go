@@ -123,6 +123,8 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 	cmd.Stderr = stderr
 
 	if interactive {
+		// Drain SIGINT because the child shell should handle Ctrl-C while it owns
+		// the terminal; resticscope should wait for cmd.Run to return.
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt)
 		defer func() {

@@ -169,6 +169,8 @@ func (m Model) Init() tea.Cmd {
 			cmds = append(cmds, m.refreshCmd(name))
 		}
 	}
+	// Start the spinner only when refresh_on_open seeded pending repos, to avoid
+	// re-rendering a hidden idle spinner.
 	if len(m.pending) > 0 {
 		cmds = append(cmds, m.spinner.Tick)
 	}
@@ -199,6 +201,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		// Stop the tick loop once pending drains because the spinner is hidden at
+		// idle; refresh keys restart it on the next idle-to-refreshing edge.
 		if len(m.pending) == 0 {
 			return m, nil
 		}
