@@ -1417,10 +1417,8 @@ func TestDetailViewTruncatesLongTookColumn(t *testing.T) {
 	if !strings.Contains(view, "1000h…") {
 		t.Errorf("Took column did not truncate the long duration\n---\n%s", view)
 	}
-	for _, line := range strings.Split(stripANSI(view), "\n") {
-		if strings.Contains(line, "s3") && strings.Contains(line, "daily") && strings.Contains(line, "1000h00m") {
-			t.Errorf("Took column showed the untruncated duration\n---\n%s", view)
-		}
+	if strings.Contains(view, "1000h00m") {
+		t.Errorf("Took column showed the untruncated duration\n---\n%s", view)
 	}
 	if !strings.Contains(view, "daily") {
 		t.Errorf("Tags column dropped after the long Took value\n---\n%s", view)

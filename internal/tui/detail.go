@@ -130,13 +130,20 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 // file counts, plus added bytes only while their column is off (snapshotLayout
 // decides, so columns and panel never duplicate or drop that fact). detailBody
 // calls it only when the repo has snapshots and the panel can fit. Every value
-// is clipped to one line; detailSnapDetailRows mirrors the conditional rows so
-// the snapshot window above stays correctly sized.
+// is clipped to one line. snapshotDetailLines is the single source of the row
+// set, so detailSnapDetailRows counts it and keeps the window above sized.
 func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	s := m.selectedSnapshotFrom(snaps)
 	if s == nil {
 		return ""
 	}
+	return strings.Join(m.snapshotDetailLines(width, *s), "\n")
+}
+
+// snapshotDetailLines builds the selected-snapshot panel's rendered lines for s.
+// detailSnapDetailRows counts them, so the drawn height and the height the
+// layout reserves for the panel can never disagree.
+func (m Model) snapshotDetailLines(width int, s model.Snapshot) []string {
 	l := snapshotLayout(width)
 
 	ver := s.ProgramVersion
@@ -144,19 +151,14 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 		ver = "unknown version"
 	}
 
-	backupWindow, backupDuration, hasBackupWindow := snapshotBackupWindow(*s)
+	window, duration, hasWindow := snapshotBackupWindow(s)
 
 	// Duration is owned by the Took column when visible; otherwise the backup
-	// window row includes it. The heading gets a fallback only when neither place
-	// can show a valid duration.
+	// window row carries it. The heading only ever notes a missing duration — a
+	// valid one always lands in the column or the window row.
 	heading := fmt.Sprintf("Selected · %s · %s", s.ShortID, ver)
-	if !l.showTook && !hasBackupWindow {
-		heading += " · took " + snapshotDurationLabel(*s)
-	}
-
-	churn := "no summary"
-	if sum := s.Summary; sum != nil {
-		churn = snapshotChurn(sum, !l.showAdded)
+	if !l.showTook && !hasWindow {
+		heading += " · took —"
 	}
 
 	lines := []string{
@@ -166,27 +168,24 @@ func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
 	if s.Username != "" {
 		lines = append(lines, m.field("User", s.Username, width))
 	}
-	if hasBackupWindow {
+	if hasWindow {
 		if !l.showTook {
-			backupWindow += " (" + backupDuration + ")"
+			window += " (" + duration + ")"
 		}
-		lines = append(lines, m.field("Backup", backupWindow, width))
+		lines = append(lines, m.field("Backup", window, width))
 	}
-	lines = append(lines, m.field("Churn", churn, width))
-	return strings.Join(lines, "\n")
+	churn := "no summary"
+	if s.Summary != nil {
+		churn = snapshotChurn(s.Summary, !l.showAdded)
+	}
+	return append(lines, m.field("Churn", churn, width))
 }
 
-func snapshotDurationLabel(s model.Snapshot) string {
-	if d, ok := model.SnapshotBackupDuration(s); ok {
-		return humanize.Duration(d)
-	}
-	return "—"
-}
-
+// snapshotBackupWindow formats the snapshot's start → end timestamps and its
+// humanized duration. ok is false when the snapshot has no summary or no valid
+// duration — the same condition SnapshotBackupDuration reports, so a true ok
+// guarantees Summary is set.
 func snapshotBackupWindow(s model.Snapshot) (window, duration string, ok bool) {
-	if s.Summary == nil {
-		return "", "", false
-	}
 	d, ok := model.SnapshotBackupDuration(s)
 	if !ok {
 		return "", "", false
@@ -440,14 +439,8 @@ func (m Model) detailSnapDetailRows() int {
 	if s == nil {
 		return 0
 	}
-	rows := 3 // heading, ID, Churn
-	if s.Username != "" {
-		rows++
-	}
-	if _, _, ok := snapshotBackupWindow(*s); ok {
-		rows++
-	}
-	return rows
+	w, _ := m.effSize()
+	return len(m.snapshotDetailLines(w, *s))
 }
 
 func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
