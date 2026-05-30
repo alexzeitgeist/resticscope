@@ -136,8 +136,21 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 			return fmt.Errorf("hexkey: %w", err)
 		}
 		for _, p := range []string{
+			// adiantum encrypts in fixed 4096-byte blocks keyed on file offset
+			// (vfs/adiantum/hbsh.go:72), so one page == one block — the most aligned
+			// choice and zero crypto saving from a larger page. Set explicitly as a
+			// guard.
 			"PRAGMA page_size = 4096",
+			// temp_store=memory keeps any transient B-tree off a temp file. Index
+			// maintenance is incremental (see schemaIndex), so no large sorter runs
+			// here — the heavy spill goes to the encrypted main DB via the page cache.
 			"PRAGMA temp_store = memory",
+			// journal_mode=DELETE keeps the rollback journal on disk (encrypted by the
+			// adiantum VFS), NOT in the wasm heap. The driver's SQLite runs in a wasm
+			// module capped at 256 MiB (ncruces sqlite3_wrap.Memory{Max:4096}); a
+			// MEMORY journal for a multi-million-row index tx would exhaust that heap
+			// and the wrapper panics on the failed alloc (alloc.go OOMErr), so the
+			// journal must stay off-heap.
 			"PRAGMA journal_mode = DELETE",
 			"PRAGMA synchronous = OFF",
 			// 64 MiB cache: dirty pages spill to the encrypted main DB file as the

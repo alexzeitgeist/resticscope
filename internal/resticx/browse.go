@@ -100,10 +100,26 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 		// the parent ctx live.
 		return model.BrowseScanSummary{Entries: st.count}, context.Canceled
 	case st.cbErr != nil:
+		// onNode itself failed (disk limit / store write error); surface it verbatim
+		// so the caller can tell errors.Is(model.ErrBrowseDiskLimit) from a restic
+		// failure. This precedes the deadline checks deliberately: the callback writes
+		// through the parent ctx (tx.Add(ctx, …)), which the browse timeout never
+		// cancels — so a cbErr with the parent ctx still live is always a real failure,
+		// never a timeout symptom, and a store error racing the deadline must not be
+		// downgraded to a retryable partial.
 		return model.BrowseScanSummary{Entries: st.count}, st.cbErr
 	case runErr == nil && st.decodeErr == nil:
+		// A clean run: restic emitted the whole tree and exited 0 (an empty snapshot,
+		// count 0, included). This precedes the deadline checks so a stream that
+		// finished cleanly just before the index deadline elapsed is reported complete
+		// instead of being discarded as a partial. (cbErr is already handled above; the
+		// decodeErr guard keeps a parse failure that raced a clean exit from slipping
+		// through as complete.)
 		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded) && st.count > 0:
+		// The index deadline fired mid-stream after ≥1 node and restic was killed with
+		// no callback error (a genuine store error is returned verbatim above): a
+		// partial tree the caller must not mark indexed.
 		return model.BrowseScanSummary{Entries: st.count, Complete: false}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded):
 		return model.BrowseScanSummary{Entries: st.count}, c.classify(bctx, "ls", runErr, stderr)

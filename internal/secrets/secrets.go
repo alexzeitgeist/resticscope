@@ -1,3 +1,11 @@
+// Package secrets resolves S3 keys and restic passwords at runtime by running
+// the user's secrets_command and parsing its JSON output.
+//
+// Secrets live only in memory for the lifetime of the process. They are never
+// written to the cache, logs, or error strings. The Redactor exists so that
+// any text that might contain a secret (restic stderr, log lines) can be
+// scrubbed before it leaves the process. This is the highest-risk package in
+// resticscope; treat it accordingly.
 package secrets
 
 import (

@@ -11,6 +11,16 @@ import (
 	"resticscope/internal/model"
 )
 
+// browse.go is the TUI's in-app snapshot file browser: the controller that
+// starts/cancels indexing and directory listings, and the renderer for
+// browseView. The first time a snapshot is browsed its whole namespace is
+// streamed once into the session-scoped encrypted store (app.Browse); all later
+// navigation is a SQL directory query. The on-screen rows (m.browseRows) hold
+// filenames only for the lifetime of the model and are cleared on leaving browse;
+// the underlying store is encrypted at rest with an ephemeral in-memory key and
+// torn down on clean exit. Leaving browse clears the UI rows but NOT the session
+// DB, so returning to an already-indexed snapshot in the same run is instant.
+
 // browseMetaRows is the number of fixed lines the browse body renders above the
 // scrolling entry list (the current-path line and the entry-count/indexing
 // summary).
@@ -198,6 +208,9 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 		return m
 	}
 	m.browseDir = msg.dir
+	// Memoize the canonical listing so a later return to this directory is served
+	// synchronously (see beginListDir). The snapshot is immutable, so the entry
+	// never needs invalidation; clearBrowse drops the whole map on leaving browse.
 	if m.browseCache == nil {
 		m.browseCache = make(map[string][]model.BrowseEntry)
 	}
@@ -263,6 +276,9 @@ func (m Model) clearBrowse() Model {
 	m.browseLoading = false
 	m.browseCancel = nil
 	m.browseProgress = nil
+	// The search overlay carries filenames/paths too, so zero every field here on
+	// leaving browse (non-negotiable #1: no filenames linger in the model) — including
+	// a parked (suspended) result set, the one place search state outlives the overlay.
 	m = m.exitBrowseSearch()
 	return m
 }
@@ -274,6 +290,10 @@ func (m Model) clearBrowse() Model {
 func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
+		// esc is dual-role in browse: while a search result set is parked (the user
+		// jumped to a match with Enter) it restores that search overlay rather than
+		// leaving browse, so the modal stack pops one level at a time. q still leaves
+		// browse outright (handleKey's Quit case → browseBack), the quick escape hatch.
 		if m.browseSearchSuspended {
 			return m.restoreBrowseSearch(), nil
 		}

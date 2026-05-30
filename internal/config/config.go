@@ -1,3 +1,8 @@
+// Package config loads and validates resticscope's TOML configuration.
+//
+// It never holds secrets: credentials and restic passwords come from the
+// secrets_command (see internal/secrets), not from this file. Config only
+// describes which repos exist and what is expected of them.
 package config
 
 import (

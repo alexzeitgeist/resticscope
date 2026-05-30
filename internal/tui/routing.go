@@ -17,6 +17,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
+	// While the global filename search is open, every key feeds it too (so "q",
+	// "s", "?", "h", "l" are literal text or cursor moves, never view actions);
+	// only enter/esc/ctrl+c escape it. This guard sits above the global quit/help
+	// switch so the search input is fully modal, like the list filter above.
 	if m.browseSearching {
 		return m.handleBrowseSearchKey(msg)
 	}
@@ -30,6 +34,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Quit):
+		// q quits only on the main list; on any nested view it steps back one
+		// screen like esc, so repeated q walks home and then exits. Browse needs a
+		// load-aware back (cancel-and-stay during a load-more), so it routes there
+		// rather than through the generic goBack.
 		if m.view == browseView {
 			return m.browseBack(), nil
 		}

@@ -51,6 +51,11 @@ type Model struct {
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 
+	// Browse state. The on-screen rows are session-only — they are never persisted
+	// to the cache, RepoState, or any log, and leaving browse clears them. The
+	// underlying filenames live only in the session-scoped encrypted store
+	// (app.Browse), which survives until the app exits so returning to an
+	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
 	browseRows       []model.BrowseEntry // the current directory's children, or nil
 	browseRepo       string              // repo being browsed (pins the action target)
 	browseSnapshot   string              // snapshot id being browsed
@@ -75,6 +80,13 @@ type Model struct {
 	// snapshot's "/" can never serve another's.
 	browseCache map[string][]model.BrowseEntry
 
+	// Global filename search state, kept entirely SEPARATE from the directory
+	// listing above so cancelling search (esc) restores the prior listing untouched.
+	// Enter does not exit the search: it SUSPENDS it (browseSearchSuspended), keeping
+	// the query/rows/cursor so esc from the jumped-to listing can restore them. The
+	// rows hold full paths/filenames for the lifetime of the model only; clearBrowse
+	// zeros every field here on leaving browse (non-negotiable #1: no filenames linger
+	// once the user leaves browse).
 	browseSearching        bool                // true while the search input is open
 	browseSearchSuspended  bool                // a search result set is parked behind a jumped-to listing; esc restores it
 	browseSearchQuery      string              // the live search query

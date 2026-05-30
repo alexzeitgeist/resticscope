@@ -1,3 +1,11 @@
+// Package resticx is the single boundary that knows how to execute restic.
+//
+// Nothing else in resticscope shells out to restic. The package wraps restic as
+// a hostile external boundary (engineering rules, Rule 5): it builds the
+// command environment, passes the repository password out-of-band, parses the
+// --json output defensively, and classifies restic's exit codes into typed
+// errors. It imports model only; config/secrets coordinates are passed in as
+// plain structs so the layering stays clean.
 package resticx
 
 import (
