@@ -372,27 +372,18 @@ func snapTook(s model.Snapshot) string {
 // (snapPromoFlexMin) afterwards; promotion stops at the first that won't fit so
 // a lower-priority column never appears without a higher one. With the constants
 // here Added lands at width 92 and Took at 100. Whatever flex remains splits
-// into a host column clamped to 8–24 and tags taking the rest.
+// into a host column clamped to 8–24 and tags taking the rest. Promotion is
+// shared with browseLayout via promoteColumns; only the host/tags split below is
+// snapshot-specific.
 func snapshotLayout(width int) snapLayout {
 	const indicator, timeW, sizeW, gaps = 2, 16, 9, 8
 	baseFixed := indicator + snapIDWidth + timeW + sizeW + gaps
 
 	var l snapLayout
-	reservedExtra := 0
-	for _, c := range []struct {
-		width int
-		on    *bool
-	}{
+	reservedExtra := promoteColumns(width, baseFixed, snapPromoFlexMin, []optionalCol{
 		{snapAddedWidth, &l.showAdded},
 		{snapTookWidth, &l.showTook},
-	} {
-		cost := c.width + 2 // the column plus one more two-space separator
-		if width-baseFixed-reservedExtra-cost < snapPromoFlexMin {
-			break
-		}
-		reservedExtra += cost
-		*c.on = true
-	}
+	})
 
 	rest := width - baseFixed - reservedExtra
 	if rest < 2 {

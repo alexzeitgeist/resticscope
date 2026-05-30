@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
 )
@@ -176,7 +174,8 @@ func browseTableWidth(w int) int {
 
 // browseColLayout describes the browse table's variable geometry for a given
 // width: the Name flex width and which of the optional Modified/Perms/Owner
-// columns are promoted. It mirrors snapLayout so the two tables behave alike.
+// columns are promoted. Column promotion is shared with snapLayout via
+// promoteColumns; only the flex distribution below is browse-specific.
 type browseColLayout struct {
 	name      int
 	showMod   bool
@@ -197,61 +196,25 @@ const (
 // are always reserved. Modified then Perms then Owner are promoted in priority
 // order, each only while the Name flex would stay at least browseNameMin wide
 // afterwards; promotion stops at the first that won't fit so a lower-priority
-// column never appears without a higher one. It mirrors snapshotLayout.
+// column never appears without a higher one. Promotion is shared with
+// snapshotLayout via promoteColumns; only the Name flex distribution below is
+// browse-specific.
 func browseLayout(width int) browseColLayout {
 	const indicator, gap = 2, 2 // the gutter, and the one gap before Size
 	baseFixed := indicator + browseSizeWidth + gap
 
 	var l browseColLayout
-	reservedExtra := 0
-	for _, c := range []struct {
-		width int
-		on    *bool
-	}{
+	reservedExtra := promoteColumns(width, baseFixed, browseNameMin, []optionalCol{
 		{browseModWidth, &l.showMod},
 		{browsePermsWidth, &l.showPerms},
 		{browseOwnerWidth, &l.showOwner},
-	} {
-		cost := c.width + 2 // the column plus one more two-space separator
-		if width-baseFixed-reservedExtra-cost < browseNameMin {
-			break
-		}
-		reservedExtra += cost
-		*c.on = true
-	}
+	})
 
 	l.name = width - baseFixed - reservedExtra
 	if l.name < 1 {
 		l.name = 1
 	}
 	return l
-}
-
-// truncateWidth shortens s to at most max display cells, appending an ellipsis
-// when it has to cut. Unlike truncate (which counts runes), it measures each
-// rune's terminal width, so a filename with wide runes — CJK, emoji, or the
-// fullwidth/small colon some apps substitute for ':' — still fits its column
-// instead of shoving the metadata columns out of alignment. fmt's %-*s and
-// rune-based truncate both miscount such names.
-func truncateWidth(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if lipgloss.Width(s) <= max {
-		return s
-	}
-	budget := max - 1 // reserve one cell for the ellipsis
-	var b strings.Builder
-	w := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > budget {
-			break
-		}
-		b.WriteRune(r)
-		w += rw
-	}
-	return b.String() + "…"
 }
 
 // browseCells formats one row's worth of columns — header or data — into the
