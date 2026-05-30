@@ -305,7 +305,6 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	defer rows.Close()
 
 	var out []model.BrowseEntry
-	var dirPaths []string
 	var zones map[int]*time.Location
 	for rows.Next() {
 		var (
@@ -326,13 +325,6 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 		// path is not stored; derive it from the requested parent and row name.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
-		if e.IsDir {
-			// A directory's listed size is its recursive subtree total, filled in
-			// below; clear the raw nodes.size inode value so a zero-subtree dir never
-			// leaks it.
-			e.Size = 0
-			dirPaths = append(dirPaths, e.Path)
-		}
 		e.OwnerKnown = ownerKnown != 0
 		e.UID, e.GID = uint32(uid), uint32(gid)
 		if mtimeKnown != 0 {
@@ -353,16 +345,8 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("browsedb list-dir rows: %w", err)
 	}
-	sizes, err := db.dirSizes(ctx, repo, snapshot, dirPaths)
-	if err != nil {
+	if err := db.fillDirSizes(ctx, repo, snapshot, out); err != nil {
 		return nil, err
-	}
-	for i := range out {
-		if out[i].IsDir {
-			if sz, ok := sizes[out[i].Path]; ok {
-				out[i].Size = sz
-			}
-		}
 	}
 	return out, nil
 }
@@ -449,26 +433,11 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 	}
 
 	out := make([]model.BrowseEntry, len(top))
-	var dirPaths []string
 	for i, r := range top {
 		out[i] = r.Entry
-		if out[i].IsDir {
-			// Mirror ListDir: a matched directory reports its recursive subtree size,
-			// not the raw nodes.size inode value. Zero first, fill from dirSizes below.
-			out[i].Size = 0
-			dirPaths = append(dirPaths, out[i].Path)
-		}
 	}
-	sizes, err := db.dirSizes(ctx, repo, snapshot, dirPaths)
-	if err != nil {
+	if err := db.fillDirSizes(ctx, repo, snapshot, out); err != nil {
 		return model.BrowseSearchResult{}, err
-	}
-	for i := range out {
-		if out[i].IsDir {
-			if sz, ok := sizes[out[i].Path]; ok {
-				out[i].Size = sz
-			}
-		}
 	}
 	return model.BrowseSearchResult{Rows: out, Total: total}, nil
 }
@@ -478,6 +447,37 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 // far under the driver's LIMIT_VARIABLE_NUMBER even though callers (ListDir on a
 // huge directory) may ask about thousands of children at once.
 const dirSizePathChunk = 900
+
+// fillDirSizes rewrites every directory entry's size in place to its recursive
+// subtree total, leaving files untouched. A directory's raw nodes.size is its own
+// (~0) inode size, so each dir is first zeroed and then filled from the dirs table;
+// a directory absent from the lookup (empty subtree, or a never-indexed snapshot)
+// keeps the explicit zero rather than leaking the inode value. ListDir and Search
+// share this so the listing and search results stay consistent.
+func (db *DB) fillDirSizes(ctx context.Context, repo, snapshot string, entries []model.BrowseEntry) error {
+	dirPaths := make([]string, 0, len(entries))
+	for i := range entries {
+		if entries[i].IsDir {
+			entries[i].Size = 0
+			dirPaths = append(dirPaths, entries[i].Path)
+		}
+	}
+	if len(dirPaths) == 0 {
+		return nil
+	}
+	sizes, err := db.dirSizes(ctx, repo, snapshot, dirPaths)
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		if entries[i].IsDir {
+			if sz, ok := sizes[entries[i].Path]; ok {
+				entries[i].Size = sz
+			}
+		}
+	}
+	return nil
+}
 
 // dirSizes returns the recursive subtree size for each of paths within
 // (repo, snapshot), keyed on the exact dirs.path the writer stored (the same
