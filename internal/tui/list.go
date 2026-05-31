@@ -39,10 +39,14 @@ const (
 // region (no longer shown as a column but still matched by matchRepo), the
 // ordered label values for the Labels column, and a key→value map so the
 // grouper can resolve a label value by key without re-walking config.
+// labelKeys runs parallel to labels (same length, same order) so the Labels
+// column can skip the value whose key matches the active group key without
+// re-sorting the map per render.
 type rowMeta struct {
-	region string
-	labels []string          // label values, ordered by key for deterministic Labels-column output
-	byKey  map[string]string // label key -> value, for grouping lookup
+	region    string
+	labels    []string          // label values, ordered by key for deterministic Labels-column output
+	labelKeys []string          // label keys in the same order as labels
+	byKey     map[string]string // label key -> value, for grouping lookup
 }
 
 // labelByKey resolves a repo's label value for the given key, or "" when the
@@ -64,6 +68,7 @@ func buildMeta(cfg *config.Config) map[string]rowMeta {
 			rm.byKey[k] = v
 		}
 		sort.Strings(keys)
+		rm.labelKeys = keys
 		for _, k := range keys {
 			rm.labels = append(rm.labels, r.Labels[k])
 		}
@@ -394,14 +399,28 @@ func (m Model) listRowFor(row app.RepoStatus) listRow {
 		last:   humanize.Ago(m.app.Clock.Now(), row.State.LastSnapshot),
 		snaps:  strconv.Itoa(row.State.SnapshotCount),
 		took:   tookDuration(row.State.Snapshots),
-		labels: listLabelsValue(m.meta[row.Name]),
+		labels: listLabelsValue(m.meta[row.Name], m.activeGroupKey()),
 	}
 }
 
 // listLabelsValue joins a repo's label values for the Labels column with " · "
-// separators, matching the rendering style of the old meta sub-line.
-func listLabelsValue(rm rowMeta) string {
-	return strings.Join(rm.labels, " · ")
+// separators, matching the rendering style of the old meta sub-line. When
+// skipKey is non-empty it omits the value for that key — used so the active
+// group key's value (already shown as the section heading) doesn't repeat in
+// every row's Labels cell. The fast path keeps the previous behavior when no
+// key is skipped or the test fixture sets labels without parallel labelKeys.
+func listLabelsValue(rm rowMeta, skipKey string) string {
+	if skipKey == "" || len(rm.labelKeys) != len(rm.labels) {
+		return strings.Join(rm.labels, " · ")
+	}
+	vals := make([]string, 0, len(rm.labels))
+	for i, k := range rm.labelKeys {
+		if k == skipKey {
+			continue
+		}
+		vals = append(vals, rm.labels[i])
+	}
+	return strings.Join(vals, " · ")
 }
 
 func tookDuration(snaps []model.Snapshot) string {

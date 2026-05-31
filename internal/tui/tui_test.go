@@ -2221,6 +2221,36 @@ func TestCycleGroupingPreservesCursor(t *testing.T) {
 	}
 }
 
+// The Labels column hides the value for the currently active group key (its
+// value already heads the section), and shows every label again once the cycle
+// reaches the flat view.
+func TestCycleGroupingHidesActiveKeyFromLabelsColumn(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = []string{"env", "criticality"}
+	a.Cfg.Repos[0].Labels = map[string]string{"env": "home", "criticality": "high"}
+	m := newTestModel(t, a)
+
+	// Active key = env -> Labels column shows only "high" (the criticality value).
+	got := listLabelsValue(m.meta["repo-a"], m.activeGroupKey())
+	if got != "high" {
+		t.Errorf("active key env: Labels = %q, want %q (only criticality)", got, "high")
+	}
+
+	// Cycle to criticality -> Labels column shows only "home" (the env value).
+	m = update(t, m, press("g"))
+	got = listLabelsValue(m.meta["repo-a"], m.activeGroupKey())
+	if got != "home" {
+		t.Errorf("active key criticality: Labels = %q, want %q (only env)", got, "home")
+	}
+
+	// Cycle to flat view -> Labels column shows both, sorted by key.
+	m = update(t, m, press("g"))
+	got = listLabelsValue(m.meta["repo-a"], m.activeGroupKey())
+	if got != "high · home" {
+		t.Errorf("flat view: Labels = %q, want %q (both, ordered by key)", got, "high · home")
+	}
+}
+
 // headerView must show the active group key when grouping is active and omit
 // the group indicator while in flat view, across the full cycle.
 func TestCycleGroupingHeaderIndicator(t *testing.T) {
