@@ -103,17 +103,23 @@ type Model struct {
 // have wired the App's Secrets and Restic (i.e. run secrets_command) so any GPG
 // passphrase prompt happens before the alt-screen is entered (plan §12).
 func Run(ctx context.Context, a *app.App, resticVer string) error {
-	// A cancellable child scopes the refresh goroutines: defer cancel guarantees
-	// they're torn down on every exit path, and the Model holds cancel so
-	// quitting kills any in-flight restic immediately rather than orphaning it.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	return runProgram(ctx, a, resticVer)
+}
 
-	rows, err := a.Statuses(ctx)
+func runProgram(ctx context.Context, a *app.App, resticVer string, opts ...tea.ProgramOption) error {
+	// A cancellable child scopes refresh/browse goroutines. It is intentionally
+	// separate from Bubble Tea's program context: normal q/ctrl+c quits must cancel
+	// restic work without making Program.Run report "context canceled".
+	opCtx, cancelOps := context.WithCancel(ctx)
+	defer cancelOps()
+
+	rows, err := a.Statuses(opCtx)
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(newModel(ctx, cancel, a, rows, resticVer), tea.WithContext(ctx)).Run()
+
+	opts = append([]tea.ProgramOption{tea.WithContext(ctx)}, opts...)
+	_, err = tea.NewProgram(newModel(opCtx, cancelOps, a, rows, resticVer), opts...).Run()
 	return err
 }
 

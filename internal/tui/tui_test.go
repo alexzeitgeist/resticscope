@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -273,6 +275,18 @@ func TestQuit(t *testing.T) {
 	}
 	if nm.View().Content != "" {
 		t.Errorf("expected empty view while quitting, got %q", nm.View().Content)
+	}
+}
+
+func TestRunQuitReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := runProgram(ctx, testApp(nil), "0.18.1",
+		tea.WithInput(bytes.NewBufferString("q")),
+		tea.WithOutput(io.Discard),
+	); err != nil {
+		t.Fatalf("runProgram returned error on normal quit: %v", err)
 	}
 }
 
