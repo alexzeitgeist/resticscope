@@ -85,7 +85,7 @@ func (m Model) refreshCmd(name string) tea.Cmd {
 
 func (m Model) applyRefresh(msg repoRefreshedMsg) Model {
 	// A refresh can change LastSnapshot and thus reorder the visible list under a
-	// staleness sort. Anchor the cursor to the repo it was on (by name) so the
+	// non-config sort. Anchor the cursor to the repo it was on (by name) so the
 	// selection — and the repo r/s/enter act on — never silently jumps, matching
 	// cycleSort's behavior.
 	var selected string

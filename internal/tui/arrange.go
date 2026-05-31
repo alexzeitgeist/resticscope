@@ -8,24 +8,47 @@ import (
 	"resticscope/internal/model"
 )
 
-// sortMode orders the list view. sortConfig is the natural config order;
-// sortStale surfaces the repos most likely to need attention (oldest backup) at
-// the top.
+// sortMode orders the list view. The `o` key cycles config → urgency → name →
+// config; sortConfig is the natural config order.
 type sortMode int
 
 const (
 	sortConfig    sortMode = iota // config order (default)
-	sortStale                     // oldest last snapshot first (never-refreshed first)
+	sortUrgency                   // most urgent first (error → red → amber → green → grey)
+	sortName                      // repo name, case-insensitive A→Z
 	sortModeCount                 // sentinel: number of modes, for cycling
 )
 
 // label is the human name shown in the header when a non-default sort is active.
 func (s sortMode) label() string {
 	switch s {
-	case sortStale:
-		return "staleness"
+	case sortUrgency:
+		return "urgency"
+	case sortName:
+		return "name"
 	default:
 		return "config"
+	}
+}
+
+// urgencyRank maps an evaluated status to its sort position for sortUrgency.
+// Grey (never refreshed) is least urgent — it carries no failed freshness
+// evidence yet, so it sorts after green. This is a product-ordering choice and
+// is deliberately distinct from EvaluateStatus's internal precedence.
+func urgencyRank(s model.Status) int {
+	switch s {
+	case model.StatusError:
+		return 0
+	case model.StatusRed:
+		return 1
+	case model.StatusAmber:
+		return 2
+	case model.StatusGreen:
+		return 3
+	case model.StatusGrey:
+		return 4
+	default:
+		return 5
 	}
 }
 
@@ -33,11 +56,13 @@ func (s sortMode) label() string {
 // keys keep their config order. sortConfig leaves the slice untouched.
 func sortRows(rows []app.RepoStatus, mode sortMode) {
 	switch mode {
-	case sortStale:
-		// Oldest backup at the top. A never-refreshed repo has a zero
-		// LastSnapshot, which sorts before any real time — i.e. most stale.
+	case sortUrgency:
 		sort.SliceStable(rows, func(i, j int) bool {
-			return rows[i].State.LastSnapshot.Before(rows[j].State.LastSnapshot)
+			return urgencyRank(rows[i].Status) < urgencyRank(rows[j].Status)
+		})
+	case sortName:
+		sort.SliceStable(rows, func(i, j int) bool {
+			return strings.ToLower(rows[i].Name) < strings.ToLower(rows[j].Name)
 		})
 	}
 }

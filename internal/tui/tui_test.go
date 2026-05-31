@@ -1040,11 +1040,12 @@ func typeFilter(t *testing.T, m Model, s string) Model {
 }
 
 func TestSortRowsOrders(t *testing.T) {
-	base := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
 	src := []app.RepoStatus{
-		{Name: "a", State: model.RepoState{LastSnapshot: base.Add(-1 * time.Hour)}},
-		{Name: "b", State: model.RepoState{LastSnapshot: base.Add(-5 * time.Hour)}},
-		{Name: "c", State: model.RepoState{}}, // never refreshed: zero time
+		{Name: "Grey", Status: model.StatusGrey},
+		{Name: "Amber", Status: model.StatusAmber},
+		{Name: "Echo", Status: model.StatusError},
+		{Name: "green", Status: model.StatusGreen},
+		{Name: "red-1", Status: model.StatusRed},
 	}
 	clone := func() []app.RepoStatus { return append([]app.RepoStatus(nil), src...) }
 
@@ -1052,8 +1053,9 @@ func TestSortRowsOrders(t *testing.T) {
 		mode sortMode
 		want string
 	}{
-		{sortConfig, "a,b,c"}, // untouched
-		{sortStale, "c,b,a"},  // oldest/never first
+		{sortConfig, "Grey,Amber,Echo,green,red-1"},  // untouched
+		{sortUrgency, "Echo,red-1,Amber,green,Grey"}, // error → red → amber → green → grey
+		{sortName, "Amber,Echo,green,Grey,red-1"},    // case-insensitive A→Z
 	} {
 		rows := clone()
 		sortRows(rows, tc.mode)
@@ -1062,7 +1064,7 @@ func TestSortRowsOrders(t *testing.T) {
 		}
 	}
 	// sortConfig must not reorder the caller's slice contents.
-	if got := strings.Join(names(src), ","); got != "a,b,c" {
+	if got := strings.Join(names(src), ","); got != "Grey,Amber,Echo,green,red-1" {
 		t.Errorf("source slice mutated by sortConfig: %q", got)
 	}
 }
@@ -1492,39 +1494,73 @@ func assertLinesFit(t *testing.T, s string, width int) {
 	}
 }
 
-// `o` cycles config -> staleness -> config, reorders accordingly, and keeps the
-// cursor on the same repo across the reorder. The header names the active sort.
+// `o` cycles config -> urgency -> name -> config, reorders accordingly, and
+// keeps the cursor on the same repo across every press. The header names the
+// active sort for each non-config mode.
 func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
-	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour)},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)},
-	})
+	cfg := &config.Config{
+		Global:      config.Global{Parallelism: 2},
+		Credentials: []config.Credential{{Name: "cred-a"}},
+		Repos: []config.Repo{
+			{Name: "charlie", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
+			{Name: "ada", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
+			{Name: "boris", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
+		},
+	}
+	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
+	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	states := map[string]model.RepoState{
+		// charlie: recent snapshot but a recorded refresh error → Error status.
+		"charlie": {Name: "charlie", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 10, LastError: "boom"},
+		// ada: 25h old → Amber (just past expected frequency, within grace).
+		"ada": {Name: "ada", RefreshedAt: testNow, LastSnapshot: testNow.Add(-25 * time.Hour), SnapshotCount: 99},
+		// boris: 50h old → Red (past grace, also the staleness winner).
+		"boris": {Name: "boris", RefreshedAt: testNow, LastSnapshot: testNow.Add(-50 * time.Hour), SnapshotCount: 2},
+	}
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   stubCache{states: states},
+		Clock:   fixedClock{testNow},
+		Secrets: stubSecrets{},
+		Restic:  stubRestic{snaps: []model.Snapshot{{Hostname: "h", Time: testNow.Add(-time.Hour)}}},
+	}
 	m := newTestModel(t, a)
-	if got := visNames(m); got != "repo-a,repo-b" {
+	if got := visNames(m); got != "charlie,ada,boris" {
 		t.Fatalf("default order = %q, want config order", got)
 	}
-	m = update(t, m, press("j")) // select repo-b
-	if r, _ := m.currentRow(); r.Name != "repo-b" {
-		t.Fatalf("cursor should be on repo-b")
+	m = update(t, m, press("j")) // select ada (cursor index 1 in config order)
+	if r, _ := m.currentRow(); r.Name != "ada" {
+		t.Fatalf("cursor should be on ada, got %q", r.Name)
 	}
 
-	m = update(t, m, press("o")) // staleness: repo-b (-9h) before repo-a (-1h)
-	if m.sortMode != sortStale {
-		t.Fatalf("sortMode = %v, want staleness", m.sortMode)
+	steps := []struct {
+		mode  sortMode
+		order string
+		label string // header indicator; empty means no sort indicator
+	}{
+		{sortUrgency, "charlie,boris,ada", "sort: urgency"},
+		{sortName, "ada,boris,charlie", "sort: name"},
+		{sortConfig, "charlie,ada,boris", ""},
 	}
-	if got := visNames(m); got != "repo-b,repo-a" {
-		t.Errorf("staleness order = %q, want repo-b,repo-a", got)
-	}
-	if r, _ := m.currentRow(); r.Name != "repo-b" || m.cursor != 0 {
-		t.Errorf("sort lost the selection (cursor=%d, row=%s)", m.cursor, r.Name)
-	}
-	if !strings.Contains(m.View().Content, "sort: staleness") {
-		t.Errorf("header should name the active sort")
-	}
-
-	m = update(t, m, press("o")) // back to config order
-	if m.sortMode != sortConfig || visNames(m) != "repo-a,repo-b" {
-		t.Errorf("cycle did not return to config order: mode=%v order=%q", m.sortMode, visNames(m))
+	for _, step := range steps {
+		m = update(t, m, press("o"))
+		if m.sortMode != step.mode {
+			t.Errorf("sortMode = %v, want %v", m.sortMode, step.mode)
+		}
+		if got := visNames(m); got != step.order {
+			t.Errorf("%s order = %q, want %q", step.mode.label(), got, step.order)
+		}
+		if r, _ := m.currentRow(); r.Name != "ada" {
+			t.Errorf("%s lost the selection (cursor=%d, row=%s)", step.mode.label(), m.cursor, r.Name)
+		}
+		view := m.View().Content
+		if step.label == "" {
+			if strings.Contains(view, "sort: ") {
+				t.Errorf("config mode should clear the sort indicator\n---\n%s", view)
+			}
+		} else if !strings.Contains(view, step.label) {
+			t.Errorf("header missing %q\n---\n%s", step.label, view)
+		}
 	}
 }
 
@@ -1533,19 +1569,21 @@ func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 // cycleSort anchors it. Regression for the applyRefresh cursor-drift bug.
 func TestSortedSelectionSurvivesRefreshReorder(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
 		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
 	})
 	m := newTestModel(t, a)
-	m.sortMode = sortStale // repo-a (oldest) sorts first, so cursor 0 is repo-a
+	m.sortMode = sortUrgency // both Green: stable sort keeps config order, cursor 0 = repo-a
 	if r, _ := m.currentRow(); r.Name != "repo-a" {
 		t.Fatalf("precondition: cursor should be on repo-a, got %s", r.Name)
 	}
 
-	// repo-b ages past repo-a; the visible order flips to repo-b, repo-a.
-	older := app.RepoStatus{Name: "repo-b", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)}}
-	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: older})
+	// repo-b becomes Error; the visible order flips to repo-b, repo-a. applyRefresh
+	// assigns msg.row directly without re-evaluating status, so the injected row
+	// carries an explicit Status.
+	errored := app.RepoStatus{Name: "repo-b", Status: model.StatusError,
+		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastError: "boom"}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: errored})
 
 	if got := visNames(m); got != "repo-b,repo-a" {
 		t.Fatalf("order after refresh = %q, want repo-b,repo-a", got)
@@ -1579,22 +1617,22 @@ func TestFilteredSelectionDrivesActions(t *testing.T) {
 }
 
 // The detail view stays pinned to the repo it was opened on, even when a sort by
-// staleness reorders the list underneath it (e.g. after a background refresh).
+// urgency reorders the list underneath it (e.g. after a background refresh).
 func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-50 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-25 * time.Hour)},
 	})
 	m := newTestModel(t, a)
-	m.sortMode = sortStale // repo-a (oldest) is first
+	m.sortMode = sortUrgency // repo-a (Red) is first, repo-b (Amber) second
 	m = update(t, m, press("enter"))
 	if m.detailName != "repo-a" {
 		t.Fatalf("opened detail on %q, want repo-a", m.detailName)
 	}
-	// repo-a gets a fresher snapshot than repo-b; under staleness sort repo-b would
-	// now sort first, so a cursor-based detail view would jump to repo-b.
+	// repo-a recovers to Green; under urgency sort repo-b (Amber) would now sort
+	// first, so a cursor-based detail view would jump to repo-b.
 	fresher := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Minute)}}
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)}}
 	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: fresher})
 	if row, ok := m.detailRow(); !ok || row.Name != "repo-a" {
 		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
@@ -1891,13 +1929,13 @@ func TestGroupToggleAnchorsSelectionByName(t *testing.T) {
 	}
 }
 
-// Under sortStale with grouping active, both the sort cycle and a background
-// refresh that changes the staleness order keep the cursor anchored to the
-// same repo by name.
+// Under sortUrgency with grouping active, both the sort cycle and a background
+// refresh that changes the urgency order keep the cursor anchored to the same
+// repo by name.
 func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
 		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour)},
-		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastError: "boom"},
 	})
 	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "shared"}
@@ -1911,20 +1949,21 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 		t.Fatalf("precondition: cursor on %q, want repo-b", row.Name)
 	}
 
-	// Sort by staleness: repo-b (older) should come first; cursor follows the name.
+	// Sort by urgency: repo-b (Error) should come first; cursor follows the name.
 	m = update(t, m, press("o"))
-	if m.sortMode != sortStale {
-		t.Fatalf("sortMode = %v, want staleness", m.sortMode)
+	if m.sortMode != sortUrgency {
+		t.Fatalf("sortMode = %v, want urgency", m.sortMode)
 	}
 	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
 		t.Errorf("after sort, cursor on %q (idx=%d), want repo-b", row.Name, m.cursor)
 	}
 
-	// Background refresh: repo-a ages past repo-b; in-group order flips again
-	// and the cursor must still point to repo-b.
-	older := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)}}
-	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: older})
+	// Background refresh: repo-a also becomes Error; in-group urgency ties, so
+	// stable sort reverts to config order repo-a, repo-b and the cursor must
+	// follow repo-b to index 1.
+	errored := app.RepoStatus{Name: "repo-a", Status: model.StatusError,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastError: "splat"}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: errored})
 	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
 		t.Errorf("after refresh-reorder, cursor on %q (idx=%d), want repo-b", row.Name, m.cursor)
 	}
