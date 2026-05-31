@@ -601,7 +601,7 @@ func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
 }
 
 // The Enter key does something different in each view (open detail in the list,
-// shell at the selected snapshot in detail, open the directory in browse), so the
+// browse the selected snapshot in detail, open the directory in browse), so the
 // footer label is overridden per view by enterAs. This guards against the binding
 // reverting to a single generic label that would mislead in two views out of three.
 func TestFooterEnterLabelsByView(t *testing.T) {

@@ -267,6 +267,9 @@ func TestDetailShellKeyRoutePassesSnapshot(t *testing.T) {
 // success-path command and execMsg's fields are package-private.
 func extractExecCommand(t *testing.T, msg tea.Msg) tea.ExecCommand {
 	t.Helper()
+	if msg, ok := msg.(shellExitedMsg); ok {
+		t.Fatalf("expected tea.ExecProcess command, got shellExitedMsg: %v", msg.err)
+	}
 	v := reflect.ValueOf(msg)
 	if v.Kind() != reflect.Struct {
 		t.Fatalf("execMsg is %T, want a struct", msg)
