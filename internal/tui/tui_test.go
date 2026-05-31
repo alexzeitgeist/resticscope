@@ -1748,6 +1748,27 @@ func TestRenderRowStaleMarker(t *testing.T) {
 	}
 }
 
+// While a refresh is pending the spinner already conveys "data is being
+// updated," so the stale `*` marker is suppressed to keep the status cell
+// quiet. A lock, however, is independent and actionable: `L` must still show.
+func TestRenderRowStaleMarkerSuppressedWhilePending(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m.pending["repo-a"] = true
+	stale := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1}}
+	rendered := stripANSI(m.renderRow(stale, computeListLayout(100), false, 100))
+	if strings.Contains(rendered, "*") {
+		t.Errorf("pending refresh should suppress '*' marker\n---\n%s", rendered)
+	}
+
+	locked := testNow.Add(-time.Hour)
+	stale.State.LockedSince = &locked
+	rendered = stripANSI(m.renderRow(stale, computeListLayout(100), false, 100))
+	if !strings.Contains(rendered, "L") {
+		t.Errorf("pending refresh must not suppress 'L' marker\n---\n%s", rendered)
+	}
+}
+
 // A repo with an active lock shows "L" in the marker cell. Lock wins over
 // stale because it's the more actionable signal.
 func TestRenderRowLockMarker(t *testing.T) {

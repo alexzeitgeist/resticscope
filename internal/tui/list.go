@@ -370,8 +370,10 @@ func (m Model) renderRow(row app.RepoStatus, l listLayout, selected bool, width 
 // statusCell renders the 2-cell status area: a colored glyph (or the spinner
 // while a refresh is pending) plus a one-cell marker that calls out an active
 // lock (`L`) or a stale cache (`*`). Lock wins over stale because it's the more
-// actionable signal. The cell width is invariant so column alignment never
-// breaks.
+// actionable signal, and the stale marker is suppressed while a refresh is
+// pending — the spinner already conveys "data is being updated right now," so
+// pairing it with `*` is noise. The cell width is invariant so column alignment
+// never breaks.
 func (m Model) statusCell(row app.RepoStatus) string {
 	var glyph string
 	if m.pending[row.Name] {
@@ -383,7 +385,7 @@ func (m Model) statusCell(row app.RepoStatus) string {
 	switch {
 	case row.State.LockedSince != nil:
 		marker = m.styles.glyph[model.StatusError].Render("L")
-	case row.Stale:
+	case row.Stale && !m.pending[row.Name]:
 		marker = m.styles.glyph[model.StatusAmber].Render("*")
 	}
 	return glyph + marker
