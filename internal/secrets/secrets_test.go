@@ -181,6 +181,9 @@ func TestLoadNonZeroExit(t *testing.T) {
 	if !strings.Contains(err.Error(), "exit status 2") {
 		t.Errorf("error should report the exit failure, got %q", err.Error())
 	}
+	if !strings.Contains(err.Error(), `command: "pass show x"`) {
+		t.Errorf("error should report the configured command, got %q", err.Error())
+	}
 }
 
 func TestLoadSuccess(t *testing.T) {
