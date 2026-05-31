@@ -112,14 +112,6 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (c *Client) run(ctx context.Context, t Target, creds Creds, args ...string) ([]byte, error) {
-	op := "restic"
-	if len(args) > 0 {
-		op = args[0]
-	}
-	return c.runOp(ctx, t, creds, op, args...)
-}
-
 func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()

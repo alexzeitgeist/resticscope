@@ -85,26 +85,58 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 	return out
 }
 
-// groupTok is one rendered line of the flattened grouped-list stream: either a
-// data row (data >= 0, indexing into the flat row list) or a heading/blank
-// separator (data == -1).
+type groupTokKind int
+
+const (
+	groupTokBlank groupTokKind = iota
+	groupTokHeading
+	groupTokRow
+)
+
+// groupTok is one unrendered line of the flattened grouped-list stream. Row
+// tokens carry both their section-local row index and their flattened data index
+// so windowing can happen before lipgloss renders any discarded rows.
 type groupTok struct {
-	s    string
-	data int
+	kind    groupTokKind
+	section int
+	row     int
+	data    int
 }
 
-// buildGroupTokens flattens sections into a render-ready token stream and
+// buildGroupTokens flattens sections into a render-free token stream and
 // records each section heading's line index. Blank separators precede every
-// non-first section. The cursor row receives the selected highlight.
-func (m Model) buildGroupTokens(sections []listSection, cursor int, l listLayout, width int) ([]groupTok, []int) {
-	var lines []groupTok
+// non-first section.
+func buildGroupTokens(sections []listSection) ([]groupTok, []int) {
+	capLines := len(sections)
+	if len(sections) > 1 {
+		capLines += len(sections) - 1
+	}
+	for _, sec := range sections {
+		capLines += len(sec.rows)
+	}
+	lines := make([]groupTok, 0, capLines)
 	headingPos := make([]int, len(sections))
 	idx := 0
 	for si, sec := range sections {
 		if si > 0 {
-			lines = append(lines, groupTok{s: "", data: -1})
+			lines = append(lines, groupTok{kind: groupTokBlank, section: si, data: -1})
 		}
 		headingPos[si] = len(lines)
+		lines = append(lines, groupTok{kind: groupTokHeading, section: si, data: -1})
+		for ri := range sec.rows {
+			lines = append(lines, groupTok{kind: groupTokRow, section: si, row: ri, data: idx})
+			idx++
+		}
+	}
+	return lines, headingPos
+}
+
+func (m Model) renderGroupToken(t groupTok, sections []listSection, cursor int, l listLayout, width int) string {
+	switch t.kind {
+	case groupTokBlank:
+		return ""
+	case groupTokHeading:
+		sec := sections[t.section]
 		// Fallback section renders in the dim/meta style so a real label value
 		// that happens to match the fallback title can't visually merge with
 		// it — the structural noKey flag, not the title string, carries the
@@ -114,13 +146,13 @@ func (m Model) buildGroupTokens(sections []listSection, cursor int, l listLayout
 			titleStyle = m.styles.meta
 		}
 		title := titleStyle.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
-		lines = append(lines, groupTok{s: clip(title, width), data: -1})
-		for _, r := range sec.rows {
-			lines = append(lines, groupTok{s: m.renderRow(r, l, idx == cursor, width), data: idx})
-			idx++
-		}
+		return clip(title, width)
+	case groupTokRow:
+		sec := sections[t.section]
+		return m.renderRow(sec.rows[t.row], l, t.data == cursor, width)
+	default:
+		return ""
 	}
-	return lines, headingPos
 }
 
 // groupedWindow picks [start, end) into the flattened token stream so the
@@ -175,24 +207,24 @@ func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading 
 // indexes.
 func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(d.rows))
-	lines, headingPos := m.buildGroupTokens(d.sections, cursor, l, width)
+	tokens, headingPos := buildGroupTokens(d.sections)
 
 	max := m.listHeight() - listHeaderRows - listScrollNoteRows
 	if max < 1 {
 		max = 1
 	}
 
-	if max >= len(lines) {
-		out := make([]string, len(lines))
-		for i, t := range lines {
-			out[i] = t.s
+	if max >= len(tokens) {
+		out := make([]string, len(tokens))
+		for i, t := range tokens {
+			out[i] = m.renderGroupToken(t, d.sections, cursor, l, width)
 		}
 		return strings.Join(out, "\n")
 	}
 
 	cursorPos := 0
-	for i, t := range lines {
-		if t.data == cursor {
+	for i, t := range tokens {
+		if t.kind == groupTokRow && t.data == cursor {
 			cursorPos = i
 			break
 		}
@@ -200,7 +232,7 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 
 	// If only one content line fits, render the selected data row alone.
 	if max == 1 {
-		return lines[cursorPos].s + "\n" + m.scrollNote(cursor, cursor+1, len(d.rows), width)
+		return m.renderGroupToken(tokens[cursorPos], d.sections, cursor, l, width) + "\n" + m.scrollNote(cursor, cursor+1, len(d.rows), width)
 	}
 
 	// Find the heading position for the cursor's section. The flattened row
@@ -215,14 +247,14 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 	}
 	hPos := headingPos[cursorSec]
 
-	start, end, prependHeading := groupedWindow(cursorPos, hPos, max, len(lines))
+	start, end, prependHeading := groupedWindow(cursorPos, hPos, max, len(tokens))
 
 	out := make([]string, 0, max+1)
 	if prependHeading {
-		out = append(out, lines[hPos].s)
+		out = append(out, m.renderGroupToken(tokens[hPos], d.sections, cursor, l, width))
 	}
 	for i := start; i < end; i++ {
-		out = append(out, lines[i].s)
+		out = append(out, m.renderGroupToken(tokens[i], d.sections, cursor, l, width))
 	}
 
 	// Data-row bounds for the scroll note: scan the rendered window (start..end)
@@ -231,12 +263,12 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 	dataStart, dataEnd := cursor, cursor+1
 	dataStartFound := false
 	for i := start; i < end; i++ {
-		if lines[i].data >= 0 {
+		if tokens[i].kind == groupTokRow {
 			if !dataStartFound {
-				dataStart = lines[i].data
+				dataStart = tokens[i].data
 				dataStartFound = true
 			}
-			dataEnd = lines[i].data + 1
+			dataEnd = tokens[i].data + 1
 		}
 	}
 	if note := m.scrollNote(dataStart, dataEnd, len(d.rows), width); note != "" {

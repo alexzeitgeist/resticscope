@@ -1080,7 +1080,7 @@ func names(rows []app.RepoStatus) []string {
 	return out
 }
 
-func visNames(m Model) string { return strings.Join(names(m.visibleRows()), ",") }
+func visNames(m Model) string { return strings.Join(names(m.displayList().rows), ",") }
 
 func typeFilter(t *testing.T, m Model, s string) Model {
 	t.Helper()

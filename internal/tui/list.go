@@ -237,11 +237,10 @@ type listDisplay struct {
 }
 
 // displayList applies the filter, then either flat sorting or grouped
-// partitioning. m.cursor indexes display.rows, not the pre-grouped visibleRows
-// order, so cursor navigation in grouped mode steps between data rows in the
-// exact order they render on screen.
+// partitioning. m.cursor indexes display.rows, so cursor navigation in grouped
+// mode steps between data rows in the exact order they render on screen.
 func (m Model) displayList() listDisplay {
-	q := strings.ToLower(strings.TrimSpace(m.filter))
+	q := normalizedFilter(m.filter)
 	filtered := make([]app.RepoStatus, 0, len(m.rows))
 	for _, r := range m.rows {
 		if matchRepo(r.Name, m.meta[r.Name], q) {
@@ -295,11 +294,11 @@ func (m Model) renderFlatList(rows []app.RepoStatus, l listLayout, width int) st
 
 // countLabel describes how many repos the list is showing: the total normally,
 // or "N of M" while a filter narrows the set. The filtered branch counts in
-// place instead of going through visibleRows so we don't sort/copy on every
+// place instead of going through displayList so we don't sort/copy on every
 // header render — the body's displayList does the canonical sort+group pass.
 func (m Model) countLabel() string {
 	total := len(m.rows)
-	q := strings.ToLower(strings.TrimSpace(m.filter))
+	q := normalizedFilter(m.filter)
 	if q == "" {
 		return repoCount(total)
 	}
@@ -313,11 +312,11 @@ func (m Model) countLabel() string {
 }
 
 // renderRow renders one repo as a single-line table row. Healthy rows use the
-// shared Name/Last/Snaps/Took/Labels cells; error and grey rows put a styled
-// message into the space after Name, skipping the numeric columns rather than
-// inventing dashes that would look like real data. Every line is clipped to
-// width so a long name or refresh error can never wrap and break the
-// one-row-per-repo budget.
+// shared Name/Last/Snaps/Took/Labels cells. Error and grey rows intentionally
+// give the post-name space to the actionable status text instead of squeezing in
+// labels, so a refresh failure has as much room as the one-row layout allows.
+// Every line is clipped to width so a long name or refresh error can never wrap
+// and break the one-row-per-repo budget.
 func (m Model) renderRow(row app.RepoStatus, l listLayout, selected bool, width int) string {
 	gutter := "  "
 	nameStyle := m.styles.name
