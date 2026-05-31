@@ -32,8 +32,9 @@ func (m Model) repoConfig(name string) (config.Repo, bool) {
 }
 
 // detailRow returns the repo the detail view is pinned to (by name, set on
-// enter). Resolving by name rather than cursor keeps the detail view stable when
-// a size/staleness sort reorders the list after a background refresh.
+// enter). Resolving by name rather than cursor keeps the detail view stable
+// when an urgency sort or a grouping cycle reorders the list after a
+// background refresh.
 func (m Model) detailRow() (app.RepoStatus, bool) {
 	for _, r := range m.rows {
 		if r.Name == m.detailName {

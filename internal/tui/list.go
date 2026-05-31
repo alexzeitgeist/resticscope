@@ -216,10 +216,14 @@ func listHeader(l listLayout) string {
 }
 
 // listSection is one group of repos rendered together under a heading. Counts
-// derive from len(rows) so there is no duplicate state to keep in sync.
+// derive from len(rows) so there is no duplicate state to keep in sync. noKey
+// marks the fallback bucket for repos missing the active group key so the
+// renderer can style it distinctly from a real label value (and so a value
+// that happens to match the fallback title can't visually merge with it).
 type listSection struct {
 	title string
 	rows  []app.RepoStatus
+	noKey bool
 }
 
 // listDisplay is the canonical render-and-action order for the list view. rows
@@ -290,13 +294,22 @@ func (m Model) renderFlatList(rows []app.RepoStatus, l listLayout, width int) st
 }
 
 // countLabel describes how many repos the list is showing: the total normally,
-// or "N of M" while a filter narrows the set.
+// or "N of M" while a filter narrows the set. The filtered branch counts in
+// place instead of going through visibleRows so we don't sort/copy on every
+// header render — the body's displayList does the canonical sort+group pass.
 func (m Model) countLabel() string {
 	total := len(m.rows)
-	if strings.TrimSpace(m.filter) == "" {
+	q := strings.ToLower(strings.TrimSpace(m.filter))
+	if q == "" {
 		return repoCount(total)
 	}
-	return fmt.Sprintf("%d of %d repos", len(m.visibleRows()), total)
+	n := 0
+	for _, r := range m.rows {
+		if matchRepo(r.Name, m.meta[r.Name], q) {
+			n++
+		}
+	}
+	return fmt.Sprintf("%d of %d repos", n, total)
 }
 
 // renderRow renders one repo as a single-line table row. Healthy rows use the

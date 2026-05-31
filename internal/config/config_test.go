@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -290,7 +291,7 @@ secrets_command`, 1))
 	if err != nil {
 		t.Fatalf("group_by should decode cleanly, got %v", err)
 	}
-	if got, want := cfg.Global.GroupBy, []string{"env", "region"}; !equalStrings(got, want) {
+	if got, want := cfg.Global.GroupBy, []string{"env", "region"}; !slices.Equal(got, want) {
 		t.Errorf("group_by = %v, want %v", got, want)
 	}
 
@@ -341,6 +342,7 @@ func TestValidatesGroupByEntries(t *testing.T) {
 		{"empty", `["env", ""]`, "global.group_by[1]"},
 		{"whitespace_padded", `[" env"]`, "global.group_by[0]"},
 		{"duplicate", `["env", "env"]`, "global.group_by[1]"},
+		{"whitespace_duplicate", `[" env", "env"]`, "duplicate"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,18 +360,6 @@ secrets_command`, 1)
 			}
 		})
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestRejectsUnknownKeys(t *testing.T) {

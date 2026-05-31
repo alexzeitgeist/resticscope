@@ -30,16 +30,20 @@ func (c *Config) Validate() error {
 
 	seenGroupBy := map[string]int{}
 	for i, k := range c.Global.GroupBy {
-		switch {
-		case k == "":
+		if k == "" {
 			errs = append(errs, fmt.Errorf("global.group_by[%d]: key must not be empty", i))
-		case strings.TrimSpace(k) != k:
+			continue
+		}
+		norm := strings.TrimSpace(k)
+		if norm != k {
 			errs = append(errs, fmt.Errorf("global.group_by[%d]: key %q has surrounding whitespace", i, k))
 		}
-		if prev, ok := seenGroupBy[k]; ok {
+		// Dedup on the trimmed key so [" env", "env"] surfaces as a duplicate
+		// rather than slipping through under two different map entries.
+		if prev, ok := seenGroupBy[norm]; ok {
 			errs = append(errs, fmt.Errorf("global.group_by[%d]: duplicate key %q (also at index %d)", i, k, prev))
 		} else {
-			seenGroupBy[k] = i
+			seenGroupBy[norm] = i
 		}
 	}
 

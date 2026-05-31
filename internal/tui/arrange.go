@@ -151,8 +151,9 @@ func browseLess(rows []model.BrowseEntry, mode browseSortMode) func(i, j int) bo
 // matchRepo reports whether a repo matches the filter query q, which must be
 // lowercased and trimmed by the caller. An empty query matches everything. The
 // query is tested as a case-insensitive substring of the repo name, its
-// credential's region, and each of its label values — the same facts shown on
-// the list's meta line.
+// credential's region, and each of its label values — covering both the Name
+// column and the Labels column the list view surfaces. Region is matched even
+// though it is no longer a column so a region-based filter keeps working.
 func matchRepo(name string, meta rowMeta, q string) bool {
 	if q == "" {
 		return true
@@ -172,12 +173,13 @@ func matchRepo(name string, meta rowMeta, q string) bool {
 }
 
 // visibleRows is the configured rows with the active filter and sort applied,
-// flattened to a single slice without group sectioning. It backs header badge
-// counts and page-jump sizing; in grouped mode it's only an approximation of
-// the displayed order because displayList() partitions the same rows into
-// sections. The cursor and every list-view action index into displayList().rows
-// — the canonical render-and-action order — not into this slice. m.rows itself
-// stays in config order so refresh-all keeps spanning every repo.
+// flattened to a single slice without group sectioning. It backs the header's
+// filter count and page-jump sizing; in grouped mode it's only an
+// approximation of the displayed order because displayList() partitions the
+// same rows into sections. The cursor and every list-view action index into
+// displayList().rows — the canonical render-and-action order — not into this
+// slice. m.rows itself stays in config order so refresh-all keeps spanning
+// every repo.
 func (m Model) visibleRows() []app.RepoStatus {
 	q := strings.ToLower(strings.TrimSpace(m.filter))
 	rows := make([]app.RepoStatus, 0, len(m.rows))

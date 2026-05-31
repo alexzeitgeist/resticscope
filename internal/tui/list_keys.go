@@ -6,6 +6,11 @@ import (
 )
 
 func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Any list-view key dismisses a prior transient footer notice (e.g.
+	// "grouping not configured") so it can't persist past the user's next
+	// interaction. Handlers that want to surface a new notice (cycleGrouping
+	// on a missing config) set m.statusMsg after this clear runs.
+	m.statusMsg = ""
 	switch {
 	case key.Matches(msg, m.keys.Up):
 		if m.cursor > 0 {
@@ -21,7 +26,7 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursor = clampCursor(m.cursor+m.visibleRepos(), len(m.displayList().rows))
 	case key.Matches(msg, m.keys.Enter):
 		// Pin the detail view to the selected repo by name so a later refresh
-		// (which can reorder a size/staleness sort) can't swap it out.
+		// (which can reorder an urgency sort) can't swap it out.
 		if row, ok := m.currentRow(); ok {
 			m.detailName = row.Name
 			m.view = detailView
@@ -70,7 +75,8 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // cycleSort advances to the next sort mode, keeping the cursor on the same repo
-// across the reorder.
+// across the reorder. Clearing a stale statusMsg is handled centrally by
+// handleListKey, so this body only owns the sort + cursor reanchor.
 func (m Model) cycleSort() Model {
 	var sel string
 	if row, ok := m.currentRow(); ok {
@@ -84,8 +90,9 @@ func (m Model) cycleSort() Model {
 // cycleGrouping advances the grouping cycle: each press steps to the next
 // configured key, then to the flat view, then wraps. The cursor stays on the
 // same repo across the reorder by anchoring on its name. When no keys are
-// configured it is a no-op that surfaces a transient footer notice so the user
-// understands why nothing happened.
+// configured it is a no-op that surfaces a transient footer notice so the
+// user understands why nothing happened — set after handleListKey's central
+// clear runs so the new notice survives this turn.
 func (m Model) cycleGrouping() Model {
 	if !m.groupingConfigured() {
 		m.statusMsg = "grouping not configured"
@@ -95,7 +102,6 @@ func (m Model) cycleGrouping() Model {
 	if row, ok := m.currentRow(); ok {
 		sel = row.Name
 	}
-	m.statusMsg = ""
 	m.groupIndex = (m.groupIndex + 1) % (len(m.app.Cfg.Global.GroupBy) + 1)
 	m.cursor = m.indexOf(sel)
 	return m

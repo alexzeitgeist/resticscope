@@ -10,9 +10,9 @@ import (
 
 // group.go owns the list view's optional grouping by a configured repo label
 // key. When `global.group_by` is set, the list partitions repos into sections —
-// one per distinct label value, plus a final "Ungrouped" section for repos
-// missing the key. Sort applies within each section so a cycle (e.g.
-// staleness) never breaks group boundaries; filter applies before grouping.
+// one per distinct label value, plus a final fallback section for repos
+// missing the key. Sort applies within each section so a cycle (e.g. urgency)
+// never breaks group boundaries; filter applies before grouping.
 
 // groupingConfigured reports whether the config supplies at least one group_by
 // label key. The `g` cycle is a no-op when this is false.
@@ -41,11 +41,13 @@ func (m Model) activeGroupKey() string {
 }
 
 // groupedSections partitions filtered rows by their value for key. Sections
-// render in ASCII order on the group value with "Ungrouped" last; sortRows
-// applies within each section so the in-group order honors the active sort
-// mode. An empty key value falls into the "Ungrouped" bucket.
+// render in case-insensitive order on the group value with the fallback
+// section last; sortRows applies within each section so the in-group order
+// honors the active sort mode. An empty key value falls into the fallback
+// "(no <key>)" bucket, marked with noKey=true so callers can distinguish it
+// from a real label value that happens to match the same title.
 func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string, mode sortMode) []listSection {
-	byValue := make(map[string][]app.RepoStatus)
+	byValue := make(map[string][]app.RepoStatus, len(rows))
 	var ungrouped []app.RepoStatus
 	for _, r := range rows {
 		v := meta[r.Name].labelByKey(key)
@@ -59,7 +61,17 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 	for v := range byValue {
 		values = append(values, v)
 	}
-	sort.Strings(values)
+	sort.SliceStable(values, func(i, j int) bool {
+		li, lj := strings.ToLower(values[i]), strings.ToLower(values[j])
+		if li != lj {
+			return li < lj
+		}
+		// Byte-order tie-break for case-only collisions ("Prod" vs "prod").
+		// Without it the map iteration order leaks into the rendered order,
+		// and two displayList() calls in the same handler can disagree —
+		// breaking the canonical render-and-action invariant.
+		return values[i] < values[j]
+	})
 	out := make([]listSection, 0, len(values)+1)
 	for _, v := range values {
 		s := byValue[v]
@@ -68,7 +80,7 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 	}
 	if len(ungrouped) > 0 {
 		sortRows(ungrouped, mode)
-		out = append(out, listSection{title: "Ungrouped", rows: ungrouped})
+		out = append(out, listSection{title: "(no " + key + ")", rows: ungrouped, noKey: true})
 	}
 	return out
 }
@@ -93,7 +105,15 @@ func (m Model) buildGroupTokens(sections []listSection, cursor int, l listLayout
 			lines = append(lines, groupTok{s: "", data: -1})
 		}
 		headingPos[si] = len(lines)
-		title := m.styles.heading.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
+		// Fallback section renders in the dim/meta style so a real label value
+		// that happens to match the fallback title can't visually merge with
+		// it — the structural noKey flag, not the title string, carries the
+		// distinction.
+		titleStyle := m.styles.heading
+		if sec.noKey {
+			titleStyle = m.styles.meta
+		}
+		title := titleStyle.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
 		lines = append(lines, groupTok{s: clip(title, width), data: -1})
 		for _, r := range sec.rows {
 			lines = append(lines, groupTok{s: m.renderRow(r, l, idx == cursor, width), data: idx})

@@ -1860,8 +1860,8 @@ func TestRenderRowFixedCellsDoNotWiden(t *testing.T) {
 }
 
 // groupedSections partitions rows by their value for the configured label
-// key. Sections come back in ASCII order on the group value, with "Ungrouped"
-// last for repos that lack the key.
+// key. Sections come back in case-insensitive order on the group value, with
+// the noKey fallback section last for repos that lack the key.
 func TestGroupedSectionsOrder(t *testing.T) {
 	rows := []app.RepoStatus{
 		{Name: "alpha"}, {Name: "bravo"}, {Name: "charlie"}, {Name: "delta"},
@@ -1870,28 +1870,55 @@ func TestGroupedSectionsOrder(t *testing.T) {
 		"alpha":   {byKey: map[string]string{"category": "business"}},
 		"bravo":   {byKey: map[string]string{"category": "personal"}},
 		"charlie": {byKey: map[string]string{"category": "business"}},
-		"delta":   {byKey: map[string]string{}}, // missing key -> Ungrouped
+		"delta":   {byKey: map[string]string{}}, // missing key -> fallback section
 	}
 	secs := groupedSections(rows, meta, "category", sortConfig)
 	if len(secs) != 3 {
 		t.Fatalf("got %d sections, want 3", len(secs))
 	}
 	if secs[0].title != "business" {
-		t.Errorf("first section title = %q, want business (ASCII first)", secs[0].title)
+		t.Errorf("first section title = %q, want business", secs[0].title)
 	}
 	if secs[1].title != "personal" {
 		t.Errorf("second section title = %q, want personal", secs[1].title)
 	}
-	if secs[2].title != "Ungrouped" {
-		t.Errorf("last section title = %q, want Ungrouped", secs[2].title)
+	if secs[2].title != "(no category)" || !secs[2].noKey {
+		t.Errorf("last section = %+v, want title=\"(no category)\" noKey=true", secs[2])
 	}
 	if len(secs[0].rows) != 2 {
 		t.Errorf("business section should have 2 rows, got %d", len(secs[0].rows))
 	}
 }
 
+// Values that differ only by case (e.g. "Prod" vs "prod") must come back in
+// a deterministic order. Sorting by the lowercase form alone leaves
+// case-only ties to map iteration order, which is randomized — letting two
+// displayList() calls in the same handler disagree on cursor mapping.
+func TestGroupedSectionsCaseOnlyCollisionIsStable(t *testing.T) {
+	rows := []app.RepoStatus{
+		{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"},
+	}
+	meta := map[string]rowMeta{
+		"a": {byKey: map[string]string{"env": "Prod"}},
+		"b": {byKey: map[string]string{"env": "prod"}},
+		"c": {byKey: map[string]string{"env": "Prod"}},
+		"d": {byKey: map[string]string{"env": "prod"}},
+	}
+	// Run repeatedly to exercise different map iteration orders.
+	for i := 0; i < 50; i++ {
+		secs := groupedSections(rows, meta, "env", sortConfig)
+		if len(secs) != 2 {
+			t.Fatalf("iter %d: got %d sections, want 2", i, len(secs))
+		}
+		// Byte-order tie-break: "Prod" (uppercase 'P' = 0x50) < "prod" ('p' = 0x70).
+		if secs[0].title != "Prod" || secs[1].title != "prod" {
+			t.Fatalf("iter %d: got titles %q,%q want Prod,prod", i, secs[0].title, secs[1].title)
+		}
+	}
+}
+
 // When group_by is configured but no repo carries the key, every repo lands
-// in a single "Ungrouped" section rather than disappearing.
+// in a single noKey fallback section rather than disappearing.
 func TestGroupedSectionsAllUngrouped(t *testing.T) {
 	rows := []app.RepoStatus{{Name: "one"}, {Name: "two"}}
 	meta := map[string]rowMeta{
@@ -1899,11 +1926,11 @@ func TestGroupedSectionsAllUngrouped(t *testing.T) {
 		"two": {byKey: map[string]string{"env": "home"}},
 	}
 	secs := groupedSections(rows, meta, "category", sortConfig)
-	if len(secs) != 1 || secs[0].title != "Ungrouped" {
-		t.Fatalf("got sections=%+v, want one Ungrouped section", secs)
+	if len(secs) != 1 || secs[0].title != "(no category)" || !secs[0].noKey {
+		t.Fatalf("got sections=%+v, want one (no category) fallback section", secs)
 	}
 	if len(secs[0].rows) != 2 {
-		t.Errorf("Ungrouped section should contain both repos, got %d rows", len(secs[0].rows))
+		t.Errorf("fallback section should contain both repos, got %d rows", len(secs[0].rows))
 	}
 }
 
@@ -1928,7 +1955,7 @@ func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
 		t.Errorf("activeGroupKey at startup = %q, want category", got)
 	}
 	d := m.displayList()
-	// ASCII order: business before personal -> repo-b first, then repo-a.
+	// Alphabetical section order: business before personal -> repo-b first, then repo-a.
 	if len(d.rows) != 2 || d.rows[0].Name != "repo-b" || d.rows[1].Name != "repo-a" {
 		t.Fatalf("display rows = %v, want [repo-b repo-a]", names(d.rows))
 	}
@@ -2281,7 +2308,7 @@ func TestCycleGroupingSingleKey(t *testing.T) {
 
 // The cursor follows the selected repo by name across the full cycle, even
 // when the repo's flattened-index changes between two grouping keys and the
-// flat view. Labels are picked so the ASCII section ordering differs between
+// flat view. Labels are picked so the section ordering differs between
 // "env" and "criticality": repo-a sits at a different cursor index under env
 // vs under criticality, so a "preserve only the numeric index" implementation
 // would land on the wrong repo at the cycle's second step.

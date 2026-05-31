@@ -160,8 +160,10 @@ func (m Model) renderHelpSection(s helpSection, keyWidth int) string {
 	return strings.Join(lines, "\n")
 }
 
-// glyphLegend explains the list view's status glyphs, rendered in their own
-// colors so the legend matches what the list shows.
+// glyphLegend explains the list view's status glyphs and the trailing marker
+// cell, rendered in their own colors so the legend matches what the list shows.
+// The marker entries mirror statusCell's render logic so the user can decode
+// the `L` and `*` they see in the second status column.
 func (m Model) glyphLegend() string {
 	items := []struct {
 		status model.Status
@@ -172,12 +174,18 @@ func (m Model) glyphLegend() string {
 		{model.StatusRed, "overdue or failed"},
 		{model.StatusGrey, "never refreshed"},
 	}
-	lines := make([]string, 0, len(items)+1)
+	lines := make([]string, 0, len(items)+3)
 	lines = append(lines, m.styles.heading.Render("Status"))
 	for _, it := range items {
 		glyph := m.styles.glyph[it.status].Render(statusGlyph(it.status))
 		lines = append(lines, "  "+glyph+"  "+m.styles.meta.Render(it.desc))
 	}
+	lockMarker := m.styles.glyph[model.StatusError].Render("L")
+	staleMarker := m.styles.glyph[model.StatusAmber].Render("*")
+	lines = append(lines,
+		"  "+lockMarker+"  "+m.styles.meta.Render("repository is locked"),
+		"  "+staleMarker+"  "+m.styles.meta.Render("cached data is stale"),
+	)
 	return strings.Join(lines, "\n")
 }
 
