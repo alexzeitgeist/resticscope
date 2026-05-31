@@ -91,7 +91,7 @@ func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.
 // reachable; the decrypted config (stdout) is intentionally discarded, as it
 // is not secret-free and `check` needs only the reachability verdict.
 func (c *Client) CatConfig(ctx context.Context, t Target, creds Creds) error {
-	_, err := c.runOp(ctx, t, creds, "cat", "cat", "config")
+	_, err := c.runOp(ctx, t, creds, "cat", "--no-lock", "cat", "config")
 	return err
 }
 

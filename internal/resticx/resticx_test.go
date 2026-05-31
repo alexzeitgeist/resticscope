@@ -192,8 +192,8 @@ func TestCatConfigReachable(t *testing.T) {
 	if err := c.CatConfig(context.Background(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("CatConfig: %v", err)
 	}
-	if got := strings.Join(fr.gotArgs, " "); got != "cat config" {
-		t.Errorf("args = %q, want %q", got, "cat config")
+	if got := strings.Join(fr.gotArgs, " "); got != "--no-lock cat config" {
+		t.Errorf("args = %q, want %q", got, "--no-lock cat config")
 	}
 	if fr.gotPassword != "pw" {
 		t.Errorf("password not passed out-of-band, got %q", fr.gotPassword)
