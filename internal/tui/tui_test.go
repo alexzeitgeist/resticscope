@@ -1603,23 +1603,25 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 
 // --- list table layout / grouping ---
 
-// computeListLayout mirrors snapshotLayout: Took (7) promotes first, then
-// Labels takes whatever flex remains. listLabelsMin+2 = 3 extra cells is the
-// floor for Labels to appear (1 content cell + the 2-space separator).
+// computeListLayout promotes Took then Labels in strict priority order: Took
+// (7) appears first and may appear alone, Labels only after Took. listLabelsMin
+// + 2 = 3 extra cells is the floor for Labels to appear (1 content cell + the
+// 2-space separator).
 func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
 	// baseFixed = gutter(2)+status(2)+gap(1)+name(24)+last(10)+snaps(5)+2*2 = 48
 	const baseFixed = 48
-	// Took promotion needs baseFixed + 7 + 2 + flexMin(3) = 60.
-	// Labels promotion needs baseFixed + flexMin(3) = 51 (independent of Took).
+	// Took promotion needs baseFixed + 7 + 2 = 57.
+	// Labels promotion needs Took on AND remaining >= flexMin(3), i.e. width >= 60.
 	for _, tc := range []struct {
 		width                int
 		wantTook, wantLabels bool
 	}{
-		{40, false, false}, // below the Labels floor
-		{50, false, false}, // still one cell short of the 3-cell flex floor
-		{51, false, true},  // Labels appears with 1 content cell + 2-space separator
-		{59, false, true},  // Labels still alone — Took needs 60
-		{60, true, true},   // Took promotes; Labels keeps the minimum
+		{40, false, false}, // well below the Took floor
+		{50, false, false}, // still below the Took floor
+		{56, false, false}, // one cell short of Took's 9-cell cost
+		{57, true, false},  // Took promotes; Labels needs another 3 cells
+		{59, true, false},  // still Took alone
+		{60, true, true},   // Labels promotes with the minimum flex
 		{100, true, true},  // wide pane: both columns present
 	} {
 		l := computeListLayout(tc.width)
@@ -1627,10 +1629,11 @@ func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
 			t.Errorf("computeListLayout(%d) = {took:%v labels:%v}, want {took:%v labels:%v}",
 				tc.width, l.showTook, l.showLabels, tc.wantTook, tc.wantLabels)
 		}
-		// Took must never appear without Labels — otherwise dropping width would
-		// strip the Labels column while the lower-priority Took stays.
-		if l.showTook && !l.showLabels {
-			t.Errorf("computeListLayout(%d) promoted Took without Labels", tc.width)
+		// Strict priority: Labels never appears without Took. If this fired the
+		// shrinking-window path would lose Took before Labels — the opposite of
+		// the documented order.
+		if l.showLabels && !l.showTook {
+			t.Errorf("computeListLayout(%d) promoted Labels without Took", tc.width)
 		}
 	}
 }
@@ -1953,6 +1956,142 @@ func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 			t.Errorf("grouped list overflows height: got %d, want <= %d at height=%d\n---\n%s",
 				got, height, height, view)
 		}
+	}
+}
+
+// When the rendered budget is two content lines or more, the cursor's group
+// heading must be the first rendered line — never replaced by an adjacent data
+// row. This covers the "cursor on second/third row of a single group with
+// max=2" case where centering would otherwise drop the heading.
+func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
+	cfg := &config.Config{
+		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Credentials: []config.Credential{{Name: "c"}},
+	}
+	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
+	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	for _, name := range []string{"repo-a", "repo-b", "repo-c", "repo-d"} {
+		cfg.Repos = append(cfg.Repos, config.Repo{
+			Name: name, Credential: "c", Endpoint: "https://e",
+			Region: "r", BucketLookup: "auto", Bucket: "b",
+			ExpectedFrequency: config.Duration(24 * time.Hour),
+			Labels:            map[string]string{"category": "only"},
+		})
+	}
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   stubCache{states: map[string]model.RepoState{}},
+		Clock:   fixedClock{testNow},
+		Secrets: stubSecrets{},
+		Restic:  stubRestic{},
+	}
+	m := newTestModel(t, a)
+	// listHeight = h - headerRows(1) - 2*gapRows(2) - footerRows(1) = h - 4.
+	// We want max := listHeight - listHeaderRows(1) - listScrollNoteRows(1) = 2,
+	// so listHeight must be 4 and h must be 8.
+	m.width, m.height = 100, 8
+
+	// Cursor on the second data row (repo-b). Centering would naturally land on
+	// [repo-a, repo-b] without the heading; the renderer must replace the first
+	// slot with the section heading so context is preserved.
+	for _, tc := range []struct {
+		cursor int
+		want   string
+	}{
+		{cursor: 1, want: "repo-b"},
+		{cursor: 2, want: "repo-c"},
+	} {
+		m.cursor = tc.cursor
+		out := stripANSI(m.renderGroupedList(m.displayList(), computeListLayout(100), 100))
+		// First line must be the group heading. The "(4)" count is unique to it.
+		lines := strings.Split(out, "\n")
+		if len(lines) < 2 {
+			t.Fatalf("cursor=%d: expected at least 2 rendered lines, got %d:\n%s", tc.cursor, len(lines), out)
+		}
+		if !strings.Contains(lines[0], "only") || !strings.Contains(lines[0], "(4)") {
+			t.Errorf("cursor=%d: first line %q is not the group heading\n--full--\n%s", tc.cursor, lines[0], out)
+		}
+		// The cursor's row must be on a line after the heading. With max=2 it's
+		// directly below; with a larger budget there may be intervening rows.
+		found := false
+		for _, line := range lines[1:] {
+			if strings.Contains(line, tc.want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cursor=%d: expected %q after the heading; got:\n%s", tc.cursor, tc.want, out)
+		}
+	}
+}
+
+// When the cursor sits on the first row of a non-first section, the rendered
+// window must still start with that section's heading — never with the
+// previous section's row or the blank separator above the heading. With a
+// budget of three content lines the centered window naturally spans
+// [prev-row, blank, heading], which would push the cursor's heading down a
+// line; the renderer must anchor the heading at start.
+func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
+	cfg := &config.Config{
+		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Credentials: []config.Credential{{Name: "c"}},
+	}
+	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
+	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	// Two sections, one row each — minimal token stream that exposes the
+	// blank-separator bug: [h0, r0, sep, h1, r1].
+	for _, r := range []struct{ name, cat string }{
+		{"repo-a", "alpha"}, {"repo-b", "bravo"},
+	} {
+		cfg.Repos = append(cfg.Repos, config.Repo{
+			Name: r.name, Credential: "c", Endpoint: "https://e",
+			Region: "r", BucketLookup: "auto", Bucket: "b",
+			ExpectedFrequency: config.Duration(24 * time.Hour),
+			Labels:            map[string]string{"category": r.cat},
+		})
+	}
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   stubCache{states: map[string]model.RepoState{}},
+		Clock:   fixedClock{testNow},
+		Secrets: stubSecrets{},
+		Restic:  stubRestic{},
+	}
+	m := newTestModel(t, a)
+	// Cursor on repo-b — the first (and only) row of the second section.
+	// repo-a (alpha) sorts before repo-b (bravo), so the bravo section is
+	// second and m.cursor=1 selects repo-b in displayList().rows.
+	m.cursor = 1
+
+	// Three content lines, just enough to include the previous section's row
+	// in a naive centered window. listHeight = h - 4, max = listHeight - 2 = 3
+	// means h = 9.
+	m.width, m.height = 100, 9
+
+	out := stripANSI(m.renderGroupedList(m.displayList(), computeListLayout(100), 100))
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 rendered lines, got %d:\n%s", len(lines), out)
+	}
+	// First line must be the bravo section heading.
+	if !strings.Contains(lines[0], "bravo") || !strings.Contains(lines[0], "(1)") {
+		t.Errorf("first line %q is not the bravo heading\n--full--\n%s", lines[0], out)
+	}
+	// repo-b must appear somewhere after the heading.
+	found := false
+	for _, line := range lines[1:] {
+		if strings.Contains(line, "repo-b") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("repo-b missing from window\n%s", out)
+	}
+	// repo-a (previous section) must NOT leak into the heading line.
+	if strings.Contains(lines[0], "repo-a") {
+		t.Errorf("previous section row leaked into the heading line\n%s", out)
 	}
 }
 

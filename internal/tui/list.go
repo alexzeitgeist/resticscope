@@ -188,20 +188,24 @@ type listLayout struct {
 }
 
 // computeListLayout sizes the list table to width. Name/Last/Snaps are always
-// present. Took then Labels promote in priority order: Took only while at least
-// one Labels content cell (plus its 2-space separator) would still fit, so a
-// wider Took never strips Labels; Labels takes whatever flex remains.
+// present. Took then Labels promote in strict priority order: Took appears
+// first (and may appear alone), and Labels only after Took, taking any flex
+// that remains. Strict priority means Labels never appears without Took, so a
+// shrinking terminal drops Labels first and then Took, never the other way
+// round — and the column identity at a given width is stable as width grows.
 func computeListLayout(width int) listLayout {
 	l := listLayout{last: listLastWidth, snaps: listSnapsWidth, took: listTookWidth}
 	baseFixed := listGutterWidth + listStatusWidth + listStatusNameGap +
 		nameWidth + l.last + l.snaps + 2*2 // two 2-space separators between Name/Last and Last/Snaps
-	flexMin := listLabelsMin + 2 // 1 content cell + 2-space separator
-	reservedExtra := promoteColumns(width, baseFixed, flexMin, []optionalCol{
-		{l.took, &l.showTook},
-	})
-	if rest := width - baseFixed - reservedExtra; rest >= flexMin {
-		l.labels = rest - 2
+
+	rest := width - baseFixed
+	if rest >= listTookWidth+2 {
+		l.showTook = true
+		rest -= listTookWidth + 2
+	}
+	if l.showTook && rest >= listLabelsMin+2 {
 		l.showLabels = true
+		l.labels = rest - 2
 	}
 	return l
 }

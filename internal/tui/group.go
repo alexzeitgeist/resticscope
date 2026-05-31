@@ -65,9 +65,19 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 // between sections consume rendered lines too, so the budget is enforced over
 // the full output, not just data rows.
 //
-// If only one content line fits, only the selected data row is rendered (no
-// heading); when two or more fit, the row's group heading is included before
-// it. The scroll note reports data-row bounds, not section-fragment indexes.
+// When the whole grouped list fits the budget, sections render top-to-bottom
+// in their natural order — no anchoring needed because nothing is truncated.
+//
+// When the list must be windowed and two or more content lines fit, the
+// cursor's group heading is anchored as the first rendered line, never a
+// previous section's row or the blank separator above the heading. When the
+// cursor sits deep inside a large group and the heading can't appear
+// contiguously with the cursor's neighborhood, the heading is emitted alone
+// at the top and the tail window below shows rows around the cursor —
+// intermediate rows are dropped (the scroll note conveys the truncation).
+// When only one content line fits, the selected data row is rendered without
+// the heading. The scroll note reports data-row bounds, not section-fragment
+// indexes.
 func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(d.rows))
 
@@ -76,11 +86,13 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 		data int // -1 = heading or blank separator
 	}
 	var lines []tok
+	headingPos := make([]int, len(d.sections)) // line index of each section's heading
 	idx := 0
 	for si, sec := range d.sections {
 		if si > 0 {
 			lines = append(lines, tok{s: "", data: -1})
 		}
+		headingPos[si] = len(lines)
 		title := m.styles.heading.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
 		lines = append(lines, tok{s: clip(title, width), data: -1})
 		for _, r := range sec.rows {
@@ -115,19 +127,70 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 		return lines[cursorPos].s + "\n" + m.scrollNote(cursor, cursor+1, len(d.rows), width)
 	}
 
-	start := cursorPos - max/2
-	if start < 0 {
-		start = 0
+	// Find the heading position for the cursor's section. The flattened row
+	// index maps to section i where cursor lies within rowsBefore..rowsBefore+len.
+	cursorSec, rowsBefore := 0, 0
+	for si, sec := range d.sections {
+		if cursor < rowsBefore+len(sec.rows) {
+			cursorSec = si
+			break
+		}
+		rowsBefore += len(sec.rows)
 	}
-	end := start + max
-	if end > len(lines) {
-		end = len(lines)
-		start = end - max
-		if start < 0 {
-			start = 0
+	hPos := headingPos[cursorSec]
+
+	// Guarantee the cursor's section heading is the FIRST rendered line. Two
+	// cases by whether the heading and the cursor fit contiguously in a window
+	// of size max:
+	//   - contiguous (cursorPos < hPos+max): start the window at hPos. The
+	//     heading is line 0 of the window, the cursor row sits below it, and
+	//     any remaining slots show rows of the same section.
+	//   - non-contiguous: render the heading as a standalone first line, then
+	//     a tail window of size max-1 that includes the cursor and starts at
+	//     hPos+1 or later (never crossing the heading or any prior section's
+	//     content). Intermediate rows of the cursor's section are dropped; the
+	//     scroll note conveys the truncation.
+	// Using == (not >= start || < end) avoids a subtle multi-section bug where
+	// the heading is inside the centered window but a previous section's blank
+	// separator or row would otherwise sit before it.
+	var start, end int
+	prependHeading := false
+	if cursorPos < hPos+max {
+		start = hPos
+		end = start + max
+		if end > len(lines) {
+			end = len(lines)
+		}
+	} else {
+		prependHeading = true
+		tailSize := max - 1
+		start = cursorPos - tailSize/2
+		if start < hPos+1 {
+			start = hPos + 1
+		}
+		end = start + tailSize
+		if end > len(lines) {
+			end = len(lines)
+			if d := end - tailSize; d > start {
+				start = d
+			}
+			if start < hPos+1 {
+				start = hPos + 1
+			}
 		}
 	}
 
+	out := make([]string, 0, max+1)
+	if prependHeading {
+		out = append(out, lines[hPos].s)
+	}
+	for i := start; i < end; i++ {
+		out = append(out, lines[i].s)
+	}
+
+	// Data-row bounds for the scroll note: scan the rendered window (start..end)
+	// for real data tokens. The non-contiguous heading prepended above is itself
+	// not a data row, so it doesn't affect the bounds.
 	dataStart, dataEnd := cursor, cursor+1
 	dataStartFound := false
 	for i := start; i < end; i++ {
@@ -138,11 +201,6 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 			}
 			dataEnd = lines[i].data + 1
 		}
-	}
-
-	out := make([]string, 0, end-start+1)
-	for i := start; i < end; i++ {
-		out = append(out, lines[i].s)
 	}
 	if note := m.scrollNote(dataStart, dataEnd, len(d.rows), width); note != "" {
 		out = append(out, note)

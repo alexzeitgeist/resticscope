@@ -146,10 +146,13 @@ func matchRepo(name string, meta rowMeta, q string) bool {
 	return false
 }
 
-// visibleRows is the configured rows with the active filter and sort applied.
-// The list cursor and every list-view action index into this, never m.rows, so
-// what the user selects is always what they see. m.rows itself stays in config
-// order so refresh-all keeps spanning every repo.
+// visibleRows is the configured rows with the active filter and sort applied,
+// flattened to a single slice without group sectioning. It backs header badge
+// counts and page-jump sizing; in grouped mode it's only an approximation of
+// the displayed order because displayList() partitions the same rows into
+// sections. The cursor and every list-view action index into displayList().rows
+// — the canonical render-and-action order — not into this slice. m.rows itself
+// stays in config order so refresh-all keeps spanning every repo.
 func (m Model) visibleRows() []app.RepoStatus {
 	q := strings.ToLower(strings.TrimSpace(m.filter))
 	rows := make([]app.RepoStatus, 0, len(m.rows))

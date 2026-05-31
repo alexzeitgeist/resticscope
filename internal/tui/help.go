@@ -47,7 +47,11 @@ func keyLabel(b key.Binding) string {
 
 // helpColumns returns the reference split into two balanced columns so the whole
 // overlay fits a standard terminal without scrolling. The glyph legend is added
-// to the left column by helpBody.
+// to the left column by helpBody. Entries here use deliberately verbose
+// descriptions (e.g. "refresh this repo", "cycle sort order",
+// "toggle grouping") to disambiguate keys that share a compact footer label
+// like "r" or "o"; the binding's WithHelp text drives the one-line footer
+// help instead, so the two are not expected to match verbatim.
 func (m Model) helpColumns() (left, right []helpSection) {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
