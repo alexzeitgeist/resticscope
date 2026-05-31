@@ -59,6 +59,67 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 	return out
 }
 
+// groupTok is one rendered line of the flattened grouped-list stream: either a
+// data row (data >= 0, indexing into the flat row list) or a heading/blank
+// separator (data == -1).
+type groupTok struct {
+	s    string
+	data int
+}
+
+// buildGroupTokens flattens sections into a render-ready token stream and
+// records each section heading's line index. Blank separators precede every
+// non-first section. The cursor row receives the selected highlight.
+func (m Model) buildGroupTokens(sections []listSection, cursor int, l listLayout, width int) ([]groupTok, []int) {
+	var lines []groupTok
+	headingPos := make([]int, len(sections))
+	idx := 0
+	for si, sec := range sections {
+		if si > 0 {
+			lines = append(lines, groupTok{s: "", data: -1})
+		}
+		headingPos[si] = len(lines)
+		title := m.styles.heading.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
+		lines = append(lines, groupTok{s: clip(title, width), data: -1})
+		for _, r := range sec.rows {
+			lines = append(lines, groupTok{s: m.renderRow(r, l, idx == cursor, width), data: idx})
+			idx++
+		}
+	}
+	return lines, headingPos
+}
+
+// groupedWindow picks [start, end) into the flattened token stream so the
+// cursor is visible AND its section heading is anchored. Contiguous case
+// (cursor fits within max of the heading): window starts at the heading.
+// Non-contiguous case: returns prependHeading=true and a tail window of size
+// max-1 that never crosses into prior sections. See renderGroupedList for the
+// full user-visible contract.
+func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading bool) {
+	if cursorPos < hPos+max {
+		start = hPos
+		end = start + max
+		if end > n {
+			end = n
+		}
+		return start, end, false
+	}
+	prependHeading = true
+	tailSize := max - 1
+	start = cursorPos - tailSize/2
+	if start < hPos+1 {
+		start = hPos + 1
+	}
+	end = start + tailSize
+	if end > n {
+		end = n
+		// No slide-back: once end clamps to n, a full tail window would
+		// move start backward to n-tailSize. We deliberately keep the
+		// centered start instead, accepting a smaller tail window near EOF.
+	}
+	return start, end, prependHeading
+}
+
 // renderGroupedList paints the grouped sections, windowed to fit the rendered
 // line budget (m.listHeight minus the table header and the scroll-note row),
 // keeping the selected data row visible. Group headings and blank separators
@@ -80,26 +141,7 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 // indexes.
 func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(d.rows))
-
-	type tok struct {
-		s    string
-		data int // -1 = heading or blank separator
-	}
-	var lines []tok
-	headingPos := make([]int, len(d.sections)) // line index of each section's heading
-	idx := 0
-	for si, sec := range d.sections {
-		if si > 0 {
-			lines = append(lines, tok{s: "", data: -1})
-		}
-		headingPos[si] = len(lines)
-		title := m.styles.heading.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", len(sec.rows)))
-		lines = append(lines, tok{s: clip(title, width), data: -1})
-		for _, r := range sec.rows {
-			lines = append(lines, tok{s: m.renderRow(r, l, idx == cursor, width), data: idx})
-			idx++
-		}
-	}
+	lines, headingPos := m.buildGroupTokens(d.sections, cursor, l, width)
 
 	max := m.listHeight() - listHeaderRows - listScrollNoteRows
 	if max < 1 {
@@ -139,46 +181,7 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 	}
 	hPos := headingPos[cursorSec]
 
-	// Guarantee the cursor's section heading is the FIRST rendered line. Two
-	// cases by whether the heading and the cursor fit contiguously in a window
-	// of size max:
-	//   - contiguous (cursorPos < hPos+max): start the window at hPos. The
-	//     heading is line 0 of the window, the cursor row sits below it, and
-	//     any remaining slots show rows of the same section.
-	//   - non-contiguous: render the heading as a standalone first line, then
-	//     a tail window of size max-1 that includes the cursor and starts at
-	//     hPos+1 or later (never crossing the heading or any prior section's
-	//     content). Intermediate rows of the cursor's section are dropped; the
-	//     scroll note conveys the truncation.
-	// Using == (not >= start || < end) avoids a subtle multi-section bug where
-	// the heading is inside the centered window but a previous section's blank
-	// separator or row would otherwise sit before it.
-	var start, end int
-	prependHeading := false
-	if cursorPos < hPos+max {
-		start = hPos
-		end = start + max
-		if end > len(lines) {
-			end = len(lines)
-		}
-	} else {
-		prependHeading = true
-		tailSize := max - 1
-		start = cursorPos - tailSize/2
-		if start < hPos+1 {
-			start = hPos + 1
-		}
-		end = start + tailSize
-		if end > len(lines) {
-			end = len(lines)
-			if d := end - tailSize; d > start {
-				start = d
-			}
-			if start < hPos+1 {
-				start = hPos + 1
-			}
-		}
-	}
+	start, end, prependHeading := groupedWindow(cursorPos, hPos, max, len(lines))
 
 	out := make([]string, 0, max+1)
 	if prependHeading {
