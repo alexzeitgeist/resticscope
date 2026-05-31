@@ -58,11 +58,12 @@ type RunFunc func(ctx context.Context, shell, command string) (stdout, stderr []
 // Store — and therefore no Redactor — exists yet on this path, and a failing
 // secrets provider can print secret fragments to stderr (shell tracing, a
 // decrypt error echoing its input, a CLI dumping the item). Only the
-// payload-free exit error and configured command string are reported.
+// payload-free exit error is reported; the configured command is arbitrary shell
+// text and may itself contain inline secrets.
 func Load(ctx context.Context, run RunFunc, shell, command string) (*Store, error) {
 	stdout, _, err := run(ctx, shell, command)
 	if err != nil {
-		return nil, fmt.Errorf("secrets_command failed: %w (command: %q; stderr suppressed; it may contain secrets — run the command manually to diagnose)", err, command)
+		return nil, fmt.Errorf("secrets_command failed: %w (stderr suppressed; it may contain secrets — run the command manually to diagnose)", err)
 	}
 	return Parse(stdout)
 }

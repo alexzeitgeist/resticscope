@@ -163,7 +163,8 @@ func TestLoadNonZeroExit(t *testing.T) {
 	run := func(ctx context.Context, shell, command string) ([]byte, []byte, error) {
 		return []byte(secretStdout), []byte(secretStderr), errors.New("exit status 2")
 	}
-	_, err := Load(context.Background(), run, "/bin/sh", "pass show x")
+	secretCommand := `printf '{"repos":{"repo-a":{"restic_password":"hunter2"}}}'`
+	_, err := Load(context.Background(), run, "/bin/sh", secretCommand)
 	if err == nil {
 		t.Fatal("expected error from non-zero exit")
 	}
@@ -181,8 +182,8 @@ func TestLoadNonZeroExit(t *testing.T) {
 	if !strings.Contains(err.Error(), "exit status 2") {
 		t.Errorf("error should report the exit failure, got %q", err.Error())
 	}
-	if !strings.Contains(err.Error(), `command: "pass show x"`) {
-		t.Errorf("error should report the configured command, got %q", err.Error())
+	if strings.Contains(err.Error(), secretCommand) || strings.Contains(err.Error(), "restic_password") {
+		t.Errorf("error leaked the configured command, which may contain secrets: %q", err.Error())
 	}
 }
 
