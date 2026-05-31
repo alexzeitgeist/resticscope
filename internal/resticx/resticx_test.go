@@ -159,6 +159,17 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 	}
 }
 
+func TestSnapshotsUsesNoLock(t *testing.T) {
+	fr := &fakeRunner{stdout: []byte("[]")}
+	c := &Client{Runner: fr}
+	if _, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
+		t.Fatalf("Snapshots: %v", err)
+	}
+	if got := strings.Join(fr.gotArgs, " "); got != "--no-lock snapshots --json" {
+		t.Errorf("args = %q, want --no-lock snapshots --json", got)
+	}
+}
+
 // Region is optional. When a Target carries none, restic must get no
 // AWS_DEFAULT_REGION at all rather than an empty one (Hetzner does not require
 // it, and the endpoint host implies the region).
@@ -223,7 +234,7 @@ func TestBucketLookupOption(t *testing.T) {
 		t.Fatalf("Snapshots: %v", err)
 	}
 	got := strings.Join(fr.gotArgs, " ")
-	if !strings.HasPrefix(got, "-o s3.bucket-lookup=dns snapshots") {
+	if !strings.HasPrefix(got, "-o s3.bucket-lookup=dns --no-lock snapshots") {
 		t.Errorf("expected bucket-lookup option prepended, got %q", got)
 	}
 }
@@ -263,6 +274,25 @@ func TestClassifyTimeout(t *testing.T) {
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestExecRunnerTimeoutStopsRetryingRestic(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "restic")
+	script := "#!/bin/sh\n" +
+		"printf 'Save(<lock/abc123>) returned error, retrying after 1s: client.PutObject: The operation could not be performed\\n' >&2\n" +
+		"while :; do :; done\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake restic: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	c := &Client{Runner: ExecRunner{}, Timeout: 100 * time.Millisecond}
+	_, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+	var re *Error
+	if !asResticError(err, &re) || re.Kind != KindTimeout {
+		t.Fatalf("expected production runner timeout, got %T: %v", err, err)
 	}
 }
 

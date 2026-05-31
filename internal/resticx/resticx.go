@@ -69,7 +69,10 @@ type Client struct {
 
 // Snapshots lists the repository's snapshots.
 func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.Snapshot, error) {
-	out, err := c.run(ctx, t, creds, "snapshots", "--json")
+	// snapshots is read-only. Running it lockless keeps resticscope usable for
+	// repositories that can still be read but reject lock writes, for example a
+	// provider-side write hold.
+	out, err := c.runOp(ctx, t, creds, "snapshots", "--no-lock", "snapshots", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +91,7 @@ func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.
 // reachable; the decrypted config (stdout) is intentionally discarded, as it
 // is not secret-free and `check` needs only the reachability verdict.
 func (c *Client) CatConfig(ctx context.Context, t Target, creds Creds) error {
-	_, err := c.run(ctx, t, creds, "cat", "config")
+	_, err := c.runOp(ctx, t, creds, "cat", "cat", "config")
 	return err
 }
 
@@ -110,6 +113,14 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 }
 
 func (c *Client) run(ctx context.Context, t Target, creds Creds, args ...string) ([]byte, error) {
+	op := "restic"
+	if len(args) > 0 {
+		op = args[0]
+	}
+	return c.runOp(ctx, t, creds, op, args...)
+}
+
+func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
@@ -122,7 +133,7 @@ func (c *Client) run(ctx context.Context, t Target, creds Creds, args ...string)
 	env := c.buildEnv(t, creds)
 	stdout, stderr, err := c.Runner.Run(ctx, env, creds.ResticPassword, full...)
 	if err != nil {
-		return nil, c.classify(ctx, args[0], err, stderr)
+		return nil, c.classify(ctx, op, err, stderr)
 	}
 	return stdout, nil
 }
