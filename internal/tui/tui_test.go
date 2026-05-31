@@ -586,6 +586,43 @@ func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
 	}
 }
 
+// The Enter key does something different in each view (open detail in the list,
+// shell at the selected snapshot in detail, open the directory in browse), so the
+// footer label is overridden per view by enterAs. This guards against the binding
+// reverting to a single generic label that would mislead in two views out of three.
+func TestFooterEnterLabelsByView(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+
+	listFooter := stripANSI(m.footerView())
+	if !strings.Contains(listFooter, "enter detail") {
+		t.Errorf("list footer should advertise 'enter detail'\n---\n%s", listFooter)
+	}
+	if strings.Contains(listFooter, "open/shell") {
+		t.Errorf("list footer must not show the old 'open/shell' label\n---\n%s", listFooter)
+	}
+
+	m = update(t, m, press("enter")) // → detail view
+	detailFooter := stripANSI(m.footerView())
+	if !strings.Contains(detailFooter, "enter shell") {
+		t.Errorf("detail footer should advertise 'enter shell'\n---\n%s", detailFooter)
+	}
+	if strings.Contains(detailFooter, "open/shell") {
+		t.Errorf("detail footer must not show the old 'open/shell' label\n---\n%s", detailFooter)
+	}
+
+	// Browse needs its own fixture (a populated browse store); reuse openBrowse.
+	bm := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
+	bm = update(t, bm, tea.WindowSizeMsg{Width: 200, Height: 40})
+	browseFooter := stripANSI(bm.footerView())
+	if !strings.Contains(browseFooter, "enter open") {
+		t.Errorf("browse footer should advertise 'enter open'\n---\n%s", browseFooter)
+	}
+	if strings.Contains(browseFooter, "open/shell") {
+		t.Errorf("browse footer must not show the old 'open/shell' label\n---\n%s", browseFooter)
+	}
+}
+
 // stripANSI removes SGR color/style escape sequences so tests can match the
 // underlying text regardless of the terminal color profile under which the
 // styled output was rendered.

@@ -46,7 +46,7 @@ func defaultKeys() keyMap {
 		SearchDown: key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
 		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
 		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
-		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/shell")),
+		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
@@ -77,8 +77,9 @@ func defaultKeys() keyMap {
 // where q steps back rather than quits; the help overlay shows only back (the
 // overlay itself is the full reference). The list keeps Quit because q only exits
 // there. While the user is typing a filter (filtering), it shows the apply/clear
-// bindings instead. Enter means "open" in the list and "shell here" in the detail
-// view (its generic help text covers both).
+// bindings instead. Enter does something different in each view (open detail in
+// the list, shell at the selected snapshot in detail, open directory in browse),
+// so its footer label is overridden per view via enterAs below.
 type viewHelp struct {
 	keys      keyMap
 	view      view
@@ -98,14 +99,23 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Browse, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "shell"), k.Shell, k.Browse, k.Refresh, k.Back}
 	case browseView:
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Parent, k.Search, k.Sort, k.Shell, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Sort, k.Shell, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "detail"), k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
 	}
+}
+
+// enterAs returns the Enter binding with a view-specific footer label. The
+// underlying keys are unchanged so key.Matches against the canonical k.Enter
+// still works; only the help text differs.
+func enterAs(k keyMap, desc string) key.Binding {
+	b := k.Enter
+	b.SetHelp("enter", desc)
+	return b
 }
 
 func (h viewHelp) FullHelp() [][]key.Binding {
@@ -125,13 +135,13 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Shell, k.Browse},
+			{enterAs(k, "shell"), k.Shell, k.Browse},
 			{k.Refresh, k.Back},
 		}
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Parent, k.Search, k.Sort, k.Shell},
+			{enterAs(k, "open"), k.Parent, k.Search, k.Sort, k.Shell},
 			{k.Back},
 		}
 	case helpView:
@@ -141,7 +151,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	default: // listView
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.Enter, k.Shell},
+			{enterAs(k, "detail"), k.Shell},
 			{k.Refresh, k.RefreshAll},
 			{k.Filter, k.Sort, k.Group},
 			{k.Help, k.Quit},

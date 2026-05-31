@@ -115,15 +115,11 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// headerView is the top line: the app name, the at-a-glance status badges, the
-// repo count, the restic version, and (when active) the sort and group
-// indicators. Badges count the visible rows so they agree with countLabel under
-// a filter; only the title is bold and only the badges carry color.
+// headerView is the top line: the app name, the repo count, the restic version,
+// and (when active) the sort and group indicators. Status stays row-local so the
+// header remains readable without relying on color-coded aggregate badges.
 func (m Model) headerView() string {
 	parts := []string{m.styles.title.Render("resticscope")}
-	if badges := m.statusBadges(statusCounts(m.visibleRows())); badges != "" {
-		parts = append(parts, badges)
-	}
 	parts = append(parts, m.countLabel())
 	if m.resticVer != "" {
 		parts = append(parts, "restic "+m.resticVer)
@@ -136,38 +132,6 @@ func (m Model) headerView() string {
 	}
 	w, _ := m.effSize()
 	return clip(strings.Join(parts, " · "), w)
-}
-
-// statusCounts tallies the rows by status across all five buckets.
-func statusCounts(rows []app.RepoStatus) map[model.Status]int {
-	counts := make(map[model.Status]int, 5)
-	for _, r := range rows {
-		counts[r.Status]++
-	}
-	return counts
-}
-
-// statusBadges renders the header's count buckets, each in its status color and
-// only when non-zero: green (●), amber (▲), failed (✕, red and error summed so ✕
-// is never double-counted), and cold (…, grey).
-func (m Model) statusBadges(counts map[model.Status]int) string {
-	buckets := []struct {
-		status model.Status
-		n      int
-	}{
-		{model.StatusGreen, counts[model.StatusGreen]},
-		{model.StatusAmber, counts[model.StatusAmber]},
-		{model.StatusRed, counts[model.StatusRed] + counts[model.StatusError]},
-		{model.StatusGrey, counts[model.StatusGrey]},
-	}
-	parts := make([]string, 0, len(buckets))
-	for _, b := range buckets {
-		if b.n == 0 {
-			continue
-		}
-		parts = append(parts, m.styles.glyph[b.status].Render(fmt.Sprintf("%s%d", statusGlyph(b.status), b.n)))
-	}
-	return strings.Join(parts, "  ")
 }
 
 // spread lays left and right on one line, padding the gap so right sits flush
