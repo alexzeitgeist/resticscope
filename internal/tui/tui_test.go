@@ -618,8 +618,11 @@ func TestFooterEnterLabelsByView(t *testing.T) {
 
 	m = update(t, m, press("enter")) // → detail view
 	detailFooter := stripANSI(m.footerView())
-	if !strings.Contains(detailFooter, "enter shell") {
-		t.Errorf("detail footer should advertise 'enter shell'\n---\n%s", detailFooter)
+	if !strings.Contains(detailFooter, "enter browse") {
+		t.Errorf("detail footer should advertise 'enter browse'\n---\n%s", detailFooter)
+	}
+	if strings.Contains(detailFooter, "enter shell") {
+		t.Errorf("detail footer must not show the old 'enter shell' label\n---\n%s", detailFooter)
 	}
 	if strings.Contains(detailFooter, "open/shell") {
 		t.Errorf("detail footer must not show the old 'open/shell' label\n---\n%s", detailFooter)
@@ -922,28 +925,33 @@ func TestDetailBackReturnsToList(t *testing.T) {
 	}
 }
 
-// b now opens the in-app file browser for the selected snapshot: it switches to
-// browseView (showing the indexing state with no listing yet), marks the index in
-// flight, and returns the command that runs the one-time index.
+// b — and enter, its drill-in alias on the detail view — opens the in-app file
+// browser for the selected snapshot: it switches to browseView (showing the
+// indexing state with no listing yet), marks the index in flight, and returns
+// the command that runs the one-time index.
 func TestDetailBKeyStartsBrowse(t *testing.T) {
-	m := newTestModel(t, browseApp(t))
-	m = update(t, m, press("enter"))
-	if m.view != detailView {
-		t.Fatal("expected detail view after enter")
-	}
-	next, cmd := m.Update(press("b"))
-	nm := next.(Model)
-	if nm.view != browseView {
-		t.Errorf("b should open the browse view; view = %d", nm.view)
-	}
-	if !nm.browseLoading || nm.browseIndexed {
-		t.Errorf("b should mark the index in flight, not yet indexed: loading=%v indexed=%v", nm.browseLoading, nm.browseIndexed)
-	}
-	if nm.browseRepo != "repo-a" || nm.browseSnapshot != "id-newest" {
-		t.Errorf("browse target = %q/%q, want repo-a/id-newest", nm.browseRepo, nm.browseSnapshot)
-	}
-	if cmd == nil {
-		t.Error("b should emit a browse command")
+	for _, k := range []string{"b", "enter"} {
+		t.Run(k, func(t *testing.T) {
+			m := newTestModel(t, browseApp(t))
+			m = update(t, m, press("enter"))
+			if m.view != detailView {
+				t.Fatal("expected detail view after enter")
+			}
+			next, cmd := m.Update(press(k))
+			nm := next.(Model)
+			if nm.view != browseView {
+				t.Errorf("%q should open the browse view; view = %d", k, nm.view)
+			}
+			if !nm.browseLoading || nm.browseIndexed {
+				t.Errorf("%q should mark the index in flight, not yet indexed: loading=%v indexed=%v", k, nm.browseLoading, nm.browseIndexed)
+			}
+			if nm.browseRepo != "repo-a" || nm.browseSnapshot != "id-newest" {
+				t.Errorf("browse target = %q/%q, want repo-a/id-newest", nm.browseRepo, nm.browseSnapshot)
+			}
+			if cmd == nil {
+				t.Errorf("%q should emit a browse command", k)
+			}
+		})
 	}
 }
 

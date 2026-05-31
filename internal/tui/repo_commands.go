@@ -8,6 +8,20 @@ import (
 	"resticscope/internal/model"
 )
 
+// shellSnap returns the snapshot the Shell key scopes to for the active view.
+// Detail uses the highlighted snapshot; list has no snapshot scope. Browse owns
+// its own s handling (handleBrowseKey) and never reaches this. A detail view
+// with zero cached snapshots also returns nil here — selectedSnapshot returns
+// nil for an empty list — and that nil is intentional: the active scope of an
+// empty detail view is the repo itself, so s falls through to a repo-only
+// shell, matching what s does from the list view.
+func (m Model) shellSnap() *model.Snapshot {
+	if m.view == detailView {
+		return m.selectedSnapshot()
+	}
+	return nil
+}
+
 // actionRepo names the repo that repo-scoped keys (shell, refresh) act on: the
 // repo being browsed in the browse view, the pinned repo in the detail view,
 // otherwise the selected row in the list.

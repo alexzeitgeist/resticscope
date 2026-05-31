@@ -78,7 +78,7 @@ func defaultKeys() keyMap {
 // overlay itself is the full reference). The list keeps Quit because q only exits
 // there. While the user is typing a filter (filtering), it shows the apply/clear
 // bindings instead. Enter does something different in each view (open detail in
-// the list, shell at the selected snapshot in detail, open directory in browse),
+// the list, browse the selected snapshot in detail, open directory in browse),
 // so its footer label is overridden per view via enterAs below.
 type viewHelp struct {
 	keys      keyMap
@@ -99,7 +99,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "shell"), k.Shell, k.Browse, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Shell, k.Refresh, k.Back}
 	case browseView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Sort, k.Shell, k.Back}
 	case helpView:
@@ -135,7 +135,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "shell"), k.Shell, k.Browse},
+			{enterAs(k, "browse"), k.Shell, k.Browse},
 			{k.Refresh, k.Back},
 		}
 	case browseView:

@@ -83,9 +83,8 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		{"Detail", []helpEntry{
 			{move, "select snapshot"},
 			{page, "page up/down"},
-			{keyLabel(k.Enter), "shell at snapshot"},
-			{keyLabel(k.Browse), "browse snapshot files"},
-			{keyLabel(k.Shell), "shell with repo env"},
+			{keyLabel(k.Enter) + "/" + keyLabel(k.Browse), "browse snapshot files"},
+			{keyLabel(k.Shell), "shell at snapshot"},
 			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to the list"},
 		}},

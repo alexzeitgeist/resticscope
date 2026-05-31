@@ -103,8 +103,11 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 		}
 		return m, tea.Batch(cmds...), true
 	case key.Matches(msg, m.keys.Shell):
-		// `s` shells into the active repo with no snapshot context.
-		if cmd := m.openShellCmd(nil); cmd != nil {
+		// `s` shells into the active scope: a snapshot when one is highlighted
+		// (detail view), otherwise the repo. Browse's own `s` handling never
+		// reaches this — handleBrowseKey runs first — so shellSnap covers only the
+		// list and detail cases.
+		if cmd := m.openShellCmd(m.shellSnap()); cmd != nil {
 			m.statusMsg = ""
 			return m, cmd, true
 		}
