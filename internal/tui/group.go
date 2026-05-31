@@ -14,16 +14,30 @@ import (
 // missing the key. Sort applies within each section so a cycle (e.g.
 // staleness) never breaks group boundaries; filter applies before grouping.
 
-// groupingConfigured reports whether the config supplies a group_by label key.
-// The `g` toggle is a no-op when this is false.
+// groupingConfigured reports whether the config supplies at least one group_by
+// label key. The `g` cycle is a no-op when this is false.
 func (m Model) groupingConfigured() bool {
-	return m.app.Cfg.Global.GroupBy != ""
+	return len(m.app.Cfg.Global.GroupBy) > 0
 }
 
-// groupingActive reports whether the list view should partition by group_by
-// right now. The transient m.grouping flag toggles via `g`; it never persists.
+// groupingActive reports whether the list view should partition by a group_by
+// key right now. The transient m.groupIndex cycles via `g` (0 = flat view,
+// 1..N = the i-1'th configured key); it never persists.
 func (m Model) groupingActive() bool {
-	return m.groupingConfigured() && m.grouping
+	keys := m.app.Cfg.Global.GroupBy
+	return m.groupIndex > 0 && m.groupIndex <= len(keys)
+}
+
+// activeGroupKey resolves the currently selected group key, or "" while the
+// cycle is on the flat-view state (or when groupIndex falls outside the
+// configured range, which should never happen but is clamped defensively so
+// callers can't see a config-OOB key).
+func (m Model) activeGroupKey() string {
+	keys := m.app.Cfg.Global.GroupBy
+	if m.groupIndex <= 0 || m.groupIndex > len(keys) {
+		return ""
+	}
+	return keys[m.groupIndex-1]
 }
 
 // groupedSections partitions filtered rows by their value for key. Sections

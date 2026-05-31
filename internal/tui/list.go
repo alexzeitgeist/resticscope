@@ -127,7 +127,7 @@ func (m Model) headerView() string {
 		parts = append(parts, "sort: "+m.sortMode.label())
 	}
 	if m.groupingActive() {
-		parts = append(parts, "group: "+m.app.Cfg.Global.GroupBy)
+		parts = append(parts, "group: "+m.activeGroupKey())
 	}
 	w, _ := m.effSize()
 	return clip(strings.Join(parts, " · "), w)
@@ -279,7 +279,7 @@ func (m Model) displayList() listDisplay {
 		sortRows(filtered, m.sortMode)
 		return listDisplay{rows: filtered}
 	}
-	sections := groupedSections(filtered, m.meta, m.app.Cfg.Global.GroupBy, m.sortMode)
+	sections := groupedSections(filtered, m.meta, m.activeGroupKey(), m.sortMode)
 	rows := make([]app.RepoStatus, 0, len(filtered))
 	for _, s := range sections {
 		rows = append(rows, s.rows...)

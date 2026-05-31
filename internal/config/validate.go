@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
@@ -25,6 +26,21 @@ func (c *Config) Validate() error {
 	}
 	if m := c.Global.ShellPasswordMode; m != "file" && m != "env" {
 		errs = append(errs, fmt.Errorf("global.shell_password_mode must be \"file\" or \"env\", got %q", m))
+	}
+
+	seenGroupBy := map[string]int{}
+	for i, k := range c.Global.GroupBy {
+		switch {
+		case k == "":
+			errs = append(errs, fmt.Errorf("global.group_by[%d]: key must not be empty", i))
+		case strings.TrimSpace(k) != k:
+			errs = append(errs, fmt.Errorf("global.group_by[%d]: key %q has surrounding whitespace", i, k))
+		}
+		if prev, ok := seenGroupBy[k]; ok {
+			errs = append(errs, fmt.Errorf("global.group_by[%d]: duplicate key %q (also at index %d)", i, k, prev))
+		} else {
+			seenGroupBy[k] = i
+		}
 	}
 
 	credNames := map[string]bool{}

@@ -49,7 +49,7 @@ func keyLabel(b key.Binding) string {
 // overlay fits a standard terminal without scrolling. The glyph legend is added
 // to the left column by helpBody. Entries here use deliberately verbose
 // descriptions (e.g. "refresh this repo", "cycle sort order",
-// "toggle grouping") to disambiguate keys that share a compact footer label
+// "cycle group key") to disambiguate keys that share a compact footer label
 // like "r" or "o"; the binding's WithHelp text drives the one-line footer
 // help instead, so the two are not expected to match verbatim.
 func (m Model) helpColumns() (left, right []helpSection) {
@@ -75,7 +75,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Filter), "filter by name/label"},
 			{keyLabel(k.Sort), "cycle sort order"},
-			{keyLabel(k.Group), "toggle grouping"},
+			{keyLabel(k.Group), "cycle group key"},
 			{keyLabel(k.Quit), "quit"},
 		}},
 	}

@@ -23,7 +23,7 @@ type keyMap struct {
 	Filter     key.Binding
 	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
 	Sort       key.Binding
-	Group      key.Binding // list: toggle grouping by the configured group_by label key
+	Group      key.Binding // list: cycle through the configured group_by keys and a flat view
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
@@ -57,7 +57,7 @@ func defaultKeys() keyMap {
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
-		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "group")),
+		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),

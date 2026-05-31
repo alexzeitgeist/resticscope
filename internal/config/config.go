@@ -38,14 +38,14 @@ type Browse struct {
 
 // Global holds process-wide settings.
 type Global struct {
-	Parallelism       int    `toml:"parallelism"`
-	CacheDir          string `toml:"cache_dir"`
-	LogFile           string `toml:"log_file"`
-	RefreshOnOpen     bool   `toml:"refresh_on_open"`
-	Shell             string `toml:"shell"`
-	ShellPasswordMode string `toml:"shell_password_mode"`
-	SecretsCommand    string `toml:"secrets_command"`
-	GroupBy           string `toml:"group_by"` // repo label key the list view groups by; empty = no grouping
+	Parallelism       int      `toml:"parallelism"`
+	CacheDir          string   `toml:"cache_dir"`
+	LogFile           string   `toml:"log_file"`
+	RefreshOnOpen     bool     `toml:"refresh_on_open"`
+	Shell             string   `toml:"shell"`
+	ShellPasswordMode string   `toml:"shell_password_mode"`
+	SecretsCommand    string   `toml:"secrets_command"`
+	GroupBy           []string `toml:"group_by"` // repo label keys the list view can group by; `g` cycles through them and a flat view, in list order. Empty = no grouping.
 
 	// Durations are TOML strings like "10m", "24h".
 	StaleAfter            Duration `toml:"stale_after"`             // cache entries older than this are refreshed on open

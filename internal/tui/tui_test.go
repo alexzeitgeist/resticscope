@@ -1804,12 +1804,18 @@ func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
 	// Config order: repo-a, repo-b. Put repo-a under "personal" so that group
 	// renders after "business" (where we'll put a new repo-c) — proves the
 	// display-order index doesn't fall back to config order.
-	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
 	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
 	m := newTestModel(t, a)
 	if !m.groupingActive() {
 		t.Fatal("grouping should start active when group_by is configured")
+	}
+	if m.groupIndex != 1 {
+		t.Errorf("groupIndex at startup = %d, want 1 (first configured key)", m.groupIndex)
+	}
+	if got := m.activeGroupKey(); got != "category" {
+		t.Errorf("activeGroupKey at startup = %q, want category", got)
 	}
 	d := m.displayList()
 	// ASCII order: business before personal -> repo-b first, then repo-a.
@@ -1830,7 +1836,7 @@ func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
 // and r marks that same repo pending — both act on display-order selection.
 func TestGroupedActionsUseHighlightedRepo(t *testing.T) {
 	a := testApp(nil)
-	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
 	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
 	m := newTestModel(t, a)
@@ -1853,7 +1859,7 @@ func TestGroupedActionsUseHighlightedRepo(t *testing.T) {
 // flattened-order index changes.
 func TestGroupToggleAnchorsSelectionByName(t *testing.T) {
 	a := testApp(nil)
-	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
 	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
 	m := newTestModel(t, a)
@@ -1865,20 +1871,23 @@ func TestGroupToggleAnchorsSelectionByName(t *testing.T) {
 		t.Fatalf("precondition: expected repo-a selected, got %q", row.Name)
 	}
 
-	// Toggle grouping off. Config order returns repo-a, repo-b. The cursor
-	// should follow repo-a, which is now at index 0, not stay at 1.
+	// Cycle past the single configured key to the flat view. Config order
+	// returns repo-a, repo-b; the cursor should follow repo-a (now index 0).
 	m = update(t, m, press("g"))
-	if m.grouping {
-		t.Fatal("g should have toggled grouping off")
+	if m.groupingActive() {
+		t.Fatal("g should have cycled past the single configured key into the flat view")
 	}
 	if row, ok := m.currentRow(); !ok || row.Name != "repo-a" {
-		t.Errorf("after toggle off, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
+		t.Errorf("after cycle off, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
 	}
 
-	// Toggle grouping back on. repo-a should again be at index 1.
+	// Cycle back to the configured key. repo-a should again be at index 1.
 	m = update(t, m, press("g"))
+	if !m.groupingActive() {
+		t.Fatal("g should have cycled back to the configured key")
+	}
 	if row, ok := m.currentRow(); !ok || row.Name != "repo-a" {
-		t.Errorf("after toggle on, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
+		t.Errorf("after cycle back on, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
 	}
 }
 
@@ -1890,7 +1899,7 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour)},
 		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
 	})
-	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "shared"}
 	a.Cfg.Repos[1].Labels = map[string]string{"category": "shared"}
 	m := newTestModel(t, a)
@@ -1925,7 +1934,7 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 // height: the rendered View should never push the footer past m.height.
 func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 		Credentials: []config.Credential{{Name: "c"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
@@ -1965,7 +1974,7 @@ func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 // max=2" case where centering would otherwise drop the heading.
 func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 		Credentials: []config.Credential{{Name: "c"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
@@ -2034,7 +2043,7 @@ func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 // line; the renderer must anchor the heading at start.
 func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 		Credentials: []config.Credential{{Name: "c"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
@@ -2095,6 +2104,152 @@ func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	}
 }
 
+// Cycling g with two configured keys steps key[0] → key[1] → flat → key[0],
+// matching the documented order. activeGroupKey() and groupingActive() track
+// the cycle at each step.
+func TestCycleGroupingThroughKeys(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = []string{"env", "criticality"}
+	m := newTestModel(t, a)
+
+	if got := m.activeGroupKey(); got != "env" {
+		t.Fatalf("startup activeGroupKey = %q, want env", got)
+	}
+	if !m.groupingActive() {
+		t.Fatal("startup should be grouped by the first key")
+	}
+
+	m = update(t, m, press("g"))
+	if got := m.activeGroupKey(); got != "criticality" {
+		t.Errorf("after first g, activeGroupKey = %q, want criticality", got)
+	}
+	if !m.groupingActive() {
+		t.Error("after first g, grouping should still be active on the second key")
+	}
+
+	m = update(t, m, press("g"))
+	if got := m.activeGroupKey(); got != "" {
+		t.Errorf("after second g, activeGroupKey = %q, want \"\" (flat view)", got)
+	}
+	if m.groupingActive() {
+		t.Error("after second g, grouping should be inactive (flat view)")
+	}
+
+	m = update(t, m, press("g"))
+	if got := m.activeGroupKey(); got != "env" {
+		t.Errorf("after third g, activeGroupKey = %q, want env (wrap)", got)
+	}
+	if !m.groupingActive() {
+		t.Error("after third g, grouping should wrap back to the first key")
+	}
+}
+
+// A one-key configuration behaves like the old toggle: key → flat → key → …
+func TestCycleGroupingSingleKey(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = []string{"env"}
+	m := newTestModel(t, a)
+
+	if got := m.activeGroupKey(); got != "env" {
+		t.Fatalf("startup activeGroupKey = %q, want env", got)
+	}
+
+	m = update(t, m, press("g"))
+	if m.groupingActive() {
+		t.Error("after one g, single-key cycle should reach the flat view")
+	}
+	if got := m.activeGroupKey(); got != "" {
+		t.Errorf("after one g, activeGroupKey = %q, want \"\"", got)
+	}
+
+	m = update(t, m, press("g"))
+	if got := m.activeGroupKey(); got != "env" {
+		t.Errorf("after two g presses, activeGroupKey = %q, want env (wrap)", got)
+	}
+}
+
+// The cursor follows the selected repo by name across the full cycle, even
+// when the repo's flattened-index changes between two grouping keys and the
+// flat view. Labels are picked so the ASCII section ordering differs between
+// "env" and "criticality": repo-a sits at a different cursor index under env
+// vs under criticality, so a "preserve only the numeric index" implementation
+// would land on the wrong repo at the cycle's second step.
+func TestCycleGroupingPreservesCursor(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = []string{"env", "criticality"}
+	// repo-a: env=zoo (sorts last alphabetically), criticality=alpha (sorts first)
+	// repo-b: env=alpha (sorts first), criticality=zoo (sorts last)
+	// Under env: [alpha(repo-b), zoo(repo-a)] -> repo-a at index 1
+	// Under criticality: [alpha(repo-a), zoo(repo-b)] -> repo-a at index 0
+	// Flat: config order [repo-a, repo-b] -> repo-a at index 0
+	a.Cfg.Repos[0].Labels = map[string]string{"env": "zoo", "criticality": "alpha"}
+	a.Cfg.Repos[1].Labels = map[string]string{"env": "alpha", "criticality": "zoo"}
+	m := newTestModel(t, a)
+
+	// Move the cursor to repo-a under env grouping (it is the second row,
+	// because "alpha" sorts before "zoo").
+	m = update(t, m, press("j"))
+	if row, _ := m.currentRow(); row.Name != "repo-a" {
+		t.Fatalf("precondition: cursor on %q, want repo-a under env grouping", row.Name)
+	}
+	if m.cursor != 1 {
+		t.Fatalf("precondition: cursor idx = %d, want 1 (repo-a under env)", m.cursor)
+	}
+
+	// Each g press: the cursor must still point to repo-a, even though its
+	// numeric index changes between env (1) and criticality/flat (0).
+	for i, step := range []struct {
+		wantKey string
+		wantIdx int
+	}{
+		{"criticality", 0}, // repo-a sorts first under "alpha" section
+		{"", 0},            // flat config order, repo-a is index 0
+		{"env", 1},         // wrap: repo-a back to zoo section, index 1
+	} {
+		m = update(t, m, press("g"))
+		if got := m.activeGroupKey(); got != step.wantKey {
+			t.Errorf("step %d: activeGroupKey = %q, want %q", i, got, step.wantKey)
+		}
+		if row, ok := m.currentRow(); !ok || row.Name != "repo-a" {
+			t.Errorf("step %d (key=%q): cursor on %q (idx=%d), want repo-a",
+				i, step.wantKey, row.Name, m.cursor)
+		}
+		if m.cursor != step.wantIdx {
+			t.Errorf("step %d (key=%q): cursor idx = %d, want %d",
+				i, step.wantKey, m.cursor, step.wantIdx)
+		}
+	}
+}
+
+// headerView must show the active group key when grouping is active and omit
+// the group indicator while in flat view, across the full cycle.
+func TestCycleGroupingHeaderIndicator(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = []string{"env", "criticality"}
+	a.Cfg.Repos[0].Labels = map[string]string{"env": "home", "criticality": "high"}
+	a.Cfg.Repos[1].Labels = map[string]string{"env": "office", "criticality": "low"}
+	m := newTestModel(t, a)
+	m.width, m.height = 200, 30
+
+	for i, want := range []struct {
+		contains, omits string
+	}{
+		{contains: "group: env", omits: ""},
+		{contains: "group: criticality", omits: ""},
+		{contains: "", omits: "group:"},
+		{contains: "group: env", omits: ""},
+	} {
+		header := stripANSI(m.headerView())
+		if want.contains != "" && !strings.Contains(header, want.contains) {
+			t.Errorf("step %d: header %q missing %q", i, header, want.contains)
+		}
+		if want.omits != "" && strings.Contains(header, want.omits) {
+			t.Errorf("step %d: header %q should omit %q", i, header, want.omits)
+		}
+		m = update(t, m, press("g"))
+	}
+}
+
 // Pressing g when group_by is unset is a no-op that surfaces a footer notice
 // rather than silently changing nothing.
 func TestGroupKeyWithoutConfigShowsNotice(t *testing.T) {
@@ -2103,7 +2258,10 @@ func TestGroupKeyWithoutConfigShowsNotice(t *testing.T) {
 		t.Fatal("precondition: grouping should be inactive without group_by")
 	}
 	m = update(t, m, press("g"))
-	if m.grouping {
+	if m.groupIndex != 0 {
+		t.Errorf("g without group_by should not change groupIndex, got %d", m.groupIndex)
+	}
+	if m.groupingActive() {
 		t.Error("g without group_by should not enable grouping")
 	}
 	if !strings.Contains(m.statusMsg, "grouping not configured") {
@@ -2131,12 +2289,12 @@ func TestGroupHelpSurfaces(t *testing.T) {
 	}
 	var hasGroup bool
 	for _, e := range listSection.entries {
-		if e.keys == "g" && e.desc == "toggle grouping" {
+		if e.keys == "g" && e.desc == "cycle group key" {
 			hasGroup = true
 		}
 	}
 	if !hasGroup {
-		t.Errorf("List section should document 'g toggle grouping', got %+v", listSection.entries)
+		t.Errorf("List section should document 'g cycle group key', got %+v", listSection.entries)
 	}
 
 	// Compact footer (list view ShortHelp) includes Group.

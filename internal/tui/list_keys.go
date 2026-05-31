@@ -32,7 +32,7 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Sort):
 		m = m.cycleSort()
 	case key.Matches(msg, m.keys.Group):
-		m = m.toggleGrouping()
+		m = m.cycleGrouping()
 	}
 	return m, nil
 }
@@ -81,11 +81,12 @@ func (m Model) cycleSort() Model {
 	return m
 }
 
-// toggleGrouping flips m.grouping when group_by is configured, anchoring the
-// cursor to the selected repo across the reorder. When group_by is unset it is
-// a no-op that surfaces a transient footer notice so the user understands why
-// nothing happened.
-func (m Model) toggleGrouping() Model {
+// cycleGrouping advances the grouping cycle: each press steps to the next
+// configured key, then to the flat view, then wraps. The cursor stays on the
+// same repo across the reorder by anchoring on its name. When no keys are
+// configured it is a no-op that surfaces a transient footer notice so the user
+// understands why nothing happened.
+func (m Model) cycleGrouping() Model {
 	if !m.groupingConfigured() {
 		m.statusMsg = "grouping not configured"
 		return m
@@ -95,7 +96,7 @@ func (m Model) toggleGrouping() Model {
 		sel = row.Name
 	}
 	m.statusMsg = ""
-	m.grouping = !m.grouping
+	m.groupIndex = (m.groupIndex + 1) % (len(m.app.Cfg.Global.GroupBy) + 1)
 	m.cursor = m.indexOf(sel)
 	return m
 }

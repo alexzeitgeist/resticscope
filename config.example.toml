@@ -18,7 +18,7 @@ stale_after         = "10m"                   # cache entries older than this ar
 stale_grace         = "12h"                   # amber band added on top of each repo's expected_frequency
 shell               = ""                       # empty -> use $SHELL for the snapshot-browsing shell
 shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWORD_FILE (default); env = RESTIC_PASSWORD
-# group_by         = "category"              # optional: repo label key the list view groups by (toggle in the TUI with `g`)
+# group_by         = ["env", "region"]      # optional: repo label keys; press `g` to cycle through them and a flat view
 
 # --- in-app file browser ------------------------------------------------------
 # Press `b` on a snapshot to browse its files in-app. The first time a snapshot

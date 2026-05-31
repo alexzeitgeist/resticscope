@@ -111,6 +111,11 @@ func (c *Config) Normalize(home string) {
 	if g.ResticCommandTimeout == 0 {
 		g.ResticCommandTimeout = Duration(defaultResticCommandTimeout)
 	}
+	// Make the omitted-vs-explicit-empty shape uniform: both become a non-nil
+	// empty slice so runtime code only needs to test len.
+	if g.GroupBy == nil {
+		g.GroupBy = []string{}
+	}
 
 	// Browse index settings are seeded with their defaults in Decode (not here)
 	// so an explicit index_timeout `0` is distinguishable from an omitted key and

@@ -279,27 +279,97 @@ expected_frequency = "24h"
 	}
 }
 
-// group_by is an optional [global] field naming the repo-label key the list
-// view groups by. An empty/absent value means no grouping; a present value
-// must decode into Global.GroupBy without tripping the unknown-keys gate.
+// group_by is an optional [global] field listing the repo-label keys the list
+// view can cycle through. A present value must decode into Global.GroupBy as a
+// slice without tripping the unknown-keys gate, and omitted/explicit-empty
+// forms must both normalize to the same non-nil empty slice so runtime code can
+// rely on a single len-based check.
 func TestParsesGroupBy(t *testing.T) {
-	cfg, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = "category"
+	cfg, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = ["env", "region"]
 secrets_command`, 1))
 	if err != nil {
 		t.Fatalf("group_by should decode cleanly, got %v", err)
 	}
-	if cfg.Global.GroupBy != "category" {
-		t.Errorf("group_by = %q, want category", cfg.Global.GroupBy)
+	if got, want := cfg.Global.GroupBy, []string{"env", "region"}; !equalStrings(got, want) {
+		t.Errorf("group_by = %v, want %v", got, want)
 	}
 
-	// Omitting the key leaves Global.GroupBy empty (no grouping by default).
+	// Omitting the key leaves Global.GroupBy as a non-nil empty slice.
 	cfg, err = load(t, minimalTOML)
 	if err != nil {
 		t.Fatalf("baseline decode failed: %v", err)
 	}
-	if cfg.Global.GroupBy != "" {
-		t.Errorf("default group_by = %q, want empty", cfg.Global.GroupBy)
+	if cfg.Global.GroupBy == nil {
+		t.Error("omitted group_by should normalize to a non-nil empty slice, got nil")
 	}
+	if len(cfg.Global.GroupBy) != 0 {
+		t.Errorf("omitted group_by = %v, want empty slice", cfg.Global.GroupBy)
+	}
+
+	// Explicit empty list normalizes to the same non-nil empty slice.
+	cfg, err = load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = []
+secrets_command`, 1))
+	if err != nil {
+		t.Fatalf("explicit empty group_by should decode cleanly, got %v", err)
+	}
+	if cfg.Global.GroupBy == nil {
+		t.Error("explicit empty group_by should normalize to a non-nil empty slice, got nil")
+	}
+	if len(cfg.Global.GroupBy) != 0 {
+		t.Errorf("explicit empty group_by = %v, want empty slice", cfg.Global.GroupBy)
+	}
+}
+
+// The legacy single-string form must now fail decode so users see the schema
+// break loudly instead of silently dropping their configured grouping.
+func TestRejectsLegacyGroupByString(t *testing.T) {
+	_, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = "category"
+secrets_command`, 1))
+	if err == nil {
+		t.Fatal("expected legacy string group_by to fail decode")
+	}
+}
+
+// Validation must surface a global.group_by error for empty, whitespace-padded,
+// and duplicate entries so the user can fix the offending index without guessing.
+func TestValidatesGroupByEntries(t *testing.T) {
+	cases := []struct {
+		name     string
+		listTOML string
+		wantSub  string
+	}{
+		{"empty", `["env", ""]`, "global.group_by[1]"},
+		{"whitespace_padded", `[" env"]`, "global.group_by[0]"},
+		{"duplicate", `["env", "env"]`, "global.group_by[1]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			toml := strings.Replace(minimalTOML, "secrets_command", `group_by = `+tc.listTOML+`
+secrets_command`, 1)
+			_, err := load(t, toml)
+			if err == nil {
+				t.Fatalf("expected validation error for group_by = %s", tc.listTOML)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q missing %q", err.Error(), tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), "group_by") {
+				t.Errorf("error %q should reference group_by", err.Error())
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRejectsUnknownKeys(t *testing.T) {
