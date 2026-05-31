@@ -1727,10 +1727,9 @@ func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
 	}
 }
 
-// listHeader and listCells share the same listLayout, so the byte offsets of
-// "Name", "Last", "Snaps", "Took" in the rendered header line up exactly with
-// the value column starts in a rendered data row. The 5-cell prefix
-// (gutter+status+gap) is present in both.
+// listHeader and listCells share the same listLayout, so Name starts at the same
+// display column in header/data rows, and metric columns share the same right
+// edge. The 5-cell prefix (gutter+status+gap) is present in both.
 func TestListHeaderAlignsWithRows(t *testing.T) {
 	m := newTestModel(t, testApp(map[string]model.RepoState{
 		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 7,
@@ -1767,10 +1766,11 @@ func TestListHeaderAlignsWithRows(t *testing.T) {
 			headerNamePos, rowNamePos, header, row)
 	}
 
-	// Snaps and Took are right-aligned: the header label's right edge must
+	// Last, Snaps, and Took are right-aligned: the header label's right edge must
 	// match the row value's right edge (header offset + width(label) ==
 	// row offset + width(value)).
 	for _, col := range []struct{ label, value string }{
+		{"Last", "2h ago"},
 		{"Snaps", "7"},
 		{"Took", "9s"},
 	} {

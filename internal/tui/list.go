@@ -185,7 +185,7 @@ type listRow struct {
 }
 
 // listCells formats one row's worth of columns into the shared column order so
-// the header and data rows always align: Name(24,left) · Last(10,left) ·
+// the header and data rows always align: Name(24,left) · Last(10,right) ·
 // Snaps(5,right) · [Took(7,right)] · [Labels(flex,left)]. Every fixed-width
 // value is truncated to its column width before padding so a long value cannot
 // widen the row and shove later columns out of alignment. Callers join the
@@ -193,7 +193,7 @@ type listRow struct {
 func listCells(l listLayout, r listRow) []string {
 	cells := []string{
 		padRight(truncateWidth(r.name, nameWidth), nameWidth),
-		padRight(truncateWidth(r.last, l.last), l.last),
+		fmt.Sprintf("%*s", l.last, truncateWidth(r.last, l.last)),
 		fmt.Sprintf("%*s", l.snaps, truncateWidth(r.snaps, l.snaps)),
 	}
 	if l.showTook {
