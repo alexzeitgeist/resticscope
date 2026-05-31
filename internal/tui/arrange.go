@@ -162,30 +162,24 @@ func (m Model) visibleRows() []app.RepoStatus {
 	return rows
 }
 
-// currentRow returns the row under the list cursor from the visible (filtered,
-// sorted) rows. ok is false when the filter matches nothing. The cursor is
-// clamped on read so a filter that shrinks the list can never index out of
-// range.
+// currentRow returns the row under the list cursor in the canonical display
+// order — the same flattened slice rendering uses, so the highlighted repo and
+// the acted-on repo can never diverge. ok is false when the filter matches
+// nothing. The cursor is clamped on read so a filter that shrinks the list can
+// never index out of range.
 func (m Model) currentRow() (app.RepoStatus, bool) {
-	rows := m.visibleRows()
+	rows := m.displayList().rows
 	if len(rows) == 0 {
 		return app.RepoStatus{}, false
 	}
-	cur := m.cursor
-	if cur < 0 {
-		cur = 0
-	}
-	if cur >= len(rows) {
-		cur = len(rows) - 1
-	}
-	return rows[cur], true
+	return rows[clampCursor(m.cursor, len(rows))], true
 }
 
-// indexOf returns the visible-row index of the named repo, or 0 if it is not
+// indexOf returns the display-order index of the named repo, or 0 if it is not
 // currently visible. It is used to keep the cursor on the same repo across a
-// sort change.
+// sort change, a grouping toggle, or a background refresh that reorders rows.
 func (m Model) indexOf(name string) int {
-	for i, r := range m.visibleRows() {
+	for i, r := range m.displayList().rows {
 		if r.Name == name {
 			return i
 		}

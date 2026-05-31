@@ -23,6 +23,7 @@ type keyMap struct {
 	Filter     key.Binding
 	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
 	Sort       key.Binding
+	Group      key.Binding // list: toggle grouping by the configured group_by label key
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
@@ -56,6 +57,7 @@ func defaultKeys() keyMap {
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
+		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "group")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
@@ -102,7 +104,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
-		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.Enter, k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
 	}
 }
 
@@ -141,7 +143,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{k.Enter, k.Shell},
 			{k.Refresh, k.RefreshAll},
-			{k.Filter, k.Sort},
+			{k.Filter, k.Sort, k.Group},
 			{k.Help, k.Quit},
 		}
 	}

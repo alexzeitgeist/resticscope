@@ -12,13 +12,13 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case key.Matches(msg, m.keys.Down):
-		if m.cursor < len(m.visibleRows())-1 {
+		if m.cursor < len(m.displayList().rows)-1 {
 			m.cursor++
 		}
 	case key.Matches(msg, m.keys.PageUp):
-		m.cursor = clampCursor(m.cursor-m.visibleRepos(), len(m.visibleRows()))
+		m.cursor = clampCursor(m.cursor-m.visibleRepos(), len(m.displayList().rows))
 	case key.Matches(msg, m.keys.PageDown):
-		m.cursor = clampCursor(m.cursor+m.visibleRepos(), len(m.visibleRows()))
+		m.cursor = clampCursor(m.cursor+m.visibleRepos(), len(m.displayList().rows))
 	case key.Matches(msg, m.keys.Enter):
 		// Pin the detail view to the selected repo by name so a later refresh
 		// (which can reorder a size/staleness sort) can't swap it out.
@@ -31,6 +31,8 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filtering = true
 	case key.Matches(msg, m.keys.Sort):
 		m = m.cycleSort()
+	case key.Matches(msg, m.keys.Group):
+		m = m.toggleGrouping()
 	}
 	return m, nil
 }
@@ -75,6 +77,25 @@ func (m Model) cycleSort() Model {
 		sel = row.Name
 	}
 	m.sortMode = (m.sortMode + 1) % sortModeCount
+	m.cursor = m.indexOf(sel)
+	return m
+}
+
+// toggleGrouping flips m.grouping when group_by is configured, anchoring the
+// cursor to the selected repo across the reorder. When group_by is unset it is
+// a no-op that surfaces a transient footer notice so the user understands why
+// nothing happened.
+func (m Model) toggleGrouping() Model {
+	if !m.groupingConfigured() {
+		m.statusMsg = "grouping not configured"
+		return m
+	}
+	var sel string
+	if row, ok := m.currentRow(); ok {
+		sel = row.Name
+	}
+	m.statusMsg = ""
+	m.grouping = !m.grouping
 	m.cursor = m.indexOf(sel)
 	return m
 }

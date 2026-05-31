@@ -18,6 +18,7 @@ stale_after         = "10m"                   # cache entries older than this ar
 stale_grace         = "12h"                   # amber band added on top of each repo's expected_frequency
 shell               = ""                       # empty -> use $SHELL for the snapshot-browsing shell
 shell_password_mode = "file"                  # file = 0600 temp + RESTIC_PASSWORD_FILE (default); env = RESTIC_PASSWORD
+# group_by         = "category"              # optional: repo label key the list view groups by (toggle in the TUI with `g`)
 
 # --- in-app file browser ------------------------------------------------------
 # Press `b` on a snapshot to browse its files in-app. The first time a snapshot
@@ -60,7 +61,7 @@ bucket             = "homeserver-backups"
 path               = ""                         # optional sub-prefix within the bucket
 bucket_lookup      = "auto"                     # auto | dns | path (use dns only if a bucket requires it)
 expected_frequency = "24h"                      # older than this (+ stale_grace) turns the repo amber/red
-labels             = { env = "home", criticality = "high" }
+labels             = { env = "home", criticality = "high", category = "personal" }
 
 # region, path, and bucket_lookup are all optional — omitted here. The endpoint
 # host implies the region, path defaults to the bucket root, bucket_lookup to
@@ -72,4 +73,4 @@ credential         = "hetzner-home"
 endpoint           = "https://hel1.your-objectstorage.com"
 bucket             = "laptop-backups"
 expected_frequency = "24h"
-labels             = { env = "home", criticality = "medium" }
+labels             = { env = "home", criticality = "medium", category = "personal" }

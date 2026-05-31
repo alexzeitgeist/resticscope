@@ -187,16 +187,22 @@ func TestViewRendersReposGlyphsAndMeta(t *testing.T) {
 
 	for _, want := range []string{
 		"resticscope", "restic 0.18.1",
+		"Name", "Last", "Snaps", "Labels", // dim table header
 		"repo-a", "repo-b",
 		statusGlyph(model.StatusGreen), // repo-a is green
 		statusGlyph(model.StatusGrey),  // repo-b never refreshed
 		"240",
 		"never refreshed",
-		"fsn1 · high · home", // region + labels sorted by key (criticality, env)
+		"high · home", // labels column, sorted by key (criticality, env); region no longer rendered
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q\n---\n%s", want, view)
 		}
+	}
+	// Region moved out of the visible columns; the Labels-column value must not
+	// embed it the way the old sub-line did.
+	if strings.Contains(view, "fsn1 ·") {
+		t.Errorf("view should not embed region in the labels column\n---\n%s", view)
 	}
 }
 
@@ -1228,7 +1234,10 @@ func TestListViewClipsNarrowTerminalStates(t *testing.T) {
 	}
 }
 
-func TestListSummaryTruncatesLongDuration(t *testing.T) {
+// A backup that ran far longer than the Took column is wide gets truncated to
+// listTookWidth, so it cannot widen the column and push the trailing Labels
+// column out of alignment.
+func TestListTookCellTruncatesLongDuration(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	start := testNow.Add(-1001 * time.Hour)
 	row := app.RepoStatus{
@@ -1249,42 +1258,38 @@ func TestListSummaryTruncatesLongDuration(t *testing.T) {
 		Status: model.StatusGreen,
 	}
 
-	got := m.summary(row)
-	if !strings.Contains(got, "took: 1000h0…  ") {
-		t.Fatalf("summary did not truncate duration to its fixed field:\n%s", got)
+	l := computeListLayout(100)
+	rendered := m.renderRow(row, l, false, 100)
+	// listTookWidth (7) reserves one cell for the ellipsis, so a 1000h+ run
+	// truncates to "1000h0…" — the row width invariant matters more than the
+	// exact digits, but the ellipsis must appear.
+	if got := stripANSI(rendered); !strings.Contains(got, "…") {
+		t.Errorf("Took column did not truncate long duration\n---\n%s", got)
 	}
-	if !strings.Contains(got, "(stale)") {
-		t.Fatalf("summary dropped stale marker:\n%s", got)
+	if got := lipgloss.Width(rendered); got > 100 {
+		t.Errorf("row width = %d, want <= 100: %q", got, rendered)
+	}
+	// Stale shows as the `*` marker in the 2-cell status area, not as inline text.
+	if got := stripANSI(rendered); !strings.Contains(got, "*") {
+		t.Errorf("stale repo should show '*' marker in status cell\n---\n%s", got)
 	}
 }
 
-func TestListSummaryDistinguishesZeroDurationFromUnknown(t *testing.T) {
-	m := newTestModel(t, testApp(nil))
+// The Took cell distinguishes a known zero-duration backup ("<1s") from one
+// without a summary ("—"), so the user can tell an instant backup from missing
+// data. The cell value lives in the row, not a free-form summary.
+func TestListTookCellDistinguishesZeroFromUnknown(t *testing.T) {
 	start := testNow.Add(-time.Hour)
-	row := app.RepoStatus{
-		Name: "repo-a",
-		State: model.RepoState{
-			LastSnapshot:  start,
-			SnapshotCount: 1,
-			Snapshots: []model.Snapshot{{
-				ID:   "id-zero-duration",
-				Time: start,
-				Summary: &model.SnapshotSummary{
-					BackupStart: start,
-					BackupEnd:   start,
-				},
-			}},
-		},
-		Status: model.StatusGreen,
+	zero := model.Snapshot{
+		ID: "id-zero", Time: start,
+		Summary: &model.SnapshotSummary{BackupStart: start, BackupEnd: start},
 	}
-
-	if got := m.summary(row); !strings.Contains(got, "took: <1s") {
-		t.Fatalf("summary did not show known zero duration as <1s:\n%s", got)
+	if got := tookDuration([]model.Snapshot{zero}); got != "<1s" {
+		t.Errorf("tookDuration(zero) = %q, want <1s", got)
 	}
-
-	row.State.Snapshots[0].Summary = nil
-	if got := m.summary(row); !strings.Contains(got, "took: —") {
-		t.Fatalf("summary did not show unknown duration as em-dash:\n%s", got)
+	unknown := model.Snapshot{ID: "id-unknown", Time: start}
+	if got := tookDuration([]model.Snapshot{unknown}); got != "—" {
+		t.Errorf("tookDuration(no summary) = %q, want em-dash", got)
 	}
 }
 
@@ -1593,6 +1598,429 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: fresher})
 	if row, ok := m.detailRow(); !ok || row.Name != "repo-a" {
 		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
+	}
+}
+
+// --- list table layout / grouping ---
+
+// computeListLayout mirrors snapshotLayout: Took (7) promotes first, then
+// Labels takes whatever flex remains. listLabelsMin+2 = 3 extra cells is the
+// floor for Labels to appear (1 content cell + the 2-space separator).
+func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
+	// baseFixed = gutter(2)+status(2)+gap(1)+name(24)+last(10)+snaps(5)+2*2 = 48
+	const baseFixed = 48
+	// Took promotion needs baseFixed + 7 + 2 + flexMin(3) = 60.
+	// Labels promotion needs baseFixed + flexMin(3) = 51 (independent of Took).
+	for _, tc := range []struct {
+		width                int
+		wantTook, wantLabels bool
+	}{
+		{40, false, false}, // below the Labels floor
+		{50, false, false}, // still one cell short of the 3-cell flex floor
+		{51, false, true},  // Labels appears with 1 content cell + 2-space separator
+		{59, false, true},  // Labels still alone — Took needs 60
+		{60, true, true},   // Took promotes; Labels keeps the minimum
+		{100, true, true},  // wide pane: both columns present
+	} {
+		l := computeListLayout(tc.width)
+		if l.showTook != tc.wantTook || l.showLabels != tc.wantLabels {
+			t.Errorf("computeListLayout(%d) = {took:%v labels:%v}, want {took:%v labels:%v}",
+				tc.width, l.showTook, l.showLabels, tc.wantTook, tc.wantLabels)
+		}
+		// Took must never appear without Labels — otherwise dropping width would
+		// strip the Labels column while the lower-priority Took stays.
+		if l.showTook && !l.showLabels {
+			t.Errorf("computeListLayout(%d) promoted Took without Labels", tc.width)
+		}
+	}
+}
+
+// listHeader and listCells share the same listLayout, so the byte offsets of
+// "Name", "Last", "Snaps", "Took" in the rendered header line up exactly with
+// the value column starts in a rendered data row. The 5-cell prefix
+// (gutter+status+gap) is present in both.
+func TestListHeaderAlignsWithRows(t *testing.T) {
+	m := newTestModel(t, testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 7,
+			Snapshots: []model.Snapshot{{ID: "id", Time: testNow.Add(-2 * time.Hour),
+				Summary: &model.SnapshotSummary{BackupStart: testNow.Add(-2 * time.Hour), BackupEnd: testNow.Add(-2*time.Hour + 9*time.Second)}}}},
+	}))
+
+	const width = 100
+	l := computeListLayout(width)
+	if !l.showTook || !l.showLabels {
+		t.Fatalf("precondition: width %d should promote both Took and Labels", width)
+	}
+
+	header := stripANSI(listHeader(l))
+	row := stripANSI(m.renderRow(m.rows[0], l, false, width))
+
+	// visibleOffset returns the display-cell offset of substr in s. Bytes lie
+	// because the status cell's glyph is multi-byte UTF-8; lipgloss.Width on
+	// the slice before substr gives the true column position.
+	visibleOffset := func(s, substr string) int {
+		i := strings.Index(s, substr)
+		if i < 0 {
+			return -1
+		}
+		return lipgloss.Width(s[:i])
+	}
+
+	// The 5-cell prefix (gutter+status+gap) puts "Name" and "repo-a" both at
+	// the same column. Any drift would mean a header/row layout mismatch.
+	headerNamePos := visibleOffset(header, "Name")
+	rowNamePos := visibleOffset(row, "repo-a")
+	if headerNamePos != 5 || rowNamePos != 5 {
+		t.Errorf("Name column offsets: header=%d row=%d, want both 5\n--header--\n%s\n--row--\n%s",
+			headerNamePos, rowNamePos, header, row)
+	}
+
+	// Snaps and Took are right-aligned: the header label's right edge must
+	// match the row value's right edge (header offset + width(label) ==
+	// row offset + width(value)).
+	for _, col := range []struct{ label, value string }{
+		{"Snaps", "7"},
+		{"Took", "9s"},
+	} {
+		hi := visibleOffset(header, col.label)
+		ri := visibleOffset(row, col.value)
+		if hi < 0 || ri < 0 {
+			t.Fatalf("missing %q in header (%d) or %q in row (%d)\n--header--\n%s\n--row--\n%s",
+				col.label, hi, col.value, ri, header, row)
+		}
+		if hi+lipgloss.Width(col.label) != ri+lipgloss.Width(col.value) {
+			t.Errorf("right-aligned column %q misaligned: header right=%d row right=%d\n--header--\n%s\n--row--\n%s",
+				col.label, hi+lipgloss.Width(col.label), ri+lipgloss.Width(col.value), header, row)
+		}
+	}
+}
+
+// The status cell is always 2 cells wide: a colored glyph plus a one-cell
+// marker (`*` for stale, blank otherwise). The marker must not widen the row.
+func TestRenderRowStaleMarker(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1}}
+	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
+	if !strings.Contains(rendered, statusGlyph(model.StatusGreen)+"*") {
+		t.Errorf("stale row should show '●*' status cell\n---\n%s", rendered)
+	}
+}
+
+// A repo with an active lock shows "L" in the marker cell. Lock wins over
+// stale because it's the more actionable signal.
+func TestRenderRowLockMarker(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	locked := testNow.Add(-time.Hour)
+	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1, LockedSince: &locked}}
+	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
+	if !strings.Contains(rendered, statusGlyph(model.StatusGreen)+"L") {
+		t.Errorf("locked row should show 'L' marker\n---\n%s", rendered)
+	}
+	if strings.Contains(rendered, statusGlyph(model.StatusGreen)+"*") {
+		t.Errorf("lock should win over stale; row shows '*' instead of 'L'\n---\n%s", rendered)
+	}
+}
+
+// Long Last, Took, and Labels values get truncated by their column rather
+// than widening the row past the pane width.
+func TestRenderRowFixedCellsDoNotWiden(t *testing.T) {
+	a := testApp(nil)
+	m := newTestModel(t, a)
+	// Inject a long label into rowMeta so listLabelsValue produces a wide string.
+	m.meta["repo-a"] = rowMeta{
+		labels: []string{strings.Repeat("verylonglabel", 5)},
+	}
+	start := testNow.Add(-1001 * time.Hour)
+	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-9999 * time.Hour), SnapshotCount: 999999,
+			Snapshots: []model.Snapshot{{ID: "id", Time: testNow.Add(-time.Hour),
+				Summary: &model.SnapshotSummary{BackupStart: start, BackupEnd: start.Add(1000 * time.Hour)}}}}}
+	for _, w := range []int{60, 80, 100, 120} {
+		l := computeListLayout(w)
+		rendered := m.renderRow(row, l, false, w)
+		if got := lipgloss.Width(rendered); got > w {
+			t.Errorf("renderRow at width %d produced %d-cell row: %q", w, got, rendered)
+		}
+	}
+}
+
+// groupedSections partitions rows by their value for the configured label
+// key. Sections come back in ASCII order on the group value, with "Ungrouped"
+// last for repos that lack the key.
+func TestGroupedSectionsOrder(t *testing.T) {
+	rows := []app.RepoStatus{
+		{Name: "alpha"}, {Name: "bravo"}, {Name: "charlie"}, {Name: "delta"},
+	}
+	meta := map[string]rowMeta{
+		"alpha":   {byKey: map[string]string{"category": "business"}},
+		"bravo":   {byKey: map[string]string{"category": "personal"}},
+		"charlie": {byKey: map[string]string{"category": "business"}},
+		"delta":   {byKey: map[string]string{}}, // missing key -> Ungrouped
+	}
+	secs := groupedSections(rows, meta, "category", sortConfig)
+	if len(secs) != 3 {
+		t.Fatalf("got %d sections, want 3", len(secs))
+	}
+	if secs[0].title != "business" {
+		t.Errorf("first section title = %q, want business (ASCII first)", secs[0].title)
+	}
+	if secs[1].title != "personal" {
+		t.Errorf("second section title = %q, want personal", secs[1].title)
+	}
+	if secs[2].title != "Ungrouped" {
+		t.Errorf("last section title = %q, want Ungrouped", secs[2].title)
+	}
+	if len(secs[0].rows) != 2 {
+		t.Errorf("business section should have 2 rows, got %d", len(secs[0].rows))
+	}
+}
+
+// When group_by is configured but no repo carries the key, every repo lands
+// in a single "Ungrouped" section rather than disappearing.
+func TestGroupedSectionsAllUngrouped(t *testing.T) {
+	rows := []app.RepoStatus{{Name: "one"}, {Name: "two"}}
+	meta := map[string]rowMeta{
+		"one": {byKey: map[string]string{"env": "home"}},
+		"two": {byKey: map[string]string{"env": "home"}},
+	}
+	secs := groupedSections(rows, meta, "category", sortConfig)
+	if len(secs) != 1 || secs[0].title != "Ungrouped" {
+		t.Fatalf("got sections=%+v, want one Ungrouped section", secs)
+	}
+	if len(secs[0].rows) != 2 {
+		t.Errorf("Ungrouped section should contain both repos, got %d rows", len(secs[0].rows))
+	}
+}
+
+// In grouped mode the cursor indexes the flattened display order — the same
+// order render uses — so the highlighted repo and the acted-on repo match.
+func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
+	a := testApp(nil)
+	// Config order: repo-a, repo-b. Put repo-a under "personal" so that group
+	// renders after "business" (where we'll put a new repo-c) — proves the
+	// display-order index doesn't fall back to config order.
+	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
+	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
+	m := newTestModel(t, a)
+	if !m.groupingActive() {
+		t.Fatal("grouping should start active when group_by is configured")
+	}
+	d := m.displayList()
+	// ASCII order: business before personal -> repo-b first, then repo-a.
+	if len(d.rows) != 2 || d.rows[0].Name != "repo-b" || d.rows[1].Name != "repo-a" {
+		t.Fatalf("display rows = %v, want [repo-b repo-a]", names(d.rows))
+	}
+	// Cursor 0 in grouped mode picks repo-b (the head of the first section),
+	// not config-order repo-a.
+	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
+		t.Errorf("currentRow at cursor 0 = %q, want repo-b", row.Name)
+	}
+	if name, ok := m.actionRepo(); !ok || name != "repo-b" {
+		t.Errorf("actionRepo at cursor 0 = %q, want repo-b", name)
+	}
+}
+
+// With grouping active, enter pins the detail view to the highlighted repo
+// and r marks that same repo pending — both act on display-order selection.
+func TestGroupedActionsUseHighlightedRepo(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
+	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
+	m := newTestModel(t, a)
+
+	// Cursor 0 in grouped mode is repo-b (under "business"). Pressing r should
+	// mark repo-b pending.
+	next, _ := m.Update(press("r"))
+	nm := next.(Model)
+	if !nm.pending["repo-b"] {
+		t.Errorf("r in grouped mode did not mark the highlighted repo (repo-b) pending: %v", nm.pending)
+	}
+	// Pressing enter pins detail to the highlighted repo.
+	m = update(t, m, press("enter"))
+	if m.detailName != "repo-b" {
+		t.Errorf("enter pinned detail to %q, want repo-b", m.detailName)
+	}
+}
+
+// Toggling grouping keeps the cursor on the same repo by name even when its
+// flattened-order index changes.
+func TestGroupToggleAnchorsSelectionByName(t *testing.T) {
+	a := testApp(nil)
+	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
+	a.Cfg.Repos[1].Labels = map[string]string{"category": "business"}
+	m := newTestModel(t, a)
+
+	// In grouped mode, cursor 0 picks repo-b (business section); move to
+	// repo-a (personal section, index 1).
+	m = update(t, m, press("j"))
+	if row, _ := m.currentRow(); row.Name != "repo-a" {
+		t.Fatalf("precondition: expected repo-a selected, got %q", row.Name)
+	}
+
+	// Toggle grouping off. Config order returns repo-a, repo-b. The cursor
+	// should follow repo-a, which is now at index 0, not stay at 1.
+	m = update(t, m, press("g"))
+	if m.grouping {
+		t.Fatal("g should have toggled grouping off")
+	}
+	if row, ok := m.currentRow(); !ok || row.Name != "repo-a" {
+		t.Errorf("after toggle off, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
+	}
+
+	// Toggle grouping back on. repo-a should again be at index 1.
+	m = update(t, m, press("g"))
+	if row, ok := m.currentRow(); !ok || row.Name != "repo-a" {
+		t.Errorf("after toggle on, currentRow = %q (cursor=%d), want repo-a", row.Name, m.cursor)
+	}
+}
+
+// Under sortStale with grouping active, both the sort cycle and a background
+// refresh that changes the staleness order keep the cursor anchored to the
+// same repo by name.
+func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-1 * time.Hour)},
+		"repo-b": {Name: "repo-b", RefreshedAt: testNow, LastSnapshot: testNow.Add(-5 * time.Hour)},
+	})
+	a.Cfg.Global.GroupBy = "category"
+	a.Cfg.Repos[0].Labels = map[string]string{"category": "shared"}
+	a.Cfg.Repos[1].Labels = map[string]string{"category": "shared"}
+	m := newTestModel(t, a)
+
+	// Same group: order within the section follows config until sort changes it.
+	// Move to repo-b.
+	m = update(t, m, press("j"))
+	if row, _ := m.currentRow(); row.Name != "repo-b" {
+		t.Fatalf("precondition: cursor on %q, want repo-b", row.Name)
+	}
+
+	// Sort by staleness: repo-b (older) should come first; cursor follows the name.
+	m = update(t, m, press("o"))
+	if m.sortMode != sortStale {
+		t.Fatalf("sortMode = %v, want staleness", m.sortMode)
+	}
+	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
+		t.Errorf("after sort, cursor on %q (idx=%d), want repo-b", row.Name, m.cursor)
+	}
+
+	// Background refresh: repo-a ages past repo-b; in-group order flips again
+	// and the cursor must still point to repo-b.
+	older := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-9 * time.Hour)}}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: older})
+	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
+		t.Errorf("after refresh-reorder, cursor on %q (idx=%d), want repo-b", row.Name, m.cursor)
+	}
+}
+
+// Many one-row groups in a short terminal must still fit within the captured
+// height: the rendered View should never push the footer past m.height.
+func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
+	cfg := &config.Config{
+		Global:      config.Global{Parallelism: 2, GroupBy: "category"},
+		Credentials: []config.Credential{{Name: "c"}},
+	}
+	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
+	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	// 8 repos, each in its own group, so grouping yields 8 sections.
+	cats := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	for _, cat := range cats {
+		cfg.Repos = append(cfg.Repos, config.Repo{
+			Name: "repo-" + cat, Credential: "c", Endpoint: "https://e",
+			Region: "r", BucketLookup: "auto", Bucket: "b",
+			ExpectedFrequency: config.Duration(24 * time.Hour),
+			Labels:            map[string]string{"category": cat},
+		})
+	}
+	a := &app.App{
+		Cfg:     cfg,
+		Cache:   stubCache{states: map[string]model.RepoState{}},
+		Clock:   fixedClock{testNow},
+		Secrets: stubSecrets{},
+		Restic:  stubRestic{},
+	}
+
+	m := newTestModel(t, a)
+	for _, height := range []int{8, 10, 14, 20} {
+		m.width, m.height = 100, height
+		view := m.View().Content
+		if got := lipgloss.Height(view); got > height {
+			t.Errorf("grouped list overflows height: got %d, want <= %d at height=%d\n---\n%s",
+				got, height, height, view)
+		}
+	}
+}
+
+// Pressing g when group_by is unset is a no-op that surfaces a footer notice
+// rather than silently changing nothing.
+func TestGroupKeyWithoutConfigShowsNotice(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	if m.groupingActive() {
+		t.Fatal("precondition: grouping should be inactive without group_by")
+	}
+	m = update(t, m, press("g"))
+	if m.grouping {
+		t.Error("g without group_by should not enable grouping")
+	}
+	if !strings.Contains(m.statusMsg, "grouping not configured") {
+		t.Errorf("statusMsg = %q, want a 'grouping not configured' notice", m.statusMsg)
+	}
+}
+
+// Help surfaces (overlay, compact footer help) document the `g` binding so a
+// user can discover the toggle. The list-context full-help row that owns
+// Filter/Sort should also include Group.
+func TestGroupHelpSurfaces(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+
+	// Overlay: g appears in the List section.
+	left, _ := m.helpColumns()
+	var listSection helpSection
+	for _, s := range left {
+		if s.title == "List" {
+			listSection = s
+			break
+		}
+	}
+	if listSection.title == "" {
+		t.Fatal("help overlay missing List section")
+	}
+	var hasGroup bool
+	for _, e := range listSection.entries {
+		if e.keys == "g" && e.desc == "toggle grouping" {
+			hasGroup = true
+		}
+	}
+	if !hasGroup {
+		t.Errorf("List section should document 'g toggle grouping', got %+v", listSection.entries)
+	}
+
+	// Compact footer (list view ShortHelp) includes Group.
+	short := viewHelp{keys: m.keys, view: listView}.ShortHelp()
+	var sawShortGroup bool
+	for _, b := range short {
+		if b.Help().Key == "g" {
+			sawShortGroup = true
+		}
+	}
+	if !sawShortGroup {
+		t.Errorf("list-view ShortHelp should include Group, got %v", short)
+	}
+}
+
+// Region is no longer rendered as a column, but `/fsn1` (the region of both
+// repos in testApp) must still narrow the list through matchRepo.
+func TestHiddenRegionStillFilters(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, press("/"))
+	m = typeFilter(t, m, "fsn1")
+	if got := visNames(m); got != "repo-a,repo-b" {
+		t.Errorf("filter 'fsn1' visible = %q, want both repos (region still matches)", got)
 	}
 }
 

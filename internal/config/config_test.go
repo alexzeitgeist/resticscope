@@ -279,6 +279,29 @@ expected_frequency = "24h"
 	}
 }
 
+// group_by is an optional [global] field naming the repo-label key the list
+// view groups by. An empty/absent value means no grouping; a present value
+// must decode into Global.GroupBy without tripping the unknown-keys gate.
+func TestParsesGroupBy(t *testing.T) {
+	cfg, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = "category"
+secrets_command`, 1))
+	if err != nil {
+		t.Fatalf("group_by should decode cleanly, got %v", err)
+	}
+	if cfg.Global.GroupBy != "category" {
+		t.Errorf("group_by = %q, want category", cfg.Global.GroupBy)
+	}
+
+	// Omitting the key leaves Global.GroupBy empty (no grouping by default).
+	cfg, err = load(t, minimalTOML)
+	if err != nil {
+		t.Fatalf("baseline decode failed: %v", err)
+	}
+	if cfg.Global.GroupBy != "" {
+		t.Errorf("default group_by = %q, want empty", cfg.Global.GroupBy)
+	}
+}
+
 func TestRejectsUnknownKeys(t *testing.T) {
 	_, err := Decode([]byte(`
 [global]

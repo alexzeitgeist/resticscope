@@ -43,6 +43,7 @@ type Model struct {
 	sortMode   sortMode        // order applied to the list view
 	filter     string          // active filter query (name/region/label substring)
 	filtering  bool            // true while the user is typing a filter
+	grouping   bool            // transient: partition the list by cfg.Global.GroupBy when active
 	pending    map[string]bool // repo name -> a refresh is in flight
 	sem        chan struct{}   // bounds concurrent refreshes to parallelism
 	resticVer  string
@@ -134,6 +135,9 @@ func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows [
 		pending:   make(map[string]bool),
 		sem:       make(chan struct{}, parallelism(a.Cfg)),
 		resticVer: resticVer,
+		// Grouping starts enabled by default when group_by is configured; the
+		// user can toggle it off with `g` (transient, never persisted).
+		grouping: a.Cfg.Global.GroupBy != "",
 	}
 	if a.Cfg.Global.RefreshOnOpen {
 		for _, name := range m.refreshOnOpenNames() {

@@ -13,8 +13,10 @@ const (
 	// tests): wide and tall enough that nothing truncates or scrolls.
 	defaultWidth, defaultHeight = 100, 30
 
-	headerRows = 1 // the header line
-	gapRows    = 1 // the blank line above and below the list
+	headerRows         = 1 // the header line
+	gapRows            = 1 // the blank line above and below the list
+	listHeaderRows     = 1 // the dim "Name Last Snaps Took Labels" header above the table rows
+	listScrollNoteRows = 1 // the "showing N–M of T" note reserved at the bottom
 )
 
 // effSize is the terminal size the layout renders at: the captured size, with
@@ -52,11 +54,13 @@ func (m Model) listHeight() int {
 	return 1
 }
 
-// visibleRepos is how many repos the list shows at once: each repo takes two
-// lines (the main row plus a meta sub-line) and one line is reserved for the
-// "showing N–M of T" note. Floored at 1.
+// visibleRepos is how many repos the list shows at once. Each repo now occupies
+// one line, with the table header and the "showing N–M of T" note reserved off
+// the top and bottom of the budget. In grouped mode this is only a page-jump
+// approximation; the grouped renderer uses the full rendered-line budget.
+// Floored at 1.
 func (m Model) visibleRepos() int {
-	if n := (m.listHeight() - 1) / 2; n >= 1 {
+	if n := m.listHeight() - listHeaderRows - listScrollNoteRows; n >= 1 {
 		return n
 	}
 	return 1

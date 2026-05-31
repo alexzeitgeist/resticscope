@@ -71,6 +71,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Filter), "filter by name/label"},
 			{keyLabel(k.Sort), "cycle sort order"},
+			{keyLabel(k.Group), "toggle grouping"},
 			{keyLabel(k.Quit), "quit"},
 		}},
 	}

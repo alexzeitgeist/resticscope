@@ -45,6 +45,7 @@ type Global struct {
 	Shell             string `toml:"shell"`
 	ShellPasswordMode string `toml:"shell_password_mode"`
 	SecretsCommand    string `toml:"secrets_command"`
+	GroupBy           string `toml:"group_by"` // repo label key the list view groups by; empty = no grouping
 
 	// Durations are TOML strings like "10m", "24h".
 	StaleAfter            Duration `toml:"stale_after"`             // cache entries older than this are refreshed on open
