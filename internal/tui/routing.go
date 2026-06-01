@@ -45,6 +45,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.view == findVersionsView {
 			return m.findVersionsBack(), nil
 		}
+		if m.view == snapshotDiffView {
+			return m.snapshotDiffBack(), nil
+		}
 		if m.view == listView {
 			m.quitting = true
 			m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
@@ -75,6 +78,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// would otherwise steal `r` or `s` on this view).
 	if m.view == findVersionsView {
 		return m.handleFindVersionsKey(msg)
+	}
+
+	// Snapshot-diff also owns all its non-global keys (including the +/-MUTb
+	// filter toggles, which would collide with literal text in the filter input
+	// path above — but that path is already gated by m.filtering and
+	// m.browseSearching). Route here before handleRepoCommandKey so `r`/`s` are
+	// not stolen on the diff view.
+	if m.view == snapshotDiffView {
+		return m.handleSnapshotDiffKey(msg)
 	}
 
 	// Refresh-all, shell, and per-repo refresh act on repos regardless of view, so
@@ -149,6 +161,11 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 func (m Model) goBack() Model {
 	switch m.view {
 	case detailView:
+		// Leaving the detail context for the list: drop the mark FIFO so a new
+		// detail visit starts fresh. The diff and browse sub-views take their
+		// own back paths to detail and never reach here, so marks survive
+		// detail ↔ diff and detail ↔ browse round-trips by construction.
+		m = m.clearDetailMarks()
 		m.view = listView
 	case helpView:
 		m.view = m.prevView

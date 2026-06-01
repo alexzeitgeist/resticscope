@@ -92,7 +92,7 @@ func (m Model) detailBody() string {
 
 	sections := []string{
 		m.detailMeta(repo, row, w),
-		clip(m.styles.heading.Render("Snapshots"), w) + "\n" + m.snapshotTable(snaps),
+		clip(m.styles.heading.Render(m.snapshotsHeadingText()), w) + "\n" + m.snapshotTable(snaps),
 	}
 	if m.detailSnapDetailVisible() {
 		if sub := m.snapshotDetail(w, snaps); sub != "" {
@@ -247,6 +247,17 @@ func (m Model) field(label, value string, width int) string {
 	return clip("  "+m.styles.label.Render(label)+truncate(value, avail), width)
 }
 
+// snapshotsHeadingText is the heading row above the snapshot table. The bare
+// label "Snapshots" gains a marks-status suffix while the diff-mark FIFO is
+// non-empty so the user sees their progress toward a valid pair without losing
+// a body row to a dedicated summary line.
+func (m Model) snapshotsHeadingText() string {
+	if n := len(m.detailMarks); n > 0 {
+		return fmt.Sprintf("Snapshots · marks: %d/2 · t toggle · d diff", n)
+	}
+	return "Snapshots"
+}
+
 // snapshotTable renders a column header and a scrolling window of snapshots,
 // newest first, marking the selected row with the accent gutter. The columns size
 // to the terminal width (snapshotLayout) and the window to its height (detailSnapVisible)
@@ -284,12 +295,20 @@ func (m Model) snapshotTable(snaps []model.Snapshot) string {
 			took:  snapTook(s),
 			tags:  truncate(strings.Join(s.Tags, ","), l.tags),
 		}), "  ")
-		indicator := "  "
+		// The 2-cell gutter carries both the cursor accent and the mark glyph:
+		// cell 1 is the cursor bar (▎ when selected), cell 2 is `*` when this
+		// snapshot is in the diff FIFO. Both can show at once (▎*) — the marks
+		// are an orthogonal slot to the cursor.
+		left := " "
+		right := " "
 		if i == cur {
-			indicator = m.styles.gutter.Render("▎") + " "
+			left = m.styles.gutter.Render("▎")
 			content = m.styles.selected.Render(content)
 		}
-		lines = append(lines, clip(indicator+content, w))
+		if m.isMarked(s.ID) {
+			right = m.styles.chgAdded.Render("*")
+		}
+		lines = append(lines, clip(left+right+content, w))
 	}
 	if (start > 0 || end < len(snaps)) && m.detailWindowNoteVisible(m.detailSnapDetailVisible()) {
 		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(snaps))), w))

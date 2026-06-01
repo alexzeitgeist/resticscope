@@ -80,6 +80,19 @@ type fakeRestic struct {
 	findResults []model.FindSnapshotResult // canned find result
 	findErr     error                      // returned instead of findResults
 	findCap     *findCapture               // optional; records what FindMatches was asked
+
+	diffEntries     []model.DiffEntry // streamed to onEntry in order
+	diffParseErrors int               // returned on the SnapshotDiff
+	diffErr         error             // returned instead of a clean diff
+	diffCap         *diffCapture      // optional; records what StreamDiff was asked
+}
+
+// diffCapture records StreamDiff's arguments across goroutines.
+type diffCapture struct {
+	mu      sync.Mutex
+	calls   int
+	olderID string
+	newerID string
 }
 
 // findCapture records FindMatches' arguments. It is a pointer so the
@@ -122,6 +135,27 @@ func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx
 		return nil, f.findErr
 	}
 	return f.findResults, nil
+}
+
+func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+	if f.diffCap != nil {
+		f.diffCap.mu.Lock()
+		f.diffCap.calls++
+		f.diffCap.olderID = olderID
+		f.diffCap.newerID = newerID
+		f.diffCap.mu.Unlock()
+	}
+	for _, e := range f.diffEntries {
+		if onEntry != nil {
+			if err := onEntry(e); err != nil {
+				return model.SnapshotDiff{}, err
+			}
+		}
+	}
+	if f.diffErr != nil {
+		return model.SnapshotDiff{}, f.diffErr
+	}
+	return model.SnapshotDiff{ParseErrors: f.diffParseErrors}, nil
 }
 
 func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
@@ -172,6 +206,11 @@ func (r blockingBrowseRestic) StreamSnapshotTree(ctx context.Context, t resticx.
 
 func (blockingBrowseRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
 	return nil, nil
+}
+
+func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+	<-ctx.Done()
+	return model.SnapshotDiff{}, ctx.Err()
 }
 
 // --- fake browse store / index writer ---

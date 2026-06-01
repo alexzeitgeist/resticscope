@@ -1,0 +1,440 @@
+package model
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"path"
+	"sort"
+	"strings"
+)
+
+// diff.go holds the pure DTOs and helpers for the snapshot-diff feature: the
+// streamed NDJSON parser, the virtual-tree builder, and the modifier-bitmask
+// model. Like the rest of model/, it imports nothing from internal/ and never
+// participates in persistence — diff data lives only in the active TUI session.
+
+// ChangeType is the single primary kind chosen for color/glyph display.
+type ChangeType uint8
+
+const (
+	ChangeUnknown      ChangeType = iota // synthetic ancestor / `?` marker
+	ChangeAdded                          // `+`
+	ChangeRemoved                        // `-`
+	ChangeModified                       // `M`
+	ChangeMetadataOnly                   // `U`
+	ChangeTypeChanged                    // `T`
+	ChangeBitrot                         // `?` reported by restic for bitrot
+)
+
+// ModifierKind is a bitmask of restic's per-change marker characters. Each
+// kind takes one bit so the multi-char modifier (e.g. `MU`, `?M`) survives
+// the parse without precedence dropouts; filter and aggregate-count semantics
+// read this bitmask, not the singular ChangeType.
+type ModifierKind uint8
+
+const (
+	KindAdded       ModifierKind = 1 << iota // `+`
+	KindRemoved                              // `-`
+	KindModified                             // `M`
+	KindMetadata                             // `U`
+	KindTypeChanged                          // `T`
+	KindBitrot                               // `?`
+)
+
+// AllDiffKinds is the bitmask with every documented modifier bit set. The TUI
+// filter mask defaults to this; toggling a kind off clears its bit.
+const AllDiffKinds ModifierKind = KindAdded | KindRemoved | KindModified | KindMetadata | KindTypeChanged | KindBitrot
+
+// DiffEntry is one decoded `change` line from `restic diff --json`. Modifier
+// retains the raw multi-char marker for renderer use; Type is the primary
+// kind chosen for color/glyph; Kinds is the full bitmask used for filter and
+// aggregate counting. No Size field — the documented `change` schema carries
+// only message_type/path/modifier (sourcing size belongs to the metadata-join
+// follow-up).
+type DiffEntry struct {
+	Path     string
+	Modifier string
+	Type     ChangeType
+	Kinds    ModifierKind
+	IsDir    bool
+}
+
+// SnapshotDiff is the terminal result of one streamed restic diff. Entries
+// are the parsed `change` records (the live stream forwards each one through
+// the onEntry callback). ParseErrors counts malformed-line tolerance so the
+// footer can surface it. No fields sourced from restic's `statistics` line —
+// UI counts come from BuildDiffTree's root aggregate so the parser is decoupled
+// from the statistics schema and survives restic-side changes to it.
+type SnapshotDiff struct {
+	Entries     []DiffEntry
+	ParseErrors int
+}
+
+// DiffStats counts changes by kind for one directory's subtree. A multi-kind
+// entry (e.g. `MU`) contributes to each of its set kinds; no precedence is
+// applied.
+type DiffStats struct {
+	Added        int
+	Removed      int
+	Modified     int
+	MetadataOnly int
+	TypeChanged  int
+	Bitrot       int
+}
+
+// Total is the sum of every counter, used to detect a dir's "all-filtered" state.
+func (s DiffStats) Total() int {
+	return s.Added + s.Removed + s.Modified + s.MetadataOnly + s.TypeChanged + s.Bitrot
+}
+
+// Empty reports whether the stats carry no counters.
+func (s DiffStats) Empty() bool { return s.Total() == 0 }
+
+// addKinds bumps every set-bit counter in k by 1.
+func (s *DiffStats) addKinds(k ModifierKind) {
+	if k&KindAdded != 0 {
+		s.Added++
+	}
+	if k&KindRemoved != 0 {
+		s.Removed++
+	}
+	if k&KindModified != 0 {
+		s.Modified++
+	}
+	if k&KindMetadata != 0 {
+		s.MetadataOnly++
+	}
+	if k&KindTypeChanged != 0 {
+		s.TypeChanged++
+	}
+	if k&KindBitrot != 0 {
+		s.Bitrot++
+	}
+}
+
+// EnabledKinds reports which DiffStats counters are >0, restricted to the
+// supplied filter mask. A dir row hides when this returns 0.
+func (s DiffStats) EnabledKinds(filter ModifierKind) ModifierKind {
+	var out ModifierKind
+	if filter&KindAdded != 0 && s.Added > 0 {
+		out |= KindAdded
+	}
+	if filter&KindRemoved != 0 && s.Removed > 0 {
+		out |= KindRemoved
+	}
+	if filter&KindModified != 0 && s.Modified > 0 {
+		out |= KindModified
+	}
+	if filter&KindMetadata != 0 && s.MetadataOnly > 0 {
+		out |= KindMetadata
+	}
+	if filter&KindTypeChanged != 0 && s.TypeChanged > 0 {
+		out |= KindTypeChanged
+	}
+	if filter&KindBitrot != 0 && s.Bitrot > 0 {
+		out |= KindBitrot
+	}
+	return out
+}
+
+// DiffRow is one renderable row in a parent's listing. Type/Kinds mirror the
+// underlying entry (synthetic ancestor dirs use ChangeUnknown / zero Kinds).
+// Aggregate is the rollup info for dir rows, empty for files.
+type DiffRow struct {
+	Name      string
+	Path      string
+	Type      ChangeType
+	Kinds     ModifierKind
+	Modifier  string
+	IsDir     bool
+	Aggregate DiffStats
+}
+
+// DiffTree is the virtual tree built from a flat entry stream. Children is
+// keyed by parent dir path; the listed rows are that directory's children.
+// Aggregate carries the per-dir rollup counts used when the dir appears
+// collapsed in its own parent's listing.
+type DiffTree struct {
+	Children  map[string][]DiffRow
+	Aggregate map[string]DiffStats
+}
+
+// DiffRoot is the path that every absolute restic path traces back to. The TUI
+// starts navigation here.
+const DiffRoot = "/"
+
+// parseModifier maps restic's modifier characters to the kind bitmask and
+// picks a deterministic primary for color/glyph. Precedence for the primary,
+// from highest to lowest: Bitrot, TypeChanged, Removed, Added, Modified,
+// MetadataOnly — the rarer / more alarming events win the one-cell display
+// when a modifier is multi-char. Rows still render the raw multi-char Modifier
+// when the column has room, so the user always sees the full restic vocabulary.
+func parseModifier(s string) (primary ChangeType, kinds ModifierKind) {
+	for _, r := range s {
+		switch r {
+		case '+':
+			kinds |= KindAdded
+		case '-':
+			kinds |= KindRemoved
+		case 'M':
+			kinds |= KindModified
+		case 'U':
+			kinds |= KindMetadata
+		case 'T':
+			kinds |= KindTypeChanged
+		case '?':
+			kinds |= KindBitrot
+		}
+	}
+	switch {
+	case kinds&KindBitrot != 0:
+		primary = ChangeBitrot
+	case kinds&KindTypeChanged != 0:
+		primary = ChangeTypeChanged
+	case kinds&KindRemoved != 0:
+		primary = ChangeRemoved
+	case kinds&KindAdded != 0:
+		primary = ChangeAdded
+	case kinds&KindModified != 0:
+		primary = ChangeModified
+	case kinds&KindMetadata != 0:
+		primary = ChangeMetadataOnly
+	default:
+		primary = ChangeUnknown
+	}
+	return primary, kinds
+}
+
+// changeMsg is the on-wire envelope for one restic diff `change` line.
+type changeMsg struct {
+	MessageType string `json:"message_type"`
+	Path        string `json:"path"`
+	Modifier    string `json:"modifier"`
+}
+
+// diffScanBufferMax bounds the per-line scanner buffer (~1 MiB) so a
+// pathological single path errors cleanly rather than running away.
+const diffScanBufferMax = 1 << 20
+
+// diffProgressEvery coalesces onProgress callbacks: the parser ticks once per
+// this many parsed entries, so the streaming caller can drive a smooth UI
+// count without flooding it.
+const diffProgressEvery = 256
+
+// ScanDiffNDJSON reads NDJSON from r and forwards each `change` line to
+// onEntry as it arrives. It polls ctx.Err() between lines so cancellation
+// stops the scan promptly with whatever was parsed so far. onEntry returning
+// an error aborts the scan (the verbatim error is returned). Unknown
+// message_types (including the terminal `statistics` line) are skipped without
+// error. Malformed lines (JSON parse failure or missing required fields) are
+// counted into SnapshotDiff.ParseErrors and do not abort.
+func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) error, onProgress func(seen int)) (SnapshotDiff, error) {
+	var out SnapshotDiff
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), diffScanBufferMax)
+	seen := 0
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var env changeMsg
+		if err := json.Unmarshal(line, &env); err != nil {
+			out.ParseErrors++
+			continue
+		}
+		if env.MessageType != "change" {
+			continue
+		}
+		if env.Path == "" || env.Modifier == "" {
+			out.ParseErrors++
+			continue
+		}
+		entry := newDiffEntry(env.Path, env.Modifier)
+		if onEntry != nil {
+			if err := onEntry(entry); err != nil {
+				return out, err
+			}
+		} else {
+			out.Entries = append(out.Entries, entry)
+		}
+		seen++
+		if onProgress != nil && seen%diffProgressEvery == 0 {
+			onProgress(seen)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return out, err
+	}
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
+	if onProgress != nil && seen%diffProgressEvery != 0 {
+		onProgress(seen)
+	}
+	return out, nil
+}
+
+// ParseDiffNDJSON wraps ScanDiffNDJSON for unit tests: it runs over a byte
+// buffer with context.Background() and accumulates entries internally.
+func ParseDiffNDJSON(b []byte) (SnapshotDiff, error) {
+	var entries []DiffEntry
+	out, err := ScanDiffNDJSON(context.Background(), bytes.NewReader(b),
+		func(e DiffEntry) error { entries = append(entries, e); return nil }, nil)
+	if err != nil {
+		return out, err
+	}
+	out.Entries = entries
+	return out, nil
+}
+
+// newDiffEntry produces a DiffEntry from a raw path and modifier. A trailing
+// slash on the path marks a directory; it is stored stripped so all later
+// path comparisons use the canonical (no-slash) form.
+func newDiffEntry(rawPath, modifier string) DiffEntry {
+	isDir := strings.HasSuffix(rawPath, "/")
+	clean := rawPath
+	if isDir && rawPath != "/" {
+		clean = strings.TrimRight(rawPath, "/")
+	}
+	primary, kinds := parseModifier(modifier)
+	return DiffEntry{
+		Path:     clean,
+		Modifier: modifier,
+		Type:     primary,
+		Kinds:    kinds,
+		IsDir:    isDir,
+	}
+}
+
+// BuildDiffTree synthesizes navigation-only ancestor dirs from the flat entry
+// stream and computes per-dir aggregates. It is decoupled from restic's
+// `statistics` line so the root aggregate is the authoritative top-level count.
+func BuildDiffTree(entries []DiffEntry) DiffTree {
+	// rows is keyed by full path so an explicit later entry can upgrade an
+	// earlier synthetic placeholder in place; children is keyed by parent dir
+	// and stores pointers into rows so the upgrade reflects in both views.
+	rows := make(map[string]*DiffRow)
+	children := make(map[string][]*DiffRow)
+
+	ensure := func(p string, isDir bool, typ ChangeType, kinds ModifierKind, modifier string) *DiffRow {
+		if existing, ok := rows[p]; ok {
+			// Upgrade in place when an explicit entry arrives for a previously-
+			// synthetic ancestor. Modified Type wins over the synthetic Unknown;
+			// Kinds OR-merges so a multi-kind explicit entry keeps every bit.
+			if typ != ChangeUnknown {
+				existing.Type = typ
+			}
+			existing.Kinds |= kinds
+			if modifier != "" {
+				existing.Modifier = modifier
+			}
+			if isDir {
+				existing.IsDir = true
+			}
+			return existing
+		}
+		row := &DiffRow{
+			Name:     diffNameOf(p),
+			Path:     p,
+			Type:     typ,
+			Kinds:    kinds,
+			Modifier: modifier,
+			IsDir:    isDir,
+		}
+		rows[p] = row
+		parent := diffParentOf(p)
+		children[parent] = append(children[parent], row)
+		return row
+	}
+
+	for _, e := range entries {
+		ensure(e.Path, e.IsDir, e.Type, e.Kinds, e.Modifier)
+		// Walk every ancestor up to the root; ensure is idempotent so a later
+		// explicit ancestor entry upgrades any synthetic placeholder.
+		for anc := diffParentOf(e.Path); anc != ""; anc = diffParentOf(anc) {
+			ensure(anc, true, ChangeUnknown, 0, "")
+			if anc == DiffRoot {
+				break
+			}
+		}
+	}
+
+	aggregate := make(map[string]DiffStats)
+	for _, e := range entries {
+		for anc := diffParentOf(e.Path); anc != ""; anc = diffParentOf(anc) {
+			s := aggregate[anc]
+			s.addKinds(e.Kinds)
+			aggregate[anc] = s
+			if anc == DiffRoot {
+				break
+			}
+		}
+	}
+
+	// Materialize by-value rows under each parent, sorted dirs-first by name,
+	// after copying aggregates onto dir rows.
+	out := DiffTree{
+		Children:  make(map[string][]DiffRow, len(children)),
+		Aggregate: aggregate,
+	}
+	for parent, kids := range children {
+		dst := make([]DiffRow, 0, len(kids))
+		for _, r := range kids {
+			row := *r
+			if row.IsDir {
+				row.Aggregate = aggregate[row.Path]
+			}
+			dst = append(dst, row)
+		}
+		sort.SliceStable(dst, func(i, j int) bool {
+			if dst[i].IsDir != dst[j].IsDir {
+				return dst[i].IsDir // dirs first, matching browse's convention
+			}
+			return dst[i].Name < dst[j].Name
+		})
+		out.Children[parent] = dst
+	}
+	return out
+}
+
+// diffParentOf returns the parent directory path of p. It returns "" when p is
+// already the diff root, signaling "stop walking ancestors". An invalid path
+// (empty, no leading slash) also returns "" so a bad entry can't loop.
+func diffParentOf(p string) string {
+	if p == "" || p == DiffRoot {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		return ""
+	}
+	parent := path.Dir(p)
+	if parent == "." {
+		return DiffRoot
+	}
+	return parent
+}
+
+// diffNameOf is the last path component (or "/" for the root).
+func diffNameOf(p string) string {
+	if p == DiffRoot || p == "" {
+		return DiffRoot
+	}
+	return path.Base(p)
+}
+
+// errInvalidModifier is returned by demand-parse helpers when restic emits a
+// modifier with no recognized character. Kept private to model — the parser
+// classes such lines as malformed and increments ParseErrors instead.
+var errInvalidModifier = errors.New("diff modifier has no recognized marker")
+
+// _ blocks the linter from complaining about an unused error; the symbol is
+// retained for documentation and a future precondition check.
+var _ = errInvalidModifier

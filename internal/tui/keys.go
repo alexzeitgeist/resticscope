@@ -26,9 +26,20 @@ type keyMap struct {
 	Group      key.Binding // list: cycle through the configured group_by keys and a flat view
 	Versions   key.Binding // browse: open the find-versions view for the selected file
 	HostToggle key.Binding // find-versions: toggle the host filter on/off
+	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
+	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
+
+	// Snapshot-diff filter toggles: one bit each in model.ModifierKind. `?`
+	// collides with Help (the modifier char for bitrot), so the binding is `b`.
+	DiffFilterAdded       key.Binding
+	DiffFilterRemoved     key.Binding
+	DiffFilterModified    key.Binding
+	DiffFilterMetadata    key.Binding
+	DiffFilterTypeChanged key.Binding
+	DiffFilterBitrot      key.Binding
 
 	FilterAccept key.Binding
 	FilterCancel key.Binding
@@ -62,9 +73,18 @@ func defaultKeys() keyMap {
 		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
 		Versions:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
 		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
+		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
+		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+
+		DiffFilterAdded:       key.NewBinding(key.WithKeys("+"), key.WithHelp("+", "added")),
+		DiffFilterRemoved:     key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "removed")),
+		DiffFilterModified:    key.NewBinding(key.WithKeys("M"), key.WithHelp("M", "modified")),
+		DiffFilterMetadata:    key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "metadata")),
+		DiffFilterTypeChanged: key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "type")),
+		DiffFilterBitrot:      key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "bitrot")),
 
 		FilterAccept: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")),
 		FilterCancel: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
@@ -103,11 +123,13 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Shell, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Shell, k.Refresh, k.Back}
 	case browseView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
+	case snapshotDiffView:
+		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -142,6 +164,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{enterAs(k, "browse"), k.Shell, k.Browse},
+			{k.Mark, k.Diff},
 			{k.Refresh, k.Back},
 		}
 	case browseView:
@@ -154,6 +177,13 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{k.HostToggle, k.Back},
+		}
+	case snapshotDiffView:
+		return [][]key.Binding{
+			{k.Up, k.Down, k.PageUp, k.PageDown},
+			{enterAs(k, "open"), k.Parent},
+			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
+			{k.Back},
 		}
 	case helpView:
 		return [][]key.Binding{

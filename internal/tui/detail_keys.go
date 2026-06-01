@@ -32,6 +32,25 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+	case key.Matches(msg, m.keys.Mark):
+		// t toggles the 2-slot FIFO mark on the cursor snapshot. Re-marking the
+		// same row clears it; a third mark evicts the oldest. The marks live for
+		// the detail context (cleared by goBack on the way back to the list).
+		m.statusMsg = ""
+		m = m.toggleDetailMark()
+	case key.Matches(msg, m.keys.Diff):
+		// d resolves the (older, newer) pair from the FIFO + cursor and opens the
+		// diff view. With zero marks (or a 1-mark + same-cursor degenerate pair)
+		// it surfaces a footer hint and stays put.
+		if name, ok := m.actionRepo(); ok {
+			if older, newer, pairOK := m.diffPair(); pairOK {
+				m.statusMsg = ""
+				var cmd tea.Cmd
+				m, cmd = m.startSnapshotDiff(name, older, newer)
+				return m, cmd
+			}
+			m.statusMsg = "mark snapshots with t"
+		}
 	}
 	return m, nil
 }

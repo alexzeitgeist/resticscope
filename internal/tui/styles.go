@@ -27,6 +27,16 @@ type styles struct {
 	spinner      lipgloss.Style
 	help         helpbubble.Styles
 	glyph        map[model.Status]lipgloss.Style
+
+	// Snapshot-diff change-type styles. Each color is a documented Gruvbox hue:
+	// green=added, red=removed, yellow=modified, blue/dim=metadata-only,
+	// aqua=type-changed, orange+bold=bitrot (loud — it is a corruption signal).
+	chgAdded       lipgloss.Style
+	chgRemoved     lipgloss.Style
+	chgModified    lipgloss.Style
+	chgMetadata    lipgloss.Style
+	chgTypeChanged lipgloss.Style
+	chgBitrot      lipgloss.Style
 }
 
 func newStyles() styles {
@@ -79,6 +89,13 @@ func newStyles() styles {
 			model.StatusError: lipgloss.NewStyle().Foreground(red),
 			model.StatusGrey:  lipgloss.NewStyle().Foreground(grey),
 		},
+
+		chgAdded:       lipgloss.NewStyle().Foreground(green),
+		chgRemoved:     lipgloss.NewStyle().Foreground(red),
+		chgModified:    lipgloss.NewStyle().Foreground(yellow),
+		chgMetadata:    lipgloss.NewStyle().Foreground(blue),
+		chgTypeChanged: lipgloss.NewStyle().Foreground(aqua),
+		chgBitrot:      lipgloss.NewStyle().Foreground(orange).Bold(true),
 	}
 }
 

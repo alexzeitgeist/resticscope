@@ -102,6 +102,12 @@ func (m Model) View() tea.View {
 			"",
 			m.findBody(),
 		)
+	case m.view == snapshotDiffView:
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.snapshotDiffHeaderView(),
+			"",
+			m.snapshotDiffBody(),
+		)
 	case m.view == detailView && hasDetail:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),

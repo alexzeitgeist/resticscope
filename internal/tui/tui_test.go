@@ -58,6 +58,26 @@ type stubRestic struct {
 	findResults []model.FindSnapshotResult // returned by FindMatches
 	findErr     error                      // optional error from FindMatches
 	findCap     *stubFindCapture           // captures FindMatches args (host, pattern, calls)
+
+	diffEntries     []model.DiffEntry // streamed by StreamDiff
+	diffParseErrors int               // surfaced in the returned SnapshotDiff
+	diffErr         error             // returned after streaming (e.g. a restic failure)
+	diffCap         *stubDiffCapture  // captures StreamDiff args (older/newer, calls)
+}
+
+// stubDiffCapture records the args passed to StreamDiff across goroutines so a
+// test can assert the chronological older/newer ordering without a race.
+type stubDiffCapture struct {
+	mu      sync.Mutex
+	calls   int
+	olderID string
+	newerID string
+}
+
+func (c *stubDiffCapture) snapshot() (calls int, olderID, newerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls, c.olderID, c.newerID
 }
 
 // stubFindCapture records the args passed to FindMatches across goroutines so
@@ -121,6 +141,32 @@ func (s stubRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.C
 	return s.findResults, nil
 }
 
+// StreamDiff replays diffEntries through onEntry, then returns a SnapshotDiff
+// carrying parseErrors and (if set) diffErr. diffCap records the older/newer
+// argument order so a test can prove the chronological sort happens before the
+// restic call. Most tui tests don't exercise diff at all; the zero stubRestic
+// returns a zero SnapshotDiff without emitting any entries.
+func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+	if s.diffCap != nil {
+		s.diffCap.mu.Lock()
+		s.diffCap.calls++
+		s.diffCap.olderID = olderID
+		s.diffCap.newerID = newerID
+		s.diffCap.mu.Unlock()
+	}
+	for _, e := range s.diffEntries {
+		if onEntry != nil {
+			if err := onEntry(e); err != nil {
+				return model.SnapshotDiff{}, err
+			}
+		}
+	}
+	if s.diffErr != nil {
+		return model.SnapshotDiff{}, s.diffErr
+	}
+	return model.SnapshotDiff{ParseErrors: s.diffParseErrors}, nil
+}
+
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
 // restic call still running when the user quits. It closes started once so a
 // test can wait until the refresh has actually reached restic.
@@ -147,6 +193,15 @@ func (b blockingRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target
 // FindMatches is unused by the blocking flows; defined to satisfy app.Restic.
 func (blockingRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.Creds, _, _ string) ([]model.FindSnapshotResult, error) {
 	return nil, nil
+}
+
+// StreamDiff blocks until cancelled, mirroring Snapshots/StreamSnapshotTree, so
+// a test can prove that q/esc while a diff is streaming cancels the running
+// restic call.
+func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _ string, _ func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+	close(b.started)
+	<-ctx.Done()
+	return model.SnapshotDiff{}, ctx.Err()
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)

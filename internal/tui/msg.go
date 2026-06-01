@@ -73,6 +73,32 @@ type findVersionsMsg struct {
 	err    error
 }
 
+// snapshotDiffProgressMsg carries a running count of entries seen on the wire
+// from an in-flight `restic diff --json` stream. It is re-armed by
+// waitForDiffProgress after each tick so the loading line climbs live. gen tags
+// it with the generation that started the diff; a tick whose gen no longer
+// matches m.diffGen is from a superseded or cancelled diff and is dropped.
+type snapshotDiffProgressMsg struct {
+	gen  int
+	seen int
+}
+
+// snapshotDiffMsg is delivered when one streamed diff finishes. gen guards
+// against a superseded request's late result. result carries the terminal
+// SnapshotDiff (ParseErrors count); entries is the slice the streaming
+// onEntry callback accumulated during the run, handed back here so the
+// terminal Update can BuildDiffTree once on the UI thread. err is non-nil on
+// failure: a restic/secrets error with secrets already redacted (a
+// restic-printed filesystem path may transiently appear in the status line,
+// never on disk — same caveat as browse). The entries hold paths only for
+// the lifetime of the model; clearSnapshotDiff zeroes them on leaving the view.
+type snapshotDiffMsg struct {
+	gen     int
+	result  model.SnapshotDiff
+	entries []model.DiffEntry
+	err     error
+}
+
 // repoRefreshedMsg is delivered when a single repo's background refresh
 // finishes. row carries the freshly evaluated status; err is non-nil only when
 // the result could not be persisted to the cache — the row is still the live
