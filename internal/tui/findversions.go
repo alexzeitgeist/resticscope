@@ -75,7 +75,10 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 		return m
 	}
 	m.findLoading = false
-	m.findCancel = nil
+	if m.findCancel != nil {
+		m.findCancel()
+		m.findCancel = nil
+	}
 	if msg.err != nil {
 		m.findRows = nil
 		m.findCursor = 0

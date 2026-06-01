@@ -142,6 +142,10 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 
 // goBack steps one screen toward the list: the detail view returns to the list
 // and the help overlay returns to the view that opened it. No-op on the list.
+// Browse and find-versions are intentionally absent: their back paths must run
+// through cancel-aware helpers (browseBack / findVersionsBack) to interrupt the
+// underlying restic process, so they are routed in handleKey's Quit branch before
+// goBack is reached.
 func (m Model) goBack() Model {
 	switch m.view {
 	case detailView:

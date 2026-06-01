@@ -90,6 +90,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		}},
 		{"Browse", []helpEntry{
 			{move, "move cursor"},
+			{page, "page up/down"},
 			{keyLabel(k.Enter) + "/" + keyLabel(k.Open), "open directory"},
 			{keyLabel(k.Parent), "parent directory"},
 			{keyLabel(k.Search), "search filenames"},
@@ -100,6 +101,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		}},
 		{"Versions", []helpEntry{
 			{move, "move cursor"},
+			{page, "page up/down"},
 			{keyLabel(k.HostToggle), "toggle host filter"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to browse"},
 		}},
