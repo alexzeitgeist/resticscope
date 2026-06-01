@@ -391,3 +391,13 @@ func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 		t.Errorf("cursor moved while loading: cursor = %d, want 0", next.(Model).findCursor)
 	}
 }
+
+func TestPathLineDoesNotExpandSpacesInsidePath(t *testing.T) {
+	m := Model{styles: newStyles()}
+	p := "/E/OneDrive/Bilder/Eigene Aufnahmen/2026/05/20260503_132847286_iOS.jpg"
+
+	line := stripANSI(m.pathLine("Path", p, 160))
+	if !strings.Contains(line, "Eigene Aufnahmen") {
+		t.Fatalf("path line should preserve the literal single space inside the path, got %q", line)
+	}
+}

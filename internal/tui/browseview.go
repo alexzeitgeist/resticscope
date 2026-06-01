@@ -27,7 +27,7 @@ func (m Model) browseHeaderView() string {
 
 func (m Model) browseBody() string {
 	w, _ := m.effSize()
-	pathLine := clip(m.styles.label.Render("Path")+m.styles.name.Render(browseDirLabel(m.browseDir)), w)
+	pathLine := m.pathLine("Path", browseDirLabel(m.browseDir), w)
 	summary := clip(m.styles.meta.Render("  "+m.browseSummaryLine()), w)
 	if m.browseLoading && !m.browseIndexed {
 		return strings.Join([]string{pathLine, summary}, "\n")
@@ -36,6 +36,10 @@ func (m Model) browseBody() string {
 		return strings.Join([]string{pathLine, summary, m.browseSearchList(w)}, "\n")
 	}
 	return strings.Join([]string{pathLine, summary, m.browseList(w)}, "\n")
+}
+
+func (m Model) pathLine(label, value string, width int) string {
+	return clip(m.styles.label.Render(label)+m.styles.name.UnsetWidth().Render(value), width)
 }
 
 // browseSummaryLine reports progress. While the one-time index runs it shows the

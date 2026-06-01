@@ -55,7 +55,7 @@ func (m Model) findHostLabel() string {
 
 func (m Model) findBody() string {
 	w, _ := m.effSize()
-	pathLine := clip(m.styles.label.Render("Path")+m.styles.name.Render(m.findPath), w)
+	pathLine := m.pathLine("Path", m.findPath, w)
 	summary := clip(m.styles.meta.Render("  "+m.findSummaryLine()), w)
 	return strings.Join([]string{pathLine, summary, m.findList(w)}, "\n")
 }
