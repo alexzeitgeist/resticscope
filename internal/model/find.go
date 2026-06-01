@@ -45,11 +45,19 @@ type FileVersionOccurrence struct {
 }
 
 // FileVersion is one distinct version of the file (collapsed by (Size,
-// ModTime)) plus the snapshots that contain it, newest-first.
+// ModTime)) plus the snapshots that contain it, newest-first. Permissions /
+// UID / GID are representative metadata captured from the first match seen
+// for the group; they are display-only and never participate in dedup (a
+// chmod or chown that does not bump mtime keeps the file in the same
+// version group, matching restic's own content key). OwnerKnown
+// distinguishes a match that carried uid/gid (a real 0:0 root-owned file)
+// from a match that did not, mirroring model.BrowseEntry.OwnerKnown.
 type FileVersion struct {
 	Size        int64
 	ModTime     time.Time
-	Permissions string // representative, from the latest occurrence; ignored for dedup
+	Permissions string
+	UID, GID    uint32
+	OwnerKnown  bool
 	Occurrences []FileVersionOccurrence
 }
 
@@ -96,6 +104,9 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 			g, ok := groups[key]
 			if !ok {
 				g = &FileVersion{Size: m.Size, ModTime: m.ModTime, Permissions: m.Permissions}
+				if m.UID != nil && m.GID != nil {
+					g.UID, g.GID, g.OwnerKnown = *m.UID, *m.GID, true
+				}
 				groups[key] = g
 				order = append(order, key)
 			}

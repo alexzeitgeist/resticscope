@@ -201,6 +201,37 @@ func TestGroupFileVersions(t *testing.T) {
 		}
 	})
 
+	t.Run("uid/gid plumbed through with OwnerKnown true", func(t *testing.T) {
+		uid, gid := uint32(0), uint32(0) // a real root-owned file; the OwnerKnown flag is what distinguishes it from missing
+		results := []FindSnapshotResult{
+			{SnapshotID: "snap-1", Matches: []FindMatch{
+				{Path: path, Size: 1500, ModTime: mtA, Permissions: "-rw-r--r--", UID: &uid, GID: &gid},
+			}},
+		}
+		got := GroupFileVersions(results, path, snapshotsByID(snapOld))
+		if len(got) != 1 {
+			t.Fatalf("want one row, got %+v", got)
+		}
+		if !got[0].OwnerKnown || got[0].UID != 0 || got[0].GID != 0 {
+			t.Errorf("expected OwnerKnown=true uid=0 gid=0, got %+v", got[0])
+		}
+	})
+
+	t.Run("missing uid/gid leaves OwnerKnown false", func(t *testing.T) {
+		results := []FindSnapshotResult{
+			{SnapshotID: "snap-1", Matches: []FindMatch{
+				{Path: path, Size: 1500, ModTime: mtA, Permissions: "-rw-r--r--"},
+			}},
+		}
+		got := GroupFileVersions(results, path, snapshotsByID(snapOld))
+		if len(got) != 1 {
+			t.Fatalf("want one row, got %+v", got)
+		}
+		if got[0].OwnerKnown {
+			t.Errorf("expected OwnerKnown=false when match carried no uid/gid, got %+v", got[0])
+		}
+	})
+
 	t.Run("all-foreign result yields nil", func(t *testing.T) {
 		askPath := "/data/file.txt"
 		results := []FindSnapshotResult{

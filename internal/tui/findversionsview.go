@@ -22,7 +22,8 @@ const (
 	findLatestMin  = 18 // "YYYY-MM-DD HH:MM xxxxxxxx"; trimmed when host promotes
 	findHostMin    = 8  // shortest host fragment shown when promoted (truncated by truncateWidth)
 	findPermsWidth = 10
-	findAuxRows    = 2 // column header + the "showing N–M of T" scroll note
+	findOwnerWidth = 11 // "uid:gid"; matches browseOwnerWidth so both views feel consistent
+	findAuxRows    = 2  // column header + the "showing N–M of T" scroll note
 )
 
 func (m Model) findHeaderView() string {
@@ -78,14 +79,15 @@ func (m Model) findSummaryLine() string {
 }
 
 // findColLayout describes the find-versions table's columns for a given
-// width. Modified / Size / Snaps are always present. Latest and Permissions
-// promote in priority order — Latest first (so the user can see when the
-// most recent backup carrying the version ran), then Permissions for parity
-// with the browse table.
+// width. Modified / Size / Snaps are always present. Latest, Permissions,
+// and Owner promote in priority order — Latest first (so the user can see
+// when the most recent backup carrying the version ran), then Permissions
+// and Owner together for parity with the browse table.
 type findColLayout struct {
 	latest     int
 	showLatest bool
 	showPerms  bool
+	showOwner  bool
 }
 
 func findLayout(width int) findColLayout {
@@ -108,6 +110,10 @@ func findLayout(width int) findColLayout {
 	}
 	if rest >= findPermsWidth+gap {
 		l.showPerms = true
+		rest -= findPermsWidth + gap
+	}
+	if rest >= findOwnerWidth+gap {
+		l.showOwner = true
 	}
 	return l
 }
@@ -149,6 +155,9 @@ func findHeaderRow(l findColLayout) string {
 	if l.showPerms {
 		cells = append(cells, fmt.Sprintf("%-*s", findPermsWidth, "Perms"))
 	}
+	if l.showOwner {
+		cells = append(cells, fmt.Sprintf("%*s", findOwnerWidth, "Owner"))
+	}
 	return "  " + strings.Join(cells, "  ")
 }
 
@@ -172,6 +181,13 @@ func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw 
 			perms = truncate(v.Permissions, findPermsWidth)
 		}
 		cells = append(cells, fmt.Sprintf("%-*s", findPermsWidth, perms))
+	}
+	if l.showOwner {
+		owner := "—"
+		if v.OwnerKnown {
+			owner = truncate(fmt.Sprintf("%d:%d", v.UID, v.GID), findOwnerWidth)
+		}
+		cells = append(cells, fmt.Sprintf("%*s", findOwnerWidth, owner))
 	}
 
 	content := strings.Join(cells, "  ")
