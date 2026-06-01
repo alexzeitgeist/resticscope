@@ -70,6 +70,7 @@ type Model struct {
 	browseRateBaseN  int                 // count at the start of the current rate window
 	browseRateBaseAt time.Time           // timestamp at the start of the current rate window
 	browseLoading    bool                // an index or directory load is in flight (navigation paused)
+	browseNotice     string              // browse-local one-action hint rendered in the fixed summary line
 	browseCancel     context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
 	browseGen        int                 // generation token; stale browse msgs are discarded
 	browseProgress   chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress

@@ -139,8 +139,9 @@ func TestFindVersionsOpensFromBrowseAndPopulates(t *testing.T) {
 	}
 }
 
-// v on a directory entry is a no-op (directories have no version concept).
-func TestFindVersionsKeyOnDirectoryIsNoOp(t *testing.T) {
+// v on a directory entry stays in browse and tells the user to select a file
+// (directories have no single-file version concept).
+func TestFindVersionsKeyOnDirectoryShowsMessage(t *testing.T) {
 	a, _ := findApp(t, nil, bnode("/dir", "dir", true, 0))
 	m := newTestModel(t, a)
 	m = openBrowse(t, m)
@@ -151,6 +152,30 @@ func TestFindVersionsKeyOnDirectoryIsNoOp(t *testing.T) {
 	}
 	if m.view != browseView {
 		t.Errorf("v on a directory should leave the view in browse, got %d", m.view)
+	}
+	if m.statusMsg != "" {
+		t.Errorf("statusMsg = %q, want no global footer notice", m.statusMsg)
+	}
+	if got := m.browseSummaryLine(); got != "versions: select a file" {
+		t.Errorf("browseSummaryLine() = %q, want directory guidance", got)
+	}
+}
+
+func TestFindVersionsDirectoryNoticeClearsOnBrowseNavigation(t *testing.T) {
+	a, _ := findApp(t, nil, bnode("/run", "run", true, 0))
+	m := newTestModel(t, a)
+	m = openBrowse(t, m)
+	m = update(t, m, press("v"))
+	if got := m.browseSummaryLine(); got != "versions: select a file" {
+		t.Fatalf("precondition: browseSummaryLine() = %q, want directory guidance", got)
+	}
+
+	m = pressBrowse(t, m, "enter")
+	if m.browseDir != "/run" {
+		t.Fatalf("browseDir = %q, want /run", m.browseDir)
+	}
+	if got := m.browseSummaryLine(); got == "versions: select a file" {
+		t.Fatalf("directory guidance should clear after navigation, got %q", got)
 	}
 }
 

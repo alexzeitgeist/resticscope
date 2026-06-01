@@ -55,6 +55,7 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 	m.browseCache = nil // a fresh snapshot: never serve a previous one's cached dirs
 	m.browseCursor = 0
 	m.browseSortMode = browseSortName // a prior session's sort must not leak in
+	m.browseNotice = ""
 	m.view = browseView
 	// beginIndex owns the index-counter reset (browseIndexed, browseIndexN, and
 	// the rate fields), so startBrowse only sets the navigation state here.
@@ -167,6 +168,7 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 // supersedes any prior in-flight browse so a stale listing can never overwrite a
 // newer one.
 func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
+	m.browseNotice = ""
 	// Serve an already-visited directory straight from the session listing cache.
 	// The snapshot is immutable once indexed, so a cached listing can never go
 	// stale; answering synchronously skips the async query and its loading hop, so
@@ -274,6 +276,7 @@ func (m Model) clearBrowse() Model {
 	m.browseRateBaseN = 0
 	m.browseRateBaseAt = time.Time{}
 	m.browseLoading = false
+	m.browseNotice = ""
 	m.browseCancel = nil
 	m.browseProgress = nil
 	// The search overlay carries filenames/paths too and must be zeroed here on
@@ -299,6 +302,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.browseBack(), nil
 	case key.Matches(msg, m.keys.Shell):
+		m.browseNotice = ""
 		if cmd := m.openShellCmd(m.browseSnapshotPtr()); cmd != nil {
 			m.statusMsg = ""
 			return m, cmd
@@ -312,20 +316,26 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Up):
+		m.browseNotice = ""
 		if m.browseCursor > 0 {
 			m.browseCursor--
 		}
 	case key.Matches(msg, m.keys.Down):
+		m.browseNotice = ""
 		if m.browseCursor < m.browseRowCount()-1 {
 			m.browseCursor++
 		}
 	case key.Matches(msg, m.keys.PageUp):
+		m.browseNotice = ""
 		m.browseCursor = clampCursor(m.browseCursor-m.browseVisible(), m.browseRowCount())
 	case key.Matches(msg, m.keys.PageDown):
+		m.browseNotice = ""
 		m.browseCursor = clampCursor(m.browseCursor+m.browseVisible(), m.browseRowCount())
 	case key.Matches(msg, m.keys.Enter), key.Matches(msg, m.keys.Open):
+		m.browseNotice = ""
 		return m.openBrowseDir()
 	case key.Matches(msg, m.keys.Parent):
+		m.browseNotice = ""
 		return m.browseToParent()
 	case key.Matches(msg, m.keys.Sort):
 		// Cycle the display sort of the current directory listing. It sits in the
@@ -333,12 +343,14 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// mid-index/mid-load. While the search input is open handleKey routes to
 		// handleBrowseSearchKey first, so `o` is literal query text there; while a
 		// search is suspended it sorts only the visible directory listing.
+		m.browseNotice = ""
 		return m.cycleBrowseSort(), nil
 	case key.Matches(msg, m.keys.Search):
 		// `/` opens the global filename search, but only once the snapshot is
 		// indexed — there is nothing to search before the one-time crawl commits.
 		// It sits in the idle-only switch (below the browseLoading guard) so it
 		// can't fire mid-index.
+		m.browseNotice = ""
 		if m.browseIndexed {
 			// Start from a fully cleared overlay (also discards any parked result
 			// set), then open the input.
@@ -349,16 +361,23 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Versions):
 		// `v` opens the find-versions view for the selected entry. Directories
 		// have no version concept (the find query is for a single file path),
-		// so this is a no-op on a directory. Crucially, browse state is NOT
-		// cleared — it must survive so q from find-versions can pop back to it.
-		if e := m.selectedBrowseEntry(); e != nil && !e.IsDir {
-			originHost := ""
-			if snap := m.browseSnapshotPtr(); snap != nil {
-				originHost = snap.Hostname
-			}
-			return m.startFindVersions(m.browseRepo, originHost, e.Path)
+		// so keep the user in browse and explain the blocked action. Crucially,
+		// browse state is NOT cleared — it must survive so q from find-versions
+		// can pop back to it.
+		e := m.selectedBrowseEntry()
+		if e == nil {
+			return m, nil
 		}
-		return m, nil
+		if e.IsDir {
+			m.browseNotice = "versions: select a file"
+			return m, nil
+		}
+		m.browseNotice = ""
+		originHost := ""
+		if snap := m.browseSnapshotPtr(); snap != nil {
+			originHost = snap.Hostname
+		}
+		return m.startFindVersions(m.browseRepo, originHost, e.Path)
 	}
 	return m, nil
 }

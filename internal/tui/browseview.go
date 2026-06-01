@@ -58,6 +58,9 @@ func (m Model) browseSummaryLine() string {
 	if m.browseSearching {
 		return m.browseSearchSummary()
 	}
+	if m.browseNotice != "" {
+		return m.browseNotice
+	}
 	parts := []string{fmt.Sprintf("%d entries", len(m.browseRows))}
 	if m.browseSortMode != browseSortName {
 		parts = append(parts, "sort: "+m.browseSortMode.label())
