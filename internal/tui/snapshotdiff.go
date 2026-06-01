@@ -210,11 +210,7 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	m.diffTree = model.BuildDiffTree(msg.entries)
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
 	m.diffErr = ""
-	if msg.result.ParseErrors > 0 {
-		// Tolerated malformed lines are surfaced in the footer summary so the
-		// user knows the count is not authoritative.
-		m.diffErr = ""
-	}
+	m.diffParseErrs = msg.result.ParseErrors
 	return m.rebuildDiffRows(model.DiffRoot, "")
 }
 
@@ -426,6 +422,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffFilters = 0
 	m.diffStats = model.DiffStats{}
 	m.diffErr = ""
+	m.diffParseErrs = 0
 	m.diffLoading = false
 	m.diffLoadCount = 0
 	m.diffCancel = nil

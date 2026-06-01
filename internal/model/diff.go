@@ -258,6 +258,10 @@ func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) er
 			continue
 		}
 		entry := newDiffEntry(env.Path, env.Modifier)
+		if entry.Kinds == 0 {
+			out.ParseErrors++
+			continue
+		}
 		if onEntry != nil {
 			if err := onEntry(entry); err != nil {
 				return out, err

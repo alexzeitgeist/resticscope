@@ -28,6 +28,9 @@ import (
 //  3. restic exited cleanly → the parsed SnapshotDiff, nil.
 //  4. anything else → classify the run failure.
 func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+	dctx, cancel := context.WithTimeout(ctx, c.timeout())
+	defer cancel()
+
 	full := make([]string, 0, 8)
 	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
 		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
@@ -35,21 +38,23 @@ func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID,
 	full = append(full, "--no-lock", "diff", "--json", olderID, newerID)
 
 	env := c.buildEnv(t, creds)
-	st := &diffStream{ctx: ctx, onEntry: onEntry, onProgress: onProgress}
-	stderr, runErr := c.streamRunner().RunStream(ctx, env, creds.ResticPassword, st.consume, full...)
+	st := &diffStream{ctx: dctx, onEntry: onEntry, onProgress: onProgress}
+	stderr, runErr := c.streamRunner().RunStream(dctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		// A caller cancel beats every other classification — the parser may have
 		// surfaced ctx.Err() up through scanErr.
 		return st.result, context.Canceled
+	case errors.Is(dctx.Err(), context.DeadlineExceeded):
+		return st.result, c.classify(dctx, "diff", runErr, stderr)
 	case st.scanErr != nil && !errors.Is(st.scanErr, context.Canceled):
 		// onEntry or scanner failure (e.g. line over the buffer cap, store error).
 		return st.result, st.scanErr
 	case runErr == nil:
 		return st.result, nil
 	default:
-		return st.result, c.classify(ctx, "diff", runErr, stderr)
+		return st.result, c.classify(dctx, "diff", runErr, stderr)
 	}
 }
 

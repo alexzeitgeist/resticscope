@@ -176,7 +176,7 @@ func TestDOpensDiffViewWithTwoMarks(t *testing.T) {
 	a := detailApp(t)
 	cap := &stubDiffCapture{}
 	a.Restic = stubRestic{
-		snaps:   []model.Snapshot{{Hostname: "h"}},
+		snaps: []model.Snapshot{{Hostname: "h"}},
 		diffEntries: []model.DiffEntry{
 			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
 			{Path: "/var/log/syslog", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
@@ -222,6 +222,32 @@ func TestDOpensDiffViewWithTwoMarks(t *testing.T) {
 	if gotOlder != older || gotNewer != newer {
 		t.Errorf("StreamDiff args = (%q, %q), want (%q, %q) — chronological sort missing",
 			gotOlder, gotNewer, older, newer)
+	}
+}
+
+func TestDOpensDiffViewSurfacesParseErrors(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+		diffParseErrors: 1,
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	if m.diffParseErrs != 1 {
+		t.Fatalf("diffParseErrs = %d, want 1", m.diffParseErrs)
+	}
+	if got := m.diffSummaryLine(); !strings.Contains(got, "1 malformed line ignored") {
+		t.Errorf("summary = %q, want parse-error notice", got)
 	}
 }
 
@@ -346,4 +372,3 @@ func TestSnapshotDiffViewRenders(t *testing.T) {
 		}
 	}
 }
-

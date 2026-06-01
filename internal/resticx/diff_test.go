@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"resticscope/internal/model"
 )
@@ -16,6 +17,7 @@ type diffStreamFake struct {
 	data    string
 	stderr  []byte
 	err     error
+	block   bool
 	gotArgs []string
 	gotEnv  []string
 }
@@ -23,6 +25,10 @@ type diffStreamFake struct {
 func (f *diffStreamFake) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) ([]byte, error) {
 	f.gotEnv = env
 	f.gotArgs = args
+	if f.block {
+		<-ctx.Done()
+		return f.stderr, ctx.Err()
+	}
 	cbErr := onStdout(strings.NewReader(f.data))
 	if cbErr != nil {
 		return f.stderr, cbErr
@@ -119,6 +125,16 @@ func TestStreamDiffProgressFires(t *testing.T) {
 	}
 	if len(ticks) < 2 {
 		t.Errorf("ticks = %v, want at least 2", ticks)
+	}
+}
+
+func TestStreamDiffUsesClientTimeout(t *testing.T) {
+	fs := &diffStreamFake{block: true}
+	c := &Client{Stream: fs, Timeout: time.Millisecond}
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", nil, nil)
+	var re *Error
+	if !asResticError(err, &re) || re.Kind != KindTimeout {
+		t.Fatalf("want KindTimeout, got %v", err)
 	}
 }
 

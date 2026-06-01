@@ -97,6 +97,23 @@ func TestParseDiffNDJSONMalformedTolerated(t *testing.T) {
 	}
 }
 
+func TestParseDiffNDJSONUnknownModifierMalformed(t *testing.T) {
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/a","modifier":"X"}`,
+		`{"message_type":"change","path":"/b","modifier":"+"}`,
+	)
+	out, err := ParseDiffNDJSON(in)
+	if err != nil {
+		t.Fatalf("ParseDiffNDJSON: %v", err)
+	}
+	if len(out.Entries) != 1 || out.ParseErrors != 1 {
+		t.Fatalf("entries=%d parseErrors=%d, want 1/1", len(out.Entries), out.ParseErrors)
+	}
+	if out.Entries[0].Path != "/b" {
+		t.Errorf("parsed entry path = %q, want /b", out.Entries[0].Path)
+	}
+}
+
 func TestParseDiffNDJSONLongLine(t *testing.T) {
 	long := strings.Repeat("a", 800*1024)
 	line := `{"message_type":"change","path":"/` + long + `","modifier":"+"}`
@@ -190,9 +207,9 @@ func TestBuildDiffTreeSynthesizesAncestors(t *testing.T) {
 	tree := BuildDiffTree(out.Entries)
 	// Every ancestor on the way to root must have its row in its parent's listing.
 	expect := map[string]string{
-		"/":     "a",
-		"/a":    "b",
-		"/a/b":  "c",
+		"/":      "a",
+		"/a":     "b",
+		"/a/b":   "c",
 		"/a/b/c": "file",
 	}
 	for parent, wantName := range expect {

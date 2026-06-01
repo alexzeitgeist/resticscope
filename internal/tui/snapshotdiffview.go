@@ -80,6 +80,9 @@ func (m Model) diffSummaryLine() string {
 		return m.diffErr
 	}
 	parts := []string{diffStatsLabel(m.diffStats, m.diffFilters, m.styles)}
+	if m.diffParseErrs > 0 {
+		parts = append(parts, diffParseErrorLabel(m.diffParseErrs))
+	}
 	if m.diffFilters != model.AllDiffKinds {
 		parts = append(parts, "filter: "+diffFilterLabel(m.diffFilters))
 	}
@@ -149,6 +152,13 @@ func diffFilterLabel(k model.ModifierKind) string {
 		return "(none)"
 	}
 	return b.String()
+}
+
+func diffParseErrorLabel(n int) string {
+	if n == 1 {
+		return "1 malformed line ignored"
+	}
+	return fmt.Sprintf("%d malformed lines ignored", n)
 }
 
 // diffList renders the table window for the current directory: a dim column
