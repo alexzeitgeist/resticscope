@@ -423,7 +423,8 @@ func tookDuration(snaps []model.Snapshot) string {
 
 func (m Model) footerView() string {
 	w, _ := m.effSize()
-	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: m.browseSearching}), w)
+	searching := m.browseSearching || m.diffSearching
+	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching}), w)
 	switch {
 	case m.filtering:
 		// Show the live query (vim-style) with a block cursor so the input mode
@@ -436,6 +437,9 @@ func (m Model) footerView() string {
 			return clip(prompt+"  "+m.styles.errText.Render(summary), w) + "\n" + help
 		}
 		return clip(prompt+m.styles.meta.Render("  "+summary), w) + "\n" + help
+	case m.diffSearching:
+		prompt := "/" + m.diffSearchQuery + m.styles.dim.Render("▏")
+		return clip(prompt+m.styles.meta.Render("  "+m.diffSearchSummary()), w) + "\n" + help
 	case m.statusMsg != "":
 		return clip(m.styles.errText.Render(m.statusMsg), w) + "\n" + help
 	}

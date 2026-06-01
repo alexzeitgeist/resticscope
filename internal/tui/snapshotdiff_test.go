@@ -49,6 +49,27 @@ func drivePastDiff(t *testing.T, m Model, cmd tea.Cmd) Model {
 	return m
 }
 
+func openDiffSearch(t *testing.T, m Model) Model {
+	t.Helper()
+	m = update(t, m, press("/"))
+	if !m.diffSearching {
+		t.Fatal("/ should open diff search")
+	}
+	return m
+}
+
+func typeDiffSearch(t *testing.T, m Model, q string) Model {
+	t.Helper()
+	for _, r := range q {
+		next, cmd := m.Update(press(string(r)))
+		m = next.(Model)
+		if cmd != nil {
+			t.Fatalf("typing %q in diff search produced an unexpected command", string(r))
+		}
+	}
+	return m
+}
+
 // snapshotIDs returns the 3 ids in detailApp's seeded order: oldest, middle, newest.
 func snapshotIDs(t *testing.T, m Model) (older, middle, newer string) {
 	t.Helper()
@@ -355,6 +376,95 @@ func TestSnapshotDiffFooterHelpIncludesSwap(t *testing.T) {
 		}
 	}
 	t.Fatalf("snapshot diff footer help should include x swap, got %+v", short)
+}
+
+func TestSnapshotDiffSearchTypeShowsChangedPaths(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/home/report.txt", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "pass")
+
+	if m.diffSearchTotal != 1 {
+		t.Fatalf("diffSearchTotal = %d, want 1", m.diffSearchTotal)
+	}
+	if len(m.diffSearchRows) != 1 || m.diffSearchRows[0].Path != "/etc/passwd" {
+		t.Fatalf("diff search rows = %+v, want /etc/passwd", m.diffSearchRows)
+	}
+	view := m.View().Content
+	if !strings.Contains(view, "/etc/passwd") {
+		t.Errorf("diff search view should render full changed path\n---\n%s", view)
+	}
+	if strings.Contains(view, "/var/log/syslog") {
+		t.Errorf("non-matching changed path leaked into search view\n---\n%s", view)
+	}
+}
+
+func TestSnapshotDiffSearchEnterJumpsAndEscReturns(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = update(t, m, press("j")) // origin cursor on /var, not /etc.
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Fatalf("precondition: selected root row = %+v, want /var", r)
+	}
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "passwd")
+
+	m = update(t, m, press("enter"))
+	if m.diffSearching {
+		t.Error("enter on a diff search match should close the search input")
+	}
+	if !m.diffSearchJumped {
+		t.Error("enter on a diff search match should arm esc to return to the origin")
+	}
+	if m.diffDir != "/etc" {
+		t.Fatalf("enter on /etc/passwd should jump to /etc, got %q", m.diffDir)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("selected row after jump = %+v, want /etc/passwd", r)
+	}
+
+	m = update(t, m, press("esc"))
+	if m.diffSearchJumped || m.diffSearching {
+		t.Fatalf("esc after a diff search jump should clear search state: searching=%v jumped=%v",
+			m.diffSearching, m.diffSearchJumped)
+	}
+	if m.diffDir != model.DiffRoot {
+		t.Fatalf("esc after jump should return to root, got %q", m.diffDir)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Errorf("esc after jump should restore the origin cursor, got %+v want /var", r)
+	}
 }
 
 func TestSnapshotDiffBackReturnsToDetailKeepingMarks(t *testing.T) {

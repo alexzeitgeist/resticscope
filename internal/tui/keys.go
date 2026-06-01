@@ -131,7 +131,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.DiffSwap, k.DiffFilterAdded, k.DiffFilterRemoved, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -183,7 +183,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent, k.DiffSwap},
+			{enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}

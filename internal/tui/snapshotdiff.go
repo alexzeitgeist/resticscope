@@ -225,6 +225,9 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
+		if m.diffSearchJumped {
+			return m.restoreDiffSearchOrigin(), nil
+		}
 		return m.snapshotDiffBack(), nil
 	}
 
@@ -239,6 +242,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.DiffSwap):
 		return m.swapSnapshotDiff()
+	case key.Matches(msg, m.keys.Search):
+		return m.openDiffSearch(), nil
 	case key.Matches(msg, m.keys.DiffFilterAdded):
 		return m.toggleDiffFilter(model.KindAdded), nil
 	case key.Matches(msg, m.keys.DiffFilterRemoved):
@@ -503,6 +508,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffCursor = 0
 	m.diffCache = nil
 	m.diffSelectPath = ""
+	m = m.exitDiffSearch()
 	m.diffFilters = 0
 	m.diffStats = model.DiffStats{}
 	m.diffErr = ""

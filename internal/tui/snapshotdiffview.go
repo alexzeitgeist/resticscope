@@ -40,6 +40,12 @@ func (m Model) snapshotDiffHeaderView() string {
 		diffSnapshotLabel(m.diffOlder) + " → " + diffSnapshotLabel(m.diffNewer)
 	left := m.styles.title.Render(label)
 	right := m.styles.dim.Render("q back")
+	switch {
+	case m.diffSearching:
+		right = m.styles.dim.Render("esc cancel")
+	case m.diffSearchJumped:
+		right = m.styles.dim.Render("esc previous · q back")
+	}
 	return clip(m.spread(left, right), w)
 }
 
@@ -58,14 +64,34 @@ func diffSnapshotLabel(s model.Snapshot) string {
 func (m Model) snapshotDiffBody() string {
 	w, _ := m.effSize()
 	pathLine := m.pathLine("Path", browseDirLabel(m.diffDir), w)
-	summary := clip(m.styles.meta.Render("  "+m.diffSummaryLine()), w)
+	summaryText := m.diffSummaryLine()
+	if m.diffSearching {
+		summaryText = m.diffSearchSummary()
+	}
+	summary := clip(m.styles.meta.Render("  "+summaryText), w)
 	if m.diffLoading {
 		// While the stream is in flight the body area shows only the meta block;
 		// the table will appear once entries land and BuildDiffTree runs on the
 		// terminal msg.
 		return strings.Join([]string{pathLine, summary}, "\n")
 	}
+	if m.diffSearching {
+		return strings.Join([]string{pathLine, summary, m.diffSearchList(w)}, "\n")
+	}
 	return strings.Join([]string{pathLine, summary, m.diffList(w)}, "\n")
+}
+
+func (m Model) diffSearchSummary() string {
+	if m.diffSearchTotal == 0 {
+		if strings.TrimSpace(m.diffSearchQuery) == "" {
+			return "type to search"
+		}
+		return "(no matches)"
+	}
+	if shown := len(m.diffSearchRows); shown < m.diffSearchTotal {
+		return fmt.Sprintf("showing %d of %d matches", shown, m.diffSearchTotal)
+	}
+	return fmt.Sprintf("%d matches", m.diffSearchTotal)
 }
 
 // diffSummaryLine is the status sub-line above the table. While loading it
@@ -209,6 +235,31 @@ func diffLayout(width int) diffColLayout {
 
 func diffHeaderRow(l diffColLayout) string {
 	return "  " + fmt.Sprintf("%-*s", l.marker, "Change") + "  " + fmt.Sprintf("%-*s", l.name, "Name")
+}
+
+func diffSearchHeaderRow(l diffColLayout) string {
+	return "  " + fmt.Sprintf("%-*s", l.marker, "Change") + "  " + fmt.Sprintf("%-*s", l.name, "Path")
+}
+
+func (m Model) diffSearchList(w int) string {
+	tw := browseTableWidth(w)
+	l := diffLayout(tw)
+	header := clip(m.styles.dim.Render(diffSearchHeaderRow(l)), tw)
+	total := len(m.diffSearchRows)
+	if total == 0 {
+		return header
+	}
+	cur := clampCursor(m.diffSearchCursor, total)
+	start, end := snapshotWindow(cur, total, m.diffVisible())
+	lines := make([]string, 0, end-start+2)
+	lines = append(lines, header)
+	for i := start; i < end; i++ {
+		lines = append(lines, m.diffRowView(&m.diffSearchRows[i], i == cur, l, tw))
+	}
+	if start > 0 || end < total {
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), tw))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // diffRowView renders one row. The marker cell shows the row's primary glyph

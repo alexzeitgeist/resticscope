@@ -24,6 +24,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.browseSearching {
 		return m.handleBrowseSearchKey(msg)
 	}
+	if m.diffSearching {
+		return m.handleDiffSearchKey(msg)
+	}
 
 	// The hard quit, the context-aware q, and the help overlay toggle are matched
 	// from every view, including the overlay itself.
@@ -81,9 +84,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Snapshot-diff also owns all its non-global keys (including the +/-MUTb
-	// filter toggles, which would collide with literal text in the filter input
-	// path above — but that path is already gated by m.filtering and
-	// m.browseSearching). Route here before handleRepoCommandKey so `r`/`s` are
+	// filter toggles, which would collide with literal text in the filter/search
+	// input paths above). Route here before handleRepoCommandKey so `r`/`s` are
 	// not stolen on the diff view.
 	if m.view == snapshotDiffView {
 		return m.handleSnapshotDiffKey(msg)
