@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"path"
 	"sort"
 	"strings"
 
@@ -88,8 +87,8 @@ func (m Model) acceptDiffSearch() Model {
 	m.diffSearchOrigCur = originCursor
 	m.diffSearchJumped = true
 
-	parent := path.Dir(target)
-	if parent == "." || parent == "" {
+	parent := diffParentOfDir(target)
+	if parent == "" {
 		parent = model.DiffRoot
 	}
 	return m.rebuildDiffRows(existingDiffDir(m.diffTree, parent), target)

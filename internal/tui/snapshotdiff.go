@@ -295,6 +295,7 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	if r := m.selectedDiffRow(); r != nil {
 		selectPath = r.Path
 	}
+	m = m.exitDiffSearch()
 	m = m.supersedeSnapshotDiff()
 	m.diffOlder, m.diffNewer = m.diffNewer, m.diffOlder
 	m.diffEntries = nil

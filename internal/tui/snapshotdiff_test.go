@@ -467,6 +467,63 @@ func TestSnapshotDiffSearchEnterJumpsAndEscReturns(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiffSwapClearsSearchJumpState(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	older, _, newer := snapshotIDs(t, m)
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = update(t, m, press("j")) // origin cursor on /var before search.
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "passwd")
+	m = update(t, m, press("enter"))
+	if !m.diffSearchJumped || m.diffDir != "/etc" {
+		t.Fatalf("precondition: search jump should land in /etc with jump state, dir=%q jumped=%v",
+			m.diffDir, m.diffSearchJumped)
+	}
+
+	next, cmd = m.Update(press("x"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("x after search jump should start a swapped diff")
+	}
+	if m.diffSearchJumped || m.diffSearching || m.diffSearchOrigin != "" {
+		t.Fatalf("x should clear stale search-jump state: searching=%v jumped=%v origin=%q",
+			m.diffSearching, m.diffSearchJumped, m.diffSearchOrigin)
+	}
+	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
+		t.Errorf("swapped model pair = (%q, %q), want (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	}
+
+	m = drivePastDiff(t, m, cmd)
+	if m.diffDir != "/etc" {
+		t.Fatalf("swapped result should preserve the current dir, got %q", m.diffDir)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("swapped result should preserve selected row, got %+v", r)
+	}
+
+	m = update(t, m, press("esc"))
+	if m.view != detailView {
+		t.Errorf("esc after swapped search jump should leave diff, not restore stale origin; view=%d", m.view)
+	}
+}
+
 func TestSnapshotDiffBackReturnsToDetailKeepingMarks(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{snaps: []model.Snapshot{{Hostname: "h"}}}
