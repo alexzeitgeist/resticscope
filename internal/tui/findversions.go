@@ -18,23 +18,21 @@ import (
 // (non-negotiable #1, same discipline as browse rows).
 
 // startFindVersions enters the find-versions view for the file currently
-// selected in browse. It pins the (repo, snapshot, origin host, path) on the
-// model so a later `a` toggle re-runs the same logical query, then kicks off the
-// first find with the default host filter (the originating snapshot's hostname).
-func (m Model) startFindVersions(repo, snapshotID, originHost, p string) (Model, tea.Cmd) {
+// selected in browse. It pins the (repo, origin host, path) on the model so a
+// later `a` toggle re-runs the same logical query, then kicks off the first
+// find with the default host filter (the originating snapshot's hostname).
+// clearFindVersions is the single source of truth for the find-* zero state;
+// supersede first so a prior in-flight find is canceled before clear drops its
+// cancel function.
+func (m Model) startFindVersions(repo, originHost, p string) (Model, tea.Cmd) {
+	m = m.supersedeFind()
+	m = m.clearFindVersions()
 	m.findRepo = repo
-	m.findSnapshot = snapshotID
 	m.findOriginHost = originHost
 	m.findPath = p
-	m.findRequestAllHosts = false
-	m.findRows = nil
-	m.findCursor = 0
-	m.findResultHost = ""
-	m.findResultAllHosts = false
-	m.findErr = ""
 	m.statusMsg = ""
 	m.view = findVersionsView
-	return m.beginFind()
+	return m.dispatchFind()
 }
 
 // beginFind supersedes any prior find (advancing the generation and cancelling
@@ -44,16 +42,20 @@ func (m Model) startFindVersions(repo, snapshotID, originHost, p string) (Model,
 // result from a superseded request is dropped by applyFindVersionsMsg.
 func (m Model) beginFind() (Model, tea.Cmd) {
 	m = m.supersedeFind()
+	return m.dispatchFind()
+}
+
+func (m Model) dispatchFind() (Model, tea.Cmd) {
 	fctx, fcancel := context.WithCancel(m.ctx)
 	m.findCancel = fcancel
 	m.findLoading = true
 	m.findErr = ""
 
 	gen := m.findGen
-	repo, snap, originHost, p, allHosts := m.findRepo, m.findSnapshot, m.findOriginHost, m.findPath, m.findRequestAllHosts
+	repo, originHost, p, allHosts := m.findRepo, m.findOriginHost, m.findPath, m.findRequestAllHosts
 	a := m.app
 	cmd := func() tea.Msg {
-		res, err := a.FindFileVersions(fctx, repo, snap, originHost, p, allHosts)
+		res, err := a.FindFileVersions(fctx, repo, originHost, p, allHosts)
 		return findVersionsMsg{gen: gen, result: res, err: err}
 	}
 	return m, cmd
@@ -62,11 +64,12 @@ func (m Model) beginFind() (Model, tea.Cmd) {
 // applyFindVersionsMsg installs the result of a find call. A message whose
 // generation no longer matches m.findGen is from a superseded or cancelled
 // request and is dropped without touching state. On ErrFindUnknownHost the
-// recovery affordance (press `a` to widen) is surfaced in the status string;
-// the result-of-record fields are intentionally left untouched, since no rows
-// came back to mislabel. On any other error the path-free first line is
-// surfaced. On success the result-of-record fields are written here exactly
-// once per response, so the renderer reads what the app actually used.
+// recovery affordance (press `a` to widen) is surfaced in the status string.
+// On any other error the path-free first line is surfaced. Either error
+// clears the result-of-record fields so the header label never reflects the
+// prior successful filter while showing the error message for the new one.
+// On success the result-of-record fields are written here exactly once per
+// response, so the renderer reads what the app actually used.
 func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 	if msg.gen != m.findGen {
 		return m
@@ -74,6 +77,10 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 	m.findLoading = false
 	m.findCancel = nil
 	if msg.err != nil {
+		m.findRows = nil
+		m.findCursor = 0
+		m.findResultHost = ""
+		m.findResultAllHosts = false
 		if errors.Is(msg.err, app.ErrFindUnknownHost) {
 			m.findErr = "find: snapshot host unknown · press a to search all hosts"
 			return m
@@ -151,11 +158,10 @@ func (m Model) supersedeFind() Model {
 }
 
 // clearFindVersions zeroes all find-versions state. Called on every exit from
-// the view so no filename, snapshot id, or host string lingers in the model
-// past the user's leave (non-negotiable #1: paths do not persist).
+// the view so no repo, path, or host string lingers in the model past the
+// user's leave (non-negotiable #1: paths do not persist).
 func (m Model) clearFindVersions() Model {
 	m.findRepo = ""
-	m.findSnapshot = ""
 	m.findOriginHost = ""
 	m.findPath = ""
 	m.findRequestAllHosts = false

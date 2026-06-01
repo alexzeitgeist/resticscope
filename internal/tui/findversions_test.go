@@ -252,9 +252,9 @@ func TestFindVersionsBackKeys(t *testing.T) {
 					k, m.browseDir, m.browseCursor, browseDirBefore, browseCursorBefore)
 			}
 			// All find state is cleared on leave so no filename lingers.
-			if m.findPath != "" || m.findRepo != "" || m.findSnapshot != "" || m.findOriginHost != "" || m.findRows != nil {
-				t.Errorf("%q should clear find state: path=%q repo=%q snap=%q host=%q rows=%v",
-					k, m.findPath, m.findRepo, m.findSnapshot, m.findOriginHost, m.findRows)
+			if m.findPath != "" || m.findRepo != "" || m.findOriginHost != "" || m.findRows != nil {
+				t.Errorf("%q should clear find state: path=%q repo=%q host=%q rows=%v",
+					k, m.findPath, m.findRepo, m.findOriginHost, m.findRows)
 			}
 			if m.findResultHost != "" || m.findResultAllHosts {
 				t.Errorf("%q should clear result host fields: host=%q allHosts=%v",
@@ -389,6 +389,39 @@ func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 	next, _ := m.handleFindVersionsKey(press("j"))
 	if next.(Model).findCursor != 0 {
 		t.Errorf("cursor moved while loading: cursor = %d, want 0", next.(Model).findCursor)
+	}
+}
+
+func TestStartFindVersionsCancelsPriorFindBeforeClearing(t *testing.T) {
+	canceled := false
+	m := Model{
+		ctx:         context.Background(),
+		findGen:     7,
+		findLoading: true,
+		findCancel:  func() { canceled = true },
+		findRows:    []model.FileVersion{{Size: 1}},
+	}
+
+	next, cmd := m.startFindVersions("repo-a", "host-a", "/x")
+	if !canceled {
+		t.Fatal("startFindVersions should cancel an existing in-flight find before clearing state")
+	}
+	if cmd == nil {
+		t.Fatal("startFindVersions should dispatch a find command")
+	}
+	if next.findGen != 8 {
+		t.Fatalf("findGen = %d, want one supersede to 8", next.findGen)
+	}
+	if !next.findLoading || next.findCancel == nil {
+		t.Fatalf("new find should be in flight with a fresh cancel func: loading=%v cancel-nil=%v",
+			next.findLoading, next.findCancel == nil)
+	}
+	if next.findRepo != "repo-a" || next.findOriginHost != "host-a" || next.findPath != "/x" {
+		t.Fatalf("new find query not pinned: repo=%q host=%q path=%q",
+			next.findRepo, next.findOriginHost, next.findPath)
+	}
+	if next.findRows != nil {
+		t.Fatalf("old rows should be cleared before new find result lands: %+v", next.findRows)
 	}
 }
 

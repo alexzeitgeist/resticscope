@@ -40,7 +40,7 @@ type FindFileVersionsResult struct {
 // selected in the caller's live state; passing it in avoids rediscovering the
 // filter from a persisted cache entry that may lag a successful in-session
 // refresh.
-func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, originHost, p string, allHosts bool) (FindFileVersionsResult, error) {
+func (a *App) FindFileVersions(ctx context.Context, repoName, originHost, p string, allHosts bool) (FindFileVersionsResult, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
 		return FindFileVersionsResult{}, fmt.Errorf("unknown repo %q", repoName)
@@ -66,7 +66,7 @@ func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, origin
 	return FindFileVersionsResult{
 		Host:     host,
 		AllHosts: allHosts,
-		Rows:     model.GroupFileVersions(results, p, a.snapshotsByID(repoName)),
+		Rows:     model.GroupFileVersions(results, p, a.snapshotsByID(ctx, repoName)),
 	}, nil
 }
 
@@ -75,8 +75,8 @@ func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, origin
 // which collaborates with model.GroupFileVersions' tolerant "unknown id →
 // occurrence with empty metadata" behavior — the version view still renders,
 // just without short ids/times for the unknown ids.
-func (a *App) snapshotsByID(repoName string) map[string]model.Snapshot {
-	state, err := a.Cache.Load(context.Background(), repoName)
+func (a *App) snapshotsByID(ctx context.Context, repoName string) map[string]model.Snapshot {
+	state, err := a.Cache.Load(ctx, repoName)
 	if err != nil {
 		return nil
 	}

@@ -105,7 +105,6 @@ type Model struct {
 	// deliberate: the renderer reads only the result fields, so a mid-toggle
 	// reload can never relabel rows that came from the other filter.
 	findRepo            string
-	findSnapshot        string              // originating snapshot id
 	findOriginHost      string              // originating snapshot hostname from the live TUI row
 	findPath            string              // the path being searched (held by the model only)
 	findRequestAllHosts bool                // user toggle position, flipped by `a`

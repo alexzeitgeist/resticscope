@@ -46,12 +46,12 @@ type FileVersionOccurrence struct {
 
 // FileVersion is one distinct version of the file (collapsed by (Size,
 // ModTime)) plus the snapshots that contain it, newest-first. Permissions /
-// UID / GID are representative metadata captured from the first match seen
-// for the group; they are display-only and never participate in dedup (a
-// chmod or chown that does not bump mtime keeps the file in the same
-// version group, matching restic's own content key). OwnerKnown
-// distinguishes a match that carried uid/gid (a real 0:0 root-owned file)
-// from a match that did not, mirroring model.BrowseEntry.OwnerKnown.
+// UID / GID are representative display metadata captured from any match in the
+// group that carries them; they never participate in dedup (a chmod or chown
+// that does not bump mtime keeps the file in the same version group, matching
+// restic's own content key). OwnerKnown distinguishes a match that carried
+// uid/gid (a real 0:0 root-owned file) from a match that did not, mirroring
+// model.BrowseEntry.OwnerKnown.
 type FileVersion struct {
 	Size        int64
 	ModTime     time.Time
@@ -61,10 +61,9 @@ type FileVersion struct {
 	Occurrences []FileVersionOccurrence
 }
 
-// fileVersionKey is the dedup tuple. ModTime is reduced to its UnixNano so a
-// time.Time with a non-default monotonic clock reading still hashes alongside
-// an equivalent wall-clock value (since the JSON-decoded times that drive
-// grouping have no monotonic component, this is mostly defensive).
+// fileVersionKey is the dedup tuple over (Size, ModTime). ModTime is reduced
+// to UnixNano so equivalent instants with different time.Location pointers
+// still group together; time.Time == would split them.
 type fileVersionKey struct {
 	size  int64
 	mtime int64
@@ -103,12 +102,19 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 			}
 			g, ok := groups[key]
 			if !ok {
-				g = &FileVersion{Size: m.Size, ModTime: m.ModTime, Permissions: m.Permissions}
-				if m.UID != nil && m.GID != nil {
-					g.UID, g.GID, g.OwnerKnown = *m.UID, *m.GID, true
-				}
+				g = &FileVersion{Size: m.Size, ModTime: m.ModTime}
 				groups[key] = g
 				order = append(order, key)
+			}
+			// Fill display metadata from any occurrence that carries it, not
+			// just the first: mixed-restic-version or mixed-filesystem repos
+			// can emit one match without uid/gid (or permissions) and another
+			// with them for the same (size,mtime) content.
+			if g.Permissions == "" {
+				g.Permissions = m.Permissions
+			}
+			if !g.OwnerKnown && m.UID != nil && m.GID != nil {
+				g.UID, g.GID, g.OwnerKnown = *m.UID, *m.GID, true
 			}
 			g.Occurrences = append(g.Occurrences, occ)
 		}

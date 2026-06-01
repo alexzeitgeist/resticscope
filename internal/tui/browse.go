@@ -356,7 +356,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if snap := m.browseSnapshotPtr(); snap != nil {
 				originHost = snap.Hostname
 			}
-			return m.startFindVersions(m.browseRepo, m.browseSnapshot, originHost, e.Path)
+			return m.startFindVersions(m.browseRepo, originHost, e.Path)
 		}
 		return m, nil
 	}

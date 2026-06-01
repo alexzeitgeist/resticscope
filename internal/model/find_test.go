@@ -53,6 +53,19 @@ func TestGroupFileVersions(t *testing.T) {
 		}
 	})
 
+	t.Run("same instant in different locations collapses", func(t *testing.T) {
+		berlin := time.FixedZone("CET", 3600)
+		sameInstant := mtA.In(berlin)
+		results := []FindSnapshotResult{
+			{SnapshotID: "snap-1", Matches: []FindMatch{mkMatch(1500, mtA)}},
+			{SnapshotID: "snap-2", Matches: []FindMatch{mkMatch(1500, sameInstant)}},
+		}
+		got := GroupFileVersions(results, path, snapshotsByID(snapOld, snapMid))
+		if len(got) != 1 || len(got[0].Occurrences) != 2 {
+			t.Fatalf("want one row for equal instants across locations, got %+v", got)
+		}
+	})
+
 	t.Run("size differs: two rows", func(t *testing.T) {
 		results := []FindSnapshotResult{
 			{SnapshotID: "snap-1", Matches: []FindMatch{mkMatch(1500, mtA)}},

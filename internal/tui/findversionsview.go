@@ -34,16 +34,12 @@ func (m Model) findHeaderView() string {
 	return clip(m.spread(left, right), w)
 }
 
-// findHostLabel renders the host-filter description. While a result is still
-// pending (loading and no row from a prior response yet) it is "…"; otherwise
-// the label is "all hosts" when the response's AllHosts is true, or the
-// hostname the response actually filtered by. The renderer reads only the
-// result-of-record fields, so a mid-toggle reload cannot relabel the visible
-// rows until the new response arrives.
+// findHostLabel renders the host-filter description from the result-of-record
+// fields, so a mid-toggle reload cannot relabel the visible rows until the new
+// response arrives. The label is "all hosts" when the response's AllHosts is
+// true, the hostname the response actually filtered by otherwise, and "…"
+// before any successful response has landed (initial load or after an error).
 func (m Model) findHostLabel() string {
-	if m.findLoading && m.findResultHost == "" && !m.findResultAllHosts && len(m.findRows) == 0 && m.findErr == "" {
-		return "…"
-	}
 	if m.findResultAllHosts {
 		return "all hosts"
 	}
