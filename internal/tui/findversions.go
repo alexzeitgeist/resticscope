@@ -18,12 +18,13 @@ import (
 // (non-negotiable #1, same discipline as browse rows).
 
 // startFindVersions enters the find-versions view for the file currently
-// selected in browse. It pins the (repo, snapshot, path) on the model so a
-// later `a` toggle re-runs the same logical query, then kicks off the first
-// find with the default host filter (the originating snapshot's hostname).
-func (m Model) startFindVersions(repo, snapshotID, p string) (Model, tea.Cmd) {
+// selected in browse. It pins the (repo, snapshot, origin host, path) on the
+// model so a later `a` toggle re-runs the same logical query, then kicks off the
+// first find with the default host filter (the originating snapshot's hostname).
+func (m Model) startFindVersions(repo, snapshotID, originHost, p string) (Model, tea.Cmd) {
 	m.findRepo = repo
 	m.findSnapshot = snapshotID
+	m.findOriginHost = originHost
 	m.findPath = p
 	m.findRequestAllHosts = false
 	m.findRows = nil
@@ -49,10 +50,10 @@ func (m Model) beginFind() (Model, tea.Cmd) {
 	m.findErr = ""
 
 	gen := m.findGen
-	repo, snap, p, allHosts := m.findRepo, m.findSnapshot, m.findPath, m.findRequestAllHosts
+	repo, snap, originHost, p, allHosts := m.findRepo, m.findSnapshot, m.findOriginHost, m.findPath, m.findRequestAllHosts
 	a := m.app
 	cmd := func() tea.Msg {
-		res, err := a.FindFileVersions(fctx, repo, snap, p, allHosts)
+		res, err := a.FindFileVersions(fctx, repo, snap, originHost, p, allHosts)
 		return findVersionsMsg{gen: gen, result: res, err: err}
 	}
 	return m, cmd
@@ -155,6 +156,7 @@ func (m Model) supersedeFind() Model {
 func (m Model) clearFindVersions() Model {
 	m.findRepo = ""
 	m.findSnapshot = ""
+	m.findOriginHost = ""
 	m.findPath = ""
 	m.findRequestAllHosts = false
 	m.findResultHost = ""

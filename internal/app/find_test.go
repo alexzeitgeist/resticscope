@@ -19,8 +19,8 @@ func findTestApp(fc *fakeCache, fr fakeRestic) *App {
 	}
 }
 
-// seedSnapshot writes a single snapshot into the fake cache so hostnameOf
-// resolves to the expected host without needing a real refresh.
+// seedSnapshot writes a single snapshot into the fake cache so the grouping step
+// can join snapshot metadata without needing a real refresh.
 func seedSnapshot(fc *fakeCache, repoName, snapID, host string, ts time.Time) {
 	fc.states[repoName] = model.RepoState{
 		Name:        repoName,
@@ -47,7 +47,7 @@ func TestFindFileVersionsHostFilter(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "/etc/hostname", false)
+	got, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "homeserver", "/etc/hostname", false)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestFindFileVersionsAllHosts(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "/etc/hostname", true)
+	got, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "homeserver", "/etc/hostname", true)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
@@ -95,19 +95,45 @@ func TestFindFileVersionsAllHosts(t *testing.T) {
 }
 
 func TestFindFileVersionsErrFindUnknownHost(t *testing.T) {
-	// No snapshot seeded — hostnameOf returns "", which the app promotes to
-	// ErrFindUnknownHost when allHosts is false; no FindMatches call must
-	// happen, since silently widening to all hosts would defeat the host filter.
+	// No origin host supplied — the app promotes that to ErrFindUnknownHost when
+	// allHosts is false; no FindMatches call must happen, since silently widening
+	// to all hosts would defeat the host filter.
 	fc := newFakeCache()
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})
 
-	_, err := a.FindFileVersions(context.Background(), "repo-a", "snap-missing", "/etc/hostname", false)
+	_, err := a.FindFileVersions(context.Background(), "repo-a", "snap-missing", "", "/etc/hostname", false)
 	if !errors.Is(err, ErrFindUnknownHost) {
 		t.Fatalf("expected ErrFindUnknownHost, got %v", err)
 	}
 	if cap.calls != 0 {
 		t.Errorf("FindMatches must not be called when host is unknown, got calls=%d", cap.calls)
+	}
+}
+
+func TestFindFileVersionsUsesLiveOriginHostWhenCacheMisses(t *testing.T) {
+	// A successful in-session refresh can update the TUI's live rows even if the
+	// cache write fails. FindFileVersions must use the selected snapshot's live
+	// host passed by the caller, not rediscover the host from the persisted cache.
+	fc := newFakeCache()
+	snapID := "snap-live-only"
+	cap := &findCapture{}
+	results := []model.FindSnapshotResult{
+		{SnapshotID: snapID, Hits: 1, Matches: []model.FindMatch{
+			{Path: "/etc/hostname", Size: 12, ModTime: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)},
+		}},
+	}
+	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
+
+	got, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "live-host", "/etc/hostname", false)
+	if err != nil {
+		t.Fatalf("FindFileVersions: %v", err)
+	}
+	if cap.host != "live-host" {
+		t.Errorf("host = %q, want live-host from caller", cap.host)
+	}
+	if got.Host != "live-host" || got.AllHosts {
+		t.Errorf("result = %+v, want Host=live-host AllHosts=false", got)
 	}
 }
 
@@ -118,7 +144,7 @@ func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})
 
-	_, err := a.FindFileVersions(context.Background(), "repo-a", "snap-missing", "/etc/hostname", true)
+	_, err := a.FindFileVersions(context.Background(), "repo-a", "snap-missing", "", "/etc/hostname", true)
 	if err != nil {
 		t.Fatalf("FindFileVersions (all-hosts recovery): %v", err)
 	}
@@ -133,7 +159,7 @@ func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
 func TestFindFileVersionsUnknownRepo(t *testing.T) {
 	fc := newFakeCache()
 	a := findTestApp(fc, fakeRestic{})
-	if _, err := a.FindFileVersions(context.Background(), "no-such-repo", "snap", "/etc", false); err == nil {
+	if _, err := a.FindFileVersions(context.Background(), "no-such-repo", "snap", "host", "/etc", false); err == nil {
 		t.Fatal("expected error for unknown repo")
 	}
 }
@@ -144,7 +170,7 @@ func TestFindFileVersionsSurfacesResticError(t *testing.T) {
 	seedSnapshot(fc, "repo-a", snapID, "homeserver", now.Add(-time.Hour))
 	a := findTestApp(fc, fakeRestic{findErr: errors.New("restic find: boom")})
 
-	if _, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "/x", false); err == nil {
+	if _, err := a.FindFileVersions(context.Background(), "repo-a", snapID, "homeserver", "/x", false); err == nil {
 		t.Fatal("expected restic error to surface")
 	}
 }
@@ -169,7 +195,7 @@ func TestFindFileVersionsGroupsRowsAcrossSnapshots(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", snapA, "/etc/x", false)
+	got, err := a.FindFileVersions(context.Background(), "repo-a", snapA, "homeserver", "/etc/x", false)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}

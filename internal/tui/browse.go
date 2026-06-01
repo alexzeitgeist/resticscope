@@ -352,7 +352,11 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// so this is a no-op on a directory. Crucially, browse state is NOT
 		// cleared — it must survive so q from find-versions can pop back to it.
 		if e := m.selectedBrowseEntry(); e != nil && !e.IsDir {
-			return m.startFindVersions(m.browseRepo, m.browseSnapshot, e.Path)
+			originHost := ""
+			if snap := m.browseSnapshotPtr(); snap != nil {
+				originHost = snap.Hostname
+			}
+			return m.startFindVersions(m.browseRepo, m.browseSnapshot, originHost, e.Path)
 		}
 		return m, nil
 	}

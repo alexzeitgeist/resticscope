@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"resticscope/internal/cache"
 	"resticscope/internal/model"
 )
 
@@ -16,13 +15,12 @@ import (
 // offers a one-key toggle to widen to all hosts. No per-snapshot ls/dump call
 // is made; metadata is joined in from the cached snapshot list.
 
-// ErrFindUnknownHost is returned when the originating snapshot's hostname
-// cannot be resolved from the cached snapshot list AND the caller did not
-// explicitly opt into all-hosts. Returning this rather than silently
-// widening preserves the host-narrowing safety property: a default-narrow
-// query never decays into a default-broad one (which would surface
-// absolute-path collisions across machines as fake "versions" — exactly the
-// failure mode the host filter exists to prevent).
+// ErrFindUnknownHost is returned when the originating snapshot's hostname is
+// unknown AND the caller did not explicitly opt into all-hosts. Returning this
+// rather than silently widening preserves the host-narrowing safety property: a
+// default-narrow query never decays into a default-broad one (which would
+// surface absolute-path collisions across machines as fake "versions" — exactly
+// the failure mode the host filter exists to prevent).
 var ErrFindUnknownHost = errors.New("find: originating snapshot host unknown")
 
 // FindFileVersionsResult bundles the rows with the host the app actually
@@ -38,8 +36,11 @@ type FindFileVersionsResult struct {
 // FindFileVersions runs the find call and groups the result into distinct
 // (size,mtime) versions of the file. Exactly one restic invocation per call:
 // no per-snapshot ls and no fresh snapshot fetch (the snapshot map is taken
-// from the cached state).
-func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, p string, allHosts bool) (FindFileVersionsResult, error) {
+// from the cached state). originHost is the hostname of the snapshot the user
+// selected in the caller's live state; passing it in avoids rediscovering the
+// filter from a persisted cache entry that may lag a successful in-session
+// refresh.
+func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, originHost, p string, allHosts bool) (FindFileVersionsResult, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
 		return FindFileVersionsResult{}, fmt.Errorf("unknown repo %q", repoName)
@@ -51,10 +52,10 @@ func (a *App) FindFileVersions(ctx context.Context, repoName, snapshotID, p stri
 
 	host := ""
 	if !allHosts {
-		host = a.hostnameOf(repoName, snapshotID)
-		if host == "" {
+		if originHost == "" {
 			return FindFileVersionsResult{}, ErrFindUnknownHost
 		}
+		host = originHost
 	}
 
 	results, err := a.Restic.FindMatches(ctx, targetOf(r), resticCreds(material), host, p)
@@ -87,26 +88,4 @@ func (a *App) snapshotsByID(repoName string) map[string]model.Snapshot {
 		out[s.ID] = s
 	}
 	return out
-}
-
-// hostnameOf returns the snapshot's Hostname from the cached state or "" on a
-// miss. It is kept composable (returns "", not an error) so future callers
-// can choose their own miss policy; FindFileVersions is the one that
-// promotes a miss to ErrFindUnknownHost.
-func (a *App) hostnameOf(repoName, snapshotID string) string {
-	state, err := a.Cache.Load(context.Background(), repoName)
-	if err != nil {
-		// A cache miss/corrupt makes the lookup impossible; treat as unknown so
-		// the caller can opt into all-hosts rather than silently widening.
-		if errors.Is(err, cache.ErrMiss) || errors.Is(err, cache.ErrCorrupt) {
-			return ""
-		}
-		return ""
-	}
-	for i := range state.Snapshots {
-		if state.Snapshots[i].ID == snapshotID {
-			return state.Snapshots[i].Hostname
-		}
-	}
-	return ""
 }

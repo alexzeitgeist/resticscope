@@ -252,9 +252,9 @@ func TestFindVersionsBackKeys(t *testing.T) {
 					k, m.browseDir, m.browseCursor, browseDirBefore, browseCursorBefore)
 			}
 			// All find state is cleared on leave so no filename lingers.
-			if m.findPath != "" || m.findRepo != "" || m.findSnapshot != "" || m.findRows != nil {
-				t.Errorf("%q should clear find state: path=%q repo=%q snap=%q rows=%v",
-					k, m.findPath, m.findRepo, m.findSnapshot, m.findRows)
+			if m.findPath != "" || m.findRepo != "" || m.findSnapshot != "" || m.findOriginHost != "" || m.findRows != nil {
+				t.Errorf("%q should clear find state: path=%q repo=%q snap=%q host=%q rows=%v",
+					k, m.findPath, m.findRepo, m.findSnapshot, m.findOriginHost, m.findRows)
 			}
 			if m.findResultHost != "" || m.findResultAllHosts {
 				t.Errorf("%q should clear result host fields: host=%q allHosts=%v",
@@ -320,10 +320,9 @@ func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 			break
 		}
 	}
-	// Forcibly clobber the model's findSnapshot to one not in the cached
-	// state so hostnameOf returns "" and FindFileVersions returns
-	// ErrFindUnknownHost. startFindVersions reads m.browseSnapshot, so
-	// override that instead.
+	// Forcibly clobber the browsed snapshot to one not in the live TUI rows.
+	// startFindVersions derives originHost via browseSnapshotPtr(), so this
+	// makes the origin host empty and FindFileVersions returns ErrFindUnknownHost.
 	m.browseSnapshot = "00000000000000000000000000000000"
 	next, cmd := m.Update(press("v"))
 	m = next.(Model)
@@ -336,7 +335,7 @@ func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 		t.Errorf("findErr should advertise the `a` recovery: %q", m.findErr)
 	}
 	// `a` re-fires with allHosts=true; this time the find succeeds because
-	// the snapshot id is irrelevant (allHosts skips hostnameOf entirely).
+	// the snapshot host is irrelevant (allHosts skips the origin-host guard).
 	next, cmd = m.Update(press("a"))
 	m = next.(Model)
 	m = drivePastFind(t, m, cmd)
