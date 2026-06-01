@@ -128,24 +128,25 @@ type Model struct {
 
 	// Snapshot-diff view state. Same path-no-persist discipline as findRows and
 	// browseRows: clearSnapshotDiff zeros every diff* field on leaving the view.
-	diffRepo      string
-	diffOlder     model.Snapshot     // first snapshot in the displayed diff direction
-	diffNewer     model.Snapshot     // second snapshot in the displayed diff direction
-	diffEntries   []model.DiffEntry  // entries accumulated by the streamed onEntry callback
-	diffTree      model.DiffTree     // virtual tree built once from diffEntries on terminal msg
-	diffDir       string             // path of the directory currently listed (defaults to DiffRoot)
-	diffRows      []model.DiffRow    // current dir's children, filtered + sorted (rebuilt on nav/filter)
-	diffCursor    int                // cursor within diffRows
-	diffCache     map[string]int     // visited dir → remembered cursor index (back-nav restore)
-	diffFilters   model.ModifierKind // bitset of enabled change types; all on by default
-	diffStats     model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
-	diffErr       string             // path-free first line of the diff/restic error
-	diffParseErrs int                // tolerated malformed diff lines in the completed stream
-	diffLoading   bool               // a diff stream is in flight (navigation paused)
-	diffLoadCount int                // entries seen on the wire while loading (progress UX)
-	diffGen       int                // generation token; stale diff msgs are discarded
-	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
-	diffProgress  chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
+	diffRepo       string
+	diffOlder      model.Snapshot     // first snapshot in the displayed diff direction
+	diffNewer      model.Snapshot     // second snapshot in the displayed diff direction
+	diffEntries    []model.DiffEntry  // entries accumulated by the streamed onEntry callback
+	diffTree       model.DiffTree     // virtual tree built once from diffEntries on terminal msg
+	diffDir        string             // path of the directory currently listed (defaults to DiffRoot)
+	diffRows       []model.DiffRow    // current dir's children, filtered + sorted (rebuilt on nav/filter)
+	diffCursor     int                // cursor within diffRows
+	diffCache      map[string]int     // visited dir → remembered cursor index (back-nav restore)
+	diffSelectPath string             // row path to reselect after an async diff rerun
+	diffFilters    model.ModifierKind // bitset of enabled change types; all on by default
+	diffStats      model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
+	diffErr        string             // path-free first line of the diff/restic error
+	diffParseErrs  int                // tolerated malformed diff lines in the completed stream
+	diffLoading    bool               // a diff stream is in flight (navigation paused)
+	diffLoadCount  int                // entries seen on the wire while loading (progress UX)
+	diffGen        int                // generation token; stale diff msgs are discarded
+	diffCancel     context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
+	diffProgress   chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
 }
 
 // Run loads cached state for an instant first paint, then starts the program in

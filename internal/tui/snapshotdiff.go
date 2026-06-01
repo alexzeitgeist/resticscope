@@ -211,7 +211,9 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
 	m.diffErr = ""
 	m.diffParseErrs = msg.result.ParseErrors
-	return m.rebuildDiffRows(existingDiffDir(m.diffTree, m.diffDir), "")
+	selectPath := m.diffSelectPath
+	m.diffSelectPath = ""
+	return m.rebuildDiffRows(existingDiffDir(m.diffTree, m.diffDir), selectPath)
 }
 
 // handleSnapshotDiffKey routes keys in the snapshot-diff view. Back (esc or
@@ -284,6 +286,10 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	if dir == "" {
 		dir = model.DiffRoot
 	}
+	selectPath := ""
+	if r := m.selectedDiffRow(); r != nil {
+		selectPath = r.Path
+	}
 	m = m.supersedeSnapshotDiff()
 	m.diffOlder, m.diffNewer = m.diffNewer, m.diffOlder
 	m.diffEntries = nil
@@ -292,6 +298,7 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	m.diffRows = nil
 	m.diffCursor = 0
 	m.diffCache = make(map[string]int)
+	m.diffSelectPath = selectPath
 	m.diffStats = model.DiffStats{}
 	m.diffErr = ""
 	m.diffParseErrs = 0
@@ -495,6 +502,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffRows = nil
 	m.diffCursor = 0
 	m.diffCache = nil
+	m.diffSelectPath = ""
 	m.diffFilters = 0
 	m.diffStats = model.DiffStats{}
 	m.diffErr = ""

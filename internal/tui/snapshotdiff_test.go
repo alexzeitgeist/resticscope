@@ -257,6 +257,7 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	a.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
 		diffEntries: []model.DiffEntry{
+			{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
 			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
 		},
 		diffCap: cap,
@@ -281,6 +282,10 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	m = update(t, m, press("enter")) // descend from / into /etc
 	if m.diffDir != "/etc" {
 		t.Fatalf("precondition: diffDir = %q, want /etc", m.diffDir)
+	}
+	m = update(t, m, press("j")) // select /etc/passwd, not the first row.
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("precondition: selected row = %+v, want /etc/passwd", r)
 	}
 
 	next, cmd = m.Update(press("x"))
@@ -309,8 +314,11 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	if m.diffDir != "/etc" {
 		t.Errorf("after swapped diff lands, diffDir = %q, want /etc", m.diffDir)
 	}
-	if len(m.diffRows) != 1 || m.diffRows[0].Name != "passwd" {
-		t.Errorf("after swapped diff lands, /etc rows = %+v, want passwd", m.diffRows)
+	if len(m.diffRows) != 2 {
+		t.Fatalf("after swapped diff lands, /etc rows = %+v, want 2 rows", m.diffRows)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Errorf("after swapped diff lands, selected row = %+v, want /etc/passwd", r)
 	}
 }
 
