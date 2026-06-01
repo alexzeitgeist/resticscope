@@ -23,6 +23,7 @@ const (
 	findHostMin    = 8  // shortest host fragment shown when promoted (truncated by truncateWidth)
 	findPermsWidth = 10
 	findOwnerWidth = 11 // "uid:gid"; matches browseOwnerWidth so both views feel consistent
+	findMetaRows   = 2  // path + summary
 	findAuxRows    = 2  // column header + the "showing N–M of T" scroll note
 )
 
@@ -224,7 +225,7 @@ func findLatestText(v *model.FileVersion, allHosts bool) string {
 // the two table auxiliary lines. Floored at 1.
 func (m Model) findVisible() int {
 	_, h := m.effSize()
-	overhead := headerRows + 2*gapRows + m.footerRows() + browseMetaRows + findAuxRows
+	overhead := headerRows + 2*gapRows + m.footerRows() + findMetaRows + findAuxRows
 	if n := h - overhead; n >= 1 {
 		return n
 	}

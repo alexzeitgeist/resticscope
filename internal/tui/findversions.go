@@ -75,10 +75,7 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 		return m
 	}
 	m.findLoading = false
-	if m.findCancel != nil {
-		m.findCancel()
-		m.findCancel = nil
-	}
+	m = m.cancelFind()
 	if msg.err != nil {
 		m.findRows = nil
 		m.findCursor = 0
@@ -153,6 +150,10 @@ func (m Model) findVersionsBack() Model {
 // find so a late response cannot resurrect stale state.
 func (m Model) supersedeFind() Model {
 	m.findGen++
+	return m.cancelFind()
+}
+
+func (m Model) cancelFind() Model {
 	if m.findCancel != nil {
 		m.findCancel()
 		m.findCancel = nil

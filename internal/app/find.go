@@ -71,7 +71,7 @@ func (a *App) FindFileVersions(ctx context.Context, repoName, originHost, p stri
 }
 
 // snapshotsByID returns a map of full snapshot id to the cached snapshot
-// record for the given repo. A missing or corrupt cache yields an empty map,
+// record for the given repo. A missing or corrupt cache yields a nil map,
 // which collaborates with model.GroupFileVersions' tolerant "unknown id →
 // occurrence with empty metadata" behavior — the version view still renders,
 // just without short ids/times for the unknown ids.

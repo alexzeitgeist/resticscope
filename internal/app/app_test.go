@@ -89,7 +89,6 @@ type findCapture struct {
 	calls   int
 	host    string
 	pattern string
-	target  resticx.Target
 }
 
 // browseCapture records StreamSnapshotTree's arguments. It is a pointer field so
@@ -117,7 +116,6 @@ func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx
 		f.findCap.calls++
 		f.findCap.host = host
 		f.findCap.pattern = pattern
-		f.findCap.target = t
 		f.findCap.mu.Unlock()
 	}
 	if f.findErr != nil {
