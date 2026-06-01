@@ -76,6 +76,20 @@ type fakeRestic struct {
 	browseErr     error                   // returned instead of a summary (simulates a restic failure)
 	browseDelay   time.Duration           // sleep after emitting nodes, widening the open-tx window for the serialization test
 	browseCap     *browseCapture          // optional; records what StreamSnapshotTree was asked
+
+	findResults []model.FindSnapshotResult // canned find result
+	findErr     error                      // returned instead of findResults
+	findCap     *findCapture               // optional; records what FindMatches was asked
+}
+
+// findCapture records FindMatches' arguments. It is a pointer so the
+// value-receiver fakeRestic can still record through it, matching browseCapture.
+type findCapture struct {
+	mu      sync.Mutex
+	calls   int
+	host    string
+	pattern string
+	target  resticx.Target
 }
 
 // browseCapture records StreamSnapshotTree's arguments. It is a pointer field so
@@ -95,6 +109,21 @@ func (f fakeRestic) Snapshots(ctx context.Context, t resticx.Target, c resticx.C
 
 func (f fakeRestic) CatConfig(ctx context.Context, t resticx.Target, c resticx.Creds) error {
 	return f.catErr
+}
+
+func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
+	if f.findCap != nil {
+		f.findCap.mu.Lock()
+		f.findCap.calls++
+		f.findCap.host = host
+		f.findCap.pattern = pattern
+		f.findCap.target = t
+		f.findCap.mu.Unlock()
+	}
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	return f.findResults, nil
 }
 
 func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
@@ -141,6 +170,10 @@ func (r blockingBrowseRestic) StreamSnapshotTree(ctx context.Context, t resticx.
 	close(r.started)
 	<-ctx.Done()
 	return model.BrowseScanSummary{}, ctx.Err()
+}
+
+func (blockingBrowseRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
+	return nil, nil
 }
 
 // --- fake browse store / index writer ---

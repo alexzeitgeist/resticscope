@@ -96,6 +96,12 @@ func (m Model) View() tea.View {
 			"",
 			m.browseBody(),
 		)
+	case m.view == findVersionsView:
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.findHeaderView(),
+			"",
+			m.findBody(),
+		)
 	case m.view == detailView && hasDetail:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),

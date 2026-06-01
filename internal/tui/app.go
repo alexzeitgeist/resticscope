@@ -20,6 +20,7 @@ const (
 	listView view = iota
 	detailView
 	browseView
+	findVersionsView
 	helpView
 )
 
@@ -96,6 +97,25 @@ type Model struct {
 	browseSearchCursor     int                 // selected match within browseSearchRows
 	browseSearchTotal      int                 // total matches before the result cap
 	browseSearchErr        string              // path-free search error, shown while searching
+
+	// Find-versions state. Like browse, rows hold a filename and snapshot ids
+	// only for the lifetime of the model — clearFindVersions zeroes them on
+	// leaving the view. The split between findRequestAllHosts (user toggle) and
+	// findResultAllHosts/findResultHost (filter the visible rows came from) is
+	// deliberate: the renderer reads only the result fields, so a mid-toggle
+	// reload can never relabel rows that came from the other filter.
+	findRepo            string
+	findSnapshot        string              // originating snapshot id (for the host default)
+	findPath            string              // the path being searched (held by the model only)
+	findRequestAllHosts bool                // user toggle position, flipped by `a`
+	findLoading         bool                // a find call is in flight
+	findResultHost      string              // host the latest response actually filtered by; "" when result.AllHosts
+	findResultAllHosts  bool                // mirrors the latest response's AllHosts so the renderer can label without inference
+	findRows            []model.FileVersion // distinct (size, mtime) versions, newest-first
+	findCursor          int                 // selected version row
+	findErr             string              // path-free first line of the find/restic error
+	findGen             int                 // generation token; stale find msgs are discarded
+	findCancel          context.CancelFunc
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -209,6 +229,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyBrowseDir(msg), nil
 	case browseSearchMsg:
 		return m.applyBrowseSearch(msg), nil
+	case findVersionsMsg:
+		return m.applyFindVersionsMsg(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case spinner.TickMsg:

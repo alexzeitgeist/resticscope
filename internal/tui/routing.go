@@ -35,11 +35,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Quit):
 		// q quits only on the main list; on any nested view it steps back one
-		// screen like esc, so repeated q walks home and then exits. Browse needs a
-		// load-aware back (e.g. cancel-and-stay during a load-more), so it routes there
+		// screen like esc, so repeated q walks home and then exits. Browse and
+		// find-versions each need a cancel-aware back (so the underlying restic
+		// process is interrupted on exit), so they route to their own helpers
 		// rather than through the generic goBack.
 		if m.view == browseView {
 			return m.browseBack(), nil
+		}
+		if m.view == findVersionsView {
+			return m.findVersionsBack(), nil
 		}
 		if m.view == listView {
 			m.quitting = true
@@ -64,6 +68,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// before the shared refresh/shell handlers below would steal s.
 	if m.view == browseView {
 		return m.handleBrowseKey(msg)
+	}
+
+	// Find-versions is its own modal view; it owns all its non-global keys so
+	// it must be routed ahead of the shared refresh/shell handlers (which
+	// would otherwise steal `r` or `s` on this view).
+	if m.view == findVersionsView {
+		return m.handleFindVersionsKey(msg)
 	}
 
 	// Refresh-all, shell, and per-repo refresh act on repos regardless of view, so

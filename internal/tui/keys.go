@@ -24,6 +24,8 @@ type keyMap struct {
 	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
 	Sort       key.Binding
 	Group      key.Binding // list: cycle through the configured group_by keys and a flat view
+	Versions   key.Binding // browse: open the find-versions view for the selected file
+	HostToggle key.Binding // find-versions: toggle the host filter on/off
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
@@ -58,6 +60,8 @@ func defaultKeys() keyMap {
 		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
 		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
+		Versions:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
+		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
@@ -101,7 +105,9 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case detailView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Shell, k.Refresh, k.Back}
 	case browseView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Sort, k.Shell, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell, k.Back}
+	case findVersionsView:
+		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -141,8 +147,13 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent, k.Search, k.Sort, k.Shell},
+			{enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell},
 			{k.Back},
+		}
+	case findVersionsView:
+		return [][]key.Binding{
+			{k.Up, k.Down, k.PageUp, k.PageDown},
+			{k.HostToggle, k.Back},
 		}
 	case helpView:
 		return [][]key.Binding{

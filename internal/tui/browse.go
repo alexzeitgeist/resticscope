@@ -346,6 +346,15 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.browseSearching = true
 		}
 		return m, nil
+	case key.Matches(msg, m.keys.Versions):
+		// `v` opens the find-versions view for the selected entry. Directories
+		// have no version concept (the find query is for a single file path),
+		// so this is a no-op on a directory. Crucially, browse state is NOT
+		// cleared — it must survive so q from find-versions can pop back to it.
+		if e := m.selectedBrowseEntry(); e != nil && !e.IsDir {
+			return m.startFindVersions(m.browseRepo, m.browseSnapshot, e.Path)
+		}
+		return m, nil
 	}
 	return m, nil
 }

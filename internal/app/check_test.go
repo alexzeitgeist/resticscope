@@ -35,6 +35,10 @@ func (r *recordingRestic) StreamSnapshotTree(ctx context.Context, t resticx.Targ
 	return model.BrowseScanSummary{}, nil
 }
 
+func (r *recordingRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
+	return nil, nil
+}
+
 func (r *recordingRestic) target(name string) (resticx.Target, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

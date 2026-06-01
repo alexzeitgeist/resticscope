@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,9 +52,27 @@ func (stubSecrets) Resolve(_, _ string) (secrets.Material, error) {
 
 type stubRestic struct {
 	snaps       []model.Snapshot
-	browseNodes []model.BrowseNode // streamed by StreamSnapshotTree
-	browseErr   error              // returned after streaming (e.g. a restic failure)
-	browseDelay time.Duration      // optional per-node delay to model a slow crawl
+	browseNodes []model.BrowseNode         // streamed by StreamSnapshotTree
+	browseErr   error                      // returned after streaming (e.g. a restic failure)
+	browseDelay time.Duration              // optional per-node delay to model a slow crawl
+	findResults []model.FindSnapshotResult // returned by FindMatches
+	findErr     error                      // optional error from FindMatches
+	findCap     *stubFindCapture           // captures FindMatches args (host, pattern, calls)
+}
+
+// stubFindCapture records the args passed to FindMatches across goroutines so
+// a test can assert the host filter, pattern, and call count without a race.
+type stubFindCapture struct {
+	mu      sync.Mutex
+	calls   int
+	host    string
+	pattern string
+}
+
+func (c *stubFindCapture) snapshot() (calls int, host, pattern string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls, c.host, c.pattern
 }
 
 func (s stubRestic) Snapshots(_ context.Context, _ resticx.Target, _ resticx.Creds) ([]model.Snapshot, error) {
@@ -86,6 +105,22 @@ func (s stubRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target, _ 
 	return model.BrowseScanSummary{Entries: len(s.browseNodes), Complete: true}, nil
 }
 
+// FindMatches returns the canned findResults / findErr, recording the host and
+// pattern through findCap so a test can prove the host filter was wired through.
+func (s stubRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
+	if s.findCap != nil {
+		s.findCap.mu.Lock()
+		s.findCap.calls++
+		s.findCap.host = host
+		s.findCap.pattern = pattern
+		s.findCap.mu.Unlock()
+	}
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	return s.findResults, nil
+}
+
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
 // restic call still running when the user quits. It closes started once so a
 // test can wait until the refresh has actually reached restic.
@@ -107,6 +142,11 @@ func (b blockingRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target
 	close(b.started)
 	<-ctx.Done()
 	return model.BrowseScanSummary{}, ctx.Err()
+}
+
+// FindMatches is unused by the blocking flows; defined to satisfy app.Restic.
+func (blockingRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.Creds, _, _ string) ([]model.FindSnapshotResult, error) {
+	return nil, nil
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)

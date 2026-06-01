@@ -57,6 +57,22 @@ type browseSearchMsg struct {
 	err    error
 }
 
+// findVersionsMsg carries the outcome of one find-file-versions call. gen guards
+// against a superseded request's late result (e.g. the user pressed `a` to widen
+// the filter, then `q` to leave before the original response arrived). result
+// bundles the rows with the host the app actually filtered by, so the renderer
+// has one authoritative source for "what filter was used" — never two parallel
+// computations that could drift. err is non-nil on failure: a find/secrets/cache
+// error with secrets already redacted by Client.classify(); a restic-printed
+// filesystem path may transiently appear in the status line, never on disk
+// (same caveat as browse). The result's Rows hold filenames/snapshot ids only
+// for the lifetime of the model state and are cleared on leaving the view.
+type findVersionsMsg struct {
+	gen    int
+	result app.FindFileVersionsResult
+	err    error
+}
+
 // repoRefreshedMsg is delivered when a single repo's background refresh
 // finishes. row carries the freshly evaluated status; err is non-nil only when
 // the result could not be persisted to the cache — the row is still the live
