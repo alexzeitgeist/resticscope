@@ -278,6 +278,10 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 		t.Fatalf("initial StreamDiff call = %d (%q, %q), want 1 (%q, %q)",
 			calls, gotOlder, gotNewer, older, newer)
 	}
+	m = update(t, m, press("enter")) // descend from / into /etc
+	if m.diffDir != "/etc" {
+		t.Fatalf("precondition: diffDir = %q, want /etc", m.diffDir)
+	}
 
 	next, cmd = m.Update(press("x"))
 	m = next.(Model)
@@ -291,8 +295,8 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 		t.Errorf("swapped model pair = (%q, %q), want (%q, %q)",
 			m.diffOlder.ID, m.diffNewer.ID, newer, older)
 	}
-	if m.diffDir != model.DiffRoot || len(m.diffRows) != 0 {
-		t.Errorf("swap should reset navigation to root with no stale rows, dir=%q rows=%d",
+	if m.diffDir != "/etc" || len(m.diffRows) != 0 {
+		t.Errorf("swap should preserve the requested dir with no stale rows, dir=%q rows=%d",
 			m.diffDir, len(m.diffRows))
 	}
 
@@ -301,6 +305,12 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	if calls != 2 || gotOlder != newer || gotNewer != older {
 		t.Errorf("swapped StreamDiff call = %d (%q, %q), want 2 (%q, %q)",
 			calls, gotOlder, gotNewer, newer, older)
+	}
+	if m.diffDir != "/etc" {
+		t.Errorf("after swapped diff lands, diffDir = %q, want /etc", m.diffDir)
+	}
+	if len(m.diffRows) != 1 || m.diffRows[0].Name != "passwd" {
+		t.Errorf("after swapped diff lands, /etc rows = %+v, want passwd", m.diffRows)
 	}
 }
 

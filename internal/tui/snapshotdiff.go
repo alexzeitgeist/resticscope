@@ -192,8 +192,8 @@ func (m Model) applySnapshotDiffProgressMsg(msg snapshotDiffProgressMsg) (Model,
 // cancelled request and is dropped. On error the path-free first line is
 // surfaced and the view falls back to the detail screen so the user is not
 // stranded on an empty diff. On success BuildDiffTree turns the flat entry
-// stream into the virtual per-dir listing and the cursor lands at the diff
-// root.
+// stream into the virtual per-dir listing and the cursor lands on the requested
+// diffDir (root for a fresh open, the current dir for a swap).
 func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	if msg.gen != m.diffGen {
 		return m
@@ -211,7 +211,7 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
 	m.diffErr = ""
 	m.diffParseErrs = msg.result.ParseErrors
-	return m.rebuildDiffRows(model.DiffRoot, "")
+	return m.rebuildDiffRows(existingDiffDir(m.diffTree, m.diffDir), "")
 }
 
 // handleSnapshotDiffKey routes keys in the snapshot-diff view. Back (esc or
@@ -273,17 +273,22 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // swapSnapshotDiff flips the already-open directional pair and reruns the diff
-// with the same filter mask. Navigation resets to the root because the old
-// directory may not exist in the swapped result.
+// with the same filter mask. The current diffDir is kept as the requested
+// landing path for the terminal result; applySnapshotDiffMsg falls back to the
+// nearest existing parent if the path is absent from the swapped result.
 func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	if m.diffOlder.ID == "" || m.diffNewer.ID == "" {
 		return m, nil
+	}
+	dir := m.diffDir
+	if dir == "" {
+		dir = model.DiffRoot
 	}
 	m = m.supersedeSnapshotDiff()
 	m.diffOlder, m.diffNewer = m.diffNewer, m.diffOlder
 	m.diffEntries = nil
 	m.diffTree = model.DiffTree{}
-	m.diffDir = model.DiffRoot
+	m.diffDir = dir
 	m.diffRows = nil
 	m.diffCursor = 0
 	m.diffCache = make(map[string]int)
@@ -292,6 +297,52 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	m.diffParseErrs = 0
 	m.statusMsg = ""
 	return m.dispatchSnapshotDiff()
+}
+
+// existingDiffDir returns requested when it exists in tree, otherwise the
+// nearest existing parent. This keeps directional swap in the same directory
+// for the normal case while still giving the view a navigable path if filters
+// or restic output shape remove the exact directory.
+func existingDiffDir(tree model.DiffTree, requested string) string {
+	if requested == "" {
+		requested = model.DiffRoot
+	}
+	for dir := requested; dir != ""; dir = diffParentOfDir(dir) {
+		if diffTreeHasDir(tree, dir) {
+			return dir
+		}
+		if dir == model.DiffRoot {
+			break
+		}
+	}
+	return model.DiffRoot
+}
+
+func diffTreeHasDir(tree model.DiffTree, dir string) bool {
+	if dir == "" || dir == model.DiffRoot {
+		return true
+	}
+	if _, ok := tree.Children[dir]; ok {
+		return true
+	}
+	parent := diffParentOfDir(dir)
+	for _, r := range tree.Children[parent] {
+		if r.Path == dir && r.IsDir {
+			return true
+		}
+	}
+	return false
+}
+
+func diffParentOfDir(dir string) string {
+	if dir == "" || dir == model.DiffRoot {
+		return ""
+	}
+	parent := path.Dir(dir)
+	if parent == "." || parent == "" {
+		return model.DiffRoot
+	}
+	return parent
 }
 
 // toggleDiffFilter flips the supplied bit in the filter mask and rebuilds the
