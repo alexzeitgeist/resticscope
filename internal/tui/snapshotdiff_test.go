@@ -251,6 +251,31 @@ func TestDOpensDiffViewSurfacesParseErrors(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiffSummaryShowsDirectionLegend(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	got := m.diffSummaryLine()
+	for _, want := range []string{"+ present in right", "- absent from right"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	a := detailApp(t)
 	cap := &stubDiffCapture{}

@@ -71,8 +71,8 @@ func (m Model) snapshotDiffBody() string {
 // diffSummaryLine is the status sub-line above the table. While loading it
 // shows the running entry count plus the cancel affordance; on error it
 // surfaces the (path-free) first line; otherwise it reports the top-level
-// totals from diffStats and the current filter mask, plus a hint about the
-// filter keys.
+// totals from diffStats, the directional +/− meaning, and the current filter
+// mask, plus a hint about the filter keys.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading {
 		return fmt.Sprintf("loading… %d changes seen · esc/back cancels", m.diffLoadCount)
@@ -81,6 +81,7 @@ func (m Model) diffSummaryLine() string {
 		return m.diffErr
 	}
 	parts := []string{diffStatsLabel(m.diffStats, m.diffFilters, m.styles)}
+	parts = append(parts, diffDirectionLegend()...)
 	if m.diffParseErrs > 0 {
 		parts = append(parts, diffParseErrorLabel(m.diffParseErrs))
 	}
@@ -89,6 +90,10 @@ func (m Model) diffSummaryLine() string {
 	}
 	parts = append(parts, "+/-/M/U/T/b toggle")
 	return strings.Join(parts, " · ")
+}
+
+func diffDirectionLegend() []string {
+	return []string{"+ present in right", "- absent from right"}
 }
 
 // diffStatsLabel renders the top-level totals as a compact, colored summary.
