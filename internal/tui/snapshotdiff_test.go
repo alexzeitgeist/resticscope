@@ -366,7 +366,7 @@ func TestSnapshotDiffViewRenders(t *testing.T) {
 	m = drivePastDiff(t, m, cmd)
 
 	view := m.View().Content
-	for _, want := range []string{"diff: repo-a", "s2", "s3", "etc/"} {
+	for _, want := range []string{"diff: repo-a", "s2", "s3", "▸ etc/"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("diff view missing %q\n---\n%s", want, view)
 		}

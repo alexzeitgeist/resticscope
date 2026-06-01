@@ -207,14 +207,15 @@ func diffHeaderRow(l diffColLayout) string {
 
 // diffRowView renders one row. The marker cell shows the row's primary glyph
 // (or, for dir rows, a compact `+a -r ~m` rollup) and is colored by the
-// primary change type. The name cell shows the last path component (with a
-// trailing slash on dirs). The whole line is clipped to width so a long name
-// can't wrap and break the row budget; the cursor row is highlighted with the
-// accent gutter and the selected style.
+// primary change type. The name cell shows the last path component, prefixing
+// dirs with the same disclosure marker browse uses and keeping the trailing
+// slash. The whole line is clipped to width so a long name can't wrap and break
+// the row budget; the cursor row is highlighted with the accent gutter and the
+// selected style.
 func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw int) string {
 	name := r.Name
 	if r.IsDir {
-		name += "/"
+		name = "▸ " + name + "/"
 	}
 	nameCell := padRight(truncateWidth(name, l.name), l.name)
 
