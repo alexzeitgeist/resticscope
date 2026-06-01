@@ -576,7 +576,8 @@ func TestHelpOverlayToggle(t *testing.T) {
 		"move repo cursor",  // cursor movement lives under List, not Global
 		"page up/down",      // page navigation in the lists
 		"shell at snapshot", // a detail-only action
-		"never refreshed",   // glyph legend entry
+		"swap snapshot direction",
+		"never refreshed", // glyph legend entry
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help overlay missing %q\n---\n%s", want, view)

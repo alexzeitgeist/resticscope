@@ -129,8 +129,8 @@ type Model struct {
 	// Snapshot-diff view state. Same path-no-persist discipline as findRows and
 	// browseRows: clearSnapshotDiff zeros every diff* field on leaving the view.
 	diffRepo      string
-	diffOlder     model.Snapshot // sorted: older.Time <= newer.Time
-	diffNewer     model.Snapshot
+	diffOlder     model.Snapshot     // first snapshot in the displayed diff direction
+	diffNewer     model.Snapshot     // second snapshot in the displayed diff direction
 	diffEntries   []model.DiffEntry  // entries accumulated by the streamed onEntry callback
 	diffTree      model.DiffTree     // virtual tree built once from diffEntries on terminal msg
 	diffDir       string             // path of the directory currently listed (defaults to DiffRoot)

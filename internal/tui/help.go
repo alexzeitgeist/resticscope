@@ -56,6 +56,12 @@ func (m Model) helpColumns() (left, right []helpSection) {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
 	page := keyLabel(k.PageUp) + " " + keyLabel(k.PageDown)
+	diffFilters := keyLabel(k.DiffFilterAdded) + " " +
+		keyLabel(k.DiffFilterRemoved) + " " +
+		keyLabel(k.DiffFilterModified) + " " +
+		keyLabel(k.DiffFilterMetadata) + " " +
+		keyLabel(k.DiffFilterTypeChanged) + " " +
+		keyLabel(k.DiffFilterBitrot)
 	// Global means shared by the normal list/detail screens; the help overlay is
 	// modal and swallows action keys behind it. Cursor movement is not global
 	// because it carries view-specific meaning, so it lives under List/Detail.
@@ -104,6 +110,15 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{page, "page up/down"},
 			{keyLabel(k.HostToggle), "toggle host filter"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to browse"},
+		}},
+		{"Diff", []helpEntry{
+			{move, "move cursor"},
+			{page, "page up/down"},
+			{keyLabel(k.Enter) + "/" + keyLabel(k.Open), "open directory"},
+			{keyLabel(k.Parent), "parent directory"},
+			{keyLabel(k.DiffSwap), "swap snapshot direction"},
+			{diffFilters, "toggle change filters"},
+			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},
 		{"Filter", []helpEntry{
 			{keyLabel(k.FilterAccept), "apply filter"},

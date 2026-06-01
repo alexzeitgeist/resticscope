@@ -8,10 +8,10 @@ import (
 )
 
 // diff.go is the headless orchestration behind the snapshot-diff view. One
-// streamed restic call per open: `restic --no-lock diff --json <older> <newer>`.
-// The TUI passes the chronologically-sorted pair so `+` means "added in the
-// newer". No cache writes, no secrets in flight: filenames live only in the
-// active TUI session and are cleared on leaving the view.
+// streamed restic call per open: `restic --no-lock diff --json <first> <second>`.
+// The initial TUI open uses chronological order, and the diff view's swap key
+// can intentionally reverse it. No cache writes, no secrets in flight: filenames
+// live only in the active TUI session and are cleared on leaving the view.
 
 // SnapshotDiff resolves the repo credentials and streams the diff between two
 // snapshots. onEntry receives each decoded change as restic emits it; onProgress

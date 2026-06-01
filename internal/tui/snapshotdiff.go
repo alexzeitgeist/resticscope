@@ -216,7 +216,8 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 
 // handleSnapshotDiffKey routes keys in the snapshot-diff view. Back (esc or
 // the contextual q routed by handleKey's Quit branch) returns to detail with
-// the in-flight stream cancelled. Filter toggles (+, -, M, U, T, b) flip the
+// the in-flight stream cancelled. Swap (`x`) flips the directional snapshot
+// pair and reruns restic diff. Filter toggles (+, -, M, U, T, b) flip the
 // corresponding bit in diffFilters and rebuild the visible rows. Navigation is
 // paused while a stream is loading because the rows are about to be replaced.
 func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -234,6 +235,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// keeps multi-kind rows (e.g. `MU`) visible whenever any of their bits is
 	// enabled, so toggling `M` off does NOT hide a `MU` row.
 	switch {
+	case key.Matches(msg, m.keys.DiffSwap):
+		return m.swapSnapshotDiff()
 	case key.Matches(msg, m.keys.DiffFilterAdded):
 		return m.toggleDiffFilter(model.KindAdded), nil
 	case key.Matches(msg, m.keys.DiffFilterRemoved):
@@ -267,6 +270,28 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.diffParentDir()
 	}
 	return m, nil
+}
+
+// swapSnapshotDiff flips the already-open directional pair and reruns the diff
+// with the same filter mask. Navigation resets to the root because the old
+// directory may not exist in the swapped result.
+func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
+	if m.diffOlder.ID == "" || m.diffNewer.ID == "" {
+		return m, nil
+	}
+	m = m.supersedeSnapshotDiff()
+	m.diffOlder, m.diffNewer = m.diffNewer, m.diffOlder
+	m.diffEntries = nil
+	m.diffTree = model.DiffTree{}
+	m.diffDir = model.DiffRoot
+	m.diffRows = nil
+	m.diffCursor = 0
+	m.diffCache = make(map[string]int)
+	m.diffStats = model.DiffStats{}
+	m.diffErr = ""
+	m.diffParseErrs = 0
+	m.statusMsg = ""
+	return m.dispatchSnapshotDiff()
 }
 
 // toggleDiffFilter flips the supplied bit in the filter mask and rebuilds the

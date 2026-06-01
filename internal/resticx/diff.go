@@ -9,7 +9,7 @@ import (
 )
 
 // diff.go is the streaming restic boundary for the snapshot-diff feature. It
-// runs `restic --no-lock diff --json <older> <newer>` once and parses the
+// runs `restic --no-lock diff --json <first> <second>` once and parses the
 // NDJSON output as it arrives, handing each decoded change to onEntry. The
 // boundary mirrors StreamSnapshotTree: callback errors abort the scan, user
 // cancel beats every other classification, and a clean exit returns the
@@ -17,9 +17,10 @@ import (
 
 // StreamDiff streams the change records for the diff between two snapshots,
 // invoking onEntry for each parsed entry as it arrives and onProgress with a
-// coalesced count. Restic must be invoked with the older snapshot first so
-// `+` means "added in the newer" and `-` means "removed in the newer"; the
-// app layer sorts the snapshot pair chronologically before calling this.
+// coalesced count. Restic diff is directional: `+` means present in the second
+// argument and absent in the first, and `-` means the reverse. The TUI opens a
+// chronological diff by default, then its swap key can pass the reverse order
+// explicitly.
 //
 // Classification is ordered:
 //  1. caller cancelled the parent ctx → context.Canceled, even if the parser

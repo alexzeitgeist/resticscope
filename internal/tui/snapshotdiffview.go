@@ -9,11 +9,12 @@ import (
 	"resticscope/internal/model"
 )
 
-// snapshotdiffview.go renders snapshotDiffView: a header naming the (older →
-// newer) pair, a fixed meta block with the breadcrumb and the summary line,
-// and a browse-style table of the current dir's children. The on-screen rows
-// hold paths only for the lifetime of the model — clearSnapshotDiff zeros every
-// diff* field on leaving the view (non-negotiable #1: no filenames linger).
+// snapshotdiffview.go renders snapshotDiffView: a header naming the
+// directional first → second snapshot pair, a fixed meta block with the
+// breadcrumb and the summary line, and a browse-style table of the current
+// dir's children. The on-screen rows hold paths only for the lifetime of the
+// model — clearSnapshotDiff zeros every diff* field on leaving the view
+// (non-negotiable #1: no filenames linger).
 
 const (
 	// diffMetaRows is the number of fixed lines the diff body renders above the
@@ -29,7 +30,7 @@ const (
 	diffNameMin     = 16 // minimum readable Name flex width
 )
 
-// snapshotDiffHeaderView renders the title (the repo + the older→newer pair)
+// snapshotDiffHeaderView renders the title (the repo + directional snapshot pair)
 // and the q-back affordance. Both ids are restic short ids so the line stays
 // stable at narrow widths; the times use the same compact format browse and
 // detail use elsewhere.
@@ -42,7 +43,7 @@ func (m Model) snapshotDiffHeaderView() string {
 	return clip(m.spread(left, right), w)
 }
 
-// diffSnapshotLabel renders one half of the older→newer pair: the snapshot's
+// diffSnapshotLabel renders one half of the directional pair: the snapshot's
 // short id (preferring the canonical ShortID field, falling back to a
 // truncated full ID when the cache only carries that) and the backup time.
 func diffSnapshotLabel(s model.Snapshot) string {

@@ -28,6 +28,7 @@ type keyMap struct {
 	HostToggle key.Binding // find-versions: toggle the host filter on/off
 	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
+	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
@@ -75,6 +76,7 @@ func defaultKeys() keyMap {
 		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
 		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
 		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
+		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
@@ -129,7 +131,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.DiffSwap, k.DiffFilterAdded, k.DiffFilterRemoved, k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	default: // listView
@@ -181,7 +183,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent},
+			{enterAs(k, "open"), k.Parent, k.DiffSwap},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}

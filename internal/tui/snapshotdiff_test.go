@@ -251,6 +251,69 @@ func TestDOpensDiffViewSurfacesParseErrors(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
+	a := detailApp(t)
+	cap := &stubDiffCapture{}
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+		diffCap: cap,
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	older, _, newer := snapshotIDs(t, m)
+
+	m = update(t, m, press("t")) // mark newest
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t")) // mark oldest
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	calls, gotOlder, gotNewer := cap.snapshot()
+	if calls != 1 || gotOlder != older || gotNewer != newer {
+		t.Fatalf("initial StreamDiff call = %d (%q, %q), want 1 (%q, %q)",
+			calls, gotOlder, gotNewer, older, newer)
+	}
+
+	next, cmd = m.Update(press("x"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("x should start a swapped diff command")
+	}
+	if !m.diffLoading {
+		t.Error("x should put the diff view back into loading state")
+	}
+	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
+		t.Errorf("swapped model pair = (%q, %q), want (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	}
+	if m.diffDir != model.DiffRoot || len(m.diffRows) != 0 {
+		t.Errorf("swap should reset navigation to root with no stale rows, dir=%q rows=%d",
+			m.diffDir, len(m.diffRows))
+	}
+
+	m = drivePastDiff(t, m, cmd)
+	calls, gotOlder, gotNewer = cap.snapshot()
+	if calls != 2 || gotOlder != newer || gotNewer != older {
+		t.Errorf("swapped StreamDiff call = %d (%q, %q), want 2 (%q, %q)",
+			calls, gotOlder, gotNewer, newer, older)
+	}
+}
+
+func TestSnapshotDiffFooterHelpIncludesSwap(t *testing.T) {
+	short := viewHelp{keys: defaultKeys(), view: snapshotDiffView}.ShortHelp()
+	for _, b := range short {
+		if h := b.Help(); h.Key == "x" && h.Desc == "swap" {
+			return
+		}
+	}
+	t.Fatalf("snapshot diff footer help should include x swap, got %+v", short)
+}
+
 func TestSnapshotDiffBackReturnsToDetailKeepingMarks(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{snaps: []model.Snapshot{{Hostname: "h"}}}
