@@ -272,6 +272,76 @@ func TestEnabledKindsFiltering(t *testing.T) {
 	}
 }
 
+func TestParseDiffNDJSONRelativePathRejected(t *testing.T) {
+	// restic always emits absolute paths; a relative one is either a malformed
+	// line or a parser bug upstream. Either way it must bump ParseErrors so the
+	// footer surfaces the count, not silently leak into entries where every
+	// later ancestor walk would diverge.
+	in := ndjsonLines(
+		`{"message_type":"change","path":"foo/bar","modifier":"+"}`,
+		`{"message_type":"change","path":"/ok","modifier":"+"}`,
+	)
+	out, err := ParseDiffNDJSON(in)
+	if err != nil {
+		t.Fatalf("ParseDiffNDJSON: %v", err)
+	}
+	if len(out.Entries) != 1 || out.ParseErrors != 1 {
+		t.Fatalf("entries=%d parseErrors=%d, want 1/1", len(out.Entries), out.ParseErrors)
+	}
+	if out.Entries[0].Path != "/ok" {
+		t.Errorf("surviving entry path = %q, want /ok", out.Entries[0].Path)
+	}
+}
+
+func TestBuildDiffTreeDedupesDuplicatePaths(t *testing.T) {
+	// Two `change` lines for the same path (e.g. restic re-emitting a record
+	// across a chunk boundary) must contribute to ancestor aggregates only once;
+	// the OR-merge of their kinds is the merged set used for the single bump.
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/x/a","modifier":"M"}`,
+		`{"message_type":"change","path":"/x/a","modifier":"M"}`,
+	)
+	out, _ := ParseDiffNDJSON(in)
+	tree := BuildDiffTree(out.Entries)
+	if got := tree.Aggregate["/x"]; got.Modified != 1 || got.Total() != 1 {
+		t.Errorf("/x aggregate = %+v, want Modified=1 only", got)
+	}
+	if got := tree.Aggregate[DiffRoot]; got.Modified != 1 || got.Total() != 1 {
+		t.Errorf("root aggregate = %+v, want Modified=1 only", got)
+	}
+}
+
+func TestBuildDiffTreePreservesExplicitFileIsDir(t *testing.T) {
+	// An explicit file row at /foo (T = type-changed) must not flip to IsDir
+	// when a later /foo/bar entry walks its ancestors. The synthetic-ancestor
+	// pass uses typ=ChangeUnknown; the guard in ensure() keeps real file rows
+	// intact so they render with the file glyph instead of being promoted to
+	// a directory listing.
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/foo","modifier":"T"}`,
+		`{"message_type":"change","path":"/foo/bar","modifier":"+"}`,
+	)
+	out, _ := ParseDiffNDJSON(in)
+	tree := BuildDiffTree(out.Entries)
+	kids := tree.Children[DiffRoot]
+	var foo *DiffRow
+	for i := range kids {
+		if kids[i].Path == "/foo" {
+			foo = &kids[i]
+			break
+		}
+	}
+	if foo == nil {
+		t.Fatalf("/foo row missing from root listing: %+v", kids)
+	}
+	if foo.IsDir {
+		t.Errorf("/foo IsDir promoted by synthetic ancestor walk: %+v", *foo)
+	}
+	if foo.Type != ChangeTypeChanged {
+		t.Errorf("/foo Type = %v, want ChangeTypeChanged (explicit kind preserved)", foo.Type)
+	}
+}
+
 func TestParseModifierPrecedence(t *testing.T) {
 	cases := []struct {
 		in       string

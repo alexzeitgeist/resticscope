@@ -167,12 +167,63 @@ type DiffTree struct {
 // starts navigation here.
 const DiffRoot = "/"
 
+// ModifierString renders kinds as restic's modifier vocabulary in a fixed
+// bit-position order (+, -, M, U, T, ?). Used when a caller needs a canonical
+// rendering that depends only on the merged Kinds — e.g. a search dedup that
+// OR-merged duplicate-path records and must not let stream order decide
+// whether the marker reads "MU" or "UM". Single-record paths render restic's
+// verbatim modifier string instead, so this is not a default formatter.
+func ModifierString(kinds ModifierKind) string {
+	var b strings.Builder
+	if kinds&KindAdded != 0 {
+		b.WriteByte('+')
+	}
+	if kinds&KindRemoved != 0 {
+		b.WriteByte('-')
+	}
+	if kinds&KindModified != 0 {
+		b.WriteByte('M')
+	}
+	if kinds&KindMetadata != 0 {
+		b.WriteByte('U')
+	}
+	if kinds&KindTypeChanged != 0 {
+		b.WriteByte('T')
+	}
+	if kinds&KindBitrot != 0 {
+		b.WriteByte('?')
+	}
+	return b.String()
+}
+
+// PrimaryChangeType picks the dominant ChangeType for a kinds bitmask using
+// the precedence Bitrot > TypeChanged > Removed > Added > Modified > MetadataOnly
+// — rarer / more alarming events win the one-cell glyph. Callers that already
+// hold a merged Kinds (e.g. a search dedup that OR-merged duplicate-path
+// records) use this to re-derive the primary marker so it reflects the merged
+// state instead of whichever record happened to arrive first.
+func PrimaryChangeType(kinds ModifierKind) ChangeType {
+	switch {
+	case kinds&KindBitrot != 0:
+		return ChangeBitrot
+	case kinds&KindTypeChanged != 0:
+		return ChangeTypeChanged
+	case kinds&KindRemoved != 0:
+		return ChangeRemoved
+	case kinds&KindAdded != 0:
+		return ChangeAdded
+	case kinds&KindModified != 0:
+		return ChangeModified
+	case kinds&KindMetadata != 0:
+		return ChangeMetadataOnly
+	}
+	return ChangeUnknown
+}
+
 // parseModifier maps restic's modifier characters to the kind bitmask and
-// picks a deterministic primary for color/glyph. Precedence for the primary,
-// from highest to lowest: Bitrot, TypeChanged, Removed, Added, Modified,
-// MetadataOnly — the rarer / more alarming events win the one-cell display
-// when a modifier is multi-char. Rows still render the raw multi-char Modifier
-// when the column has room, so the user always sees the full restic vocabulary.
+// picks a deterministic primary for color/glyph via PrimaryChangeType. Rows
+// still render the raw multi-char Modifier when the column has room, so the
+// user always sees the full restic vocabulary.
 func parseModifier(s string) (primary ChangeType, kinds ModifierKind) {
 	for _, r := range s {
 		switch r {
@@ -190,23 +241,7 @@ func parseModifier(s string) (primary ChangeType, kinds ModifierKind) {
 			kinds |= KindBitrot
 		}
 	}
-	switch {
-	case kinds&KindBitrot != 0:
-		primary = ChangeBitrot
-	case kinds&KindTypeChanged != 0:
-		primary = ChangeTypeChanged
-	case kinds&KindRemoved != 0:
-		primary = ChangeRemoved
-	case kinds&KindAdded != 0:
-		primary = ChangeAdded
-	case kinds&KindModified != 0:
-		primary = ChangeModified
-	case kinds&KindMetadata != 0:
-		primary = ChangeMetadataOnly
-	default:
-		primary = ChangeUnknown
-	}
-	return primary, kinds
+	return PrimaryChangeType(kinds), kinds
 }
 
 // changeMsg is the on-wire envelope for one restic diff `change` line.
@@ -253,7 +288,7 @@ func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) er
 		if env.MessageType != "change" {
 			continue
 		}
-		if env.Path == "" || env.Modifier == "" {
+		if env.Path == "" || env.Modifier == "" || !strings.HasPrefix(env.Path, "/") {
 			out.ParseErrors++
 			continue
 		}
@@ -340,7 +375,10 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 			if modifier != "" {
 				existing.Modifier = modifier
 			}
-			if isDir {
+			// Only a real (non-synthetic) upgrade flips IsDir. A synthetic
+			// ancestor walk (typ==ChangeUnknown) for a child of /foo must not
+			// promote a previously-recorded file /foo into a directory.
+			if isDir && typ != ChangeUnknown {
 				existing.IsDir = true
 			}
 			return existing
@@ -354,7 +392,7 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 			IsDir:    isDir,
 		}
 		rows[p] = row
-		parent := diffParentOf(p)
+		parent := DiffParentOf(p)
 		children[parent] = append(children[parent], row)
 		return row
 	}
@@ -363,7 +401,7 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 		ensure(e.Path, e.IsDir, e.Type, e.Kinds, e.Modifier)
 		// Walk every ancestor up to the root; ensure is idempotent so a later
 		// explicit ancestor entry upgrades any synthetic placeholder.
-		for anc := diffParentOf(e.Path); anc != ""; anc = diffParentOf(anc) {
+		for anc := DiffParentOf(e.Path); anc != ""; anc = DiffParentOf(anc) {
 			ensure(anc, true, ChangeUnknown, 0, "")
 			if anc == DiffRoot {
 				break
@@ -371,11 +409,24 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 		}
 	}
 
-	aggregate := make(map[string]DiffStats)
+	// Dedupe by path so two `change` lines for the same file don't double-count
+	// ancestor stats. Kinds OR-merge across duplicates so a `M` + `U` pair for
+	// the same path still contributes to both the Modified and MetadataOnly
+	// counters on every ancestor exactly once.
+	mergedKinds := make(map[string]ModifierKind, len(entries))
+	pathOrder := make([]string, 0, len(entries))
 	for _, e := range entries {
-		for anc := diffParentOf(e.Path); anc != ""; anc = diffParentOf(anc) {
+		if _, seen := mergedKinds[e.Path]; !seen {
+			pathOrder = append(pathOrder, e.Path)
+		}
+		mergedKinds[e.Path] |= e.Kinds
+	}
+	aggregate := make(map[string]DiffStats)
+	for _, p := range pathOrder {
+		k := mergedKinds[p]
+		for anc := DiffParentOf(p); anc != ""; anc = DiffParentOf(anc) {
 			s := aggregate[anc]
-			s.addKinds(e.Kinds)
+			s.addKinds(k)
 			aggregate[anc] = s
 			if anc == DiffRoot {
 				break
@@ -409,10 +460,12 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 	return out
 }
 
-// diffParentOf returns the parent directory path of p. It returns "" when p is
+// DiffParentOf returns the parent directory path of p. It returns "" when p is
 // already the diff root, signaling "stop walking ancestors". An invalid path
-// (empty, no leading slash) also returns "" so a bad entry can't loop.
-func diffParentOf(p string) string {
+// (empty, no leading slash) also returns "" so a bad entry can't loop. Exported
+// so TUI navigation can share this canonical walk and not maintain a parallel
+// copy.
+func DiffParentOf(p string) string {
 	if p == "" || p == DiffRoot {
 		return ""
 	}

@@ -619,6 +619,260 @@ func TestDiffFilterToggleHidesAndRestores(t *testing.T) {
 	}
 }
 
+func TestSnapshotDiffSearchDedupesDuplicatePaths(t *testing.T) {
+	// Two `change` lines for the same path (a duplicate restic record) must
+	// surface as a single search hit, not two identical rows, and must count
+	// once in the total.
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "pass")
+
+	if m.diffSearchTotal != 1 {
+		t.Errorf("diffSearchTotal = %d, want 1 (duplicate /etc/passwd must count once)", m.diffSearchTotal)
+	}
+	if len(m.diffSearchRows) != 1 {
+		t.Fatalf("diffSearchRows = %d, want 1, got %+v", len(m.diffSearchRows), m.diffSearchRows)
+	}
+	if m.diffSearchRows[0].Path != "/etc/passwd" {
+		t.Errorf("search row path = %q, want /etc/passwd", m.diffSearchRows[0].Path)
+	}
+}
+
+func TestSnapshotDiffSearchMergesMixedModifiersForSamePath(t *testing.T) {
+	// Two records for /etc/passwd carrying different modifiers (M then U) must
+	// rank as a single MU row with merged Kinds — matching BuildDiffTree's
+	// per-path OR-merge contract. The pre-merge step is what keeps the search
+	// marker independent of stream order and active filter.
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/etc/passwd", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "pass")
+
+	if m.diffSearchTotal != 1 || len(m.diffSearchRows) != 1 {
+		t.Fatalf("rows=%d total=%d, want 1/1", len(m.diffSearchRows), m.diffSearchTotal)
+	}
+	row := m.diffSearchRows[0]
+	if row.Kinds != model.KindModified|model.KindMetadata {
+		t.Errorf("merged Kinds = %b, want %b (M|U)",
+			row.Kinds, model.KindModified|model.KindMetadata)
+	}
+	if row.Type != model.ChangeModified {
+		t.Errorf("re-derived Type = %v, want ChangeModified (M wins over U)", row.Type)
+	}
+	if row.Modifier != "MU" {
+		t.Errorf("merged Modifier = %q, want %q", row.Modifier, "MU")
+	}
+
+	// Reverse the input order: U then M. The merged Kinds is the same set, and
+	// the rendered modifier must still be the canonical "MU" — proves the
+	// marker is derived from Kinds in fixed bit order, not stream order.
+	aRev := detailApp(t)
+	aRev.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata},
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+	}
+	mRev := newTestModel(t, aRev)
+	mRev = update(t, mRev, press("enter"))
+	mRev = update(t, mRev, press("t"))
+	mRev = update(t, mRev, press("j"))
+	mRev = update(t, mRev, press("t"))
+	nextRev, cmdRev := mRev.Update(press("d"))
+	mRev = nextRev.(Model)
+	mRev = drivePastDiff(t, mRev, cmdRev)
+	mRev = openDiffSearch(t, mRev)
+	mRev = typeDiffSearch(t, mRev, "pass")
+	if len(mRev.diffSearchRows) != 1 {
+		t.Fatalf("reverse-order: rows = %d, want 1", len(mRev.diffSearchRows))
+	}
+	if got := mRev.diffSearchRows[0].Modifier; got != "MU" {
+		t.Errorf("reverse-order Modifier = %q, want %q (canonical bit order)", got, "MU")
+	}
+
+	// Filter to U-only: the merged row must survive because its merged Kinds
+	// still has U set. Without the pre-merge, the first record (M) would have
+	// claimed the slot and been hidden by the U filter, swapping the visible
+	// marker depending on stream order.
+	m = update(t, m, press("esc"))
+	m = update(t, m, press("+"))
+	m = update(t, m, press("-"))
+	m = update(t, m, press("M"))
+	m = update(t, m, press("T"))
+	m = update(t, m, press("b"))
+	if m.diffFilters != model.KindMetadata {
+		t.Fatalf("precondition: filters = %b, want U-only (%b)", m.diffFilters, model.KindMetadata)
+	}
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "pass")
+	if m.diffSearchTotal != 1 || len(m.diffSearchRows) != 1 {
+		t.Fatalf("U-only filter: rows=%d total=%d, want 1/1", len(m.diffSearchRows), m.diffSearchTotal)
+	}
+	if m.diffSearchRows[0].Kinds != model.KindModified|model.KindMetadata {
+		t.Errorf("U-filtered row Kinds = %b, want still M|U (merge happens before filter)",
+			m.diffSearchRows[0].Kinds)
+	}
+}
+
+func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
+	// Contract: when existingDiffDir falls back to a parent because the search
+	// origin is gone, originCursor indexes the wrong list and must not be
+	// applied. The fallback dir owns its own cursor restoration (diffCache /
+	// selectPath / 0). We force the fallback branch by mutating the captured
+	// origin to a path the tree does not contain.
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+			{Path: "/home/report.txt", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+			{Path: "/var/cache/index", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+			{Path: "/var/log/syslog", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	// Root listing is /etc, /home, /var (3 dir rows). Move to /var at index 2
+	// so descending records diffCache["/"] = 2.
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j"))
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Fatalf("precondition: root selected = %+v, want /var", r)
+	}
+	m = update(t, m, press("enter"))
+	if m.diffDir != "/var" {
+		t.Fatalf("precondition: diffDir = %q, want /var", m.diffDir)
+	}
+	// /var has /var/cache and /var/log. Land cursor on /var/log (index 1) so the
+	// captured originCursor (1) would visibly mis-restore the 3-row root listing
+	// if it leaked into the fallback path.
+	m = update(t, m, press("j"))
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var/log" {
+		t.Fatalf("precondition: /var selected = %+v, want /var/log", r)
+	}
+
+	m = openDiffSearch(t, m)
+	if m.diffSearchOrigin != "/var" || m.diffSearchOrigCur != 1 {
+		t.Fatalf("precondition: origin=%q origCur=%d, want /var/1",
+			m.diffSearchOrigin, m.diffSearchOrigCur)
+	}
+
+	// Force the fallback branch: origin no longer exists in the tree, so
+	// existingDiffDir resolves to /.
+	m.diffSearchOrigin = "/nonexistent"
+
+	m = update(t, m, press("esc"))
+
+	if m.diffDir != model.DiffRoot {
+		t.Fatalf("cancel fallback should land at root, got %q", m.diffDir)
+	}
+	// The bug would apply originCursor=1 (the /var index) to root's 3 rows; the
+	// fix lets diffCache["/"]=2 win, restoring /var as selected.
+	if m.diffCursor != 2 {
+		t.Errorf("fallback cursor = %d, want 2 (diffCache restoration, not stale originCursor=1)",
+			m.diffCursor)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Errorf("selected after fallback = %+v, want /var (cache restoration)", r)
+	}
+}
+
+func TestQAfterDiffSearchJumpRestoresOrigin(t *testing.T) {
+	// q on the diff view after an accepted search jump must mirror esc: reverse
+	// the jump first, leaving the view only on the second q. This is the only
+	// way q and esc stay interchangeable as "step back one screen" everywhere.
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = update(t, m, press("j")) // origin cursor on /var, not /etc.
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Fatalf("precondition: selected root row = %+v, want /var", r)
+	}
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "passwd")
+	m = update(t, m, press("enter"))
+	if !m.diffSearchJumped || m.diffDir != "/etc" {
+		t.Fatalf("precondition: jump should land in /etc with jump state, dir=%q jumped=%v",
+			m.diffDir, m.diffSearchJumped)
+	}
+
+	m = update(t, m, press("q"))
+	if m.view != snapshotDiffView {
+		t.Fatalf("q after diff search jump should stay on diff view, got view=%d", m.view)
+	}
+	if m.diffSearchJumped || m.diffSearching {
+		t.Fatalf("q after jump should clear search state: searching=%v jumped=%v",
+			m.diffSearching, m.diffSearchJumped)
+	}
+	if m.diffDir != model.DiffRoot {
+		t.Fatalf("q after jump should return to root, got %q", m.diffDir)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
+		t.Errorf("q after jump should restore the origin cursor, got %+v want /var", r)
+	}
+
+	// A second q (no jump state armed) leaves the diff view back to detail,
+	// confirming q's normal "step back" semantics resume once the jump is undone.
+	m = update(t, m, press("q"))
+	if m.view != detailView {
+		t.Errorf("second q should leave diff for detail, got view=%d", m.view)
+	}
+}
+
 // Smoke check that the snapshotDiffView renders without panicking and surfaces
 // the (older, newer) pair label and at least one entry's name.
 func TestSnapshotDiffViewRenders(t *testing.T) {

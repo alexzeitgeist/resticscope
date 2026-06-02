@@ -87,7 +87,7 @@ func (m Model) acceptDiffSearch() Model {
 	m.diffSearchOrigCur = originCursor
 	m.diffSearchJumped = true
 
-	parent := diffParentOfDir(target)
+	parent := model.DiffParentOf(target)
 	if parent == "" {
 		parent = model.DiffRoot
 	}
@@ -100,15 +100,22 @@ func (m Model) cancelDiffSearch() Model {
 	if origin == "" {
 		origin = model.DiffRoot
 	}
-	m = m.rebuildDiffRows(existingDiffDir(m.diffTree, origin), "")
-	m.diffCursor = clampCursor(originCursor, len(m.diffRows))
+	resolved := existingDiffDir(m.diffTree, origin)
+	m = m.rebuildDiffRows(resolved, "")
+	// Only restore the origin cursor when we actually landed in the origin dir.
+	// If existingDiffDir fell back to a parent (filter/swap removed origin),
+	// originCursor indexes the wrong list — let rebuildDiffRows' normal cursor
+	// restoration (selectPath / diffCache / 0) own the fallback dir's position.
+	if resolved == origin {
+		m.diffCursor = clampCursor(originCursor, len(m.diffRows))
+	}
 	return m
 }
 
+// restoreDiffSearchOrigin reverses an accepted search jump: every caller has
+// already gated on m.diffSearchJumped, so this delegates to the same teardown
+// cancelDiffSearch performs (rebuild at origin, clamp cursor).
 func (m Model) restoreDiffSearchOrigin() Model {
-	if !m.diffSearchJumped {
-		return m
-	}
 	return m.cancelDiffSearch()
 }
 
@@ -135,24 +142,55 @@ func rankDiffSearchRows(entries []model.DiffEntry, query string, filter model.Mo
 	if strings.TrimSpace(query) == "" {
 		return nil, 0
 	}
-	rowsByPath := make(map[string]model.DiffRow, len(entries))
-	ranks := make([]model.FuzzyRank, 0, len(entries))
+	// Pre-merge by path: a `M`+`U` pair for the same file must rank as one MU
+	// row to match BuildDiffTree's per-path OR-merge contract. Filtering or
+	// first-wins-deduping before the merge would let the active filter (or
+	// stream order) change which record's marker the row renders.
+	type merged struct {
+		kinds    model.ModifierKind
+		modifier string
+		isDir    bool
+		dup      bool
+	}
+	byPath := make(map[string]*merged, len(entries))
+	order := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.Kinds&filter == 0 {
+		if existing, ok := byPath[e.Path]; ok {
+			existing.kinds |= e.Kinds
+			existing.isDir = existing.isDir || e.IsDir
+			existing.dup = true
 			continue
 		}
-		if match, ok := model.FuzzyScore(e.Path, query); ok {
-			row := model.DiffRow{
-				Name:     e.Path,
-				Path:     e.Path,
-				Type:     e.Type,
-				Kinds:    e.Kinds,
-				Modifier: e.Modifier,
-				IsDir:    e.IsDir,
+		byPath[e.Path] = &merged{kinds: e.Kinds, modifier: e.Modifier, isDir: e.IsDir}
+		order = append(order, e.Path)
+	}
+
+	rowsByPath := make(map[string]model.DiffRow, len(order))
+	ranks := make([]model.FuzzyRank, 0, len(order))
+	for _, p := range order {
+		mg := byPath[p]
+		if mg.kinds&filter == 0 {
+			continue
+		}
+		if match, ok := model.FuzzyScore(p, query); ok {
+			modifier := mg.modifier
+			if mg.dup {
+				// A duplicate-path merge has no canonical "original" string;
+				// render from the OR-merged Kinds so the marker is the same
+				// regardless of which order restic emitted the records.
+				modifier = model.ModifierString(mg.kinds)
 			}
-			rowsByPath[e.Path] = row
+			row := model.DiffRow{
+				Name:     p,
+				Path:     p,
+				Type:     model.PrimaryChangeType(mg.kinds),
+				Kinds:    mg.kinds,
+				Modifier: modifier,
+				IsDir:    mg.isDir,
+			}
+			rowsByPath[p] = row
 			ranks = append(ranks, model.FuzzyRank{
-				Entry: model.BrowseEntry{Name: e.Path, Path: e.Path, IsDir: e.IsDir},
+				Entry: model.BrowseEntry{Name: p, Path: p, IsDir: mg.isDir},
 				Match: match,
 			})
 		}

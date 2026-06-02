@@ -72,6 +72,11 @@ func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 	case findVersionsView:
 		return m.findVersionsBack(), nil
 	case snapshotDiffView:
+		// Mirror esc: after a search jump, q first reverses the jump rather than
+		// leaving the view, so q and esc remain interchangeable as "step back one".
+		if m.diffSearchJumped {
+			return m.restoreDiffSearchOrigin(), nil
+		}
 		return m.snapshotDiffBack(), nil
 	case listView:
 		return m.quitModel(), tea.Quit

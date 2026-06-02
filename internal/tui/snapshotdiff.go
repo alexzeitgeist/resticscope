@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"path"
 	"sort"
 
 	"charm.land/bubbles/v2/key"
@@ -320,12 +319,9 @@ func existingDiffDir(tree model.DiffTree, requested string) string {
 	if requested == "" {
 		requested = model.DiffRoot
 	}
-	for dir := requested; dir != ""; dir = diffParentOfDir(dir) {
+	for dir := requested; dir != ""; dir = model.DiffParentOf(dir) {
 		if diffTreeHasDir(tree, dir) {
 			return dir
-		}
-		if dir == model.DiffRoot {
-			break
 		}
 	}
 	return model.DiffRoot
@@ -338,24 +334,13 @@ func diffTreeHasDir(tree model.DiffTree, dir string) bool {
 	if _, ok := tree.Children[dir]; ok {
 		return true
 	}
-	parent := diffParentOfDir(dir)
+	parent := model.DiffParentOf(dir)
 	for _, r := range tree.Children[parent] {
 		if r.Path == dir && r.IsDir {
 			return true
 		}
 	}
 	return false
-}
-
-func diffParentOfDir(dir string) string {
-	if dir == "" || dir == model.DiffRoot {
-		return ""
-	}
-	parent := path.Dir(dir)
-	if parent == "." || parent == "" {
-		return model.DiffRoot
-	}
-	return parent
 }
 
 // toggleDiffFilter flips the supplied bit in the filter mask and rebuilds the
@@ -397,8 +382,8 @@ func (m Model) diffParentDir() Model {
 	if m.diffDir == model.DiffRoot || m.diffDir == "" {
 		return m
 	}
-	parent := path.Dir(m.diffDir)
-	if parent == "." || parent == "" {
+	parent := model.DiffParentOf(m.diffDir)
+	if parent == "" {
 		parent = model.DiffRoot
 	}
 	from := m.diffDir

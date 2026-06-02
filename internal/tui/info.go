@@ -62,10 +62,12 @@ func (m Model) infoBody() string {
 	// Content overflows: reserve the last visible row for a scroll hint and
 	// window the rest around m.infoScroll. clampInfoScroll guarantees the same
 	// bounds the key handler enforces, so the model state and what is on screen
-	// can never disagree.
+	// can never disagree. When visible==1 there is no room for both body and
+	// hint — drop the hint so the modal never spills into an adjacent pane.
 	bodyRows := visible - 1
-	if bodyRows < 1 {
-		bodyRows = 1
+	showHint := bodyRows >= 1
+	if !showHint {
+		bodyRows = visible
 	}
 	start := clampInfoScroll(m.infoScroll, len(lines), bodyRows)
 	end := start + bodyRows
@@ -74,8 +76,10 @@ func (m Model) infoBody() string {
 	}
 	out := make([]string, 0, end-start+1)
 	out = append(out, lines[start:end]...)
-	hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
-	out = append(out, clip(m.styles.meta.Render(hint), w))
+	if showHint {
+		hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
+		out = append(out, clip(m.styles.meta.Render(hint), w))
+	}
 	return strings.Join(out, "\n")
 }
 
