@@ -291,6 +291,16 @@ func (m Model) clearBrowse() Model {
 // an index or listing is in flight, since the cursor would point into rows that
 // are about to be replaced.
 func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, cmd, handled := m.handleBrowseImmediateKey(msg); handled {
+		return next, cmd
+	}
+	if m.browseLoading {
+		return m, nil // navigation is paused while indexing or a listing is in flight
+	}
+	return m.handleIdleBrowseKey(msg)
+}
+
+func (m Model) handleBrowseImmediateKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
 		// esc is dual-role in browse: while a search result set is parked (the user
@@ -298,45 +308,66 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// leaving browse, to ensure the modal stack pops one level at a time. q still leaves
 		// browse outright (handleKey's Quit case → browseBack), the quick escape hatch.
 		if m.browseSearchSuspended {
-			return m.restoreBrowseSearch(), nil
+			return m.restoreBrowseSearch(), nil, true
 		}
-		return m.browseBack(), nil
+		return m.browseBack(), nil, true
 	case key.Matches(msg, m.keys.Shell):
 		m.browseNotice = ""
 		if cmd := m.openShellCmd(m.browseSnapshotPtr()); cmd != nil {
 			m.statusMsg = ""
-			return m, cmd
+			return m, cmd, true
 		}
-		return m, nil
+		return m, nil, true
 	}
+	return m, nil, false
+}
 
-	if m.browseLoading {
-		return m, nil // navigation is paused while indexing or a listing is in flight
+func (m Model) handleIdleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if next, cmd, handled := m.handleBrowseNavigationKey(msg); handled {
+		return next, cmd
 	}
+	if next, cmd, handled := m.handleBrowseActionKey(msg); handled {
+		return next, cmd
+	}
+	return m, nil
+}
 
+func (m Model) handleBrowseNavigationKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.Up):
 		m.browseNotice = ""
 		if m.browseCursor > 0 {
 			m.browseCursor--
 		}
+		return m, nil, true
 	case key.Matches(msg, m.keys.Down):
 		m.browseNotice = ""
 		if m.browseCursor < m.browseRowCount()-1 {
 			m.browseCursor++
 		}
+		return m, nil, true
 	case key.Matches(msg, m.keys.PageUp):
 		m.browseNotice = ""
 		m.browseCursor = clampCursor(m.browseCursor-m.browseVisible(), m.browseRowCount())
+		return m, nil, true
 	case key.Matches(msg, m.keys.PageDown):
 		m.browseNotice = ""
 		m.browseCursor = clampCursor(m.browseCursor+m.browseVisible(), m.browseRowCount())
+		return m, nil, true
 	case key.Matches(msg, m.keys.Enter), key.Matches(msg, m.keys.Open):
 		m.browseNotice = ""
-		return m.openBrowseDir()
+		next, cmd := m.openBrowseDir()
+		return next, cmd, true
 	case key.Matches(msg, m.keys.Parent):
 		m.browseNotice = ""
-		return m.browseToParent()
+		next, cmd := m.browseToParent()
+		return next, cmd, true
+	}
+	return m, nil, false
+}
+
+func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case key.Matches(msg, m.keys.Sort):
 		// Cycle the display sort of the current directory listing. It sits in the
 		// idle-only switch (below the browseLoading guard) so it can't fire
@@ -344,42 +375,51 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// handleBrowseSearchKey first, so `o` is literal query text there; while a
 		// search is suspended it sorts only the visible directory listing.
 		m.browseNotice = ""
-		return m.cycleBrowseSort(), nil
+		return m.cycleBrowseSort(), nil, true
 	case key.Matches(msg, m.keys.Search):
 		// `/` opens the global filename search, but only once the snapshot is
 		// indexed — there is nothing to search before the one-time crawl commits.
 		// It sits in the idle-only switch (below the browseLoading guard) so it
 		// can't fire mid-index.
-		m.browseNotice = ""
-		if m.browseIndexed {
-			// Start from a fully cleared overlay (also discards any parked result
-			// set), then open the input.
-			m = m.exitBrowseSearch()
-			m.browseSearching = true
-		}
-		return m, nil
+		return m.openBrowseSearchInput(), nil, true
 	case key.Matches(msg, m.keys.Versions):
-		// `v` opens the find-versions view for the selected entry. Directories
-		// have no version concept (the find query is for a single file path),
-		// so keep the user in browse and explain the blocked action. Crucially,
-		// browse state is NOT cleared — it must survive so q from find-versions
-		// can pop back to it.
-		e := m.selectedBrowseEntry()
-		if e == nil {
-			return m, nil
-		}
-		if e.IsDir {
-			m.browseNotice = "versions: select a file"
-			return m, nil
-		}
-		m.browseNotice = ""
-		originHost := ""
-		if snap := m.browseSnapshotPtr(); snap != nil {
-			originHost = snap.Hostname
-		}
-		return m.startFindVersions(m.browseRepo, originHost, e.Path)
+		next, cmd := m.openBrowseVersions()
+		return next, cmd, true
 	}
-	return m, nil
+	return m, nil, false
+}
+
+func (m Model) openBrowseSearchInput() Model {
+	m.browseNotice = ""
+	if !m.browseIndexed {
+		return m
+	}
+	// Start from a fully cleared overlay (also discards any parked result set),
+	// then open the input.
+	m = m.exitBrowseSearch()
+	m.browseSearching = true
+	return m
+}
+
+// openBrowseVersions opens the find-versions view for the selected entry. A
+// directory has no version concept (the find query is for one file path), so it
+// stays in browse and explains the blocked action. Browse state is intentionally
+// kept intact so q from find-versions can pop back to it.
+func (m Model) openBrowseVersions() (Model, tea.Cmd) {
+	e := m.selectedBrowseEntry()
+	if e == nil {
+		return m, nil
+	}
+	if e.IsDir {
+		m.browseNotice = "versions: select a file"
+		return m, nil
+	}
+	m.browseNotice = ""
+	originHost := ""
+	if snap := m.browseSnapshotPtr(); snap != nil {
+		originHost = snap.Hostname
+	}
+	return m.startFindVersions(m.browseRepo, originHost, e.Path)
 }
 
 // cycleBrowseSort advances the browse display sort (name → size → modified → name)

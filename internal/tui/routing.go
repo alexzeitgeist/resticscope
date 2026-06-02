@@ -11,104 +11,128 @@ import (
 // meaning. q is dual-role: it quits from the main list but steps back one screen
 // from any nested view, so repeated q walks home and then exits.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// While typing a filter, every key feeds the query (so "q", "r", etc. are
-	// literal text); only apply/clear and ctrl+c escape it.
-	if m.filtering {
-		return m.handleFilterKey(msg)
+	if next, cmd, handled := m.handleInputKey(msg); handled {
+		return next, cmd
 	}
+	if next, cmd, handled := m.handleGlobalKey(msg); handled {
+		return next, cmd
+	}
+	if next, handled := m.handleModalViewKey(msg); handled {
+		return next, nil
+	}
+	return m.handleViewKey(msg)
+}
 
-	// While the global filename search is open, every key feeds it too (so "q",
-	// "s", "?", "h", "l" are literal text or cursor moves, never view actions);
-	// only enter/esc/ctrl+c escape it. This guard sits above the global quit/help
-	// switch to ensure the search input is fully modal, like the list filter above.
-	if m.browseSearching {
-		return m.handleBrowseSearchKey(msg)
+// handleInputKey gives active text inputs first claim on every key so printable
+// globals like q/r/s/? are literal query text until the input is accepted,
+// cancelled, or hard-quit.
+func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	switch {
+	case m.filtering:
+		next, cmd := m.handleFilterKey(msg)
+		return next, cmd, true
+	case m.browseSearching:
+		next, cmd := m.handleBrowseSearchKey(msg)
+		return next, cmd, true
+	case m.diffSearching:
+		next, cmd := m.handleDiffSearchKey(msg)
+		return next, cmd, true
 	}
-	if m.diffSearching {
-		return m.handleDiffSearchKey(msg)
-	}
+	return m, nil, false
+}
 
-	// The hard quit, the context-aware q, and the help overlay toggle are matched
-	// from every view, including the overlay itself.
+// handleGlobalKey matches keys that are valid from every view, including modal
+// overlays. Context-aware q is delegated because nested views need their own
+// cancel-aware back paths before the generic goBack path is safe.
+func (m Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
-		// Unconditional hard quit from anywhere.
-		m.quitting = true
-		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
-		return m, tea.Quit
+		return m.quitModel(), tea.Quit, true
 	case key.Matches(msg, m.keys.Quit):
-		// q quits only on the main list; on any nested view it steps back one
-		// screen like esc, so repeated q walks home and then exits. Browse and
-		// find-versions each need a cancel-aware back (so the underlying restic
-		// process is interrupted on exit), so they route to their own helpers
-		// rather than through the generic goBack.
-		if m.view == browseView {
-			return m.browseBack(), nil
-		}
-		if m.view == findVersionsView {
-			return m.findVersionsBack(), nil
-		}
-		if m.view == snapshotDiffView {
-			return m.snapshotDiffBack(), nil
-		}
-		if m.view == listView {
-			m.quitting = true
-			m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
-			return m, tea.Quit
-		}
-		return m.goBack(), nil
+		next, cmd := m.handleQuitKey()
+		return next, cmd, true
 	case key.Matches(msg, m.keys.Help):
-		return m.toggleHelp(), nil
+		return m.toggleHelp(), nil, true
 	}
+	return m, nil, false
+}
 
-	// The help overlay is modal: behind it only Back closes the overlay (quit
-	// and the help toggle are handled above); action keys do nothing.
-	if m.view == helpView {
-		if key.Matches(msg, m.keys.Back) {
-			m = m.goBack()
-		}
-		return m, nil
+func (m Model) quitModel() Model {
+	m.quitting = true
+	m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
+	return m
+}
+
+// handleQuitKey implements q's dual role: it quits from the main list but steps
+// back one screen from nested views, so repeated q walks home and then exits.
+func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
+	switch m.view {
+	case browseView:
+		return m.browseBack(), nil
+	case findVersionsView:
+		return m.findVersionsBack(), nil
+	case snapshotDiffView:
+		return m.snapshotDiffBack(), nil
+	case listView:
+		return m.quitModel(), tea.Quit
+	default:
+		return m.goBack(), nil
 	}
+}
 
-	// The info modal is modal too: behind it only Back (esc), Info (i toggle),
-	// and the scroll keys do anything. The global ctrl+c/q/? path above still
-	// works, so `s`/`r`/`R` and other action keys do not run behind the modal.
-	// Scrolling is needed because a snapshot with many paths/excludes can
-	// produce a body taller than the terminal.
-	if m.view == infoView {
-		switch {
-		case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Info):
-			m = m.goBack()
-		case key.Matches(msg, m.keys.Up):
-			m = m.scrollInfo(-1)
-		case key.Matches(msg, m.keys.Down):
-			m = m.scrollInfo(1)
-		case key.Matches(msg, m.keys.PageUp):
-			m = m.scrollInfo(-m.infoVisible())
-		case key.Matches(msg, m.keys.PageDown):
-			m = m.scrollInfo(m.infoVisible())
-		}
-		return m, nil
+func (m Model) handleModalViewKey(msg tea.KeyPressMsg) (Model, bool) {
+	switch m.view {
+	case helpView:
+		return m.handleHelpViewKey(msg), true
+	case infoView:
+		return m.handleInfoViewKey(msg), true
 	}
+	return m, false
+}
 
-	// Browse owns all its non-global keys (including s=shell), so it is routed
-	// before the shared refresh/shell handlers below would steal s.
-	if m.view == browseView {
+// handleHelpViewKey keeps the help overlay modal: only Back closes it. The
+// global ctrl+c/q/? path has already had first claim in handleGlobalKey.
+func (m Model) handleHelpViewKey(msg tea.KeyPressMsg) Model {
+	if key.Matches(msg, m.keys.Back) {
+		return m.goBack()
+	}
+	return m
+}
+
+// handleInfoViewKey keeps the info modal modal while still allowing its scroll
+// keys. The global ctrl+c/q/? path has already had first claim in handleGlobalKey.
+func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
+	switch {
+	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Info):
+		m = m.goBack()
+	case key.Matches(msg, m.keys.Up):
+		m = m.scrollInfo(-1)
+	case key.Matches(msg, m.keys.Down):
+		m = m.scrollInfo(1)
+	case key.Matches(msg, m.keys.PageUp):
+		m = m.scrollInfo(-m.infoVisible())
+	case key.Matches(msg, m.keys.PageDown):
+		m = m.scrollInfo(m.infoVisible())
+	}
+	return m
+}
+
+func (m Model) handleViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch m.view {
+	case browseView:
+		// Browse owns all its non-global keys (including s=shell), so it is routed
+		// before the shared refresh/shell handlers below would steal s.
 		return m.handleBrowseKey(msg)
-	}
-
-	// Find-versions is its own modal view; it owns all its non-global keys so
-	// it must be routed ahead of the shared refresh/shell handlers (which
-	// would otherwise steal `r` or `s` on this view).
-	if m.view == findVersionsView {
+	case findVersionsView:
+		// Find-versions is its own modal view; it owns all its non-global keys so
+		// it must be routed ahead of the shared refresh/shell handlers (which
+		// would otherwise steal `r` or `s` on this view).
 		return m.handleFindVersionsKey(msg)
-	}
-
-	// Snapshot-diff also owns all its non-global keys (including the +/-MUTb
-	// filter toggles, which would collide with literal text in the filter/search
-	// input paths above). Route here before handleRepoCommandKey so `r`/`s` are
-	// not stolen on the diff view.
-	if m.view == snapshotDiffView {
+	case snapshotDiffView:
+		// Snapshot-diff also owns all its non-global keys (including the +/-MUTb
+		// filter toggles, which would collide with literal text in the filter/search
+		// input paths above). Route here before handleRepoCommandKey so `r`/`s` are
+		// not stolen on the diff view.
 		return m.handleSnapshotDiffKey(msg)
 	}
 
