@@ -236,11 +236,10 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.snapshotDiffBack(), nil
 	}
 
+	m.statusMsg = ""
 	if m.diffLoading {
-		m.statusMsg = ""
 		return m, nil
 	}
-	m.statusMsg = ""
 
 	// Filter toggles. Each binding maps one restic modifier character to its
 	// bit in the filter mask; the row predicate `row.Kinds & filter != 0`

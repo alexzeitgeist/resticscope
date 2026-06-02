@@ -41,8 +41,9 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Diff):
 		// d resolves the (older, newer) pair from the FIFO + cursor and opens the
 		// diff view. With zero marks (or a 1-mark + same-cursor degenerate pair)
-		// it surfaces a footer hint and stays put.
-		m = m.normalizeDetailMarks(m.snapDisplay())
+		// it surfaces a footer hint and stays put. diffPair normalizes its own
+		// view of detailMarks; upstream mutators (group/collapse/refresh) already
+		// keep m.detailMarks normalized, so no persistent prune is needed here.
 		if name, ok := m.actionRepo(); ok {
 			if older, newer, pairOK := m.diffPair(); pairOK {
 				m.statusMsg = ""
