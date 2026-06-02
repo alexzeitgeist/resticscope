@@ -295,25 +295,31 @@ func openDetailWith(t *testing.T, a *app.App) Model {
 	return update(t, m, press("enter"))
 }
 
-func TestDetailEntryDefaultsCollapseOnGroupOff(t *testing.T) {
+func TestDetailEntryDefaultsBothOff(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
 	if m.snapGroupMode != snapGroupOff {
 		t.Errorf("snapGroupMode = %d, want off", m.snapGroupMode)
 	}
-	if !m.snapCollapseTree {
-		t.Errorf("snapCollapseTree should be true on detail entry")
+	if m.snapCollapseTree {
+		t.Errorf("snapCollapseTree should be false on detail entry (collapse is opt-in)")
 	}
-	// Collapse-on default folds a-runs and b-runs into one head each.
+	// With both off the display is the raw newest-first list — one node per
+	// snapshot, no sections.
 	d := m.snapDisplay()
-	if len(d.nodes) != 2 || d.nodes[0].head.ID != "a3" || d.nodes[1].head.ID != "b2" {
-		t.Errorf("default display = %v, want [a3 b2] collapsed heads", ids(d.nodes))
+	if d.sections != nil {
+		t.Errorf("default display should have no sections, got %d", len(d.sections))
+	}
+	if len(d.nodes) != 5 {
+		t.Errorf("default display nodes = %d, want 5 (no collapse)", len(d.nodes))
 	}
 }
 
 func TestCycleSnapGroupPreservesSelection(t *testing.T) {
+	// Default collapse OFF: raw flat order [a3,a2,a1,b2,b1]; b2 sits at
+	// index 3. After cycling group to host the same snapshot must stay
+	// selected even though the flat ordering changes.
 	m := openDetailWith(t, snapGroupApp(t))
-	// Selection: the collapsed b-head at index 1.
-	m.snapCursor = 1
+	m.snapCursor = 3
 	got := m.selectedSnapshot()
 	if got == nil || got.ID != "b2" {
 		t.Fatalf("pre-cycle selection = %+v, want b2", got)
@@ -329,11 +335,14 @@ func TestCycleSnapGroupPreservesSelection(t *testing.T) {
 }
 
 func TestCycleSnapCollapsePreservesSelection(t *testing.T) {
+	// Default collapse is OFF — the cursor sits on b2 in the raw flat order
+	// [a3,a2,a1,b2,b1]. Toggling collapse ON folds the a-run and the b-run;
+	// b2 is the b-section head so the same snapshot stays selected.
 	m := openDetailWith(t, snapGroupApp(t))
-	m.snapCursor = 1 // b2 head
+	m.snapCursor = 3 // b2 in [a3,a2,a1,b2,b1]
 	m = m.cycleSnapCollapse()
-	if m.snapCollapseTree {
-		t.Fatalf("collapse should be off after toggle")
+	if !m.snapCollapseTree {
+		t.Fatalf("collapse should be on after toggle")
 	}
 	got := m.selectedSnapshot()
 	if got == nil || got.ID != "b2" {
@@ -399,9 +408,10 @@ func TestCollapseNormalizesPeerMarks(t *testing.T) {
 func TestCollapsedPeerMarkRendersOnHead(t *testing.T) {
 	// isNodeMarked checks head + peers, so a hidden peer mark stays visible on
 	// the head row even BEFORE normalize folds it (defensive: covers a render
-	// hop between cycle and normalize).
+	// hop between cycle and normalize). Explicitly enable collapse since the
+	// new default is off.
 	m := openDetailWith(t, snapGroupApp(t))
-	// detail entry default: collapse on; a3 is head, a2/a1 peers.
+	m.snapCollapseTree = true
 	m.detailMarks = []model.Snapshot{snap("a1", "host-a", "TA", 3, nil, []string{"/data"})}
 	d := m.snapDisplay()
 	if !m.isNodeMarked(d.nodes[0]) {
@@ -448,8 +458,10 @@ func TestSnapshotDetailTracksGroupedSelection(t *testing.T) {
 	// With grouping host + collapse on, the displayed nodes are [a3-head,
 	// b2-head]. Moving the cursor to index 1 must put b2 in the selected
 	// sub-panel — proving snapshotDetail goes through selectedSnapshot().
+	// Collapse is opt-in (off by default) so the test sets it explicitly.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.width, m.height = 120, 40
+	m.snapCollapseTree = true
 	m = m.cycleSnapGroup() // off -> host
 	m.snapCursor = 1       // the b-section head
 	if got := m.selectedSnapshot(); got == nil || got.ID != "b2" {
@@ -465,8 +477,10 @@ func TestSnapshotDetailUsesSelectedSnapshotNoRawSnapsParam(t *testing.T) {
 	// snapshotDetail's new signature takes only width; calling it directly with
 	// the current model must produce the same panel content the integrated
 	// renderer does. Indirectly proves no raw snaps slice indexing remains.
+	// Collapse is opt-in (off by default) so the test sets it explicitly.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.width, m.height = 120, 40
+	m.snapCollapseTree = true
 	m = m.cycleSnapGroup()
 	m.snapCursor = 1
 	w, _ := m.effSize()
@@ -482,7 +496,10 @@ func TestSnapshotDetailUsesSelectedSnapshotNoRawSnapsParam(t *testing.T) {
 func TestGroupedSnapshotMaxOneRendersSelectedRow(t *testing.T) {
 	// Squeeze the pane until detailSnapVisible == 1; the grouped renderer
 	// must show the SELECTED data row (not a heading-only window).
+	// Collapse is opt-in (off by default) so the test sets it explicitly
+	// to land cursor index 1 on b2 head in [a3-head, b2-head].
 	m := openDetailWith(t, snapGroupApp(t))
+	m.snapCollapseTree = true
 	m = m.cycleSnapGroup()
 	m.snapCursor = 1 // b2 head
 	// detailOverhead at the default test height is large; pick a height that
@@ -501,9 +518,12 @@ func TestGroupedSnapshotMaxOneRendersSelectedRow(t *testing.T) {
 
 func TestGoBackResetsSnapGroupState(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
-	m = m.cycleSnapGroup()    // group host
-	m = m.cycleSnapCollapse() // collapse off
-	if m.snapGroupMode == snapGroupOff || m.snapCollapseTree {
+	m = m.cycleSnapGroup()    // group: off -> host
+	m = m.cycleSnapCollapse() // collapse: false -> true
+	// Setup precondition: both fields have moved off the per-visit defaults
+	// (group=off, collapse=false) so the goBack assertion below proves the
+	// reset, not the absence of any cycle.
+	if m.snapGroupMode == snapGroupOff || !m.snapCollapseTree {
 		t.Fatalf("setup failed: group=%d collapse=%v", m.snapGroupMode, m.snapCollapseTree)
 	}
 	// q from detail returns to list AND resets transient state.
@@ -525,7 +545,12 @@ func TestGoBackResetsSnapGroupState(t *testing.T) {
 func TestSnapshotsMetaCountIsRaw(t *testing.T) {
 	// Collapse on folds 5 snapshots into 2 nodes, but the meta "Snapshots: N"
 	// row is sourced from row.State.SnapshotCount (raw), not snapCount().
+	// Enable collapse explicitly since the per-visit default is off.
 	m := openDetailWith(t, snapGroupApp(t))
+	m.snapCollapseTree = true
+	if got := m.snapCount(); got != 2 {
+		t.Fatalf("snapCount = %d, want 2 (collapse on should fold 5→2)", got)
+	}
 	view := stripANSI(m.View().Content)
 	// detailMeta renders "Snapshots" label + the SnapshotCount value.
 	if !strings.Contains(view, "Snapshots") || !strings.Contains(view, "5") {
@@ -568,8 +593,8 @@ func TestHelpOverlayShowsSnapGroupingKeys(t *testing.T) {
 
 func TestSnapshotsHeadingShowsGroupAndCollapseState(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
-	// Defaults: no suffix.
-	if got := m.snapshotsHeadingText(); strings.Contains(got, "group:") || strings.Contains(got, "collapse off") {
+	// Defaults (group off + collapse off): no suffix at all.
+	if got := m.snapshotsHeadingText(); strings.Contains(got, "group:") || strings.Contains(got, "collapse") {
 		t.Errorf("default heading should be clean, got %q", got)
 	}
 	m = m.cycleSnapGroup()
@@ -577,8 +602,8 @@ func TestSnapshotsHeadingShowsGroupAndCollapseState(t *testing.T) {
 		t.Errorf("heading after group cycle = %q, want '· group: host'", got)
 	}
 	m = m.cycleSnapCollapse()
-	if got := m.snapshotsHeadingText(); !strings.Contains(got, "collapse off") {
-		t.Errorf("heading after collapse toggle = %q, want '· collapse off'", got)
+	if got := m.snapshotsHeadingText(); !strings.Contains(got, "collapse on") {
+		t.Errorf("heading after collapse toggle = %q, want '· collapse on'", got)
 	}
 }
 
@@ -594,12 +619,34 @@ func TestDetailGKeyCyclesSnapGroup(t *testing.T) {
 
 func TestDetailCKeyTogglesCollapse(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
-	if !m.snapCollapseTree {
-		t.Fatal("setup: collapse should default to true")
+	if m.snapCollapseTree {
+		t.Fatal("setup: collapse should default to false (opt-in)")
 	}
 	m = update(t, m, press("c"))
-	if m.snapCollapseTree {
-		t.Errorf("c on detail did not toggle collapse off")
+	if !m.snapCollapseTree {
+		t.Errorf("c on detail did not toggle collapse on")
+	}
+}
+
+// --- collapse-mode column alignment ---
+
+func TestCollapsedRowAlignsWithUncollapsedRow(t *testing.T) {
+	// When collapse is on the ID column reserves a "+N" suffix slot. The
+	// uncollapsed row must pad blank space in that slot so every column past
+	// ID (Time, Hostname, Size, …) lines up across rows. Verify by comparing
+	// the byte offset of the Time value in two joined cell strings — they
+	// must match.
+	l := snapshotLayout(120, true)
+	tm := "2024-01-01 12:00"
+	collapsed := strings.Join(snapCells(l, snapRow{
+		id: idCell("abc12345", 1), tm: tm, host: "h", size: "0 B",
+	}), "  ")
+	uncollapsed := strings.Join(snapCells(l, snapRow{
+		id: idCell("def67890", 0), tm: tm, host: "h", size: "0 B",
+	}), "  ")
+	if got, want := strings.Index(uncollapsed, tm), strings.Index(collapsed, tm); got != want {
+		t.Errorf("Time column misaligned (collapsed@%d vs uncollapsed@%d)\ncollapsed:   %q\nuncollapsed: %q",
+			want, got, collapsed, uncollapsed)
 	}
 }
 

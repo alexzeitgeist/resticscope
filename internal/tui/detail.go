@@ -143,7 +143,7 @@ func (m Model) snapshotDetail(width int) string {
 // detailSnapDetailRows counts them, so the drawn height and the height the
 // layout reserves for the panel can never disagree.
 func (m Model) snapshotDetailLines(width int, s model.Snapshot) []string {
-	l := snapshotLayout(width)
+	l := snapshotLayout(width, m.snapCollapseTree)
 
 	ver := s.ProgramVersion
 	if ver == "" {
@@ -249,9 +249,9 @@ func (m Model) field(label, value string, width int) string {
 // label "Snapshots" gains a marks-status suffix while the diff-mark FIFO is
 // non-empty so the user sees their progress toward a valid pair without losing
 // a body row to a dedicated summary line. Transient group/collapse state is
-// surfaced as a "· group: host" / "· collapse off" suffix only when it differs
-// from the per-visit defaults, keeping the heading clean for users who never
-// touch g or c.
+// surfaced as a "· group: host" / "· collapse on" suffix only when it differs
+// from the per-visit defaults (both off), keeping the heading clean for users
+// who never touch g or c.
 func (m Model) snapshotsHeadingText() string {
 	head := "Snapshots"
 	if n := len(m.detailMarks); n > 0 {
@@ -260,8 +260,8 @@ func (m Model) snapshotsHeadingText() string {
 	if lbl := m.snapGroupMode.label(); lbl != "" {
 		head += " · group: " + lbl
 	}
-	if !m.snapCollapseTree {
-		head += " · collapse off"
+	if m.snapCollapseTree {
+		head += " · collapse on"
 	}
 	return head
 }
@@ -275,7 +275,7 @@ func (m Model) snapshotsHeadingText() string {
 // through the section-aware path; everything else hits the flat path.
 func (m Model) snapshotTable() string {
 	w, _ := m.effSize()
-	l := snapshotLayout(w)
+	l := snapshotLayout(w, m.snapCollapseTree)
 	header := clip(m.styles.dim.Render(snapHeader(l)), w)
 
 	d := m.snapDisplay()
@@ -460,19 +460,22 @@ func (m Model) snapTableScrollNote(start, end, total, width int) string {
 }
 
 // snapLayout describes the snapshot table's variable geometry for a given width:
-// the host and tags column widths, and whether the optional Added/Took columns
-// are promoted. snapshotTable and snapshotDetail both derive it from
-// snapshotLayout so the columns and the bottom panel always agree on what's
-// shown where.
+// the host and tags column widths, the total ID column width (snapIDWidth in
+// the default case; widened to make room for a "+N" suffix slot when collapse
+// is on), and whether the optional Added/Took columns are promoted. snapshotTable
+// and snapshotDetail both derive it from snapshotLayout so the columns and the
+// bottom panel always agree on what's shown where.
 type snapLayout struct {
+	idWidth             int // snapIDWidth, or snapIDWidth+1+snapCollapseSuffixWidth when collapse is on
 	host, tags          int
 	showAdded, showTook bool
 }
 
 const (
-	snapAddedWidth   = 9  // "+1023 GiB" target width, right-aligned like Size
-	snapTookWidth    = 6  // "12h59m" target width; truncate longer durations to this
-	snapPromoFlexMin = 38 // host+tags cells that must remain after promoting a column
+	snapAddedWidth          = 9  // "+1023 GiB" target width, right-aligned like Size
+	snapTookWidth           = 6  // "12h59m" target width; truncate longer durations to this
+	snapPromoFlexMin        = 38 // host+tags cells that must remain after promoting a column
+	snapCollapseSuffixWidth = 3  // "+N" suffix slot reserved next to ID when collapse is on; fits +99 cleanly, wider counts widen that one row only
 )
 
 // snapHeader is the dim column-label row for the snapshot table, built from the
@@ -489,12 +492,14 @@ type snapRow struct {
 }
 
 // snapCells formats one row's worth of columns — header or data — into the
-// shared column order, so both are guaranteed to align: ID(8,left) · Time(16,
-// left) · Hostname(host,left) · Size(9,right) · [Added(9,right)] ·
-// [Took(6,right)] · Tags(flex,left). Callers join the result with two spaces.
+// shared column order, so both are guaranteed to align: ID(l.idWidth,left) ·
+// Time(16,left) · Hostname(host,left) · Size(9,right) · [Added(9,right)] ·
+// [Took(6,right)] · Tags(flex,left). The ID column widens when collapse is on
+// to reserve a "+N" suffix slot — every row pads to the same width so columns
+// past ID stay aligned. Callers join the result with two spaces.
 func snapCells(l snapLayout, r snapRow) []string {
 	cells := []string{
-		fmt.Sprintf("%-*s", snapIDWidth, r.id),
+		fmt.Sprintf("%-*s", l.idWidth, r.id),
 		fmt.Sprintf("%-16s", r.tm),
 		fmt.Sprintf("%-*s", l.host, r.host),
 		fmt.Sprintf("%9s", r.size),
@@ -538,11 +543,20 @@ func snapTook(s model.Snapshot) string {
 // into a host column clamped to 8–24 and tags taking the rest. Promotion is
 // shared with browseLayout via promoteColumns; only the host/tags split below is
 // snapshot-specific.
-func snapshotLayout(width int) snapLayout {
+func snapshotLayout(width int, collapseOn bool) snapLayout {
 	const indicator, timeW, sizeW, gaps = 2, 16, 9, 8
-	baseFixed := indicator + snapIDWidth + timeW + sizeW + gaps
-
 	var l snapLayout
+	l.idWidth = snapIDWidth
+	if collapseOn {
+		// Widen ID by one space + the "+N" slot so the cell can carry
+		// "shortid +N" on collapsed rows and "shortid   " (blank slot) on
+		// uncollapsed rows — every row pads to l.idWidth so subsequent
+		// columns align. The flex floor (snapPromoFlexMin) tightens
+		// accordingly, which may demote Added/Took on narrow terminals.
+		l.idWidth = snapIDWidth + 1 + snapCollapseSuffixWidth
+	}
+	baseFixed := indicator + l.idWidth + timeW + sizeW + gaps
+
 	reservedExtra := promoteColumns(width, baseFixed, snapPromoFlexMin, []optionalCol{
 		{snapAddedWidth, &l.showAdded},
 		{snapTookWidth, &l.showTook},

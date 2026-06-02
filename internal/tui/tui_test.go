@@ -1479,7 +1479,7 @@ func TestSnapshotLayoutProgressiveThresholds(t *testing.T) {
 		{100, true, true},
 		{140, true, true},
 	} {
-		l := snapshotLayout(tc.width)
+		l := snapshotLayout(tc.width, false)
 		if l.showAdded != tc.wantAdded || l.showTook != tc.wantTook {
 			t.Errorf("snapshotLayout(%d) = {added:%v took:%v}, want {added:%v took:%v}",
 				tc.width, l.showAdded, l.showTook, tc.wantAdded, tc.wantTook)

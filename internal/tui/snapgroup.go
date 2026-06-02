@@ -451,13 +451,22 @@ func buildSnapTokens(d snapDisplay) ([]snapTok, []int) {
 	return lines, headingPos
 }
 
-// idCell formats the short-id column for a node: bare short-id for a
-// single-snapshot node, or "shortid (+N)" for a collapsed head. The "(+N)"
-// suffix is left to absorb slack from the two-space gap (snapIDWidth is the
-// header's width; data rows are allowed to widen).
+// idCell formats the short-id column's text for a node. snapCells left-pads
+// the result to l.idWidth, so:
+//
+//   - Uncollapsed: return the bare short-id; snapCells handles padding,
+//     including the blank suffix slot when collapse mode is on.
+//   - Collapsed head: return "shortid +N" with the "+N" right-aligned within
+//     snapCollapseSuffixWidth so the digit lands in the reserved slot. A
+//     count whose decimal width exceeds the slot widens that one row only
+//     (snapCells's %-*s never truncates), accepted as a rare case.
 func idCell(shortID string, count int) string {
 	if count <= 0 {
-		return fmt.Sprintf("%-*s", snapIDWidth, shortID)
+		return shortID
 	}
-	return fmt.Sprintf("%s (+%d)", shortID, count)
+	suffix := fmt.Sprintf("+%d", count)
+	if len(suffix) < snapCollapseSuffixWidth {
+		suffix = fmt.Sprintf("%*s", snapCollapseSuffixWidth, suffix)
+	}
+	return fmt.Sprintf("%-*s %s", snapIDWidth, shortID, suffix)
 }
