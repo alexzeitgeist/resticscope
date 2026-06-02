@@ -345,6 +345,40 @@ func TestBuildDiffTreeDedupesDuplicatePaths(t *testing.T) {
 	}
 }
 
+func TestBuildDiffTreeCanonicalizesDuplicatePathMarker(t *testing.T) {
+	// Two `change` records for the same path with different modifiers (M then
+	// U) must produce a row whose Type / Modifier mirror the OR-merged Kinds.
+	// Without canonicalization the renderer trusts whichever record arrived
+	// last (Modifier="U", Type=ChangeMetadataOnly), so an M-only filter keeps
+	// the row visible (Kinds contains M) but the marker reads "U" with
+	// metadata styling — silent disagreement between filter and marker.
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/etc/passwd","modifier":"M"}`,
+		`{"message_type":"change","path":"/etc/passwd","modifier":"U"}`,
+	)
+	out, _ := ParseDiffNDJSON(in)
+	tree := BuildDiffTree(out.Entries)
+	var row *DiffRow
+	for i, r := range tree.Children["/etc"] {
+		if r.Path == "/etc/passwd" {
+			row = &tree.Children["/etc"][i]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatalf("/etc/passwd row missing from /etc listing: %+v", tree.Children["/etc"])
+	}
+	if row.Kinds != KindModified|KindMetadata {
+		t.Errorf("Kinds = %b, want M|U", row.Kinds)
+	}
+	if row.Modifier != "MU" {
+		t.Errorf("Modifier = %q, want canonical %q", row.Modifier, "MU")
+	}
+	if row.Type != ChangeModified {
+		t.Errorf("Type = %v, want ChangeModified (M wins over U in precedence)", row.Type)
+	}
+}
+
 func TestBuildDiffTreePreservesExplicitFileIsDir(t *testing.T) {
 	// An explicit file row at /foo (T = type-changed) must not flip to IsDir
 	// when a later /foo/bar entry walks its ancestors. The synthetic-ancestor

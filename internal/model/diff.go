@@ -370,12 +370,23 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 			// Upgrade in place when an explicit entry arrives for a previously-
 			// synthetic ancestor. Modified Type wins over the synthetic Unknown;
 			// Kinds OR-merges so a multi-kind explicit entry keeps every bit.
+			prevKinds := existing.Kinds
 			if typ != ChangeUnknown {
 				existing.Type = typ
 			}
 			existing.Kinds |= kinds
 			if modifier != "" {
 				existing.Modifier = modifier
+			}
+			// Duplicate-path merge (both sides carry kind bits): the row's
+			// Type/Modifier must mirror the OR-merged Kinds so the marker stays
+			// consistent with what filters and aggregates see — otherwise a
+			// later `U` overwrites an earlier `M` even though Kinds is M|U.
+			// Single-record paths keep restic's verbatim modifier string;
+			// synthetic ancestor upgrades (kinds==0) don't trigger this.
+			if prevKinds != 0 && kinds != 0 {
+				existing.Type = PrimaryChangeType(existing.Kinds)
+				existing.Modifier = ModifierString(existing.Kinds)
 			}
 			// Only a real (non-synthetic) entry rewrites IsDir. A synthetic
 			// ancestor walk (typ==ChangeUnknown) for a child of /foo must not
