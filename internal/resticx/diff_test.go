@@ -49,7 +49,7 @@ func TestStreamDiffParsesEntries(t *testing.T) {
 
 	var entries []model.DiffEntry
 	res, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"},
-		"old", "new",
+		"old", "new", time.Minute,
 		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil)
 	if err != nil {
 		t.Fatalf("StreamDiff: %v", err)
@@ -75,7 +75,7 @@ func TestStreamDiffOnEntryErrorAborts(t *testing.T) {
 	}, "\n") + "\n"}
 	c := &Client{Stream: fs}
 	sentinel := errors.New("disk full")
-	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n",
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute,
 		func(model.DiffEntry) error { return sentinel }, nil)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel verbatim", err)
@@ -90,7 +90,7 @@ func TestStreamDiffTolerateMalformed(t *testing.T) {
 	}, "\n") + "\n"}
 	c := &Client{Stream: fs}
 	var entries []model.DiffEntry
-	res, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n",
+	res, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute,
 		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil)
 	if err != nil {
 		t.Fatalf("StreamDiff: %v", err)
@@ -103,7 +103,7 @@ func TestStreamDiffTolerateMalformed(t *testing.T) {
 func TestStreamDiffResticFailureClassifies(t *testing.T) {
 	fs := &diffStreamFake{err: fakeExit(10), stderr: []byte("repository does not exist")}
 	c := &Client{Stream: fs}
-	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", nil, nil)
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute, nil, nil)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindRepoNotFound {
 		t.Fatalf("want KindRepoNotFound, got %v", err)
@@ -118,7 +118,7 @@ func TestStreamDiffProgressFires(t *testing.T) {
 	fs := &diffStreamFake{data: strings.Join(lines, "\n") + "\n"}
 	c := &Client{Stream: fs}
 	var ticks []int
-	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n",
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute,
 		func(model.DiffEntry) error { return nil }, func(seen int) { ticks = append(ticks, seen) })
 	if err != nil {
 		t.Fatalf("StreamDiff: %v", err)
@@ -128,10 +128,20 @@ func TestStreamDiffProgressFires(t *testing.T) {
 	}
 }
 
-func TestStreamDiffUsesClientTimeout(t *testing.T) {
+func TestStreamDiffUsesCallTimeout(t *testing.T) {
+	fs := &diffStreamFake{block: true}
+	c := &Client{Stream: fs, Timeout: time.Hour}
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Millisecond, nil, nil)
+	var re *Error
+	if !asResticError(err, &re) || re.Kind != KindTimeout {
+		t.Fatalf("want KindTimeout, got %v", err)
+	}
+}
+
+func TestStreamDiffZeroCallTimeoutFallsBackToClientTimeout(t *testing.T) {
 	fs := &diffStreamFake{block: true}
 	c := &Client{Stream: fs, Timeout: time.Millisecond}
-	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", nil, nil)
+	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", 0, nil, nil)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("want KindTimeout, got %v", err)
@@ -143,7 +153,7 @@ func TestStreamDiffPasswordOutOfBand(t *testing.T) {
 	c := &Client{Stream: fs}
 	if _, err := c.StreamDiff(context.Background(), testTarget,
 		Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "super-secret-pw"},
-		"o", "n", nil, nil); err != nil {
+		"o", "n", time.Minute, nil, nil); err != nil {
 		t.Fatalf("StreamDiff: %v", err)
 	}
 	env := strings.Join(fs.gotEnv, "\n")

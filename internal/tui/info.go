@@ -122,9 +122,8 @@ func (m Model) infoVisible() int {
 // infoScrollable reports whether the info modal's body overflows the visible
 // pane and therefore needs to advertise scroll keys in the footer. It is
 // deliberately independent of m.footerRows() to avoid a cycle (footerRows
-// builds viewHelp, which calls this); the 1-line footer assumption holds
-// because no filter/search input can be active behind the modal, so the
-// rendered footer is always exactly the help row.
+// builds viewHelp, which calls this). The info modal cannot have an active
+// filter/search prompt, but an async status message can add one footer row.
 func (m Model) infoScrollable() bool {
 	if m.view != infoView {
 		return false
@@ -134,7 +133,11 @@ func (m Model) infoScrollable() bool {
 		return false
 	}
 	w, h := m.effSize()
-	available := h - headerRows - 2*gapRows - 1
+	footer := 1
+	if m.statusMsg != "" {
+		footer = 2
+	}
+	available := h - headerRows - 2*gapRows - footer
 	if available < 1 {
 		available = 1
 	}

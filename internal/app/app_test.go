@@ -93,6 +93,7 @@ type diffCapture struct {
 	calls   int
 	olderID string
 	newerID string
+	timeout time.Duration
 }
 
 // findCapture records FindMatches' arguments. It is a pointer so the
@@ -137,12 +138,13 @@ func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx
 	return f.findResults, nil
 }
 
-func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	if f.diffCap != nil {
 		f.diffCap.mu.Lock()
 		f.diffCap.calls++
 		f.diffCap.olderID = olderID
 		f.diffCap.newerID = newerID
+		f.diffCap.timeout = timeout
 		f.diffCap.mu.Unlock()
 	}
 	for _, e := range f.diffEntries {
@@ -208,7 +210,7 @@ func (blockingBrowseRestic) FindMatches(ctx context.Context, t resticx.Target, c
 	return nil, nil
 }
 
-func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()
 }
@@ -388,6 +390,7 @@ func testConfig() *config.Config {
 	cfg.Global.LockMaxAge = config.Duration(30 * time.Minute)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
 	cfg.Browse = config.Browse{IndexTimeout: config.Duration(10 * time.Minute)}
+	cfg.Diff = config.Diff{Timeout: config.Duration(15 * time.Minute)}
 	return cfg
 }
 
@@ -726,6 +729,39 @@ func TestRefreshRowUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
 	if _, err := a.RefreshRow(context.Background(), "nope"); err == nil {
 		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
+	cap := &diffCapture{}
+	a := &App{
+		Cfg:     testConfig(),
+		Cache:   newFakeCache(),
+		Clock:   fixedClock{now},
+		Secrets: fakeSecrets{},
+		Restic: fakeRestic{
+			diffCap: cap,
+			diffEntries: []model.DiffEntry{
+				{Path: "/x", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			},
+		},
+	}
+
+	var entries []model.DiffEntry
+	if _, err := a.SnapshotDiff(context.Background(), "repo-a", "old", "new",
+		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil); err != nil {
+		t.Fatalf("SnapshotDiff: %v", err)
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if cap.calls != 1 || cap.olderID != "old" || cap.newerID != "new" {
+		t.Fatalf("StreamDiff call = %d (%q, %q), want 1 (old, new)", cap.calls, cap.olderID, cap.newerID)
+	}
+	if cap.timeout != 15*time.Minute {
+		t.Errorf("StreamDiff timeout = %v, want cfg.Diff.Timeout 15m", cap.timeout)
+	}
+	if len(entries) != 1 {
+		t.Errorf("entries = %d, want 1", len(entries))
 	}
 }
 

@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"resticscope/internal/app"
 	"resticscope/internal/model"
 )
 
@@ -193,6 +196,53 @@ func TestDKeyWithoutMarksShowsHint(t *testing.T) {
 	}
 }
 
+func TestRefreshPrunesStaleDetailMarksBeforeDiff(t *testing.T) {
+	a := detailApp(t)
+	cap := &stubDiffCapture{}
+	a.Restic = stubRestic{diffCap: cap}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+
+	m = update(t, m, press("t")) // mark newest
+	if len(m.detailMarks) != 1 || m.detailMarks[0].ID != "id-newest" {
+		t.Fatalf("precondition: detailMarks = %+v, want id-newest", m.detailMarks)
+	}
+
+	// Refresh repo-a with the marked snapshot removed. applyRefresh should prune
+	// the now-stale mark so d cannot pass the vanished ID to restic diff.
+	refreshed := app.RepoStatus{
+		Name:   "repo-a",
+		Status: model.StatusGreen,
+		State: model.RepoState{
+			Name:          "repo-a",
+			RefreshedAt:   testNow,
+			LastSnapshot:  testNow.Add(-2 * time.Hour),
+			SnapshotCount: 2,
+			Snapshots: []model.Snapshot{
+				{ID: "id-oldest", ShortID: "s1", Time: testNow.Add(-3 * time.Hour), Hostname: "homeserver"},
+				{ID: "id-middle", ShortID: "s2", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver"},
+			},
+		},
+	}
+	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: refreshed})
+	if len(m.detailMarks) != 0 {
+		t.Fatalf("stale marks after refresh = %+v, want none", m.detailMarks)
+	}
+
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatal("d after stale mark prune should not start a diff")
+	}
+	if m.view != detailView {
+		t.Fatalf("view = %d, want detailView", m.view)
+	}
+	calls, _, _ := cap.snapshot()
+	if calls != 0 {
+		t.Fatalf("StreamDiff calls = %d, want 0", calls)
+	}
+}
+
 func TestDOpensDiffViewWithTwoMarks(t *testing.T) {
 	a := detailApp(t)
 	cap := &stubDiffCapture{}
@@ -342,12 +392,12 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	if !m.diffLoading {
 		t.Error("x should put the diff view back into loading state")
 	}
-	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
-		t.Errorf("swapped model pair = (%q, %q), want (%q, %q)",
-			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	if m.diffOlder.ID != older || m.diffNewer.ID != newer {
+		t.Errorf("loading swap model pair = (%q, %q), want still-loaded (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, older, newer)
 	}
-	if m.diffDir != "/etc" || len(m.diffRows) != 0 {
-		t.Errorf("swap should preserve the requested dir with no stale rows, dir=%q rows=%d",
+	if m.diffDir != "/etc" || len(m.diffRows) != 2 {
+		t.Errorf("swap should preserve the current loaded rows until the rerun succeeds, dir=%q rows=%d",
 			m.diffDir, len(m.diffRows))
 	}
 
@@ -357,6 +407,10 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 		t.Errorf("swapped StreamDiff call = %d (%q, %q), want 2 (%q, %q)",
 			calls, gotOlder, gotNewer, newer, older)
 	}
+	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
+		t.Errorf("landed swap model pair = (%q, %q), want (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	}
 	if m.diffDir != "/etc" {
 		t.Errorf("after swapped diff lands, diffDir = %q, want /etc", m.diffDir)
 	}
@@ -365,6 +419,64 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	}
 	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
 		t.Errorf("after swapped diff lands, selected row = %+v, want /etc/passwd", r)
+	}
+}
+
+func TestSnapshotDiffSwapErrorKeepsPreviousDiff(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	older, _, newer := snapshotIDs(t, m)
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = update(t, m, press("enter")) // descend into /etc
+	m = update(t, m, press("j"))     // select /etc/passwd
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("precondition: selected row = %+v, want /etc/passwd", r)
+	}
+
+	a.Restic = stubRestic{diffErr: errors.New("context deadline exceeded")}
+	next, cmd = m.Update(press("x"))
+	m = next.(Model)
+	if !m.diffLoading {
+		t.Fatal("x should put the diff view into loading state")
+	}
+	m = drivePastDiff(t, m, cmd)
+
+	if m.view != snapshotDiffView {
+		t.Fatalf("failed swap should stay in diff view, got %d", m.view)
+	}
+	if m.diffLoading {
+		t.Fatal("failed swap should clear loading")
+	}
+	if m.diffOlder.ID != older || m.diffNewer.ID != newer {
+		t.Fatalf("failed swap pair = (%q, %q), want original (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, older, newer)
+	}
+	if m.diffDir != "/etc" {
+		t.Fatalf("failed swap dir = %q, want /etc", m.diffDir)
+	}
+	if len(m.diffRows) != 2 {
+		t.Fatalf("failed swap rows = %+v, want previous /etc rows", m.diffRows)
+	}
+	if r := m.selectedDiffRow(); r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("failed swap selected row = %+v, want /etc/passwd", r)
+	}
+	if !strings.Contains(m.statusMsg, "diff: context deadline exceeded") {
+		t.Errorf("statusMsg = %q, want failed diff notice", m.statusMsg)
 	}
 }
 
@@ -467,6 +579,73 @@ func TestSnapshotDiffSearchEnterJumpsAndEscReturns(t *testing.T) {
 	}
 }
 
+func TestDiffFilterAfterSearchJumpClearsOriginBookmark(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = update(t, m, press("j")) // origin cursor on /var
+	m = openDiffSearch(t, m)
+	m = typeDiffSearch(t, m, "passwd")
+	m = update(t, m, press("enter"))
+	if !m.diffSearchJumped || m.diffDir != "/etc" {
+		t.Fatalf("precondition: jump should land in /etc with jump state, dir=%q jumped=%v",
+			m.diffDir, m.diffSearchJumped)
+	}
+
+	m = update(t, m, press("M"))
+	if m.diffSearchJumped || m.diffSearchOrigin != "" {
+		t.Fatalf("filter toggle after jump should clear origin bookmark: jumped=%v origin=%q",
+			m.diffSearchJumped, m.diffSearchOrigin)
+	}
+	if m.diffDir != "/etc" {
+		t.Fatalf("filter toggle should stay in current dir, got %q", m.diffDir)
+	}
+
+	m = update(t, m, press("q"))
+	if m.view != detailView {
+		t.Fatalf("q after filter-cleared jump should leave diff, got view=%d", m.view)
+	}
+}
+
+func TestSnapshotDiffKeyClearsStaleStatusMsg(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "-", Type: model.ChangeRemoved, Kinds: model.KindRemoved},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m.statusMsg = "cache write failed: disk full"
+	m = update(t, m, press("j"))
+	if m.statusMsg != "" {
+		t.Errorf("diff navigation should clear stale statusMsg, got %q", m.statusMsg)
+	}
+}
+
 func TestSnapshotDiffSwapClearsSearchJumpState(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -505,12 +684,16 @@ func TestSnapshotDiffSwapClearsSearchJumpState(t *testing.T) {
 		t.Fatalf("x should clear stale search-jump state: searching=%v jumped=%v origin=%q",
 			m.diffSearching, m.diffSearchJumped, m.diffSearchOrigin)
 	}
-	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
-		t.Errorf("swapped model pair = (%q, %q), want (%q, %q)",
-			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	if m.diffOlder.ID != older || m.diffNewer.ID != newer {
+		t.Errorf("loading swap model pair = (%q, %q), want still-loaded (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, older, newer)
 	}
 
 	m = drivePastDiff(t, m, cmd)
+	if m.diffOlder.ID != newer || m.diffNewer.ID != older {
+		t.Errorf("landed swap model pair = (%q, %q), want (%q, %q)",
+			m.diffOlder.ID, m.diffNewer.ID, newer, older)
+	}
 	if m.diffDir != "/etc" {
 		t.Fatalf("swapped result should preserve the current dir, got %q", m.diffDir)
 	}
@@ -814,6 +997,20 @@ func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
 	}
 	if r := m.selectedDiffRow(); r == nil || r.Path != "/var" {
 		t.Errorf("selected after fallback = %+v, want /var (cache restoration)", r)
+	}
+}
+
+func TestExistingDiffDirTreatsDemotedSyntheticAncestorAsFile(t *testing.T) {
+	tree := model.BuildDiffTree([]model.DiffEntry{
+		{Path: "/foo/bar", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/foo", Modifier: "T", Type: model.ChangeTypeChanged, Kinds: model.KindTypeChanged},
+	})
+
+	if got := existingDiffDir(tree, "/foo"); got != model.DiffRoot {
+		t.Fatalf("existingDiffDir(/foo) = %q, want root because /foo is an explicit file", got)
+	}
+	if got := existingDiffDir(tree, "/foo/bar"); got != model.DiffRoot {
+		t.Fatalf("existingDiffDir(/foo/bar) = %q, want root because parent /foo is a file", got)
 	}
 }
 

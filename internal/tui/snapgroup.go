@@ -338,8 +338,8 @@ func (m Model) isNodeMarked(n snapNode) bool {
 // normalizeDetailMarks remaps the mark FIFO against d. A mark on a peer that
 // becomes hidden maps to its absorbing head; duplicate marks that map to the
 // same head collapse to one mark, preserving FIFO order by keeping the first
-// occurrence. A mark whose ID is not present in d (head or peer) survives
-// unchanged so a stale-but-recoverable mark is never silently dropped.
+// occurrence. A mark whose ID is not present in d (head or peer) is dropped so
+// refreshes that remove snapshots cannot leave a stale restic diff target.
 //
 // Normalization is monotonic: collapse-on can fold peer marks into a head
 // mark; collapse-off cannot reconstruct the original peer identities after
@@ -349,6 +349,11 @@ func (m Model) normalizeDetailMarks(d snapDisplay) Model {
 	if len(m.detailMarks) == 0 {
 		return m
 	}
+	m.detailMarks = normalizedDetailMarks(m.detailMarks, d)
+	return m
+}
+
+func normalizedDetailMarks(marks []model.Snapshot, d snapDisplay) []model.Snapshot {
 	headByID := make(map[string]model.Snapshot, len(d.nodes))
 	for _, n := range d.nodes {
 		headByID[n.head.ID] = n.head
@@ -356,12 +361,12 @@ func (m Model) normalizeDetailMarks(d snapDisplay) Model {
 			headByID[p.ID] = n.head
 		}
 	}
-	out := make([]model.Snapshot, 0, len(m.detailMarks))
-	seen := make(map[string]bool, len(m.detailMarks))
-	for _, mark := range m.detailMarks {
-		mapped := mark
-		if h, ok := headByID[mark.ID]; ok {
-			mapped = h
+	out := make([]model.Snapshot, 0, len(marks))
+	seen := make(map[string]bool, len(marks))
+	for _, mark := range marks {
+		mapped, ok := headByID[mark.ID]
+		if !ok {
+			continue
 		}
 		if seen[mapped.ID] {
 			continue
@@ -369,8 +374,7 @@ func (m Model) normalizeDetailMarks(d snapDisplay) Model {
 		seen[mapped.ID] = true
 		out = append(out, mapped)
 	}
-	m.detailMarks = out
-	return m
+	return out
 }
 
 // cycleSnapGroup advances the detail-view grouping cycle (off → host → tags

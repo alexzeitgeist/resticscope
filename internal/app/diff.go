@@ -27,5 +27,6 @@ func (a *App) SnapshotDiff(ctx context.Context, repoName, olderID, newerID strin
 	if err != nil {
 		return model.SnapshotDiff{}, err
 	}
-	return a.Restic.StreamDiff(ctx, targetOf(r), resticCreds(material), olderID, newerID, onEntry, onProgress)
+	return a.Restic.StreamDiff(ctx, targetOf(r), resticCreds(material),
+		olderID, newerID, a.Cfg.Diff.Timeout.Std(), onEntry, onProgress)
 }

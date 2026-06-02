@@ -79,15 +79,16 @@ func (m Model) isMarked(id string) bool {
 //   - 0 marks → ok=false, footer hint
 //   - cursor identical to the only mark → ok=false, footer hint
 func (m Model) diffPair() (older, newer model.Snapshot, ok bool) {
-	switch len(m.detailMarks) {
+	marks := normalizedDetailMarks(m.detailMarks, m.snapDisplay())
+	switch len(marks) {
 	case 2:
-		older, newer = m.detailMarks[0], m.detailMarks[1]
+		older, newer = marks[0], marks[1]
 	case 1:
 		cur := m.selectedSnapshot()
-		if cur == nil || cur.ID == m.detailMarks[0].ID {
+		if cur == nil || cur.ID == marks[0].ID {
 			return model.Snapshot{}, model.Snapshot{}, false
 		}
-		older, newer = m.detailMarks[0], *cur
+		older, newer = marks[0], *cur
 	default:
 		return model.Snapshot{}, model.Snapshot{}, false
 	}
@@ -113,7 +114,7 @@ func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Mode
 	m.diffCache = make(map[string]int)
 	m.statusMsg = ""
 	m.view = snapshotDiffView
-	return m.dispatchSnapshotDiff()
+	return m.dispatchSnapshotDiff(m.diffOlder, m.diffNewer)
 }
 
 // dispatchSnapshotDiff opens a fresh cancel scope (a child of m.ctx so a
@@ -121,21 +122,21 @@ func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Mode
 // kicks off the stream in a Cmd, and arms a paired Cmd that waits on the
 // progress channel. Both Cmds carry the generation so a late tick or terminal
 // message from a superseded run is dropped.
-func (m Model) dispatchSnapshotDiff() (Model, tea.Cmd) {
+func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, tea.Cmd) {
 	dctx, dcancel := context.WithCancel(m.ctx)
 	m.diffCancel = dcancel
 	m.diffLoading = true
 	m.diffLoadCount = 0
 	m.diffErr = ""
-	m.diffEntries = nil
 
 	gen := m.diffGen
 	progress := make(chan int, diffProgressBuffer)
 	m.diffProgress = progress
 
-	repo, olderID, newerID := m.diffRepo, m.diffOlder.ID, m.diffNewer.ID
+	repo, olderID, newerID := m.diffRepo, runOlder.ID, runNewer.ID
 	a := m.app
 	streamCmd := func() tea.Msg {
+		defer close(progress) // ends the paired waitForDiffProgress Cmd
 		// entries live in this closure for the duration of the stream; the
 		// terminal msg hands them to applySnapshotDiffMsg which calls
 		// BuildDiffTree on the UI thread.
@@ -151,8 +152,7 @@ func (m Model) dispatchSnapshotDiff() (Model, tea.Cmd) {
 				default:
 				}
 			})
-		close(progress) // ends the paired waitForDiffProgress Cmd
-		return snapshotDiffMsg{gen: gen, result: res, entries: entries, err: err}
+		return snapshotDiffMsg{gen: gen, older: runOlder, newer: runNewer, result: res, entries: entries, err: err}
 	}
 	return m, tea.Batch(streamCmd, waitForDiffProgress(gen, progress))
 }
@@ -200,11 +200,17 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	m.diffLoading = false
 	m = m.cancelSnapshotDiff()
 	if msg.err != nil {
-		m = m.supersedeSnapshotDiff()
 		m.statusMsg = "diff: " + firstLine(msg.err.Error())
+		m.diffSelectPath = ""
+		if m.diffTree.Children != nil {
+			return m
+		}
+		m = m.supersedeSnapshotDiff()
 		m.view = detailView
 		return m.clearSnapshotDiff()
 	}
+	m.diffOlder = msg.older
+	m.diffNewer = msg.newer
 	m.diffEntries = msg.entries
 	m.diffTree = model.BuildDiffTree(msg.entries)
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
@@ -225,14 +231,16 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
 		if m.diffSearchJumped {
-			return m.restoreDiffSearchOrigin(), nil
+			return m.cancelDiffSearch(), nil
 		}
 		return m.snapshotDiffBack(), nil
 	}
 
 	if m.diffLoading {
+		m.statusMsg = ""
 		return m, nil
 	}
+	m.statusMsg = ""
 
 	// Filter toggles. Each binding maps one restic modifier character to its
 	// bit in the filter mask; the row predicate `row.Kinds & filter != 0`
@@ -296,19 +304,10 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	}
 	m = m.exitDiffSearch()
 	m = m.supersedeSnapshotDiff()
-	m.diffOlder, m.diffNewer = m.diffNewer, m.diffOlder
-	m.diffEntries = nil
-	m.diffTree = model.DiffTree{}
 	m.diffDir = dir
-	m.diffRows = nil
-	m.diffCursor = 0
-	m.diffCache = make(map[string]int)
 	m.diffSelectPath = selectPath
-	m.diffStats = model.DiffStats{}
-	m.diffErr = ""
-	m.diffParseErrs = 0
 	m.statusMsg = ""
-	return m.dispatchSnapshotDiff()
+	return m.dispatchSnapshotDiff(m.diffNewer, m.diffOlder)
 }
 
 // existingDiffDir returns requested when it exists in tree, otherwise the
@@ -331,9 +330,6 @@ func diffTreeHasDir(tree model.DiffTree, dir string) bool {
 	if dir == "" || dir == model.DiffRoot {
 		return true
 	}
-	if _, ok := tree.Children[dir]; ok {
-		return true
-	}
 	parent := model.DiffParentOf(dir)
 	for _, r := range tree.Children[parent] {
 		if r.Path == dir && r.IsDir {
@@ -349,6 +345,9 @@ func diffTreeHasDir(tree model.DiffTree, dir string) bool {
 // when the user navigates back, and clampCursor handles the case where the
 // dir's row count shrank below the saved index.
 func (m Model) toggleDiffFilter(k model.ModifierKind) Model {
+	if m.diffSearchJumped {
+		m = m.exitDiffSearch()
+	}
 	m.diffFilters ^= k
 	// Remember where we were so the rebuild can restore the cursor onto the
 	// same row by path if it survives the new filter.

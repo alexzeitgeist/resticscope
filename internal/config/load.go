@@ -21,12 +21,12 @@ const (
 	defaultResticCommandTimeout  = 2 * time.Minute
 	defaultShellPasswordMode     = "file"
 
-	// Browse index settings. IndexTimeout is generous because a one-time full
-	// index of a huge snapshot can take minutes; MaxDiskBytes defaults to a
-	// finite session-wide safety cap. Users can still opt into unlimited browse
-	// DB growth with max_disk_bytes = "0".
+	// Long-running interactive streams. Browse indexing and snapshot diffing
+	// compare or walk large trees, so their defaults are intentionally more
+	// generous than the generic restic command timeout.
 	defaultBrowseIndexTimeout = 10 * time.Minute
 	defaultBrowseMaxDiskBytes = 2 << 30
+	defaultDiffTimeout        = 10 * time.Minute
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -68,6 +68,7 @@ func Decode(data []byte) (*Config, error) {
 			IndexTimeout: Duration(defaultBrowseIndexTimeout),
 			MaxDiskBytes: defaultBrowseMaxDiskBytes,
 		},
+		Diff: Diff{Timeout: Duration(defaultDiffTimeout)},
 	}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
@@ -117,9 +118,9 @@ func (c *Config) Normalize(home string) {
 		g.GroupBy = []string{}
 	}
 
-	// Browse index settings are seeded with their defaults in Decode (not here)
-	// so an explicit index_timeout `0` is distinguishable from an omitted key and
-	// reaches validation.
+	// Browse/diff stream settings are seeded with their defaults in Decode (not
+	// here) so an explicit timeout `0` is distinguishable from an omitted key
+	// and reaches validation.
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {

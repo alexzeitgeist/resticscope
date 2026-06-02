@@ -146,7 +146,7 @@ func (s stubRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.C
 // argument order so a test can prove the chronological sort happens before the
 // restic call. Most tui tests don't exercise diff at all; the zero stubRestic
 // returns a zero SnapshotDiff without emitting any entries.
-func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Creds, olderID, newerID string, _ time.Duration, onEntry func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
 	if s.diffCap != nil {
 		s.diffCap.mu.Lock()
 		s.diffCap.calls++
@@ -198,7 +198,7 @@ func (blockingRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx
 // StreamDiff blocks until cancelled, mirroring Snapshots/StreamSnapshotTree, so
 // a test can prove that q/esc while a diff is streaming cancels the running
 // restic call.
-func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _ string, _ func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _ string, _ time.Duration, _ func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
 	close(b.started)
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()
@@ -2850,6 +2850,32 @@ func TestInfoModalScrolls(t *testing.T) {
 	m = update(t, m, press("k"))
 	if m.infoScroll != 0 {
 		t.Errorf("after k, infoScroll = %d, want 0", m.infoScroll)
+	}
+}
+
+func TestInfoFooterScrollabilityAccountsForStatusRow(t *testing.T) {
+	m := enterInfoOnFullSnapshot(t, newTestModel(t, snapshotInfoApp(t)))
+	s := m.selectedSnapshot()
+	if s == nil {
+		t.Fatal("precondition: selected snapshot missing")
+	}
+	w, _ := m.effSize()
+	lines := m.infoBodyLines(*s, w)
+	m.statusMsg = "cache write failed: disk full"
+	// This height gives exactly enough room for the body with a one-line footer.
+	// The status message makes the real footer two lines, so the body must
+	// overflow and the help row must advertise scroll keys.
+	m.height = headerRows + 2*gapRows + 1 + len(lines)
+
+	view := m.View().Content
+	if !strings.Contains(view, "showing lines") {
+		t.Fatalf("info body should show a scroll hint once status adds a footer row\n---\n%s", view)
+	}
+	plain := stripANSI(view)
+	rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+	footer := rows[len(rows)-1]
+	if !strings.Contains(footer, "up") || !strings.Contains(footer, "down") {
+		t.Errorf("info footer missing up/down keys with status row\nfooter: %q\n---\n%s", footer, plain)
 	}
 }
 

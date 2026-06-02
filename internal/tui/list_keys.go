@@ -31,13 +31,11 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.detailName = row.Name
 			m.view = detailView
 			m.snapCursor = 0
-			// Defaults for the detail visit's transient grouping/collapse state.
-			// Both are off-by-default: collapse only helps on grouped views of
-			// busy multi-plan repos (consecutive same-tree runs are rare in the
-			// flat newest-first stream), so it stays opt-in. goBack resets both
-			// alongside clearDetailMarks; nothing to set explicitly here since
-			// the zero values match the defaults, but we restate it so a fresh
-			// detail visit can't inherit stale state from a stuck struct copy.
+			// Reset transient group/collapse state every detail entry. goBack
+			// also resets them on exit, but be explicit so a future code path
+			// that lands on detail without going through goBack can't inherit
+			// stale values. Collapse is opt-in (rare to help in the flat
+			// newest-first stream); group cycles via `g`.
 			m.snapGroupMode = snapGroupOff
 			m.snapCollapseTree = false
 		}

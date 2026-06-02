@@ -112,13 +112,6 @@ func (m Model) cancelDiffSearch() Model {
 	return m
 }
 
-// restoreDiffSearchOrigin reverses an accepted search jump: every caller has
-// already gated on m.diffSearchJumped, so this delegates to the same teardown
-// cancelDiffSearch performs (rebuild at origin, clamp cursor).
-func (m Model) restoreDiffSearchOrigin() Model {
-	return m.cancelDiffSearch()
-}
-
 func (m Model) exitDiffSearch() Model {
 	m.diffSearching = false
 	m.diffSearchQuery = ""

@@ -113,6 +113,9 @@ func (m Model) applyRefresh(msg repoRefreshedMsg) Model {
 			break
 		}
 	}
+	if msg.name == m.detailName {
+		m = m.normalizeDetailMarks(m.snapDisplay())
+	}
 	m.cursor = m.indexOf(selected)
 	if msg.err != nil {
 		// RefreshRow's error is a cache-persistence failure only; it carries no

@@ -95,8 +95,17 @@ func (c *Config) Validate() error {
 	}
 
 	errs = append(errs, c.validateBrowse()...)
+	errs = append(errs, c.validateDiff()...)
 
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateDiff() []error {
+	var errs []error
+	if c.Diff.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("diff.timeout must be a positive duration, got %q", c.Diff.Timeout.Std()))
+	}
+	return errs
 }
 
 // validateBrowse checks the browse index settings: index_timeout must be a

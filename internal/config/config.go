@@ -20,6 +20,7 @@ type Config struct {
 	Credentials []Credential `toml:"credentials"`
 	Repos       []Repo       `toml:"repos"`
 	Browse      Browse       `toml:"browse"`
+	Diff        Diff         `toml:"diff"`
 }
 
 // Browse bounds the in-app snapshot file browser. The first time a snapshot is
@@ -34,6 +35,13 @@ type Config struct {
 type Browse struct {
 	IndexTimeout Duration `toml:"index_timeout"`
 	MaxDiskBytes ByteSize `toml:"max_disk_bytes"`
+}
+
+// Diff bounds the in-app snapshot diff stream. Diffing two large snapshots can
+// legitimately take longer than cheap restic probes such as snapshots/cat, so it
+// has its own timeout instead of sharing global.restic_command_timeout.
+type Diff struct {
+	Timeout Duration `toml:"timeout"`
 }
 
 // Global holds process-wide settings.

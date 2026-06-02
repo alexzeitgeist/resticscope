@@ -42,6 +42,7 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// d resolves the (older, newer) pair from the FIFO + cursor and opens the
 		// diff view. With zero marks (or a 1-mark + same-cursor degenerate pair)
 		// it surfaces a footer hint and stays put.
+		m = m.normalizeDetailMarks(m.snapDisplay())
 		if name, ok := m.actionRepo(); ok {
 			if older, newer, pairOK := m.diffPair(); pairOK {
 				m.statusMsg = ""

@@ -94,6 +94,8 @@ type snapshotDiffProgressMsg struct {
 // the lifetime of the model; clearSnapshotDiff zeroes them on leaving the view.
 type snapshotDiffMsg struct {
 	gen     int
+	older   model.Snapshot
+	newer   model.Snapshot
 	result  model.SnapshotDiff
 	entries []model.DiffEntry
 	err     error

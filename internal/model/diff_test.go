@@ -114,6 +114,40 @@ func TestParseDiffNDJSONUnknownModifierMalformed(t *testing.T) {
 	}
 }
 
+func TestParseDiffNDJSONMixedUnknownModifierMalformed(t *testing.T) {
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/a","modifier":"MX"}`,
+		`{"message_type":"change","path":"/b","modifier":"+"}`,
+	)
+	out, err := ParseDiffNDJSON(in)
+	if err != nil {
+		t.Fatalf("ParseDiffNDJSON: %v", err)
+	}
+	if len(out.Entries) != 1 || out.ParseErrors != 1 {
+		t.Fatalf("entries=%d parseErrors=%d, want 1/1", len(out.Entries), out.ParseErrors)
+	}
+	if out.Entries[0].Path != "/b" {
+		t.Errorf("parsed entry path = %q, want /b", out.Entries[0].Path)
+	}
+}
+
+func TestParseDiffNDJSONRootPathRejected(t *testing.T) {
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/","modifier":"+"}`,
+		`{"message_type":"change","path":"/ok","modifier":"+"}`,
+	)
+	out, err := ParseDiffNDJSON(in)
+	if err != nil {
+		t.Fatalf("ParseDiffNDJSON: %v", err)
+	}
+	if len(out.Entries) != 1 || out.ParseErrors != 1 {
+		t.Fatalf("entries=%d parseErrors=%d, want 1/1", len(out.Entries), out.ParseErrors)
+	}
+	if out.Entries[0].Path != "/ok" {
+		t.Errorf("parsed entry path = %q, want /ok", out.Entries[0].Path)
+	}
+}
+
 func TestParseDiffNDJSONLongLine(t *testing.T) {
 	long := strings.Repeat("a", 800*1024)
 	line := `{"message_type":"change","path":"/` + long + `","modifier":"+"}`
@@ -342,6 +376,35 @@ func TestBuildDiffTreePreservesExplicitFileIsDir(t *testing.T) {
 	}
 }
 
+func TestBuildDiffTreeDemotesSyntheticDirOnExplicitFile(t *testing.T) {
+	// If a child appears before an explicit file entry for its parent path, the
+	// ancestor walk creates /foo as a synthetic directory. The later real file row
+	// must rewrite IsDir=false so /foo does not render as navigable.
+	in := ndjsonLines(
+		`{"message_type":"change","path":"/foo/bar","modifier":"+"}`,
+		`{"message_type":"change","path":"/foo","modifier":"T"}`,
+	)
+	out, _ := ParseDiffNDJSON(in)
+	tree := BuildDiffTree(out.Entries)
+	kids := tree.Children[DiffRoot]
+	var foo *DiffRow
+	for i := range kids {
+		if kids[i].Path == "/foo" {
+			foo = &kids[i]
+			break
+		}
+	}
+	if foo == nil {
+		t.Fatalf("/foo row missing from root listing: %+v", kids)
+	}
+	if foo.IsDir {
+		t.Errorf("/foo IsDir stayed synthetic-dir after explicit file entry: %+v", *foo)
+	}
+	if foo.Type != ChangeTypeChanged {
+		t.Errorf("/foo Type = %v, want ChangeTypeChanged", foo.Type)
+	}
+}
+
 func TestParseModifierPrecedence(t *testing.T) {
 	cases := []struct {
 		in       string
@@ -360,9 +423,12 @@ func TestParseModifierPrecedence(t *testing.T) {
 		{"", ChangeUnknown, 0},
 	}
 	for _, c := range cases {
-		gotType, gotKind := parseModifier(c.in)
+		gotType, gotKind, gotUnknown := parseModifier(c.in)
 		if gotType != c.wantType || gotKind != c.wantKind {
 			t.Errorf("parseModifier(%q) = (%v,%b), want (%v,%b)", c.in, gotType, gotKind, c.wantType, c.wantKind)
+		}
+		if gotUnknown {
+			t.Errorf("parseModifier(%q) unknown = true, want false", c.in)
 		}
 	}
 }

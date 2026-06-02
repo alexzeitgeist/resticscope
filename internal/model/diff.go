@@ -224,7 +224,7 @@ func PrimaryChangeType(kinds ModifierKind) ChangeType {
 // picks a deterministic primary for color/glyph via PrimaryChangeType. Rows
 // still render the raw multi-char Modifier when the column has room, so the
 // user always sees the full restic vocabulary.
-func parseModifier(s string) (primary ChangeType, kinds ModifierKind) {
+func parseModifier(s string) (primary ChangeType, kinds ModifierKind, unknown bool) {
 	for _, r := range s {
 		switch r {
 		case '+':
@@ -239,9 +239,11 @@ func parseModifier(s string) (primary ChangeType, kinds ModifierKind) {
 			kinds |= KindTypeChanged
 		case '?':
 			kinds |= KindBitrot
+		default:
+			unknown = true
 		}
 	}
-	return PrimaryChangeType(kinds), kinds
+	return PrimaryChangeType(kinds), kinds, unknown
 }
 
 // changeMsg is the on-wire envelope for one restic diff `change` line.
@@ -288,12 +290,12 @@ func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) er
 		if env.MessageType != "change" {
 			continue
 		}
-		if env.Path == "" || env.Modifier == "" || !strings.HasPrefix(env.Path, "/") {
+		if env.Path == "" || env.Path == DiffRoot || env.Modifier == "" || !strings.HasPrefix(env.Path, "/") {
 			out.ParseErrors++
 			continue
 		}
-		entry := newDiffEntry(env.Path, env.Modifier)
-		if entry.Kinds == 0 {
+		entry, unknownModifier := newDiffEntry(env.Path, env.Modifier)
+		if unknownModifier || entry.Kinds == 0 {
 			out.ParseErrors++
 			continue
 		}
@@ -337,20 +339,20 @@ func ParseDiffNDJSON(b []byte) (SnapshotDiff, error) {
 // newDiffEntry produces a DiffEntry from a raw path and modifier. A trailing
 // slash on the path marks a directory; it is stored stripped so all later
 // path comparisons use the canonical (no-slash) form.
-func newDiffEntry(rawPath, modifier string) DiffEntry {
+func newDiffEntry(rawPath, modifier string) (DiffEntry, bool) {
 	isDir := strings.HasSuffix(rawPath, "/")
 	clean := rawPath
 	if isDir && rawPath != "/" {
 		clean = strings.TrimRight(rawPath, "/")
 	}
-	primary, kinds := parseModifier(modifier)
+	primary, kinds, unknown := parseModifier(modifier)
 	return DiffEntry{
 		Path:     clean,
 		Modifier: modifier,
 		Type:     primary,
 		Kinds:    kinds,
 		IsDir:    isDir,
-	}
+	}, unknown
 }
 
 // BuildDiffTree synthesizes navigation-only ancestor dirs from the flat entry
@@ -375,11 +377,12 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 			if modifier != "" {
 				existing.Modifier = modifier
 			}
-			// Only a real (non-synthetic) upgrade flips IsDir. A synthetic
+			// Only a real (non-synthetic) entry rewrites IsDir. A synthetic
 			// ancestor walk (typ==ChangeUnknown) for a child of /foo must not
-			// promote a previously-recorded file /foo into a directory.
-			if isDir && typ != ChangeUnknown {
-				existing.IsDir = true
+			// promote a previously-recorded file /foo into a directory, but a
+			// later explicit file entry must demote an earlier synthetic dir.
+			if typ != ChangeUnknown {
+				existing.IsDir = isDir
 			}
 			return existing
 		}

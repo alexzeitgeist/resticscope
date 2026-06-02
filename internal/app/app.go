@@ -38,7 +38,7 @@ type Restic interface {
 	CatConfig(ctx context.Context, t resticx.Target, creds resticx.Creds) error
 	StreamSnapshotTree(ctx context.Context, t resticx.Target, creds resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error)
 	FindMatches(ctx context.Context, t resticx.Target, creds resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error)
-	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
+	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
 }
 
 // Secrets resolves a repo's runtime credentials. Satisfied by *secrets.Store.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"resticscope/internal/model"
 )
@@ -28,8 +29,11 @@ import (
 //  2. onEntry / parser returned a non-cancel error → that error verbatim.
 //  3. restic exited cleanly → the parsed SnapshotDiff, nil.
 //  4. anything else → classify the run failure.
-func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
-	dctx, cancel := context.WithTimeout(ctx, c.timeout())
+func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+	if timeout <= 0 {
+		timeout = c.timeout()
+	}
+	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	full := make([]string, 0, 8)
