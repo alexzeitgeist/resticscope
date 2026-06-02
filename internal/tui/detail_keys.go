@@ -51,6 +51,16 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.statusMsg = "mark snapshots with t"
 		}
+	case key.Matches(msg, m.keys.Info):
+		// i opens the full snapshot-info modal for the cursor snapshot. With an
+		// empty repo it surfaces the same kind of hint the diff arm uses.
+		if m.selectedSnapshot() != nil {
+			m.statusMsg = ""
+			m.infoScroll = 0
+			m.view = infoView
+		} else {
+			m.statusMsg = "no snapshot selected"
+		}
 	}
 	return m, nil
 }

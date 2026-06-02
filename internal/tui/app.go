@@ -23,6 +23,7 @@ const (
 	findVersionsView
 	snapshotDiffView
 	helpView
+	infoView
 )
 
 // Model is the root Bubble Tea model. It drives both the list view and the
@@ -118,6 +119,10 @@ type Model struct {
 	findErr             string              // path-free first line of the find/restic error
 	findGen             int                 // generation token; stale find msgs are discarded
 	findCancel          context.CancelFunc
+
+	// Vertical scroll offset for the snapshot-info modal body, in lines. Reset
+	// to 0 when the modal opens; clamped to a valid range on every render.
+	infoScroll int
 
 	// Detail-view 2-slot FIFO of marked snapshots. Marks belong to the "detail
 	// context": they survive a round-trip into the snapshot-diff or browse views

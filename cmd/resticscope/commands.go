@@ -102,16 +102,18 @@ func cmdCache(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 // cmdCachePrune reclaims disk space from restic's own per-repo caches under
 // <cache_dir>/restic-cache/ (plan §7, §11). By default it removes only orphaned
-// caches — those left behind by a repo that is no longer in the config — so the
-// caches backing live repos survive. `--all` removes every cache (restic rebuilds
-// it on next access), and `--dry-run` reports what would go without deleting it.
+// caches — those left behind by a repo that has been removed from the config, or
+// renamed (the cache is keyed on the config name, so a rename looks like a fresh
+// repo) — so the caches backing live repos survive. `--all` removes every cache
+// (restic rebuilds it on next access), and `--dry-run` reports what would go
+// without deleting it.
 // It reads no secrets and makes no network or restic calls. Exit codes: 0 on
 // success (including nothing to prune), 2 on a setup or filesystem failure.
 func cmdCachePrune(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("cache prune", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
-	all := fs.Bool("all", false, "remove every repo's restic cache, not just orphaned ones")
+	all := fs.Bool("all", false, "remove every repo's restic cache, not just orphaned ones (orphans are caches for repos removed or renamed in the config)")
 	dryRun := fs.Bool("dry-run", false, "report what would be removed without deleting anything")
 	if err := fs.Parse(args); err != nil {
 		return 2

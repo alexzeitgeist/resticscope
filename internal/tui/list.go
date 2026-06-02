@@ -90,6 +90,12 @@ func (m Model) View() tea.View {
 			"",
 			m.helpBody(),
 		)
+	case m.view == infoView:
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.infoHeaderView(),
+			"",
+			m.infoBody(),
+		)
 	case m.view == browseView:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.browseHeaderView(),
@@ -424,7 +430,7 @@ func tookDuration(snaps []model.Snapshot) string {
 func (m Model) footerView() string {
 	w, _ := m.effSize()
 	searching := m.browseSearching || m.diffSearching
-	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching}), w)
+	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching, infoScrollable: m.infoScrollable()}), w)
 	switch {
 	case m.filtering:
 		// Show the live query (vim-style) with a block cursor so the input mode

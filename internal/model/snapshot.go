@@ -19,6 +19,12 @@ type Snapshot struct {
 	Username       string           `json:"username,omitempty"`
 	Tags           []string         `json:"tags,omitempty"`
 	ProgramVersion string           `json:"program_version,omitempty"`
+	Parent         string           `json:"parent,omitempty"`   // parent snapshot id (chain link)
+	Tree           string           `json:"tree,omitempty"`     // root tree blob id
+	Paths          []string         `json:"paths,omitempty"`    // source paths included in the backup
+	Excludes       []string         `json:"excludes,omitempty"` // excluded paths/globs recorded by restic
+	UID            *uint32          `json:"uid,omitempty"`      // owner uid; pointer preserves root uid 0
+	GID            *uint32          `json:"gid,omitempty"`      // owner gid; pointer preserves root gid 0
 	Summary        *SnapshotSummary `json:"summary,omitempty"`
 }
 
@@ -36,5 +42,11 @@ type SnapshotSummary struct {
 	BackupEnd           time.Time `json:"backup_end,omitempty"`            // when this run finished; End-Start is the duration
 	FilesNew            *uint64   `json:"files_new,omitempty"`             // files added this run
 	FilesChanged        *uint64   `json:"files_changed,omitempty"`         // files modified this run
+	FilesUnmodified     *uint64   `json:"files_unmodified,omitempty"`      // files unchanged this run
+	DirsNew             *uint64   `json:"dirs_new,omitempty"`              // directories added this run
+	DirsChanged         *uint64   `json:"dirs_changed,omitempty"`          // directories modified this run
+	DirsUnmodified      *uint64   `json:"dirs_unmodified,omitempty"`       // directories unchanged this run
+	DataBlobs           *int64    `json:"data_blobs,omitempty"`            // new data blobs written
+	TreeBlobs           *int64    `json:"tree_blobs,omitempty"`            // new tree blobs written
 	TotalFilesProcessed *uint64   `json:"total_files_processed,omitempty"` // files in the snapshot
 }

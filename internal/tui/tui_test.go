@@ -2593,6 +2593,330 @@ func TestHiddenRegionStillFilters(t *testing.T) {
 	}
 }
 
+func uint32p(n uint32) *uint32 { return &n }
+
+// snapshotInfoApp seeds repo-a with one richly-detailed snapshot and one
+// minimal pre-0.17 snapshot so the info modal can be exercised against both
+// shapes without leaning on detailApp's broader fixture.
+func snapshotInfoApp(t *testing.T) *app.App {
+	t.Helper()
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name:          "repo-a",
+			RefreshedAt:   testNow,
+			LastSnapshot:  testNow.Add(-time.Hour),
+			SnapshotCount: 2,
+			Hosts:         []string{"homeserver"},
+			Snapshots: []model.Snapshot{
+				{ID: "id-minimal", ShortID: "sm", Time: testNow.Add(-2 * time.Hour), Hostname: "homeserver"},
+				{
+					ID: "id-full", ShortID: "sf", Time: testNow.Add(-time.Hour),
+					Hostname: "homeserver", Username: "backup-user",
+					Tags: []string{"daily", "system"}, ProgramVersion: "restic 0.18.1",
+					Parent:   "parent-id-deadbeef",
+					Tree:     "tree-id-cafebabe",
+					Paths:    []string{"/etc", "/var/lib"},
+					Excludes: []string{"*.tmp", "/var/cache"},
+					UID:      uint32p(0),
+					GID:      uint32p(0),
+					Summary: &model.SnapshotSummary{
+						TotalBytesProcessed: 4404019200,
+						DataAdded:           int64p(5242880),
+						DataAddedPacked:     int64p(4194304),
+						BackupStart:         testNow.Add(-time.Hour),
+						BackupEnd:           testNow.Add(-time.Hour + 28*time.Second),
+						FilesNew:            uint64p(12),
+						FilesChanged:        uint64p(34),
+						FilesUnmodified:     uint64p(4050),
+						TotalFilesProcessed: uint64p(4096),
+						DirsNew:             uint64p(1),
+						DirsChanged:         uint64p(2),
+						DirsUnmodified:      uint64p(7),
+						DataBlobs:           int64p(11),
+						TreeBlobs:           int64p(3),
+					},
+				},
+			},
+		},
+	})
+	a.Cfg.Global.ShellPasswordMode = "env"
+	return a
+}
+
+// enterInfoOnFullSnapshot opens the info modal on the full-summary snapshot of
+// snapshotInfoApp. The detail view orders newest-first, so id-full lands at
+// snapCursor 0 and `i` from there opens the modal in one step. The window is
+// resized to a tall pane first so the body fits without scrolling — tests that
+// exercise scrolling shrink the height themselves.
+func enterInfoOnFullSnapshot(t *testing.T, m Model) Model {
+	t.Helper()
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 80})
+	m = update(t, m, press("enter")) // → detailView
+	m = update(t, m, press("i"))     // → infoView
+	if m.view != infoView {
+		t.Fatalf("view = %d, want infoView", m.view)
+	}
+	return m
+}
+
+func TestInfoModalRendersAllSectionsForFullSnapshot(t *testing.T) {
+	m := enterInfoOnFullSnapshot(t, newTestModel(t, snapshotInfoApp(t)))
+	view := m.View().Content
+	for _, want := range []string{
+		"resticscope · snapshot info",
+		"i close",
+		// Identity
+		"Identity", "ID", "id-full", "Short ID", "sf",
+		"Parent", "parent-id-deadbeef",
+		"Tree", "tree-id-cafebabe",
+		"Program", "restic 0.18.1",
+		// Source
+		"Source", "Hostname", "homeserver",
+		"Username", "backup-user",
+		"UID", "GID",
+		"Tags", "daily, system",
+		"Paths", "/etc", "/var/lib",
+		"Excludes", "*.tmp", "/var/cache",
+		// Backup window
+		"Backup window", "Snapshot time", "Start", "End", "Duration", "28s",
+		// Churn
+		"Churn", "Total bytes", "Data added", "Data added packed",
+		"Data blobs", "Tree blobs",
+		"Files new", "Files changed", "Files unmodified", "Files total",
+		"Dirs new", "Dirs changed", "Dirs unmodified", "Dirs total",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("info modal missing %q\n---\n%s", want, view)
+		}
+	}
+}
+
+func TestInfoModalSkipsSummarySectionsForMinimalSnapshot(t *testing.T) {
+	m := newTestModel(t, snapshotInfoApp(t))
+	m = update(t, m, press("enter")) // → detailView
+	// Move cursor to the minimal (older) snapshot. detailSnapshots() sorts
+	// newest-first, so the minimal one is index 1.
+	m = update(t, m, press("j"))
+	m = update(t, m, press("i"))
+	if m.view != infoView {
+		t.Fatalf("view = %d, want infoView", m.view)
+	}
+	view := m.View().Content
+	for _, want := range []string{
+		"Identity", "id-minimal", "Source", "Hostname", "homeserver",
+		"Backup window", "Snapshot time",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("info modal missing %q\n---\n%s", want, view)
+		}
+	}
+	for _, forbidden := range []string{
+		"Churn", "Files total", "Data added", "Tree blobs",
+		// the minimal snapshot has no summary, so Start/End/Duration are also absent
+		"Start", "End", "Duration",
+	} {
+		if strings.Contains(view, forbidden) {
+			t.Errorf("info modal should not show %q for pre-summary snapshot\n---\n%s", forbidden, view)
+		}
+	}
+}
+
+func TestInfoKeyTogglesAndPreservesDetailMarks(t *testing.T) {
+	m := newTestModel(t, snapshotInfoApp(t))
+	m = update(t, m, press("enter")) // → detailView
+	m = update(t, m, press("t"))     // mark the cursor snapshot
+	if len(m.detailMarks) != 1 {
+		t.Fatalf("precondition: 1 mark, got %d", len(m.detailMarks))
+	}
+
+	m = update(t, m, press("i")) // open modal
+	if m.view != infoView {
+		t.Fatalf("after i view = %d, want infoView", m.view)
+	}
+	if len(m.detailMarks) != 1 {
+		t.Errorf("marks dropped on opening info modal: %d, want 1", len(m.detailMarks))
+	}
+
+	m = update(t, m, press("i")) // close via i
+	if m.view != detailView {
+		t.Fatalf("after second i view = %d, want detailView", m.view)
+	}
+	if len(m.detailMarks) != 1 {
+		t.Errorf("marks dropped on closing info via i: %d, want 1", len(m.detailMarks))
+	}
+
+	m = update(t, m, press("i")) // reopen
+	m = update(t, m, press("q")) // close via q
+	if m.view != detailView {
+		t.Fatalf("after q view = %d, want detailView", m.view)
+	}
+
+	m = update(t, m, press("i"))                                  // reopen
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEsc, Text: ""}) // close via esc
+	if m.view != detailView {
+		t.Fatalf("after esc view = %d, want detailView", m.view)
+	}
+	if len(m.detailMarks) != 1 {
+		t.Errorf("marks dropped on closing info via esc: %d, want 1", len(m.detailMarks))
+	}
+}
+
+func TestInfoKeyIsNoOpWithoutSnapshot(t *testing.T) {
+	a := testApp(nil) // both repos have no cached state, so no snapshots
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter")) // → detailView (with empty snapshot list)
+	if m.view != detailView {
+		t.Fatalf("view = %d, want detailView", m.view)
+	}
+	m = update(t, m, press("i"))
+	if m.view != detailView {
+		t.Errorf("after i with no snapshot, view = %d, want detailView (no-op)", m.view)
+	}
+}
+
+// TestInfoFooterStaysMinimalWhenBodyFits locks the symmetric UX rule: when no
+// scrolling is needed the footer must NOT advertise up/down — the only key the
+// modal exposes there is `q back`. This guards the conditional in viewHelp
+// against regressions that would always-on the scroll chip.
+func TestInfoFooterStaysMinimalWhenBodyFits(t *testing.T) {
+	m := enterInfoOnFullSnapshot(t, newTestModel(t, snapshotInfoApp(t)))
+	view := m.View().Content
+	if !strings.Contains(view, "back") {
+		t.Fatalf("info footer missing back key\n---\n%s", view)
+	}
+	// The footer is the last non-empty line; an "up"/"down" chip there means
+	// the conditional regressed. Body content includes "Backup window" so a raw
+	// substring search would false-positive — scan the footer line only.
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	footer := lines[len(lines)-1]
+	if strings.Contains(footer, "up") || strings.Contains(footer, "down") {
+		t.Errorf("info footer should not advertise scroll keys when body fits\nfooter: %q", footer)
+	}
+}
+
+// TestInfoModalScrolls covers the case the user hit: a body taller than the
+// terminal must remain reachable via up/down/page navigation. The test uses a
+// deliberately short window so the body overflows, then drives j/page-down to
+// reveal the bottom-most section ("Churn") that was clipped before scrolling
+// was wired.
+func TestInfoModalScrolls(t *testing.T) {
+	m := newTestModel(t, snapshotInfoApp(t))
+	// 20 rows leaves only a handful for the body once header/footer/gap are
+	// subtracted; the full snapshot's body is well over that, so windowing kicks
+	// in and `Churn` is below the fold initially.
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	if m.view != infoView {
+		t.Fatalf("view = %d, want infoView", m.view)
+	}
+
+	initial := m.View().Content
+	if !strings.Contains(initial, "showing lines") {
+		t.Fatalf("initial view missing position indicator, modal must report overflow\n---\n%s", initial)
+	}
+	// Scrollability advertised in the footer (mirroring detail's up/down chip),
+	// not inline with the body anymore.
+	if !strings.Contains(initial, "up") || !strings.Contains(initial, "down") {
+		t.Errorf("info footer missing up/down keys while scrolling is needed\n---\n%s", initial)
+	}
+	if strings.Contains(initial, "Churn") {
+		t.Fatalf("precondition: with a short window the Churn section must start off-screen\n---\n%s", initial)
+	}
+
+	// Page-down enough times to reach the bottom. clampInfoScroll bounds the
+	// stored offset, so excess presses are a no-op once we hit the floor.
+	for i := 0; i < 20; i++ {
+		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	bottom := m.View().Content
+	if !strings.Contains(bottom, "Churn") {
+		t.Errorf("after scrolling to the bottom, Churn still hidden\n---\n%s", bottom)
+	}
+
+	// Page-up returns to the top.
+	for i := 0; i < 20; i++ {
+		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	if m.infoScroll != 0 {
+		t.Errorf("after paging back up, infoScroll = %d, want 0", m.infoScroll)
+	}
+
+	// j/k must also scroll (they share keys.Up/Down bindings).
+	m = update(t, m, press("j"))
+	if m.infoScroll != 1 {
+		t.Errorf("after j, infoScroll = %d, want 1", m.infoScroll)
+	}
+	m = update(t, m, press("k"))
+	if m.infoScroll != 0 {
+		t.Errorf("after k, infoScroll = %d, want 0", m.infoScroll)
+	}
+}
+
+// Closing and reopening the modal must reset the scroll position so the user
+// always lands at the top of the new snapshot's body.
+func TestInfoModalScrollResetsOnOpen(t *testing.T) {
+	m := newTestModel(t, snapshotInfoApp(t))
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("i"))
+	for i := 0; i < 5; i++ {
+		m = update(t, m, press("j"))
+	}
+	if m.infoScroll == 0 {
+		t.Fatalf("precondition: infoScroll should be > 0 after scrolling")
+	}
+	m = update(t, m, press("i")) // close
+	m = update(t, m, press("i")) // reopen
+	if m.infoScroll != 0 {
+		t.Errorf("infoScroll = %d on reopen, want 0", m.infoScroll)
+	}
+}
+
+// TestRepoCommandKeysAreIgnoredByInfoModal mirrors the help-overlay test:
+// behind the modal `s`/`r`/`R` must not launch repo actions.
+func TestRepoCommandKeysAreIgnoredByInfoModal(t *testing.T) {
+	m := enterInfoOnFullSnapshot(t, newTestModel(t, snapshotInfoApp(t)))
+	for _, k := range []string{"s", "r", "R"} {
+		next, cmd := m.Update(press(k))
+		nm := next.(Model)
+		if cmd != nil {
+			t.Errorf("key %q in info modal produced a command, want none", k)
+		}
+		if len(nm.pending) != 0 {
+			t.Errorf("key %q in info modal started a refresh (pending=%v), want none", k, nm.pending)
+		}
+		if nm.view != infoView {
+			t.Errorf("key %q left the info modal, view = %d, want infoView", k, nm.view)
+		}
+	}
+}
+
+// TestInfoViewHelpHasExplicitCase locks that viewHelp's ShortHelp/FullHelp
+// return an info-specific case rather than falling through to the list-view
+// default (which would advertise the wrong keys behind the modal footer).
+func TestInfoViewHelpHasExplicitCase(t *testing.T) {
+	k := defaultKeys()
+	short := viewHelp{keys: k, view: infoView}.ShortHelp()
+	full := viewHelp{keys: k, view: infoView}.FullHelp()
+	listShort := viewHelp{keys: k, view: listView}.ShortHelp()
+
+	if len(short) == len(listShort) {
+		t.Errorf("info ShortHelp same length as list ShortHelp (%d), expected a distinct case", len(short))
+	}
+	if len(full) == 0 {
+		t.Fatalf("info FullHelp is empty")
+	}
+	// info footer should advertise close keys (Info / Back) but not the detail
+	// scope actions like Mark or Diff.
+	for _, b := range short {
+		desc := b.Help().Desc
+		if desc == "toggle mark" || desc == "diff" {
+			t.Errorf("info ShortHelp includes detail action %q", desc)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	tests := []struct {
 		s    string

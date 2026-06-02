@@ -23,10 +23,14 @@
   },
   {
     "time": "2026-05-23T06:00:12.901551+02:00",
+    "parent": "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3",
     "tree": "33333333333333333333333333333333333333333333333333333333333333cc",
     "paths": ["/etc", "/var/lib"],
+    "excludes": ["*.tmp", "/var/cache"],
     "hostname": "homeserver",
     "username": "root",
+    "uid": 0,
+    "gid": 0,
     "tags": ["daily", "system"],
     "program_version": "restic 0.18.1",
     "summary": {
@@ -34,6 +38,12 @@
       "backup_end": "2026-05-23T06:00:41.115233+02:00",
       "files_new": 12,
       "files_changed": 34,
+      "files_unmodified": 4050,
+      "dirs_new": 1,
+      "dirs_changed": 2,
+      "dirs_unmodified": 7,
+      "data_blobs": 11,
+      "tree_blobs": 3,
       "data_added": 5242880,
       "total_files_processed": 4096,
       "total_bytes_processed": 4404019200

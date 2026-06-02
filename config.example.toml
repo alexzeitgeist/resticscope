@@ -48,8 +48,13 @@ name = "hetzner-home"
 # Each repo references a credential by name and describes where its bucket lives:
 # endpoint (required), plus the optional region and bucket_lookup. The name must
 # be unique, match a key under "repos" in the secrets JSON, and contain only
-# letters, digits, '.', '_' and '-' (it becomes a cache filename). The two repos
-# below share one credential while living in different regions.
+# letters, digits, '.', '_' and '-' (it becomes a cache filename). The name is
+# also resticscope's local identity for the repo: its status/history JSON and
+# its restic cache are both keyed on it, so renaming a repo here looks like a
+# new repo to the local tool — the next refresh rebuilds restic's cache from
+# scratch and leaves the old cache dir orphaned. Run `resticscope cache prune`
+# after renaming or removing a repo to reclaim that space. The two repos below
+# share one credential while living in different regions.
 
 [[repos]]
 name               = "homeserver-system"

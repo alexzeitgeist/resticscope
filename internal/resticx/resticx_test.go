@@ -124,6 +124,40 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if snaps[0].Summary != nil {
 		t.Errorf("expected nil Summary for the un-summarized snapshot, got %+v", snaps[0].Summary)
 	}
+	// The non-summary documented snapshot fields (parent, tree, paths, uid, gid,
+	// excludes) and the additional documented summary counters back the
+	// snapshot-info modal, so they must parse from the same fixture.
+	if last.Parent == "" || last.Tree == "" {
+		t.Errorf("parent/tree not parsed: parent=%q tree=%q", last.Parent, last.Tree)
+	}
+	if len(last.Paths) != 2 || last.Paths[0] != "/etc" || last.Paths[1] != "/var/lib" {
+		t.Errorf("Paths = %v, want [/etc /var/lib]", last.Paths)
+	}
+	if len(last.Excludes) != 2 || last.Excludes[0] != "*.tmp" {
+		t.Errorf("Excludes = %v, want [*.tmp /var/cache]", last.Excludes)
+	}
+	// uid/gid of 0 must round-trip as present-and-zero (root), not absent.
+	if last.UID == nil || *last.UID != 0 {
+		t.Errorf("UID = %v, want 0 (root preserved)", last.UID)
+	}
+	if last.GID == nil || *last.GID != 0 {
+		t.Errorf("GID = %v, want 0", last.GID)
+	}
+	if last.Summary.FilesUnmodified == nil || *last.Summary.FilesUnmodified != 4050 {
+		t.Errorf("FilesUnmodified = %v, want 4050", last.Summary.FilesUnmodified)
+	}
+	if last.Summary.DirsNew == nil || *last.Summary.DirsNew != 1 ||
+		last.Summary.DirsChanged == nil || *last.Summary.DirsChanged != 2 ||
+		last.Summary.DirsUnmodified == nil || *last.Summary.DirsUnmodified != 7 {
+		t.Errorf("dir counts = new %v/changed %v/unmodified %v, want 1/2/7",
+			last.Summary.DirsNew, last.Summary.DirsChanged, last.Summary.DirsUnmodified)
+	}
+	if last.Summary.DataBlobs == nil || *last.Summary.DataBlobs != 11 {
+		t.Errorf("DataBlobs = %v, want 11", last.Summary.DataBlobs)
+	}
+	if last.Summary.TreeBlobs == nil || *last.Summary.TreeBlobs != 3 {
+		t.Errorf("TreeBlobs = %v, want 3", last.Summary.TreeBlobs)
+	}
 }
 
 func TestEnvAndPasswordHandling(t *testing.T) {

@@ -70,6 +70,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The info modal is modal too: behind it only Back (esc), Info (i toggle),
+	// and the scroll keys do anything. The global ctrl+c/q/? path above still
+	// works, so `s`/`r`/`R` and other action keys do not run behind the modal.
+	// Scrolling is needed because a snapshot with many paths/excludes can
+	// produce a body taller than the terminal.
+	if m.view == infoView {
+		switch {
+		case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Info):
+			m = m.goBack()
+		case key.Matches(msg, m.keys.Up):
+			m = m.scrollInfo(-1)
+		case key.Matches(msg, m.keys.Down):
+			m = m.scrollInfo(1)
+		case key.Matches(msg, m.keys.PageUp):
+			m = m.scrollInfo(-m.infoVisible())
+		case key.Matches(msg, m.keys.PageDown):
+			m = m.scrollInfo(m.infoVisible())
+		}
+		return m, nil
+	}
+
 	// Browse owns all its non-global keys (including s=shell), so it is routed
 	// before the shared refresh/shell handlers below would steal s.
 	if m.view == browseView {
@@ -171,6 +192,11 @@ func (m Model) goBack() Model {
 		m.view = listView
 	case helpView:
 		m.view = m.prevView
+	case infoView:
+		// info is only reachable from detail, so prevView is unnecessary; the
+		// detail arm above is the only one that clears marks, and infoView
+		// never reaches it, so the mark FIFO survives the round-trip.
+		m.view = detailView
 	}
 	return m
 }

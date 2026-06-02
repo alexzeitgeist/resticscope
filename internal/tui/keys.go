@@ -28,6 +28,7 @@ type keyMap struct {
 	HostToggle key.Binding // find-versions: toggle the host filter on/off
 	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
+	Info       key.Binding // detail: open the full snapshot-info modal
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
@@ -76,6 +77,7 @@ func defaultKeys() keyMap {
 		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
 		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
 		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
+		Info:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
 		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
@@ -107,10 +109,11 @@ func defaultKeys() keyMap {
 // the list, browse the selected snapshot in detail, open directory in browse),
 // so its footer label is overridden per view via enterAs below.
 type viewHelp struct {
-	keys      keyMap
-	view      view
-	filtering bool
-	searching bool // browse global filename search input is open
+	keys           keyMap
+	view           view
+	filtering      bool
+	searching      bool // browse global filename search input is open
+	infoScrollable bool // info modal body overflows; advertise up/down in the footer
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
@@ -125,7 +128,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Info, k.Shell, k.Refresh, k.Back}
 	case browseView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
@@ -133,6 +136,14 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case snapshotDiffView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
 	case helpView:
+		return []key.Binding{k.Back}
+	case infoView:
+		// `i` already advertised itself in the modal header (the "i close"
+		// hint), so the footer carries only the canonical back key — plus the
+		// scroll keys when the body overflows.
+		if h.infoScrollable {
+			return []key.Binding{k.Up, k.Down, k.Back}
+		}
 		return []key.Binding{k.Back}
 	default: // listView
 		return []key.Binding{k.Up, k.Down, enterAs(k, "detail"), k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
@@ -166,7 +177,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{enterAs(k, "browse"), k.Shell, k.Browse},
-			{k.Mark, k.Diff},
+			{k.Mark, k.Diff, k.Info},
 			{k.Refresh, k.Back},
 		}
 	case browseView:
@@ -188,6 +199,15 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Back},
 		}
 	case helpView:
+		return [][]key.Binding{
+			{k.Back},
+		}
+	case infoView:
+		if h.infoScrollable {
+			return [][]key.Binding{
+				{k.Up, k.Down, k.PageUp, k.PageDown, k.Back},
+			}
+		}
 		return [][]key.Binding{
 			{k.Back},
 		}
