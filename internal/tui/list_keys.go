@@ -31,6 +31,11 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.detailName = row.Name
 			m.view = detailView
 			m.snapCursor = 0
+			// Defaults for the detail visit's transient grouping/collapse state.
+			// snapCollapseTree must be set explicitly because Go's bool zero is
+			// false; goBack resets both alongside clearDetailMarks.
+			m.snapGroupMode = snapGroupOff
+			m.snapCollapseTree = true
 		}
 	case key.Matches(msg, m.keys.Filter):
 		m.filtering = true

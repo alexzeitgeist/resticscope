@@ -131,6 +131,14 @@ type Model struct {
 	// every back path goes through the same gate.
 	detailMarks []model.Snapshot
 
+	// Snapshot-table grouping and tree-ID collapse for the detail view. Both are
+	// transient per-detail-visit state: snapGroupMode cycles via `g` (off → host
+	// → tags → paths → off) and snapCollapseTree toggles via `c`. A fresh detail
+	// visit starts with group off and collapse on; goBack on the detail arm
+	// resets both alongside clearDetailMarks so a return to detail starts fresh.
+	snapGroupMode    snapGroupMode
+	snapCollapseTree bool
+
 	// Snapshot-diff view state. Same path-no-persist discipline as findRows and
 	// browseRows: clearSnapshotDiff zeros every diff* field on leaving the view.
 	diffRepo       string

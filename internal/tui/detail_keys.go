@@ -61,6 +61,22 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "no snapshot selected"
 		}
+	case key.Matches(msg, m.keys.Group):
+		// g cycles the detail snapshot table's section grouping
+		// (off → host → tags → paths → off). cycleSnapGroup anchors on the
+		// selected node's head ID so the same snapshot stays selected across
+		// the reorder, then normalizes detail marks against the new display
+		// (a previously visible mark on a now-hidden peer shows on its
+		// absorbing head).
+		m.statusMsg = ""
+		m = m.cycleSnapGroup()
+	case key.Matches(msg, m.keys.Collapse):
+		// c toggles tree-ID collapse on the snapshot table. Same anchor +
+		// normalize discipline as cycleSnapGroup; collapse-on can fold peer
+		// marks into a head mark, collapse-off cannot un-merge them (folded
+		// peers share an identity by construction).
+		m.statusMsg = ""
+		m = m.cycleSnapCollapse()
 	}
 	return m, nil
 }

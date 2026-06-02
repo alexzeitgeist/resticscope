@@ -52,27 +52,26 @@ func (m Model) detailSnapshots() []model.Snapshot {
 	return model.SortedSnapshotsNewestFirst(row.State.Snapshots)
 }
 
+// snapCount is the number of selectable rows in the detail-view snapshot
+// table: nodes in the current snapDisplay, NOT raw snapshots. Collapse folds
+// peers into their head so the count shrinks; grouping never changes it. Both
+// detail_keys cursor bounds and the windowing math reach for this. The meta
+// "Snapshots: N" line wants the raw count and uses State.SnapshotCount
+// directly — do not route it through here.
 func (m Model) snapCount() int {
-	row, _ := m.detailRow()
-	return len(row.State.Snapshots)
+	return len(m.snapDisplay().nodes)
 }
 
 // selectedSnapshot returns the snapshot under the detail cursor, or nil when the
-// repo has none. The cursor is clamped on read so a refresh that shrinks the
-// list can never index out of range.
+// repo has none. A shim over selectedNode that unwraps the head; callers that
+// also need the peer set or the collapse count use selectedNode directly.
 func (m Model) selectedSnapshot() *model.Snapshot {
-	return m.selectedSnapshotFrom(m.detailSnapshots())
-}
-
-func (m Model) selectedSnapshotFrom(snaps []model.Snapshot) *model.Snapshot {
-	if len(snaps) == 0 {
+	n, ok := m.selectedNode()
+	if !ok {
 		return nil
 	}
-	cur := m.snapCursor
-	if cur >= len(snaps) {
-		cur = len(snaps) - 1
-	}
-	return &snaps[cur]
+	head := n.head
+	return &head
 }
 
 func (m Model) detailHeaderView() string {
@@ -88,14 +87,13 @@ func (m Model) detailBody() string {
 	row, _ := m.detailRow()
 	repo, _ := m.repoConfig(row.Name)
 	w, _ := m.effSize()
-	snaps := m.detailSnapshots()
 
 	sections := []string{
 		m.detailMeta(repo, row, w),
-		clip(m.styles.heading.Render(m.snapshotsHeadingText()), w) + "\n" + m.snapshotTable(snaps),
+		clip(m.styles.heading.Render(m.snapshotsHeadingText()), w) + "\n" + m.snapshotTable(),
 	}
 	if m.detailSnapDetailVisible() {
-		if sub := m.snapshotDetail(w, snaps); sub != "" {
+		if sub := m.snapshotDetail(w); sub != "" {
 			sections = append(sections, sub)
 		}
 	}
@@ -133,8 +131,8 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 // calls it only when the repo has snapshots and the panel can fit. Every value
 // is clipped to one line. snapshotDetailLines is the single source of the row
 // set, so detailSnapDetailRows counts it and keeps the window above sized.
-func (m Model) snapshotDetail(width int, snaps []model.Snapshot) string {
-	s := m.selectedSnapshotFrom(snaps)
+func (m Model) snapshotDetail(width int) string {
+	s := m.selectedSnapshot()
 	if s == nil {
 		return ""
 	}
@@ -250,70 +248,215 @@ func (m Model) field(label, value string, width int) string {
 // snapshotsHeadingText is the heading row above the snapshot table. The bare
 // label "Snapshots" gains a marks-status suffix while the diff-mark FIFO is
 // non-empty so the user sees their progress toward a valid pair without losing
-// a body row to a dedicated summary line.
+// a body row to a dedicated summary line. Transient group/collapse state is
+// surfaced as a "· group: host" / "· collapse off" suffix only when it differs
+// from the per-visit defaults, keeping the heading clean for users who never
+// touch g or c.
 func (m Model) snapshotsHeadingText() string {
+	head := "Snapshots"
 	if n := len(m.detailMarks); n > 0 {
-		return fmt.Sprintf("Snapshots · marks: %d/2 · t toggle · d diff", n)
+		head = fmt.Sprintf("Snapshots · marks: %d/2 · t toggle · d diff", n)
 	}
-	return "Snapshots"
+	if lbl := m.snapGroupMode.label(); lbl != "" {
+		head += " · group: " + lbl
+	}
+	if !m.snapCollapseTree {
+		head += " · collapse off"
+	}
+	return head
 }
 
 // snapshotTable renders a column header and a scrolling window of snapshots,
 // newest first, marking the selected row with the accent gutter. The columns size
-// to the terminal width (snapshotLayout) and the window to its height (detailSnapVisible)
-// so the table fills the pane without wrapping. Enter on the selection opens a
-// shell scoped to it.
-func (m Model) snapshotTable(snaps []model.Snapshot) string {
+// to the terminal width (snapshotLayout) and the window to its height
+// (detailSnapVisible) so the table fills the pane without wrapping. Enter on
+// the selection opens a shell scoped to it. The body is a thin dispatcher:
+// empty repos render the "no snapshots" placeholder; grouped displays go
+// through the section-aware path; everything else hits the flat path.
+func (m Model) snapshotTable() string {
 	w, _ := m.effSize()
 	l := snapshotLayout(w)
 	header := clip(m.styles.dim.Render(snapHeader(l)), w)
 
-	if len(snaps) == 0 {
+	d := m.snapDisplay()
+	if len(d.nodes) == 0 {
 		return header + "\n" + clip(m.styles.meta.Render("  no snapshots"), w)
 	}
-
-	cur := m.snapCursor
-	if cur >= len(snaps) {
-		cur = len(snaps) - 1
+	if d.sections == nil {
+		return header + "\n" + m.snapshotTableFlat(d, l, w)
 	}
-	start, end := snapshotWindow(cur, len(snaps), m.detailSnapVisible())
+	return header + "\n" + m.snapshotTableGrouped(d, l, w)
+}
 
-	lines := make([]string, 0, end-start+2)
-	lines = append(lines, header)
+// snapshotRowLine formats one node into a clipped table line with the 2-cell
+// cursor/mark gutter. The gutter carries both the cursor accent (cell 1 = ▎
+// when selected) and the mark glyph (cell 2 = * when this node is in the diff
+// FIFO). Both can show at once (▎*); marks live on the head row even when the
+// mark originally targeted a now-folded peer (isNodeMarked ORs head + peers).
+func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected bool) string {
+	s := node.head
+	size := "—"
+	if s.Summary != nil {
+		size = humanize.Bytes(s.Summary.TotalBytesProcessed)
+	}
+	content := strings.Join(snapCells(l, snapRow{
+		id:    idCell(s.ShortID, node.count),
+		tm:    s.Time.Format("2006-01-02 15:04"),
+		host:  truncate(s.Hostname, l.host),
+		size:  size,
+		added: snapAdded(s),
+		took:  snapTook(s),
+		tags:  truncate(strings.Join(s.Tags, ","), l.tags),
+	}), "  ")
+	left := " "
+	right := " "
+	if selected {
+		left = m.styles.gutter.Render("▎")
+		content = m.styles.selected.Render(content)
+	}
+	if m.isNodeMarked(node) {
+		right = m.styles.chgAdded.Render("*")
+	}
+	return clip(left+right+content, width)
+}
+
+// snapshotTableFlat renders the windowed flat path: the same simple scroll
+// behavior as before grouping existed, but iterating snapDisplay.nodes so
+// collapse can fold consecutive same-tree rows into "(+N)" heads.
+func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string {
+	cur := clampCursor(m.snapCursor, len(d.nodes))
+	start, end := snapshotWindow(cur, len(d.nodes), m.detailSnapVisible())
+
+	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
-		s := snaps[i]
-		size := "—"
-		if s.Summary != nil {
-			size = humanize.Bytes(s.Summary.TotalBytesProcessed)
-		}
-		content := strings.Join(snapCells(l, snapRow{
-			id:    s.ShortID,
-			tm:    s.Time.Format("2006-01-02 15:04"),
-			host:  truncate(s.Hostname, l.host),
-			size:  size,
-			added: snapAdded(s),
-			took:  snapTook(s),
-			tags:  truncate(strings.Join(s.Tags, ","), l.tags),
-		}), "  ")
-		// The 2-cell gutter carries both the cursor accent and the mark glyph:
-		// cell 1 is the cursor bar (▎ when selected), cell 2 is `*` when this
-		// snapshot is in the diff FIFO. Both can show at once (▎*) — the marks
-		// are an orthogonal slot to the cursor.
-		left := " "
-		right := " "
-		if i == cur {
-			left = m.styles.gutter.Render("▎")
-			content = m.styles.selected.Render(content)
-		}
-		if m.isMarked(s.ID) {
-			right = m.styles.chgAdded.Render("*")
-		}
-		lines = append(lines, clip(left+right+content, w))
+		lines = append(lines, m.snapshotRowLine(d.nodes[i], l, width, i == cur))
 	}
-	if (start > 0 || end < len(snaps)) && m.detailWindowNoteVisible(m.detailSnapDetailVisible()) {
-		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(snaps))), w))
+	if (start > 0 || end < len(d.nodes)) && m.detailWindowNoteVisible(m.detailSnapDetailVisible()) {
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(d.nodes))), width))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// snapshotTableGrouped renders the section-aware path: a flattened token
+// stream (heading / blank / row) windowed by groupedWindow so the cursor's
+// heading is always anchored. The line budget excludes the table header and
+// the optional scroll note so the heading-anchored window can't push the
+// selected row off the bottom of the pane.
+func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) string {
+	cur := clampCursor(m.snapCursor, len(d.nodes))
+	tokens, headingPos := buildSnapTokens(d)
+
+	// detailSnapVisible already excludes the scroll-note row from the data-row
+	// budget (detailOverhead bakes the note in when it would be visible), so
+	// max here is the count of body lines we can emit before the optional note.
+	// Headings and blank separators count against this budget in grouped mode —
+	// the user sees fewer data rows when sections take up space, mirroring
+	// renderGroupedList's contract on the list view.
+	max := m.detailSnapVisible()
+	if max < 1 {
+		max = 1
+	}
+
+	if max >= len(tokens) {
+		out := make([]string, 0, len(tokens)+1)
+		for _, t := range tokens {
+			out = append(out, m.renderSnapToken(t, d, cur, l, width))
+		}
+		if note := m.snapTableScrollNote(0, len(d.nodes), len(d.nodes), width); note != "" {
+			out = append(out, note)
+		}
+		return strings.Join(out, "\n")
+	}
+
+	cursorPos := 0
+	for i, t := range tokens {
+		if t.kind == snapTokRow && t.data == cur {
+			cursorPos = i
+			break
+		}
+	}
+
+	// When only one content line fits, render the selected data row alone —
+	// mirrors renderGroupedList. groupedWindow can otherwise return a
+	// heading-only window and hide the selected row.
+	if max == 1 {
+		out := []string{m.renderSnapToken(tokens[cursorPos], d, cur, l, width)}
+		if note := m.snapTableScrollNote(cur, cur+1, len(d.nodes), width); note != "" {
+			out = append(out, note)
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// Find the heading position for the cursor's section by walking sections
+	// in flat-cursor order — same logic as renderGroupedList.
+	cursorSec, rowsBefore := 0, 0
+	for si, sec := range d.sections {
+		if cur < rowsBefore+len(sec.nodes) {
+			cursorSec = si
+			break
+		}
+		rowsBefore += len(sec.nodes)
+	}
+	hPos := headingPos[cursorSec]
+
+	start, end, prependHeading := groupedWindow(cursorPos, hPos, max, len(tokens))
+
+	out := make([]string, 0, max+2)
+	if prependHeading {
+		out = append(out, m.renderSnapToken(tokens[hPos], d, cur, l, width))
+	}
+	for i := start; i < end; i++ {
+		out = append(out, m.renderSnapToken(tokens[i], d, cur, l, width))
+	}
+
+	dataStart, dataEnd := cur, cur+1
+	dataStartFound := false
+	for i := start; i < end; i++ {
+		if tokens[i].kind == snapTokRow {
+			if !dataStartFound {
+				dataStart = tokens[i].data
+				dataStartFound = true
+			}
+			dataEnd = tokens[i].data + 1
+		}
+	}
+	if note := m.snapTableScrollNote(dataStart, dataEnd, len(d.nodes), width); note != "" {
+		out = append(out, note)
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderSnapToken paints one token in the grouped stream: a blank separator,
+// a section heading with its raw snapshot count, or a data row. The heading
+// uses meta style for the noKey fallback section so a real label value that
+// matches the fallback title can't visually merge with it.
+func (m Model) renderSnapToken(t snapTok, d snapDisplay, cur int, l snapLayout, width int) string {
+	switch t.kind {
+	case snapTokBlank:
+		return ""
+	case snapTokHeading:
+		sec := d.sections[t.section]
+		titleStyle := m.styles.heading
+		if sec.noKey {
+			titleStyle = m.styles.meta
+		}
+		title := titleStyle.Render(sec.title) + " " + m.styles.dim.Render(fmt.Sprintf("(%d)", sec.rawCount))
+		return clip(title, width)
+	case snapTokRow:
+		sec := d.sections[t.section]
+		return m.snapshotRowLine(sec.nodes[t.node], l, width, t.data == cur)
+	default:
+		return ""
+	}
+}
+
+// snapTableScrollNote is the snapshot-table variant of group.go's scrollNote:
+// "showing N–M of T" over node counts, or "" when the window covers all nodes.
+func (m Model) snapTableScrollNote(start, end, total, width int) string {
+	if start <= 0 && end >= total {
+		return ""
+	}
+	return clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), width)
 }
 
 // snapLayout describes the snapshot table's variable geometry for a given width:

@@ -23,7 +23,8 @@ type keyMap struct {
 	Filter     key.Binding
 	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
 	Sort       key.Binding
-	Group      key.Binding // list: cycle through the configured group_by keys and a flat view
+	Group      key.Binding // list: cycle group_by keys + flat view; detail: cycle snapshot section grouping (off → host → tags → paths)
+	Collapse   key.Binding // detail: toggle tree-ID collapse on the snapshot table (folds consecutive same-tree rows into "(+N)")
 	Versions   key.Binding // browse: open the find-versions view for the selected file
 	HostToggle key.Binding // find-versions: toggle the host filter on/off
 	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
@@ -73,6 +74,7 @@ func defaultKeys() keyMap {
 		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
 		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
+		Collapse:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "collapse")),
 		Versions:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
 		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
 		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
@@ -128,7 +130,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Info, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Info, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
 	case browseView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
@@ -178,6 +180,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Up, k.Down, k.PageUp, k.PageDown},
 			{enterAs(k, "browse"), k.Shell, k.Browse},
 			{k.Mark, k.Diff, k.Info},
+			{k.Group, k.Collapse},
 			{k.Refresh, k.Back},
 		}
 	case browseView:

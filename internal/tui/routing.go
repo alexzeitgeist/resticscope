@@ -211,8 +211,11 @@ func (m Model) goBack() Model {
 		// Leaving the detail context for the list: drop the mark FIFO so a new
 		// detail visit starts fresh. The diff and browse sub-views take their
 		// own back paths to detail and never reach here, so marks survive
-		// detail ↔ diff and detail ↔ browse round-trips by construction.
+		// detail ↔ diff and detail ↔ browse round-trips by construction. Snap
+		// grouping and collapse mode are visit-scoped too, so reset both here.
 		m = m.clearDetailMarks()
+		m.snapGroupMode = snapGroupOff
+		m.snapCollapseTree = false
 		m.view = listView
 	case helpView:
 		m.view = m.prevView
