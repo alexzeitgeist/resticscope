@@ -512,6 +512,9 @@ func TestGroupedSnapshotMaxOneRendersSelectedRow(t *testing.T) {
 	if !strings.Contains(plain, "b2") {
 		t.Errorf("max=1 grouped renderer must show the selected row b2\n---\n%s", plain)
 	}
+	if strings.Contains(plain, "showing ") {
+		t.Errorf("max=1 grouped renderer must not emit an unreserved scroll note\n---\n%s", plain)
+	}
 }
 
 // --- goBack reset ---

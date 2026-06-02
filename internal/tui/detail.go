@@ -345,6 +345,7 @@ func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string 
 func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) string {
 	cur := clampCursor(m.snapCursor, len(d.nodes))
 	tokens, headingPos := buildSnapTokens(d)
+	showNote := m.detailWindowNoteVisible(m.detailSnapDetailVisible())
 
 	// detailSnapVisible already excludes the scroll-note row from the data-row
 	// budget (detailOverhead bakes the note in when it would be visible), so
@@ -362,7 +363,7 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 		for _, t := range tokens {
 			out = append(out, m.renderSnapToken(t, d, cur, l, width))
 		}
-		if note := m.snapTableScrollNote(0, len(d.nodes), len(d.nodes), width); note != "" {
+		if note := m.snapTableScrollNote(0, len(d.nodes), len(d.nodes), width, showNote); note != "" {
 			out = append(out, note)
 		}
 		return strings.Join(out, "\n")
@@ -381,7 +382,7 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 	// heading-only window and hide the selected row.
 	if max == 1 {
 		out := []string{m.renderSnapToken(tokens[cursorPos], d, cur, l, width)}
-		if note := m.snapTableScrollNote(cur, cur+1, len(d.nodes), width); note != "" {
+		if note := m.snapTableScrollNote(cur, cur+1, len(d.nodes), width, showNote); note != "" {
 			out = append(out, note)
 		}
 		return strings.Join(out, "\n")
@@ -420,7 +421,7 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 			dataEnd = tokens[i].data + 1
 		}
 	}
-	if note := m.snapTableScrollNote(dataStart, dataEnd, len(d.nodes), width); note != "" {
+	if note := m.snapTableScrollNote(dataStart, dataEnd, len(d.nodes), width, showNote); note != "" {
 		out = append(out, note)
 	}
 	return strings.Join(out, "\n")
@@ -452,7 +453,10 @@ func (m Model) renderSnapToken(t snapTok, d snapDisplay, cur int, l snapLayout, 
 
 // snapTableScrollNote is the snapshot-table variant of group.go's scrollNote:
 // "showing N–M of T" over node counts, or "" when the window covers all nodes.
-func (m Model) snapTableScrollNote(start, end, total, width int) string {
+func (m Model) snapTableScrollNote(start, end, total, width int, visible bool) string {
+	if !visible {
+		return ""
+	}
 	if start <= 0 && end >= total {
 		return ""
 	}

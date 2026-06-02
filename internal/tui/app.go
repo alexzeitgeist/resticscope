@@ -134,8 +134,8 @@ type Model struct {
 	// Snapshot-table grouping and tree-ID collapse for the detail view. Both are
 	// transient per-detail-visit state: snapGroupMode cycles via `g` (off → host
 	// → tags → paths → off) and snapCollapseTree toggles via `c`. A fresh detail
-	// visit starts with group off and collapse on; goBack on the detail arm
-	// resets both alongside clearDetailMarks so a return to detail starts fresh.
+	// visit starts with both off; goBack on the detail arm resets both alongside
+	// clearDetailMarks so a return to detail starts fresh.
 	snapGroupMode    snapGroupMode
 	snapCollapseTree bool
 
