@@ -166,7 +166,7 @@ type Model struct {
 
 	diffFilters   model.ModifierKind // bitset of enabled change types; all on by default
 	diffStats     model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
-	diffErr       string             // path-free first line of the diff/restic error
+	diffErr       string             // sticky partial-diff warning rendered with the loaded tree
 	diffParseErrs int                // tolerated malformed diff lines in the completed stream
 	diffLoading   bool               // a diff stream is in flight (navigation paused)
 	diffLoadCount int                // entries seen on the wire while loading (progress UX)

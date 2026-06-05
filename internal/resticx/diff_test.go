@@ -39,6 +39,62 @@ func (f *diffStreamFake) RunStream(ctx context.Context, env []string, password s
 	return f.stderr, f.err
 }
 
+// TestStreamDiffParsesFixture is the diff-side golden test, matching the
+// pattern of TestSnapshotsParsesFixture for snapshots. The fixture is a real
+// restic 0.18 capture (one NDJSON record per change plus a terminal
+// `statistics` envelope) and locks the parser against any drift in the
+// message shape — field names, type semantics, the envelope being on its own
+// line — that would otherwise only surface against a live repo.
+//
+// The current capture only exercises `+` and `M` modifiers; recapturing
+// between snapshots that include a delete (`-`), a `chmod`-only change (`U`),
+// or a file→symlink swap (`T`) would tighten the coverage further.
+func TestStreamDiffParsesFixture(t *testing.T) {
+	fs := &diffStreamFake{data: string(readFixture(t, "restic-0.18-diff.ndjson"))}
+	c := &Client{Stream: fs}
+
+	var entries []model.DiffEntry
+	res, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+		"aa11bb22", "cc33dd44", time.Minute,
+		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil)
+	if err != nil {
+		t.Fatalf("StreamDiff: %v", err)
+	}
+	if res.ParseErrors != 0 {
+		t.Errorf("ParseErrors = %d, want 0 — fixture should parse cleanly", res.ParseErrors)
+	}
+	if len(entries) != 333 {
+		t.Fatalf("entries = %d, want 333 (333 change records; the trailing statistics envelope is skipped, not counted)", len(entries))
+	}
+
+	// Modifier histogram pins the fixture content. If regeneration diversifies
+	// the fixture (add `-`/`U`/`T`/`MU` records), update these counts.
+	counts := map[model.ModifierKind]int{}
+	for _, e := range entries {
+		counts[e.Kinds]++
+	}
+	if got := counts[model.KindModified]; got != 198 {
+		t.Errorf("KindModified count = %d, want 198", got)
+	}
+	if got := counts[model.KindAdded]; got != 135 {
+		t.Errorf("KindAdded count = %d, want 135", got)
+	}
+
+	// The first record locks the leading-/ requirement and the M classification.
+	if first := entries[0]; first.Path != "/etc/app/app.conf" || first.Modifier != "M" || first.Kinds != model.KindModified {
+		t.Errorf("first entry = %+v, want /etc/app/app.conf modifier=M Kinds=KindModified", first)
+	}
+
+	// The `statistics` envelope at the end must be silently skipped (parser
+	// rule: unknown message_type, not a parse error). If a future restic
+	// release changes its envelope or removes the trailing newline, this
+	// assertion plus ParseErrors==0 above is what catches it.
+	last := entries[len(entries)-1]
+	if last.Path == "" || last.Modifier == "" {
+		t.Errorf("last entry looks like the statistics envelope leaked: %+v", last)
+	}
+}
+
 func TestStreamDiffParsesEntries(t *testing.T) {
 	fs := &diffStreamFake{data: strings.Join([]string{
 		`{"message_type":"change","path":"/a","modifier":"+"}`,
@@ -101,12 +157,53 @@ func TestStreamDiffTolerateMalformed(t *testing.T) {
 }
 
 func TestStreamDiffResticFailureClassifies(t *testing.T) {
-	fs := &diffStreamFake{err: fakeExit(10), stderr: []byte("repository does not exist")}
-	c := &Client{Stream: fs}
+	// The diff path must classify exit codes the same way as Snapshots, so a
+	// wrong-password or locked-repo failure surfaces a typed *resticx.Error
+	// instead of leaking the raw exit-status string into the UI. Mirrors
+	// TestClassifyExitCodes on the Snapshots path.
+	tests := []struct {
+		name   string
+		exit   fakeExit
+		stderr string
+		want   ErrorKind
+	}{
+		{"repo not found", fakeExit(10), "repository does not exist", KindRepoNotFound},
+		{"locked", fakeExit(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
+		{"wrong password", fakeExit(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
+		{"unknown exit", fakeExit(1), "some other failure", KindUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := &diffStreamFake{err: tt.exit, stderr: []byte(tt.stderr)}
+			c := &Client{Stream: fs}
+			_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute, nil, nil)
+			var re *Error
+			if !asResticError(err, &re) {
+				t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
+			}
+			if re.Kind != tt.want {
+				t.Errorf("Kind = %v, want %v", re.Kind, tt.want)
+			}
+		})
+	}
+}
+
+// TestStreamDiffMissingBinaryClassifies asserts the diff path classifies a
+// missing `restic` executable exactly like the Snapshots path does — a typed
+// KindBinaryMissing error rather than the bare exec error. This is the same
+// failure mode a user with PATH issues hits, so the surfaced message must be
+// the friendly one.
+func TestStreamDiffMissingBinaryClassifies(t *testing.T) {
+	// ExecRunner with a guaranteed-empty PATH so `restic` cannot be found.
+	t.Setenv("PATH", "")
+	c := &Client{Runner: ExecRunner{}, Stream: ExecRunner{}}
 	_, err := c.StreamDiff(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "o", "n", time.Minute, nil, nil)
 	var re *Error
-	if !asResticError(err, &re) || re.Kind != KindRepoNotFound {
-		t.Fatalf("want KindRepoNotFound, got %v", err)
+	if !asResticError(err, &re) {
+		t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
+	}
+	if re.Kind != KindBinaryMissing {
+		t.Errorf("Kind = %v, want KindBinaryMissing", re.Kind)
 	}
 }
 

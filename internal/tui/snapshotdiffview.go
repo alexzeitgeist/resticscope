@@ -82,31 +82,48 @@ func (m Model) snapshotDiffBody() string {
 }
 
 func (m Model) diffSearchSummary() string {
-	if m.diffSearchTotal == 0 {
-		if strings.TrimSpace(m.diffSearchQuery) == "" {
+	body := diffSearchSummaryBody(m.diffSearchQuery, m.diffSearchTotal, len(m.diffSearchRows))
+	// While search replaces the regular summary line, the partial-stream
+	// warning must still be visible — a user searching a truncated diff and
+	// hitting "(no matches)" needs to know the data is incomplete, otherwise
+	// they'll assume the file isn't there.
+	if m.diffErr != "" {
+		return m.diffErr + " · " + body
+	}
+	return body
+}
+
+func diffSearchSummaryBody(query string, total, shown int) string {
+	if total == 0 {
+		if strings.TrimSpace(query) == "" {
 			return "type to search"
 		}
 		return "(no matches)"
 	}
-	if shown := len(m.diffSearchRows); shown < m.diffSearchTotal {
-		return fmt.Sprintf("showing %d of %d matches", shown, m.diffSearchTotal)
+	if shown < total {
+		return fmt.Sprintf("showing %d of %d matches", shown, total)
 	}
-	return fmt.Sprintf("%d matches", m.diffSearchTotal)
+	return fmt.Sprintf("%d matches", total)
 }
 
 // diffSummaryLine is the status sub-line above the table. While loading it
-// shows the running entry count plus the cancel affordance; on error it
-// surfaces the (path-free) first line; otherwise it reports the top-level
-// totals from diffStats, the directional +/− meaning, and the current filter
-// mask, plus a hint about the filter keys.
+// shows the running entry count plus the cancel affordance; otherwise it
+// reports the top-level totals from diffStats, the directional +/− meaning,
+// and the current filter mask, plus a hint about the filter keys. When the
+// stream failed mid-way and only delivered partial entries, diffErr carries
+// a sticky "partial: …" warning that is *prepended* to the line (not
+// replacing the stats) so the user always sees both the data they have and
+// the fact that it is incomplete. diffSearchSummary, which replaces this
+// line while search is open, prefixes the same warning for the same reason.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading {
 		return fmt.Sprintf("loading… %d changes seen · esc/back cancels", m.diffLoadCount)
 	}
+	parts := make([]string, 0, 6)
 	if m.diffErr != "" {
-		return m.diffErr
+		parts = append(parts, m.diffErr)
 	}
-	parts := []string{diffStatsLabel(m.diffStats, m.diffFilters, m.styles)}
+	parts = append(parts, diffStatsLabel(m.diffStats, m.diffFilters, m.styles))
 	parts = append(parts, diffDirectionLegend()...)
 	if m.diffParseErrs > 0 {
 		parts = append(parts, diffParseErrorLabel(m.diffParseErrs))
@@ -118,8 +135,13 @@ func (m Model) diffSummaryLine() string {
 	return strings.Join(parts, " · ")
 }
 
+// diffDirectionLegend explains the +/− sign convention against the directional
+// arrow rendered in the header. We anchor it on "second snapshot" — the
+// position relative to the arrow — rather than "right" or "newer", because
+// after the `x` swap the right-hand snapshot is the chronologically older
+// one and "right = later in time" would mislead.
 func diffDirectionLegend() []string {
-	return []string{"+ present in right", "- absent from right"}
+	return []string{"+ in second snapshot", "- in first snapshot"}
 }
 
 // diffStatsLabel renders the top-level totals as a compact, colored summary.

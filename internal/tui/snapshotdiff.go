@@ -188,11 +188,21 @@ func (m Model) applySnapshotDiffProgressMsg(msg snapshotDiffProgressMsg) (Model,
 
 // applySnapshotDiffMsg installs the terminal result of a streamed diff. A
 // message whose generation no longer matches is from a superseded or
-// cancelled request and is dropped. On error the path-free first line is
-// surfaced and the view falls back to the detail screen so the user is not
-// stranded on an empty diff. On success BuildDiffTree turns the flat entry
-// stream into the virtual per-dir listing and the cursor lands on the requested
-// diffDir (root for a fresh open, the current dir for a swap).
+// cancelled request and is dropped. On error with a previous tree on screen
+// (swap path) the previous tree is preserved and the error is surfaced in
+// statusMsg (transient, fine here — the user already had a complete tree).
+// On a first-time error with no parsed entries the view falls back to detail
+// so the user is not stranded. On a first-time error with partial entries
+// the partial tree is installed and diffErr carries a sticky "partial: …"
+// warning that rides on the summary line for the lifetime of the tree (and
+// is prefixed onto the search summary while search is open) — dropping
+// thousands of good entries because one late line was malformed would be
+// worse than showing them with a warning, but a transient statusMsg would
+// let the next navigation/filter/search key dismiss the warning and leave
+// an incomplete tree indistinguishable from a complete one.
+// On success BuildDiffTree turns the flat entry stream into the virtual
+// per-dir listing and the cursor lands on the requested diffDir (root for a
+// fresh open, the current dir for a swap).
 func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	if msg.gen != m.diffGen {
 		return m
@@ -200,21 +210,37 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	m.diffLoading = false
 	m = m.cancelSnapshotDiff()
 	if msg.err != nil {
-		m.statusMsg = "diff: " + firstLine(msg.err.Error())
-		m.diffSelectPath = ""
+		// Swap error: keep the previous tree on screen. statusMsg's footer
+		// notice is fine here because the user already had a complete tree;
+		// the warning is about a *failed* swap, not the data on screen.
 		if m.diffTree.Children != nil {
+			m.statusMsg = "diff: " + firstLine(msg.err.Error())
+			m.diffSelectPath = ""
 			return m
 		}
-		m = m.supersedeSnapshotDiff()
-		m.view = detailView
-		return m.clearSnapshotDiff()
+		// First-time error with no entries: nothing to show, bail to detail.
+		if len(msg.entries) == 0 {
+			m.statusMsg = "diff: " + firstLine(msg.err.Error())
+			m.diffSelectPath = ""
+			m = m.supersedeSnapshotDiff()
+			m.view = detailView
+			return m.clearSnapshotDiff()
+		}
+		// First-time error with partial entries: install what we got and
+		// pin the warning to diffErr so it rides on the summary line for
+		// the lifetime of this tree. Putting it in statusMsg would let the
+		// next j/filter/search key silently dismiss it (handleSnapshotDiffKey
+		// clears statusMsg), leaving an incomplete tree indistinguishable
+		// from a complete one.
+		m.diffErr = "partial: " + firstLine(msg.err.Error())
+	} else {
+		m.diffErr = ""
 	}
 	m.diffOlder = msg.older
 	m.diffNewer = msg.newer
 	m.diffEntries = msg.entries
 	m.diffTree = model.BuildDiffTree(msg.entries)
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
-	m.diffErr = ""
 	m.diffParseErrs = msg.result.ParseErrors
 	selectPath := m.diffSelectPath
 	m.diffSelectPath = ""

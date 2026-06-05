@@ -322,6 +322,107 @@ func TestDOpensDiffViewSurfacesParseErrors(t *testing.T) {
 	}
 }
 
+// A first-time diff that fails mid-stream with entries already accumulated
+// must KEEP those entries on screen — dropping thousands of good rows because
+// one late line was malformed would be worse than rendering them with a
+// warning. The warning lives in diffErr (sticky for the tree's lifetime,
+// rendered on the summary line alongside the stats), not in statusMsg —
+// statusMsg is transient and the next j/filter/search key would clear it,
+// leaving an incomplete tree indistinguishable from a complete one.
+func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/var/log/syslog", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		},
+		diffErr: errors.New("scanner: token too long"),
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	if m.view != snapshotDiffView {
+		t.Fatalf("partial-entry error: view = %d, want snapshotDiffView (no bail-to-detail)", m.view)
+	}
+	if m.diffLoading {
+		t.Error("partial-entry error: should clear loading")
+	}
+	if len(m.diffEntries) != 2 {
+		t.Errorf("partial-entry error: diffEntries = %d, want 2 (entries retained)", len(m.diffEntries))
+	}
+	if m.diffStats.Added != 1 || m.diffStats.Modified != 1 {
+		t.Errorf("partial-entry error: stats = %+v, want Added=1 Modified=1", m.diffStats)
+	}
+	if !strings.Contains(m.diffErr, "partial: scanner: token too long") {
+		t.Errorf("partial-entry error: diffErr = %q, want sticky warning prefixed with partial:", m.diffErr)
+	}
+	// The summary line must show BOTH the warning AND the stats — replacing
+	// the stats with just the warning would hide the data the user can act on.
+	summary := m.diffSummaryLine()
+	if !strings.Contains(summary, "partial:") {
+		t.Errorf("summary line missing partial warning: %q", summary)
+	}
+	if !strings.Contains(summary, "+1") || !strings.Contains(summary, "M1") {
+		t.Errorf("summary line lost the stats next to the warning: %q", summary)
+	}
+
+	// Stickiness: the warning must survive — and remain VISIBLE — across
+	// navigation, filter, and search keys. statusMsg gets cleared by
+	// handleSnapshotDiffKey on every normal key; diffErr does not. Search
+	// mode replaces the regular summary line with diffSearchSummary, which
+	// must also surface the warning (a user finding "(no matches)" against
+	// an incomplete diff would otherwise wrongly conclude the file is
+	// absent). We assert against View() because it's the ground truth the
+	// user actually sees — checking m.diffSummaryLine() alone would have
+	// silently passed the search-mode gap.
+	for _, k := range []string{"j", "k", "+", "/"} {
+		next, _ := m.Update(press(k))
+		m = next.(Model)
+		if !strings.Contains(m.diffErr, "partial:") {
+			t.Errorf("after pressing %q the partial warning was lost (diffErr = %q)", k, m.diffErr)
+		}
+		if view := m.View().Content; !strings.Contains(view, "partial:") {
+			t.Errorf("after pressing %q the rendered view dropped the partial warning\n---\n%s", k, view)
+		}
+	}
+}
+
+// A first-time diff that fails with no entries at all has nothing to render,
+// so the view must bail back to detail with the error in statusMsg. This is
+// the path the partial-entry retention deliberately does NOT take.
+func TestSnapshotDiffFirstTimeErrorWithNoEntriesBailsToDetail(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps:   []model.Snapshot{{Hostname: "h"}},
+		diffErr: errors.New("wrong password"),
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	if m.view != detailView {
+		t.Fatalf("empty-result error: view = %d, want detailView (must bail)", m.view)
+	}
+	if len(m.diffEntries) != 0 {
+		t.Errorf("empty-result error: diffEntries = %d, want 0 (cleared)", len(m.diffEntries))
+	}
+	if !strings.Contains(m.statusMsg, "diff: wrong password") {
+		t.Errorf("empty-result error: statusMsg = %q, want failure notice", m.statusMsg)
+	}
+}
+
 func TestSnapshotDiffSummaryShowsDirectionLegend(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -340,7 +441,7 @@ func TestSnapshotDiffSummaryShowsDirectionLegend(t *testing.T) {
 	m = drivePastDiff(t, m, cmd)
 
 	got := m.diffSummaryLine()
-	for _, want := range []string{"+ present in right", "- absent from right"} {
+	for _, want := range []string{"+ in second snapshot", "- in first snapshot"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary = %q, want %q", got, want)
 		}
@@ -1094,5 +1195,100 @@ func TestSnapshotDiffViewRenders(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("diff view missing %q\n---\n%s", want, view)
 		}
+	}
+}
+
+// The search summary's two empty-state branches are user-visible feedback;
+// without coverage a future change could silently regress them to "0 matches"
+// or a blank line. Opening search with no query must render the prompt;
+// typing a query that hits nothing must render the no-match notice.
+func TestSnapshotDiffSearchSummaryEmptyStates(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	m = openDiffSearch(t, m)
+	if got := m.diffSearchSummary(); got != "type to search" {
+		t.Errorf("empty-query summary = %q, want %q", got, "type to search")
+	}
+	if view := m.View().Content; !strings.Contains(view, "type to search") {
+		t.Errorf("rendered view missing the empty-query prompt\n---\n%s", view)
+	}
+
+	m = typeDiffSearch(t, m, "zzznomatch")
+	if got := m.diffSearchSummary(); got != "(no matches)" {
+		t.Errorf("no-match summary = %q, want %q", got, "(no matches)")
+	}
+	if view := m.View().Content; !strings.Contains(view, "(no matches)") {
+		t.Errorf("rendered view missing the no-match notice\n---\n%s", view)
+	}
+}
+
+// A user hitting ctrl+c with a diff stream still in flight must cancel that
+// stream — leaving the restic subprocess running past the UI's exit would
+// outlive the password fd's lifetime and burn S3 budget. blockingRestic
+// stalls in StreamDiff until cancelled, so a clean exit here proves the
+// HardQuit cascade reaches the diff context.
+func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
+	a := detailApp(t)
+	started := make(chan struct{})
+	a.Restic = blockingRestic{started: started}
+	m := newTestModel(t, a)
+
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	if !m.diffLoading {
+		t.Fatal("precondition: diff should be loading after d")
+	}
+	if m.view != snapshotDiffView {
+		t.Fatalf("precondition: view = %d, want snapshotDiffView", m.view)
+	}
+	if cmd == nil {
+		t.Fatal("expected a diff command")
+	}
+
+	// Run every leaf concurrently — one blocks in restic, another waits on the
+	// progress channel. We only forward the terminal snapshotDiffMsg, so a wait
+	// leaf returning nil doesn't satisfy the assertion below.
+	done := make(chan tea.Msg, 1)
+	for _, c := range leafCmds(t, cmd) {
+		c := c
+		go func() {
+			if msg, ok := c().(snapshotDiffMsg); ok {
+				done <- msg
+			}
+		}()
+	}
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("diff stream never reached restic")
+	}
+
+	// ctrl+c cancels m.ctx; dispatchSnapshotDiff's WithCancel child rides on top
+	// of m.ctx so the cancel cascades into blockingRestic.StreamDiff's ctx.
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("diff stream did not unblock after ctrl+c cancelled the context")
 	}
 }
