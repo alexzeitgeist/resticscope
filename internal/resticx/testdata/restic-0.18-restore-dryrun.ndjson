@@ -1,0 +1,10 @@
+{"message_type":"verbose_status","action":"restored","item":"/bigblob.bin","size":268435456}
+{"message_type":"verbose_status","action":"restored","item":"/conf.d/gzip.conf","size":9}
+{"message_type":"verbose_status","action":"restored","item":"/conf.d/ssl.conf","size":23}
+{"message_type":"verbose_status","action":"restored","item":"/nginx.conf","size":38}
+{"message_type":"verbose_status","action":"restored","item":"/sites-enabled/api","size":23}
+{"message_type":"verbose_status","action":"restored","item":"/sites-enabled/default","size":22}
+{"message_type":"verbose_status","action":"restored","item":"/active.conf","size":0}
+{"message_type":"verbose_status","action":"restored","item":"/conf.d","size":0}
+{"message_type":"verbose_status","action":"restored","item":"/sites-enabled","size":0}
+{"message_type":"summary","total_files":9,"files_restored":9,"total_bytes":268435571,"bytes_restored":268435571}

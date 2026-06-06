@@ -20,6 +20,7 @@ const (
 	KindTimeout                 // context deadline exceeded
 	KindParse                   // restic ran but its JSON could not be parsed
 	KindCanceled                // the caller cancelled the context
+	KindPartial                 // restic completed but some items failed (e.g. a partial restore)
 )
 
 // Error is a classified restic failure. Its message is a clear diagnostic
@@ -49,6 +50,8 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("restic %s: could not parse JSON output: %v", e.Op, e.wrapped)
 	case KindCanceled:
 		return fmt.Sprintf("restic %s: canceled", e.Op)
+	case KindPartial:
+		return fmt.Sprintf("restic %s: completed with errors (partial restore)", e.Op)
 	default:
 		if e.Stderr != "" {
 			return fmt.Sprintf("restic %s failed: %v (stderr: %s)", e.Op, e.wrapped, e.Stderr)
