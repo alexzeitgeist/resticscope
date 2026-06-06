@@ -27,6 +27,12 @@ const (
 	defaultBrowseIndexTimeout = 10 * time.Minute
 	defaultBrowseMaxDiskBytes = 2 << 30
 	defaultDiffTimeout        = 10 * time.Minute
+
+	// Extract copies data out of a backup with a read-only restic invocation. A
+	// large tree can take minutes, so its timeout is likewise generous, and its
+	// output lands under target_root by default.
+	defaultExtractTimeout    = 30 * time.Minute
+	defaultExtractTargetRoot = "~/resticscope-extracts"
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -69,6 +75,10 @@ func Decode(data []byte) (*Config, error) {
 			MaxDiskBytes: defaultBrowseMaxDiskBytes,
 		},
 		Diff: Diff{Timeout: Duration(defaultDiffTimeout)},
+		Extract: Extract{
+			TargetRoot:     defaultExtractTargetRoot,
+			ExtractTimeout: Duration(defaultExtractTimeout),
+		},
 	}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
@@ -128,6 +138,13 @@ func (c *Config) Normalize(home string) {
 	} else {
 		g.LogFile = expandPath(g.LogFile, home)
 	}
+
+	// Extract output base and timeout are both seeded in Decode (not here) so an
+	// explicit empty `target_root` / explicit-zero `extract_timeout` is
+	// distinguishable from an omitted key: it overwrites the seed, survives to
+	// validation, and is rejected there rather than silently defaulted. Here we
+	// only expand ~, mirroring CacheDir.
+	c.Extract.TargetRoot = expandPath(c.Extract.TargetRoot, home)
 
 	for i := range c.Repos {
 		if c.Repos[i].BucketLookup == "" {

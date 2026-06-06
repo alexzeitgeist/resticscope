@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -96,6 +97,7 @@ func (c *Config) Validate() error {
 
 	errs = append(errs, c.validateBrowse()...)
 	errs = append(errs, c.validateDiff()...)
+	errs = append(errs, c.validateExtract()...)
 
 	return errors.Join(errs...)
 }
@@ -104,6 +106,28 @@ func (c *Config) validateDiff() []error {
 	var errs []error
 	if c.Diff.Timeout <= 0 {
 		errs = append(errs, fmt.Errorf("diff.timeout must be a positive duration, got %q", c.Diff.Timeout.Std()))
+	}
+	return errs
+}
+
+// validateExtract checks the extract output base and timeout. target_root is
+// seeded in Decode and only ~-expanded in Normalize, so an omitted key arrives
+// here as the default (absolute) path, while an explicit empty or relative value
+// survives to be rejected as a config error. Error messages name the key and the
+// kind of failure but never echo the user's path — the privacy discipline that
+// governs extract source/destination paths starts at config time. extract_timeout
+// is likewise seeded pre-decode, so a value reaching here at <= 0 was set
+// explicitly and is rejected rather than silently defaulted.
+func (c *Config) validateExtract() []error {
+	var errs []error
+	switch root := c.Extract.TargetRoot; {
+	case root == "":
+		errs = append(errs, errors.New("extract.target_root must not be empty"))
+	case !filepath.IsAbs(root):
+		errs = append(errs, errors.New("extract.target_root must be an absolute path (~ is expanded against $HOME)"))
+	}
+	if c.Extract.ExtractTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("extract.extract_timeout must be a positive duration, got %q", c.Extract.ExtractTimeout.Std()))
 	}
 	return errs
 }
