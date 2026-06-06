@@ -43,6 +43,14 @@ func (r *recordingRestic) StreamDiff(ctx context.Context, t resticx.Target, c re
 	return model.SnapshotDiff{}, nil
 }
 
+func (r *recordingRestic) ExtractTree(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error {
+	return nil
+}
+
+func (r *recordingRestic) ExtractBytes(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractBytesParams, onProgress func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error) {
+	return resticx.ExtractBytesResult{}, nil
+}
+
 func (r *recordingRestic) target(name string) (resticx.Target, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

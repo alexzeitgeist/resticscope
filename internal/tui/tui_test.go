@@ -167,6 +167,16 @@ func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Cr
 	return model.SnapshotDiff{ParseErrors: s.diffParseErrors}, nil
 }
 
+// ExtractTree / ExtractBytes satisfy app.Restic; the tui tests don't exercise
+// the extract orchestrator directly, so the stub is a no-op success.
+func (s stubRestic) ExtractTree(_ context.Context, _ resticx.Target, _ resticx.Creds, _ resticx.ExtractTreeParams, _ func(resticx.ExtractTreeEvent) error) error {
+	return nil
+}
+
+func (s stubRestic) ExtractBytes(_ context.Context, _ resticx.Target, _ resticx.Creds, _ resticx.ExtractBytesParams, _ func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error) {
+	return resticx.ExtractBytesResult{}, nil
+}
+
 // blockingRestic stalls in Snapshots until its context is cancelled, modeling a
 // restic call still running when the user quits. It closes started once so a
 // test can wait until the refresh has actually reached restic.
@@ -202,6 +212,20 @@ func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ rest
 	close(b.started)
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()
+}
+
+// ExtractTree / ExtractBytes block until cancelled, mirroring the other blocking
+// flows, so a test could prove q/esc cancels a running extract.
+func (b blockingRestic) ExtractTree(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ resticx.ExtractTreeParams, _ func(resticx.ExtractTreeEvent) error) error {
+	close(b.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (b blockingRestic) ExtractBytes(ctx context.Context, _ resticx.Target, _ resticx.Creds, _ resticx.ExtractBytesParams, _ func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error) {
+	close(b.started)
+	<-ctx.Done()
+	return resticx.ExtractBytesResult{}, ctx.Err()
 }
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
