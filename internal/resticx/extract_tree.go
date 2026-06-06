@@ -46,7 +46,7 @@ const extractTreeStreamBuffer = 1 << 16
 
 // extractPathMask replaces a source/target path fragment scrubbed out of restic
 // stderr before it can enter a returned *Error. It carries no '/', so it never
-// trips sanitizeExtractStderr's residual-path guard.
+// trips scrubExtractStderr's residual-path guard.
 const extractPathMask = "[path]"
 
 // snapshotIDHexLen is restic's full snapshot ID length: a SHA-256 digest in
@@ -326,20 +326,28 @@ func assertCleanSource(src string) error {
 	return nil
 }
 
-// sanitizeExtractStderr prepares restic stderr to be safe inside a returned
-// *Error: it redacts secrets, masks the source/target fragments the redactor
-// does not know about, then applies a conservative residual-path guard. Any '/'
-// surviving the masking may be an un-enumerated path (a sibling item restic
-// named, the repo URL, /dev/fd/3), which we cannot prove path-free, so the whole
-// stderr is dropped. Only KindUnknown renders Stderr, so the lost detail is a
-// deliberate privacy trade. classify re-runs the redactor on the result, which
-// is a no-op on already-masked text.
+// sanitizeExtractStderr prepares restic restore stderr to be safe inside a
+// returned *Error by scrubbing the tree-extract source/target fragments. The
+// shared scrubExtractStderr does the redact/mask/residual-path work.
 func (c *Client) sanitizeExtractStderr(stderr []byte, p ExtractTreeParams) []byte {
+	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target))
+}
+
+// scrubExtractStderr makes restic stderr safe to embed in a returned *Error and
+// is shared by both extract wrappers (tree and bytes) so the privacy rule has a
+// single implementation. It redacts secrets, masks the supplied path fragments
+// the redactor does not know about, then applies a conservative residual-path
+// guard: any '/' surviving the masking may be an un-enumerated path (a sibling
+// item restic named, the repo URL, /dev/fd/3), which we cannot prove path-free,
+// so the whole stderr is dropped. Only KindUnknown renders Stderr, so the lost
+// detail is a deliberate privacy trade. classify re-runs the redactor on the
+// result, which is a no-op on already-masked text.
+func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 	s := string(stderr)
 	if c.Redact != nil {
 		s = c.Redact(s)
 	}
-	for _, frag := range extractTreePathFragments(p) {
+	for _, frag := range frags {
 		if frag != "" {
 			s = strings.ReplaceAll(s, frag, extractPathMask)
 		}
@@ -350,17 +358,18 @@ func (c *Client) sanitizeExtractStderr(stderr []byte, p ExtractTreeParams) []byt
 	return []byte(s)
 }
 
-// extractTreePathFragments lists the path strings to scrub from stderr: the full
+// extractPathFragments lists the path strings to scrub from stderr: the full
 // source and target plus their basenames (restic often reports just the leaf or
 // the staging-dir name). The longer fragments are listed first so a basename is
-// only matched where the full path did not already cover it.
-func extractTreePathFragments(p ExtractTreeParams) []string {
+// only matched where the full path did not already cover it. Shared by the tree
+// and bytes wrappers.
+func extractPathFragments(source, target string) []string {
 	frags := make([]string, 0, 4)
-	if p.Target != "" {
-		frags = append(frags, p.Target, filepath.Base(p.Target))
+	if target != "" {
+		frags = append(frags, target, filepath.Base(target))
 	}
-	if p.Source != "" && p.Source != "/" {
-		frags = append(frags, p.Source, filepath.Base(p.Source))
+	if source != "" && source != "/" {
+		frags = append(frags, source, filepath.Base(source))
 	}
 	return frags
 }
