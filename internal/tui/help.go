@@ -114,6 +114,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Parent), "parent directory"},
 			{keyLabel(k.Search), "search filenames"},
 			{keyLabel(k.Versions), "file versions across snapshots"},
+			{keyLabel(k.Extract), "extract file/dir"},
 			{keyLabel(k.Sort), "cycle sort order"},
 			{keyLabel(k.Shell), "shell at snapshot"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},

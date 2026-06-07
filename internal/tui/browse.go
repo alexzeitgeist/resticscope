@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"path"
 	"time"
 
@@ -385,8 +386,51 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 	case key.Matches(msg, m.keys.Versions):
 		next, cmd := m.openBrowseVersions()
 		return next, cmd, true
+	case key.Matches(msg, m.keys.Extract):
+		next, cmd := m.openExtract()
+		return next, cmd, true
 	}
 	return m, nil, false
+}
+
+// openExtract launches the extract modal for the selected browse entry. Browse's
+// row listing is children-only (00-framework.md §22), so the selection is always
+// a non-root file or directory; the Source == "/" full-snapshot path is reserved
+// for the deferred detail-view entry point and is unreachable here. Symlinks and
+// special nodes are rejected with a path-free notice and no view change; a
+// path-planning or setup error likewise stays in browse. Only a clean
+// construction switches to extractView. The sub-model's parentCtx is m.ctx — the
+// program-scoped op context — so quitting cascades the cancel into any in-flight
+// extract, while leaving just the modal cancels only the extract (clearTransient
+// supersedes its per-op context on the way out).
+func (m Model) openExtract() (Model, tea.Cmd) {
+	e := m.selectedBrowseEntry()
+	if e == nil {
+		return m, nil
+	}
+	req, err := extractRequestFromBrowseEntry(m.browseRepo, m.browseSnapshot, *e)
+	if err != nil {
+		if errors.Is(err, ErrExtractUnsupportedType) {
+			m.browseNotice = "extract: this entry type is not supported (extract the parent directory instead)"
+		} else {
+			// Path-free by construction: extractRequestFromBrowseEntry's other
+			// errors name a shape problem ("snapshot id too short", "slug is
+			// empty"), never the source path.
+			m.browseNotice = "extract: " + firstLine(err.Error())
+		}
+		return m, nil
+	}
+	sub, err := newExtractModel(m.app, m.ctx, req, e.Size)
+	if err != nil {
+		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
+		// offending field, so the notice carries no path either.
+		m.browseNotice = "extract: " + firstLine(err.Error())
+		return m, nil
+	}
+	m.browseNotice = ""
+	m.extract = sub
+	m.view = extractView
+	return m, nil
 }
 
 func (m Model) openBrowseSearchInput() Model {

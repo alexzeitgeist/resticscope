@@ -142,7 +142,13 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case detailView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Info, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
 	case browseView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell, k.Back}
+		// The compact footer is width-bound, and browse already fills it. Collapse
+		// the two cursor-movement bindings into one "↑/↓ move" entry so the extract
+		// action fits alongside the existing browse keys without clipping
+		// shell/back on an ~100-col terminal. j/k still move (the ? overlay lists
+		// them); only the footer hint is condensed.
+		move := key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
+		return []key.Binding{move, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
@@ -201,7 +207,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Sort, k.Shell},
+			{enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell},
 			{k.Back},
 		}
 	case findVersionsView:

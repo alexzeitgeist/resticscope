@@ -1020,6 +1020,203 @@ func TestDetailFooterBrowseWording(t *testing.T) {
 	}
 }
 
+// --- browse → extract wiring (step 07) ---
+
+// extractTestSnapID is a real 64-hex restic snapshot id, the shape
+// PlanExtractPaths requires; the browse `e` dispatch passes m.browseSnapshot
+// straight through, so the test snapshot must be well-formed.
+const extractTestSnapID = "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
+
+// extractBrowseModel parks a Model in browseView with a valid [extract] config, a
+// real 64-hex snapshot, and the given rows under the cursor — the exact state an
+// `e` press needs. It bypasses the full index/list flow (covered by the
+// browse-open tests) to isolate the extract dispatch.
+func extractBrowseModel(t *testing.T, rows []model.BrowseEntry, cursor int) Model {
+	t.Helper()
+	a := extractApp(t)
+	m := newTestModel(t, a)
+	m.view = browseView
+	m.browseRepo = "repo-a"
+	m.browseSnapshot = extractTestSnapID
+	m.browseIndexed = true
+	m.browseRows = rows
+	m.browseCursor = cursor
+	return m
+}
+
+// e on a directory row opens the extract sub-model in directory-tree mode, with
+// every request field derived from the selection and the snapshot pinned by
+// browse. TargetRoot stays empty so the app layer applies the cfg default.
+func TestBrowseExtractDirectoryOpensSubModel(t *testing.T) {
+	m := extractBrowseModel(t, []model.BrowseEntry{
+		{Path: "/etc/nginx", Name: "nginx", Type: "dir", IsDir: true, Size: 4096},
+	}, 0)
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e on a directory should open extractView, view = %d", m.view)
+	}
+	req := m.extract.req
+	if req.Mode != app.ExtractDirectoryTree {
+		t.Errorf("Mode = %v, want ExtractDirectoryTree", req.Mode)
+	}
+	if req.WasRegularFile {
+		t.Error("a directory must not be flagged WasRegularFile")
+	}
+	if want := model.CleanBrowsePath("/etc/nginx"); req.Source != want {
+		t.Errorf("Source = %q, want %q", req.Source, want)
+	}
+	if req.SourceName != "nginx" {
+		t.Errorf("SourceName = %q, want nginx", req.SourceName)
+	}
+	if req.TargetRoot != "" {
+		t.Errorf("TargetRoot = %q, want empty (cfg default)", req.TargetRoot)
+	}
+	if req.Repo != "repo-a" {
+		t.Errorf("Repo = %q, want repo-a", req.Repo)
+	}
+	if req.SnapshotID != extractTestSnapID {
+		t.Errorf("SnapshotID = %q, want %q", req.SnapshotID, extractTestSnapID)
+	}
+	if req.SnapshotShort != extractTestSnapID[:8] {
+		t.Errorf("SnapshotShort = %q, want %q", req.SnapshotShort, extractTestSnapID[:8])
+	}
+	if m.extract.srcSize != 4096 {
+		t.Errorf("srcSize = %d, want 4096 (carried from BrowseEntry.Size)", m.extract.srcSize)
+	}
+}
+
+// e on a regular-file row opens the sub-model in file-bytes mode with
+// WasRegularFile set, so the app layer routes restic dump rather than restore.
+func TestBrowseExtractFileOpensSubModel(t *testing.T) {
+	m := extractBrowseModel(t, []model.BrowseEntry{
+		{Path: "/etc/hosts", Name: "hosts", Type: "file", Size: 412},
+	}, 0)
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e on a file should open extractView, view = %d", m.view)
+	}
+	req := m.extract.req
+	if req.Mode != app.ExtractFileBytes {
+		t.Errorf("Mode = %v, want ExtractFileBytes", req.Mode)
+	}
+	if !req.WasRegularFile {
+		t.Error("a regular file must set WasRegularFile")
+	}
+	if req.SourceName != "hosts" {
+		t.Errorf("SourceName = %q, want hosts", req.SourceName)
+	}
+	if m.extract.srcSize != 412 {
+		t.Errorf("srcSize = %d, want 412", m.extract.srcSize)
+	}
+}
+
+// e on a symlink / device / fifo / socket row is rejected: a path-free
+// status-line notice, no view change, and no sub-model constructed. Browse's
+// listing is children-only, so the snapshot-root path is never reachable here
+// (00-framework.md §22) and needs no separate guard.
+func TestBrowseExtractRejectsUnsupportedTypes(t *testing.T) {
+	for _, typ := range []string{"symlink", "dev", "char", "fifo", "socket"} {
+		t.Run(typ, func(t *testing.T) {
+			m := extractBrowseModel(t, []model.BrowseEntry{
+				{Path: "/dev/thing", Name: "thing", Type: typ},
+			}, 0)
+
+			m = update(t, m, press("e"))
+
+			if m.view != browseView {
+				t.Errorf("e on a %q entry should stay in browse, view = %d", typ, m.view)
+			}
+			if !strings.Contains(m.browseNotice, "not supported") {
+				t.Errorf("expected an unsupported-type notice, got %q", m.browseNotice)
+			}
+			if m.extract.req.Source != "" {
+				t.Errorf("no sub-model should be built on rejection; req = %+v", m.extract.req)
+			}
+			// Privacy: the rejection notice must never echo the entry path.
+			if strings.Contains(m.browseNotice, "thing") {
+				t.Errorf("rejection notice leaked the entry name/path: %q", m.browseNotice)
+			}
+		})
+	}
+}
+
+// Quitting the program while an extract is in flight cancels it: the sub-model's
+// per-op context is a child of the program op-context (m.ctx) the `e` dispatch
+// passes as parentCtx, so a hard quit cascades the cancel and the worker
+// unblocks. This is the same cascade the browse-index quit test asserts.
+func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
+	m := extractBrowseModel(t, []model.BrowseEntry{
+		{Path: "/etc/hosts", Name: "hosts", Type: "file", Size: 1},
+	}, 0)
+	m = update(t, m, press("e")) // builds the sub-model with parentCtx = m.ctx
+	if m.view != extractView {
+		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
+	}
+
+	// Swap in a blocking driver so the live run hangs until the context fires.
+	drv := &fakeExtractDriver{}
+	block := make(chan struct{})
+	defer close(block)
+	drv.push(extractResp{blockOn: block, err: context.Canceled})
+	m.extract.drv = drv
+
+	// File source: enter → preview (no restic call), g → running (starts Extract).
+	m = update(t, m, press("enter"))
+	if m.extract.state != extractStatePreview {
+		t.Fatalf("precondition: enter on file review should reach preview, state = %v", m.extract.state)
+	}
+	next, cmd := m.Update(press("g"))
+	m = next.(Model)
+	if m.extract.state != extractStateRunning {
+		t.Fatalf("precondition: g should start the run, state = %v", m.extract.state)
+	}
+
+	// Run the worker leaf in a goroutine; it blocks in Extract until the per-op
+	// context cancels. The progress pump leaf returns nil once the run closes its
+	// channel, so we filter for the worker's done message only.
+	done := make(chan tea.Msg, 1)
+	for _, c := range leafCmds(t, cmd) {
+		c := c
+		go func() {
+			if msg, ok := c().(extractRunDoneMsg); ok {
+				done <- msg
+			}
+		}()
+	}
+
+	// Hard quit cancels m.ctx, which the extract's per-op child context inherits.
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("extract did not unblock after quit cancelled the context")
+	}
+}
+
+// The browse footer advertises the extract action so it is discoverable in
+// context. Rendered wide so the full short-help line is visible.
+func TestBrowseFooterAdvertisesExtract(t *testing.T) {
+	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "e extract") {
+		t.Errorf("browse footer should advertise 'e extract'\n---\n%s", footer)
+	}
+}
+
+// The extract action is bound to the single key `e`.
+func TestExtractKeyBoundToE(t *testing.T) {
+	keys := defaultKeys().Extract.Keys()
+	if len(keys) != 1 || keys[0] != "e" {
+		t.Errorf("Extract binding keys = %v, want [e]", keys)
+	}
+}
+
 // --- browse sort ---
 
 // sortBrowseApp builds a browse app whose root directory holds one dir plus three
