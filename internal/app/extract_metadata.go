@@ -16,10 +16,13 @@ package app
 //   - ownership reset to the effective uid/gid (a no-op when already correct;
 //     a hard failure when it differs and cannot be changed).
 //   - xattrs/ACLs removed via the l* (no-follow) calls; a filesystem that reports
-//     xattrs unsupported is skipped, not failed.
-//   - mtimes normalized to one baseline instant.
+//     xattrs unsupported — or a single attribute it refuses to remove — is
+//     skipped and counted, not failed (documented v1 tolerance).
+//   - mtimes normalized to one baseline instant, including symlinks (via the
+//     no-follow unix.Lutimes; the link target is never touched).
 //   - symlinks kept only when their target is relative and cannot escape the
-//     extracted tree after lexical cleaning; never followed, never chmod'd.
+//     extracted tree after lexical cleaning; never followed, never chmod'd, but
+//     their own timestamps are reset like every other node.
 //   - devices/fifos/sockets and any other node type rejected.
 //
 // Every failure returns a path-free ErrExtractMetadataNormalization; the caller
@@ -45,7 +48,7 @@ type extractMetaCounts struct {
 	Files         int // regular files normalized
 	Dirs          int // directories normalized (excludes the staging root)
 	XattrsRemoved int
-	Skipped       int // entries whose filesystem reported xattrs unsupported
+	Skipped       int // xattrs left in place because the fs reported them unsupported
 }
 
 // normalizeExtractTreeMetadata walks root (the staging dir) and normalizes every
@@ -82,7 +85,18 @@ func normalizeExtractNode(ctx context.Context, root, p string, baseline time.Tim
 		if err := chownToEffective(p, st, euid, egid, true); err != nil {
 			return err
 		}
-		return removeXattrs(p, counts)
+		if err := removeXattrs(p, counts); err != nil {
+			return err
+		}
+		// Reset the symlink's own timestamps to the baseline like every other
+		// node. os.Chtimes would follow the link (and re-time its target); Lutimes
+		// is guaranteed no-follow on linux/darwin, the only platforms this gate
+		// builds for, so the link's target is never touched.
+		tv := unix.NsecToTimeval(baseline.UnixNano())
+		if err := unix.Lutimes(p, []unix.Timeval{tv, tv}); err != nil {
+			return metaErr(err)
+		}
+		return nil
 
 	case mode.IsDir():
 		// Force the directory owner-traversable before reading it: restic restores
@@ -194,11 +208,21 @@ func removeXattrs(p string, counts *extractMetaCounts) error {
 	}
 	for _, name := range names {
 		if err := unix.Lremovexattr(p, name); err != nil {
-			if isXattrUnsupported(err) || err == unix.ENODATA {
-				// Unsupported, or the attribute vanished between list and remove.
+			switch {
+			case isXattrUnsupported(err):
+				// The filesystem listed the attribute but refuses to remove it
+				// (rare; e.g. an immutable system/namespace attr). v1 policy is to
+				// tolerate it: count it as skipped rather than fail the whole
+				// extract. A surviving xattr here is an accepted, documented v1
+				// trade-off, not a normalization failure.
+				counts.Skipped++
 				continue
+			case err == unix.ENODATA:
+				// Vanished between list and remove — already gone, nothing to count.
+				continue
+			default:
+				return metaErr(err)
 			}
-			return metaErr(err)
 		}
 		counts.XattrsRemoved++
 	}

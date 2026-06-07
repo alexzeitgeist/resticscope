@@ -64,7 +64,7 @@ type ExtractRequest struct {
 	Source string
 
 	// SourceName is the sanitized basename forming the per-op subdir. The app
-	// layer re-asserts SourceName == sanitizeExtractSlug(path.Base(Source)) (or ==
+	// layer re-asserts SourceName == SanitizeExtractSlug(path.Base(Source)) (or ==
 	// SnapshotShort for the root source) so a caller-supplied slug cannot be
 	// attached to the wrong source.
 	SourceName string
@@ -159,11 +159,12 @@ var extractSnapshotShortRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
 // not after resticx rejects it at dispatch.
 var extractSnapshotIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// sanitizeExtractSlug keeps [a-zA-Z0-9._-], collapses any run of other bytes to a
+// SanitizeExtractSlug keeps [a-zA-Z0-9._-], collapses any run of other bytes to a
 // single "-", trims leading "-"/"." (so no dotfile or "-leading" path element is
-// produced), and caps the result at 64 bytes. An empty result is an error. Step
-// 05's sanitizeSlug must match this rule byte-for-byte.
-func sanitizeExtractSlug(s string) (string, error) {
+// produced), and caps the result at 64 bytes. An empty result is an error. It is
+// exported so the TUI (layer 3) builds SourceName with the exact rule
+// PlanExtractPaths re-asserts, eliminating a byte-for-byte duplicate.
+func SanitizeExtractSlug(s string) (string, error) {
 	var b strings.Builder
 	dash := false
 	for _, r := range s {
@@ -196,7 +197,7 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 	if req.Repo == "" {
 		return "", "", invalidExtractRequest("repo")
 	}
-	repoSlug, err := sanitizeExtractSlug(req.Repo)
+	repoSlug, err := SanitizeExtractSlug(req.Repo)
 	if err != nil {
 		return "", "", invalidExtractRequest("repo")
 	}
@@ -230,7 +231,7 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 	if req.Source == "/" {
 		wantName = req.SnapshotShort
 	} else {
-		base, berr := sanitizeExtractSlug(path.Base(req.Source))
+		base, berr := SanitizeExtractSlug(path.Base(req.Source))
 		if berr != nil {
 			return "", "", invalidExtractRequest("source")
 		}
@@ -395,6 +396,13 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	}
 	result.FinalDir = final
 
+	// Total wall-clock for the operation, measured against the injected clock from
+	// the same baseline used for mtime normalization. This covers both modes —
+	// restic dump never reports a duration, and restic restore's self-reported
+	// seconds (a hostile boundary, Rule 5) cover only the restore, not our
+	// normalization + rename.
+	result.Elapsed = a.Clock.Now().Sub(baseline)
+
 	a.logExtractSuccess(req, result)
 	return result, nil
 }
@@ -421,13 +429,9 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 		Target:     staging,
 		DryRun:     req.DryRun,
 	}
-	var seconds int64
 	onEvent := func(ev resticx.ExtractTreeEvent) error {
 		switch ev.Kind {
 		case resticx.ExtractTreeStatus:
-			if ev.SecondsElapsed > seconds {
-				seconds = ev.SecondsElapsed
-			}
 			if onProgress != nil {
 				onProgress(ExtractProgress{
 					BytesDone:      ev.BytesRestored,
@@ -446,19 +450,12 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 		case resticx.ExtractTreeSummary:
 			result.Files = int(ev.FilesRestored)
 			result.Bytes = ev.BytesRestored
-			if ev.SecondsElapsed > seconds {
-				seconds = ev.SecondsElapsed
-			}
 		}
 		return nil
 	}
-	if err := a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent); err != nil {
-		return err
-	}
-	if seconds > 0 {
-		result.Elapsed = time.Duration(seconds) * time.Second
-	}
-	return nil
+	// result.Elapsed is set by Extract from the injected clock (wall-clock for the
+	// whole op); restic's self-reported seconds feed only the live progress line.
+	return a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent)
 }
 
 // extractBytes drives resticx.ExtractBytes for a single regular file. The target

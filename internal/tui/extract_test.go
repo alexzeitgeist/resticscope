@@ -957,17 +957,17 @@ func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 		{"weird@!name", "weird-name"},
 	}
 	for _, c := range cases {
-		got, err := sanitizeSlug(c.in)
+		got, err := app.SanitizeExtractSlug(c.in)
 		if err != nil {
-			t.Errorf("sanitizeSlug(%q) error: %v", c.in, err)
+			t.Errorf("app.SanitizeExtractSlug(%q) error: %v", c.in, err)
 			continue
 		}
 		if got != c.want {
-			t.Errorf("sanitizeSlug(%q) = %q, want %q", c.in, got, c.want)
+			t.Errorf("app.SanitizeExtractSlug(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	if _, err := sanitizeSlug(""); err == nil {
-		t.Error("sanitizeSlug(\"\") should return an error")
+	if _, err := app.SanitizeExtractSlug(""); err == nil {
+		t.Error("app.SanitizeExtractSlug(\"\") should return an error")
 	}
 
 	// Genuine anti-drift cross-check: a SourceName produced by the TUI slug must
@@ -978,7 +978,7 @@ func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 	cfg, _ := extractCfg(t)
 	const snap = "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
 	for _, base := range []string{"nginx", "my dir", "weird@!name", "a.b-c_d", "café", "...trim"} {
-		name, err := sanitizeSlug(base)
+		name, err := app.SanitizeExtractSlug(base)
 		if err != nil {
 			continue // unusable basenames are surfaced to the user, never extracted
 		}

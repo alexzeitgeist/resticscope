@@ -43,6 +43,10 @@ func TestNormalizeExtractTreeMetadata(t *testing.T) {
 	for _, p := range []string{file, nested, sub} {
 		mustSetup(t, os.Chtimes(p, old, old))
 	}
+	// Backdate the symlink's OWN mtime too (Lutimes is no-follow, unlike Chtimes,
+	// which would re-time the target instead).
+	tvOld := unix.NsecToTimeval(old.UnixNano())
+	mustSetup(t, unix.Lutimes(link, []unix.Timeval{tvOld, tvOld}))
 
 	counts, err := normalizeExtractTreeMetadata(context.Background(), root, baseline)
 	if err != nil {
@@ -74,6 +78,9 @@ func TestNormalizeExtractTreeMetadata(t *testing.T) {
 
 	if li := lstat(t, link); li.Mode()&os.ModeSymlink == 0 {
 		t.Error("symlink was not preserved as a symlink (must not be followed)")
+	}
+	if li := lstat(t, link); !li.ModTime().Equal(baseline) {
+		t.Errorf("symlink mtime = %v, want baseline %v (no-follow Lutimes)", li.ModTime(), baseline)
 	}
 
 	if xattrSet && hasXattr(t, file, "user.resticscope_test") {

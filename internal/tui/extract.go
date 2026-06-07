@@ -31,10 +31,10 @@ import (
 // path data lingers in the model (non-negotiable #1, same discipline as
 // browse / find-versions / snapshot-diff).
 //
-// Step 07 will wire the browse `e` key to construct this sub-model from the
-// selected BrowseEntry via extractRequestFromBrowseEntry; until then nothing
-// imports the sub-model. The success-view `s` action opens a credential-free
-// local shell rooted at the extracted directory via App.LocalShellSession.
+// Browse wires the `e` key to construct this sub-model from the selected
+// BrowseEntry via extractRequestFromBrowseEntry. The success-view `s` action
+// opens a credential-free local shell rooted at the extracted directory via
+// App.LocalShellSession.
 
 // extractState is the modal's state machine.
 type extractState int
@@ -71,9 +71,9 @@ type extractDriver interface {
 	LocalShellSession(dir string) (*app.ShellSession, error)
 }
 
-// extractModel is the self-contained sub-model. Step 07's browse wiring
-// constructs one per `e` press, the root Model hosts it on m.extract, and the
-// routing layer dispatches keys / messages to it while m.view == extractView.
+// extractModel is the self-contained sub-model. Browse wiring constructs one per
+// `e` press, the root Model hosts it on m.extract, and the routing layer
+// dispatches keys / messages to it while m.view == extractView.
 type extractModel struct {
 	drv extractDriver
 	cfg config.Extract
@@ -160,14 +160,14 @@ type extractModel struct {
 
 // ErrExtractUnsupportedType is the TUI-side sentinel returned by
 // extractRequestFromBrowseEntry when the browse entry's type is neither "file"
-// nor "dir" (symlink, device, fifo, socket). Step 07 surfaces this on the
+// nor "dir" (symlink, device, fifo, socket). Browse wiring surfaces this on the
 // status line when the user presses `e` on an unsupported row.
 var ErrExtractUnsupportedType = errors.New("extract: source type not supported in v1")
 
 // newExtractModel constructs the sub-model from an explicit request. It calls
 // PlanExtractPaths to derive staging / final; an invalid request bubbles back
-// to the caller (step 07) which then stays in browse and surfaces a status-line
-// error rather than switching the view. srcSize is the originating
+// to the caller, which then stays in browse and surfaces a status-line error
+// rather than switching the view. srcSize is the originating
 // BrowseEntry's size, shown read-only on the review screen. The filepicker is
 // NOT initialized here — that happens lazily on first entry to
 // extractStateFilePicker.
@@ -759,9 +759,9 @@ func returnExtract(notice string) tea.Cmd {
 }
 
 // extractRequestFromBrowseEntry translates a browse selection into a fully
-// explicit ExtractRequest the app layer accepts. Step 07 wires this to the
-// browse `e` keypress. Symlinks / devices / fifos / sockets are rejected with
-// ErrExtractUnsupportedType; the app layer's defense-in-depth gate catches a
+// explicit ExtractRequest the app layer accepts. The browse `e` keypress uses it
+// before opening the modal. Symlinks / devices / fifos / sockets are rejected
+// with ErrExtractUnsupportedType; the app layer's defense-in-depth gate catches a
 // mode / type mismatch a second time.
 func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry) (app.ExtractRequest, error) {
 	if len(snapID) < 8 {
@@ -780,7 +780,7 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	default:
 		return app.ExtractRequest{}, ErrExtractUnsupportedType
 	}
-	name, err := sanitizeSlug(path.Base(source))
+	name, err := app.SanitizeExtractSlug(path.Base(source))
 	if err != nil {
 		return app.ExtractRequest{}, err
 	}
@@ -793,36 +793,6 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 		Mode:           mode,
 		WasRegularFile: wasFile,
 	}, nil
-}
-
-// sanitizeSlug mirrors the app-layer sanitizeExtractSlug byte-for-byte so the
-// TUI-built SourceName satisfies PlanExtractPaths's re-derivation check. Keep
-// [a-zA-Z0-9._-], collapse other runs to "-", trim leading "-"/".", cap at 64.
-// An empty result is an error so the caller can surface a "name unusable"
-// notice instead of producing a slug that PlanExtractPaths would reject.
-func sanitizeSlug(s string) (string, error) {
-	var b strings.Builder
-	dash := false
-	for _, r := range s {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-':
-			b.WriteRune(r)
-			dash = false
-		default:
-			if !dash {
-				b.WriteByte('-')
-				dash = true
-			}
-		}
-	}
-	out := strings.TrimLeft(b.String(), "-.")
-	if len(out) > 64 {
-		out = out[:64]
-	}
-	if out == "" {
-		return "", errors.New("slug is empty")
-	}
-	return out, nil
 }
 
 // extractFootRender produces the modal's footer help line for the current

@@ -31,7 +31,7 @@ type keyMap struct {
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
 	Info       key.Binding // detail: open the full snapshot-info modal
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
-	Extract    key.Binding // browse: open the extract modal for the selected entry (step 07)
+	Extract    key.Binding // browse: open the extract modal for the selected entry
 	ExtractGo  key.Binding // extract: commit the extract (review→running or preview→running)
 	Target     key.Binding // extract: open the target-root filepicker overlay from review
 	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
@@ -224,7 +224,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		}
 	case extractView:
 		return [][]key.Binding{
-			{k.Up, k.Down, k.Enter, k.ExtractGo, k.Target},
+			{k.Up, k.Down, k.PageUp, k.PageDown, k.Enter, k.ExtractGo, k.Target},
 			{k.Shell, k.Keep, k.Delete, k.Back},
 		}
 	case helpView:
