@@ -249,7 +249,7 @@ func TestExtractTreeParsesDryRunFixture(t *testing.T) {
 	for _, e := range events {
 		if e.Kind == ExtractTreeVerboseStatus {
 			verbose++
-			if e.Action == "" || e.Item == "" {
+			if e.Action == model.RestoreActionOther || e.Item == "" {
 				t.Errorf("verbose_status missing action/item: %+v", e)
 			}
 			if e.Size > 0 {
@@ -269,6 +269,28 @@ func TestExtractTreeParsesDryRunFixture(t *testing.T) {
 	// The first verbose line is the big blob; pin its parsed shape.
 	if first := events[0]; first.Kind != ExtractTreeVerboseStatus || first.Item != "/bigblob.bin" || first.Size != 268435456 {
 		t.Errorf("first event = %+v, want verbose_status /bigblob.bin size 268435456", first)
+	}
+}
+
+// TestRestoreActionOf pins every arm of the restic action vocabulary mapping.
+// The dry-run fixture only carries "restored", so without this the metadata /
+// skipped arms would be uncovered and a typo there would surface only as a wrong
+// preview glyph two layers away.
+func TestRestoreActionOf(t *testing.T) {
+	cases := []struct {
+		action string
+		want   model.RestoreAction
+	}{
+		{"restored", model.RestoreActionRestored},
+		{"updated metadata", model.RestoreActionMetadata},
+		{"skipped", model.RestoreActionSkipped},
+		{"deleted", model.RestoreActionOther},
+		{"", model.RestoreActionOther},
+	}
+	for _, c := range cases {
+		if got := restoreActionOf(c.action); got != c.want {
+			t.Errorf("restoreActionOf(%q) = %v, want %v", c.action, got, c.want)
+		}
 	}
 }
 

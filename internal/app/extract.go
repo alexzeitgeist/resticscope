@@ -117,8 +117,8 @@ type ExtractResult struct {
 
 // ExtractPreviewItem is one row of a directory dry-run preview.
 type ExtractPreviewItem struct {
-	Action string // "restored", "skipped", "updated metadata", …
-	Item   string // relative path under the subtree root
+	Action model.RestoreAction // restored / metadata / skipped, typed at the resticx boundary
+	Item   string              // relative path under the subtree root
 	Size   int64
 }
 

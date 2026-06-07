@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"resticscope/internal/config"
+	"resticscope/internal/model"
 	"resticscope/internal/resticx"
 )
 
@@ -321,7 +322,7 @@ func TestExtractDirectoryTreeDryRun(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{
 		extractCap: cap,
 		extractTreeEvents: []resticx.ExtractTreeEvent{
-			{Kind: resticx.ExtractTreeVerboseStatus, Action: "restored", Item: "/etc/nginx/nginx.conf", Size: 120},
+			{Kind: resticx.ExtractTreeVerboseStatus, Action: model.RestoreActionRestored, Item: "/etc/nginx/nginx.conf", Size: 120},
 			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 120},
 		},
 	}, root)
@@ -345,7 +346,7 @@ func TestExtractDirectoryTreeDryRun(t *testing.T) {
 	if gotTarget != staging || !gotDry || gotSource != req.Source {
 		t.Errorf("tree params = {Target:%q DryRun:%v Source:%q}, want {%q true %q}", gotTarget, gotDry, gotSource, staging, req.Source)
 	}
-	if len(result.DryRunPreview) != 1 || result.DryRunPreview[0].Action != "restored" || result.DryRunPreview[0].Item != "/etc/nginx/nginx.conf" || result.DryRunPreview[0].Size != 120 {
+	if len(result.DryRunPreview) != 1 || result.DryRunPreview[0].Action != model.RestoreActionRestored || result.DryRunPreview[0].Item != "/etc/nginx/nginx.conf" || result.DryRunPreview[0].Size != 120 {
 		t.Errorf("DryRunPreview = %+v, want one restored row", result.DryRunPreview)
 	}
 	if result.FinalDir != "" {

@@ -134,7 +134,7 @@ type ExtractTreeEvent struct {
 	BytesSkipped   int64
 
 	// Per-file action — populated for VerboseStatus.
-	Action string
+	Action model.RestoreAction
 	Item   string
 	Size   int64
 
@@ -180,7 +180,7 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 			BytesSkipped: m.BytesSkipped,
 		}, true
 	case "verbose_status":
-		return ExtractTreeEvent{Kind: ExtractTreeVerboseStatus, Action: m.Action, Item: m.Item, Size: m.Size}, true
+		return ExtractTreeEvent{Kind: ExtractTreeVerboseStatus, Action: restoreActionOf(m.Action), Item: m.Item, Size: m.Size}, true
 	case "summary":
 		return ExtractTreeEvent{
 			Kind: ExtractTreeSummary, SecondsElapsed: m.SecondsElapsed, TotalFiles: m.TotalFiles,
@@ -191,6 +191,22 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 		return ExtractTreeEvent{Kind: ExtractTreeError, ErrorMessage: m.Error.Message, During: m.During, Item: m.Item}, true
 	default:
 		return ExtractTreeEvent{}, false
+	}
+}
+
+// restoreActionOf maps restic's restore verbose_status action vocabulary to the
+// typed model.RestoreAction. This is the ONLY place that knows the raw action
+// strings; an unrecognized action becomes RestoreActionOther.
+func restoreActionOf(action string) model.RestoreAction {
+	switch action {
+	case "restored":
+		return model.RestoreActionRestored
+	case "updated metadata":
+		return model.RestoreActionMetadata
+	case "skipped":
+		return model.RestoreActionSkipped
+	default:
+		return model.RestoreActionOther
 	}
 }
 
@@ -385,14 +401,13 @@ func exitCodeOf(err error) int {
 }
 
 // extractTreeStream decodes the restore NDJSON stream and forwards each event to
-// onEvent. It keeps no event data: only a processed count, the first
-// callback/decode error, and whether a summary / error line was seen (the
-// partial-restore signals ExtractTree classifies on).
+// onEvent. It keeps no event data: only the first callback/decode error, and
+// whether a summary / error line was seen (the partial-restore signals
+// ExtractTree classifies on).
 type extractTreeStream struct {
 	onEvent func(ExtractTreeEvent) error
 	cancel  context.CancelFunc
 
-	count      int
 	cbErr      error // onEvent's error, surfaced verbatim
 	decodeErr  error // a genuine JSON decode failure (not a clean EOF)
 	sawSummary bool
@@ -426,7 +441,6 @@ func (s *extractTreeStream) consume(r io.Reader) error {
 					return cbErr
 				}
 			}
-			s.count++
 			continue
 		}
 		if errors.Is(err, io.EOF) {

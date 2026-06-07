@@ -228,8 +228,8 @@ func TestExtractDirectoryHappyPath(t *testing.T) {
 	keys := defaultKeys()
 
 	dryRows := []app.ExtractPreviewItem{
-		{Action: "restored", Item: "./nginx.conf", Size: 2100},
-		{Action: "restored", Item: "./sites-enabled/default", Size: 1800},
+		{Action: model.RestoreActionRestored, Item: "./nginx.conf", Size: 2100},
+		{Action: model.RestoreActionRestored, Item: "./sites-enabled/default", Size: 1800},
 	}
 	drv.push(extractResp{result: app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, DryRunPreview: dryRows}})
 	drv.push(extractResp{result: app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, FinalDir: em.final, Elapsed: 2 * time.Second}})
@@ -546,7 +546,7 @@ func TestExtractStaleRunDoneDropped(t *testing.T) {
 // owns the call site and tests can hit the helper without a full route.
 func TestExtractClearTransientZerosPaths(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	em.previewRows = []app.ExtractPreviewItem{{Action: "restored", Item: "./x", Size: 1}}
+	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: "./x", Size: 1}}
 	em.previewSummary = app.ExtractResult{Files: 1}
 	em.result = app.ExtractResult{FinalDir: "/some/where", StagingDir: "/staging"}
 	em.err = errors.New("boom")
@@ -761,7 +761,7 @@ func TestExtractPreviewWrapsLongItemPath(t *testing.T) {
 	em.drv = &fakeExtractDriver{}
 	em.state = extractStatePreview
 	long := "./etc/nginx/sites-available/deeply/nested/path/to/a/config-file-with-a-very-long-name.conf"
-	em.previewRows = []app.ExtractPreviewItem{{Action: "restored", Item: long}}
+	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: long}}
 	em.previewSummary = app.ExtractResult{Files: 1}
 
 	m := newTestModel(t, a)
@@ -912,7 +912,7 @@ func TestExtractEscFromPreviewReturnsThenClears(t *testing.T) {
 	}
 	em.drv = &fakeExtractDriver{}
 	em.state = extractStatePreview
-	em.previewRows = []app.ExtractPreviewItem{{Action: "restored", Item: "./a"}, {Action: "restored", Item: "./b"}}
+	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: "./a"}, {Action: model.RestoreActionRestored, Item: "./b"}}
 	em.previewSummary = app.ExtractResult{Files: 2}
 	em.previewScrollOffset = 1
 

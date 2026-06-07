@@ -743,10 +743,7 @@ func stagingDirExists(p string) bool {
 // cancel / timeout. It checks both context errors directly and the wrapped
 // form App.Extract produces ("extract: <context.Canceled>").
 func isExtractCancelErr(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return false
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // returnExtract dispatches a back-to-browse message carrying an optional

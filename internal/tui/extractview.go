@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"resticscope/internal/app"
 	"resticscope/internal/humanize"
+	"resticscope/internal/model"
 )
 
 // extractview.go renders extractView. Each state has its own body; the root
@@ -61,14 +63,8 @@ func extractHeaderHint(em extractModel) string {
 	switch em.state {
 	case extractStateRunning:
 		return "esc cancel"
-	case extractStateSuccess:
+	case extractStateSuccess, extractStateCanceled, extractStateError:
 		return "enter back"
-	case extractStateCanceled, extractStateError:
-		return "enter back"
-	case extractStateFilePicker:
-		return "esc back"
-	case extractStateKeepDelete:
-		return "esc back"
 	default:
 		return "esc back"
 	}
@@ -246,14 +242,14 @@ func renderExtractPreviewRowLines(item app.ExtractPreviewItem, w int) []string {
 	return lines
 }
 
-// actionPrefix maps the action string to its one-character prefix glyph.
-func actionPrefix(action string) string {
+// actionPrefix maps the restore action to its one-character prefix glyph.
+func actionPrefix(action model.RestoreAction) string {
 	switch action {
-	case "restored":
+	case model.RestoreActionRestored:
 		return "+"
-	case "updated metadata":
+	case model.RestoreActionMetadata:
 		return "~"
-	case "skipped":
+	case model.RestoreActionSkipped:
 		return "-"
 	default:
 		return " "
@@ -347,20 +343,9 @@ func extractRunningStatus(em extractModel) string {
 		parts = append(parts, fmt.Sprintf("%s/s", humanize.Bytes(int64(em.rate))))
 	}
 	if p.SecondsRemaining > 0 {
-		parts = append(parts, "eta "+extractEta(p.SecondsRemaining))
+		parts = append(parts, "eta "+humanize.Duration(time.Duration(p.SecondsRemaining)*time.Second))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// extractEta formats seconds as a short ETA token ("12s", "1m24s", "2h").
-func extractEta(s float64) string {
-	if s < 60 {
-		return fmt.Sprintf("%ds", int(s))
-	}
-	if s < 3600 {
-		return fmt.Sprintf("%dm%02ds", int(s)/60, int(s)%60)
-	}
-	return fmt.Sprintf("%dh%02dm", int(s)/3600, (int(s)%3600)/60)
 }
 
 // extractSuccessBody renders the post-rename congratulation page.
