@@ -84,6 +84,14 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Group), "cycle group key"},
 			{keyLabel(k.Quit), "quit"},
 		}},
+		{"Extract (from browse)", []helpEntry{
+			{keyLabel(k.Extract), "extract selected file/dir"},
+			{keyLabel(k.Enter), "dry-run / review"},
+			{keyLabel(k.ExtractGo), "extract for real"},
+			{keyLabel(k.Target), "choose target root"},
+			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},
+			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back"},
+		}},
 	}
 	right = []helpSection{
 		{"Detail", []helpEntry{

@@ -67,6 +67,12 @@ func (m Model) quitModel() Model {
 // back one screen from nested views, so repeated q walks home and then exits.
 func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 	switch m.view {
+	case extractView:
+		// q routes through the sub-model's per-state Back so cancel, preview→
+		// review, and back-to-browse all stay in one place.
+		next, cmd, _ := m.extract.back(m.keys)
+		m.extract = next
+		return m, cmd
 	case browseView:
 		return m.browseBack(), nil
 	case findVersionsView:
@@ -124,6 +130,18 @@ func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
 
 func (m Model) handleViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.view {
+	case extractView:
+		// Extract is a self-contained sub-model with per-state key handling. It
+		// owns every printable key inside the modal (e.g. g/t/d/k/s collide with
+		// list/detail bindings), so it must run before the shared refresh/shell
+		// handlers would steal them. Sync the current size first so a target key
+		// that lazily builds the filepicker — and the dry-run preview's
+		// width-aware scroll clamp — size from the live terminal.
+		m.extract.width = m.width
+		m.extract.height = m.height
+		next, cmd, _ := m.extract.handleKey(m.keys, msg)
+		m.extract = next
+		return m, cmd
 	case browseView:
 		// Browse owns all its non-global keys (including s=shell), so it is routed
 		// before the shared refresh/shell handlers below would steal s.

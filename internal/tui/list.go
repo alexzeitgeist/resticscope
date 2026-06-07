@@ -114,6 +114,12 @@ func (m Model) View() tea.View {
 			"",
 			m.snapshotDiffBody(),
 		)
+	case m.view == extractView:
+		body = lipgloss.JoinVertical(lipgloss.Left,
+			m.extractHeaderView(),
+			"",
+			m.extractBody(),
+		)
 	case m.view == detailView && hasDetail:
 		body = lipgloss.JoinVertical(lipgloss.Left,
 			m.detailHeaderView(),
@@ -429,6 +435,12 @@ func tookDuration(snaps []model.Snapshot) string {
 
 func (m Model) footerView() string {
 	w, _ := m.effSize()
+	if m.view == extractView {
+		// Extract owns a per-state footer driven by its sub-model state machine
+		// (review/preview/running/terminal each advertise different keys), so it
+		// renders directly here instead of through the bubble-help binding list.
+		return clip(m.extract.helpLine(m.keys), w)
+	}
 	searching := m.browseSearching || m.diffSearching
 	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching, infoScrollable: m.infoScrollable()}), w)
 	switch {

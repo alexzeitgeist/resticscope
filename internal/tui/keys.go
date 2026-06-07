@@ -31,6 +31,11 @@ type keyMap struct {
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
 	Info       key.Binding // detail: open the full snapshot-info modal
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
+	Extract    key.Binding // browse: open the extract modal for the selected entry (step 07)
+	ExtractGo  key.Binding // extract: commit the extract (review→running or preview→running)
+	Target     key.Binding // extract: open the target-root filepicker overlay from review
+	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
+	Delete     key.Binding // extract: delete the staging dir from the cancel/error prompt
 	Help       key.Binding
 	Quit       key.Binding // context-aware q: back from nested views, quit on list
 	HardQuit   key.Binding // unconditional ctrl+c
@@ -81,6 +86,11 @@ func defaultKeys() keyMap {
 		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 		Info:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
 		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
+		Extract:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
+		ExtractGo:  key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go")),
+		Target:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
+		Keep:       key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "keep")),
+		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
@@ -137,6 +147,11 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
 		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
+	case extractView:
+		// Extract renders its own per-state footer via extract.helpLine in
+		// footerView, bypassing this bubble-help path entirely. This branch is a
+		// fallback only; it advertises the always-present back affordance.
+		return []key.Binding{k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
 	case infoView:
@@ -200,6 +215,11 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
+		}
+	case extractView:
+		return [][]key.Binding{
+			{k.Up, k.Down, k.Enter, k.ExtractGo, k.Target},
+			{k.Shell, k.Keep, k.Delete, k.Back},
 		}
 	case helpView:
 		return [][]key.Binding{

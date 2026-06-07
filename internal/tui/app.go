@@ -24,6 +24,7 @@ const (
 	snapshotDiffView
 	helpView
 	infoView
+	extractView
 )
 
 // Model is the root Bubble Tea model. It drives both the list view and the
@@ -173,6 +174,13 @@ type Model struct {
 	diffGen       int                // generation token; stale diff msgs are discarded
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
 	diffProgress  chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
+
+	// Extract sub-model. Constructed on `e` from browse (step 07) and hosted
+	// here while m.view == extractView. The sub-model owns its own state
+	// machine, generation token, per-op cancel, embedded filepicker, and
+	// transient-clear discipline; the root Model just routes keys and messages
+	// to it and swaps view back to browse on extractBackToBrowseMsg.
+	extract extractModel
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -273,6 +281,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
+		// Keep the extract sub-model sized too: it owns an embedded filepicker
+		// whose viewport we size ourselves (AutoHeight is off), and the dry-run
+		// preview's scroll clamp wraps rows to width, so a live resize while either
+		// is open must reflow.
+		m.extract.width = msg.Width
+		m.extract.height = msg.Height
+		if m.extract.filepickerInit {
+			m.extract.filepicker.SetHeight(extractFilePickerHeight(msg.Height))
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -294,6 +311,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applySnapshotDiffMsg(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
+	case extractDryRunDoneMsg:
+		// Every extract message is gated on the modal being active: the sub-model's
+		// gen restarts at 0 each session, so a late message from a prior session
+		// must not be applied (or worse, switch the view) once the user has left.
+		// "Active" includes the help overlay opened over extract — otherwise a
+		// completion that lands while help is open would be dropped and strand the
+		// modal (it returns to extract via prevView, not a real exit).
+		if m.extractActive() {
+			m.extract.applyDryRunDone(msg)
+		}
+		return m, nil
+	case extractRunDoneMsg:
+		if m.extractActive() {
+			m.extract.applyRunDone(msg)
+		}
+		return m, nil
+	case extractProgressMsg:
+		if !m.extractActive() {
+			return m, nil
+		}
+		cmd := m.extract.applyProgress(msg)
+		return m, cmd
+	case extractDeleteStagingDoneMsg:
+		if !m.extractActive() {
+			return m, nil
+		}
+		m.extract.applyDeleteStagingDone(msg)
+		// Closing the modal lives here so the sub-model stays self-contained.
+		notice := m.extract.noticeAfterClose
+		m.extract.clearTransient()
+		m.extract = extractModel{}
+		m.view = browseView
+		if notice != "" {
+			m.statusMsg = notice
+		}
+		return m, nil
+	case extractBackToBrowseMsg:
+		if !m.extractActive() {
+			return m, nil
+		}
+		m.extract.clearTransient()
+		m.extract = extractModel{}
+		m.view = browseView
+		if msg.notice != "" {
+			m.statusMsg = msg.notice
+		}
+		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -303,6 +367,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, cmd
+	default:
+		// The embedded filepicker is fully async: its Init and every navigation
+		// emit an unexported readDirMsg that no case above handles. Forward any
+		// otherwise-unhandled message to it while the overlay is open so the
+		// directory list actually populates (without this it renders empty).
+		if m.extractActive() && m.extract.state == extractStateFilePicker {
+			var cmd tea.Cmd
+			m.extract, cmd = m.extract.updateFilePicker(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
+}
+
+// extractActive reports whether the extract sub-model is the live modal context:
+// either showing directly, or temporarily behind the help overlay (which was
+// opened over it and returns to it via prevView). Extract async messages and the
+// filepicker's async reads must be honored in both — help is an overlay, not a
+// real extract exit, and clearTransient is not called when it opens — otherwise a
+// dry-run/run completion, progress tick, or staging delete that lands while help
+// is up would be silently dropped and strand the modal.
+func (m Model) extractActive() bool {
+	return m.view == extractView || (m.view == helpView && m.prevView == extractView)
 }
