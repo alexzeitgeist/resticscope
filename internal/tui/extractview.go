@@ -377,7 +377,7 @@ func (m Model) extractSuccessBody(w int) string {
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
 		"    " + m.styles.meta.Render(em.result.FinalDir),
 		"",
-		"    " + m.styles.dim.Render("s     open a shell in the target directory (not yet available)"),
+		"    " + m.styles.dim.Render("s     open a shell in the target directory"),
 		"    " + m.styles.dim.Render("enter back to browse"),
 	}
 	return clipLines(body, w)

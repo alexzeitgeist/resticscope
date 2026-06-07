@@ -44,6 +44,11 @@ type fakeExtractDriver struct {
 	calls    []extractCall
 	queue    []extractResp
 	canceled int
+
+	// shellDir records the dir passed to the most recent LocalShellSession call;
+	// shellErr (when set) is what that call returns instead of a session.
+	shellDir string
+	shellErr error
 }
 
 type extractResp struct {
@@ -85,6 +90,16 @@ func (f *fakeExtractDriver) Extract(ctx context.Context, req app.ExtractRequest,
 		}
 	}
 	return resp.result, resp.err
+}
+
+func (f *fakeExtractDriver) LocalShellSession(dir string) (*app.ShellSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shellDir = dir
+	if f.shellErr != nil {
+		return nil, f.shellErr
+	}
+	return &app.ShellSession{Shell: "/bin/sh", Dir: dir, Cleanup: func() error { return nil }}, nil
 }
 
 func (f *fakeExtractDriver) callsSnapshot() []extractCall {
@@ -623,6 +638,115 @@ func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	}
 	if m.extract.state != extractStateSuccess {
 		t.Fatalf("extract stranded in %v after run completed under help; want success", m.extract.state)
+	}
+}
+
+// The success-view `s` action opens a credential-free shell rooted at the
+// extracted directory via the driver's LocalShellSession.
+func TestExtractSuccessShellHere(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{FinalDir: "/extracted/here"}
+
+	next, cmd, leave := dispatchKey(em, defaultKeys(), "s")
+	if leave {
+		t.Error("s must not leave the modal; the success screen stays up under the shell")
+	}
+	if next.state != extractStateSuccess {
+		t.Errorf("state = %v after s, want success", next.state)
+	}
+	if cmd == nil {
+		t.Fatal("s produced no command")
+	}
+	if drv.shellDir != "/extracted/here" {
+		t.Errorf("LocalShellSession dir = %q, want the final extracted dir", drv.shellDir)
+	}
+	// Do not run cmd: it is tea.ExecProcess wrapping a real shell exec.
+}
+
+// A LocalShellSession failure surfaces as a path-free shellExitedMsg rather than
+// being swallowed, and leaves the user on the success screen.
+func TestExtractSuccessShellHereError(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{FinalDir: "/extracted/here"}
+	drv.shellErr = errors.New("local shell: invalid working directory: dir not a directory")
+
+	next, cmd, _ := dispatchKey(em, defaultKeys(), "s")
+	if next.state != extractStateSuccess {
+		t.Errorf("state = %v after failed s, want success", next.state)
+	}
+	if cmd == nil {
+		t.Fatal("s produced no command on the error path")
+	}
+	msg, ok := cmd().(shellExitedMsg)
+	if !ok {
+		t.Fatalf("error path produced %T, want shellExitedMsg", cmd())
+	}
+	if msg.err == nil {
+		t.Fatal("shellExitedMsg carried no error")
+	}
+	if strings.Contains(msg.err.Error(), "/extracted/here") {
+		t.Errorf("shell error leaked the destination path: %v", msg.err)
+	}
+}
+
+// End-to-end regression lock for the one behaviour step 06 exists for: pressing
+// `s` on the success screen must launch the shell *in the extracted directory*.
+// It drives the real *app.App through handleSuccessKey → LocalShellSession →
+// shellCmdFromSession → exec.Cmd.Dir → a fake shell that records its actual cwd,
+// mirroring TestDetailShellKeyRoutePassesSnapshot. A reflected exec.Cmd.Dir
+// assertion would couple to bubbletea's internal exec wrapper; running the shell
+// and reading its working directory proves the same contract via the public
+// ExecCommand.Run seam.
+func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
+	finalDir := t.TempDir()
+	outPath := filepath.Join(t.TempDir(), "pwd")
+	shellPath := filepath.Join(t.TempDir(), "fakeshell")
+	// Pass the output path through a preserved env var and quote it in the script,
+	// so a TMPDIR containing a space or shell metacharacter can't break the
+	// redirection. TEST_PWD_OUT is a generic var (not a RESTIC_/AWS_/B2_/
+	// RESTICSCOPE_ family member), so it survives stripCredEnv and reaches the
+	// child — which also confirms the filter doesn't over-strip ordinary env.
+	t.Setenv("TEST_PWD_OUT", outPath)
+	script := "#!/bin/sh\npwd -P > \"$TEST_PWD_OUT\"\nexit 0\n"
+	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake shell: %v", err)
+	}
+
+	a := extractApp(t)
+	a.Cfg.Global.Shell = shellPath // LocalShellSession resolves this shell
+
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{FinalDir: finalDir}
+
+	_, cmd, _ := dispatchKey(em, defaultKeys(), "s")
+	if cmd == nil {
+		t.Fatal("s produced no command")
+	}
+	// extractExecCommand (routing_test.go) unwraps the tea.ExecProcess wrapper so
+	// we can Run() the fake shell directly without driving a real tea.Program.
+	ec := extractExecCommand(t, cmd())
+	if err := ec.Run(); err != nil {
+		t.Fatalf("ExecCommand.Run: %v", err)
+	}
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read fake shell cwd: %v", err)
+	}
+	// Compare against the symlink-resolved target: t.TempDir paths can sit under a
+	// symlinked root on some platforms, and `pwd -P` reports the physical path.
+	want, err := filepath.EvalSymlinks(finalDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if dir := strings.TrimSpace(string(got)); dir != want {
+		t.Errorf("shell launched in %q, want the extracted dir %q", dir, want)
 	}
 }
 

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -197,6 +199,156 @@ func TestInteractiveArgs(t *testing.T) {
 	}
 	if !strings.Contains(args[2], "'hi there'") {
 		t.Errorf("script does not quote the banner: %q", args[2])
+	}
+}
+
+// An empty banner (the local "shell here" session) must emit only the exec
+// wrapper, with no leading printf line that would print a blank line before the
+// prompt.
+func TestInteractiveArgsEmptyBanner(t *testing.T) {
+	s := &ShellSession{Shell: "/bin/zsh"}
+	args := s.InteractiveArgs()
+	if len(args) != 3 || args[0] != "/bin/sh" || args[1] != "-c" {
+		t.Fatalf("args = %v, want [/bin/sh -c <script>]", args)
+	}
+	if strings.Contains(args[2], "printf") {
+		t.Errorf("empty banner must not emit a printf: %q", args[2])
+	}
+	if args[2] != "exec '/bin/zsh' -i" {
+		t.Errorf("script = %q, want bare exec wrapper", args[2])
+	}
+}
+
+// --- LocalShellSession ---
+
+func localShellApp(shell string) *App {
+	return &App{Cfg: &config.Config{Global: config.Global{Shell: shell}}}
+}
+
+func TestLocalShellSessionHappyPath(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	// A credential the parent process carries must not survive into the child.
+	t.Setenv("RESTIC_PASSWORD", "hunter2")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "sk-leak")
+	t.Setenv("RESTICSCOPE_REPO", "homeserver-system")
+
+	dir := t.TempDir()
+	a := localShellApp("") // no configured shell, so $SHELL wins
+	sess, err := a.LocalShellSession(dir)
+	if err != nil {
+		t.Fatalf("LocalShellSession: %v", err)
+	}
+	if sess.Dir != dir {
+		t.Errorf("Dir = %q, want %q", sess.Dir, dir)
+	}
+	if sess.Shell != "/bin/zsh" {
+		t.Errorf("Shell = %q, want $SHELL", sess.Shell)
+	}
+	if sess.Banner != "" {
+		t.Errorf("local shell must carry no banner, got %q", sess.Banner)
+	}
+	if sess.Cleanup == nil {
+		t.Fatal("Cleanup must be a no-op func, not nil")
+	}
+	if err := sess.Cleanup(); err != nil {
+		t.Errorf("Cleanup should be a no-op, got %v", err)
+	}
+	joined := strings.Join(sess.Env, "\n")
+	for _, banned := range []string{"hunter2", "sk-leak", "homeserver-system"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("credential/context value %q leaked into the local shell env", banned)
+		}
+	}
+	for _, key := range []string{"RESTIC_PASSWORD", "AWS_SECRET_ACCESS_KEY", "RESTICSCOPE_REPO"} {
+		if _, ok := envValue(sess.Env, key); ok {
+			t.Errorf("local shell env still carries %s", key)
+		}
+	}
+	// The user's general environment is preserved.
+	if _, ok := envValue(sess.Env, "PATH"); !ok {
+		t.Error("local shell dropped PATH; the shell would be unusable")
+	}
+}
+
+func TestLocalShellSessionFallbackShell(t *testing.T) {
+	t.Setenv("SHELL", "")
+	a := localShellApp("") // neither configured nor $SHELL
+	sess, err := a.LocalShellSession(t.TempDir())
+	if err != nil {
+		t.Fatalf("LocalShellSession: %v", err)
+	}
+	if sess.Shell != "/bin/sh" {
+		t.Errorf("fallback Shell = %q, want /bin/sh", sess.Shell)
+	}
+}
+
+func TestLocalShellSessionInvalidDir(t *testing.T) {
+	a := localShellApp("/bin/sh")
+
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	tests := []struct {
+		name, dir, wantReason string
+	}{
+		{"empty", "", "dir empty"},
+		{"relative", "relative/dir", "dir not absolute"},
+		{"missing", missing, "dir not accessible"},
+		{"regular file", file, "dir not a directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := a.LocalShellSession(tt.dir)
+			if err == nil {
+				t.Fatalf("LocalShellSession(%q) returned no error", tt.dir)
+			}
+			if !errors.Is(err, ErrLocalShellInvalidDir) {
+				t.Errorf("error %v is not ErrLocalShellInvalidDir", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantReason) {
+				t.Errorf("error %q does not name the failed check %q", err, tt.wantReason)
+			}
+			// The dir value must never appear in the error (privacy contract §3).
+			if tt.dir != "" && strings.Contains(err.Error(), tt.dir) {
+				t.Errorf("error %q leaked the dir value", err)
+			}
+		})
+	}
+}
+
+func TestStripCredEnv(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/me",
+		"TERM=xterm",
+		"RESTIC_PASSWORD=secret",
+		"RESTIC_REPOSITORY=s3:x",
+		"AWS_ACCESS_KEY_ID=ak",
+		"AWS_SECRET_ACCESS_KEY=sk",
+		"B2_ACCOUNT_ID=b2",
+		"GOOGLE_APPLICATION_CREDENTIALS=/path/to/creds.json",
+		"RESTICSCOPE_SNAPSHOT_ID=deadbeef",
+		"MALFORMED_NO_EQUALS", // passed through untouched
+	}
+	got := stripCredEnv(base)
+	joined := strings.Join(got, "\n")
+
+	for _, gone := range []string{
+		"RESTIC_PASSWORD", "RESTIC_REPOSITORY", "AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY", "B2_ACCOUNT_ID", "GOOGLE_APPLICATION_CREDENTIALS",
+		"RESTICSCOPE_SNAPSHOT_ID",
+	} {
+		if strings.Contains(joined, gone+"=") {
+			t.Errorf("stripCredEnv kept credential var %s", gone)
+		}
+	}
+	for _, kept := range []string{"PATH=/usr/bin", "HOME=/home/me", "TERM=xterm", "MALFORMED_NO_EQUALS"} {
+		if !strings.Contains(joined, kept) {
+			t.Errorf("stripCredEnv dropped non-credential entry %q", kept)
+		}
 	}
 }
 

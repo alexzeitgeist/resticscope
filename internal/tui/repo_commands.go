@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"resticscope/internal/app"
 	"resticscope/internal/model"
 )
 
@@ -58,9 +59,21 @@ func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
 	if err != nil {
 		return func() tea.Msg { return shellExitedMsg{err: err} }
 	}
+	return shellCmdFromSession(sess)
+}
+
+// shellCmdFromSession builds the tea.Cmd that suspends the TUI, runs the prepared
+// shell session via tea.ExecProcess, and runs Cleanup once the child exits. It
+// honors sess.Dir when set, so the same builder serves both the repo/snapshot
+// shell (openShellCmd, no Dir) and the extract success-view local shell
+// (LocalShellSession, Dir = the extracted directory).
+func shellCmdFromSession(sess *app.ShellSession) tea.Cmd {
 	args := sess.InteractiveArgs()
 	c := exec.Command(args[0], args[1:]...)
 	c.Env = sess.Env
+	if sess.Dir != "" {
+		c.Dir = sess.Dir
+	}
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		_ = sess.Cleanup()
 		return shellExitedMsg{err: err}

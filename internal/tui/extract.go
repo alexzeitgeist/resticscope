@@ -33,8 +33,8 @@ import (
 //
 // Step 07 will wire the browse `e` key to construct this sub-model from the
 // selected BrowseEntry via extractRequestFromBrowseEntry; until then nothing
-// imports the sub-model. Step 06 will replace the success-view `s` action with
-// a real local-shell helper; until then `s` surfaces a "not yet wired" notice.
+// imports the sub-model. The success-view `s` action opens a credential-free
+// local shell rooted at the extracted directory via App.LocalShellSession.
 
 // extractState is the modal's state machine.
 type extractState int
@@ -64,8 +64,11 @@ const extractRateWindow = 2 * time.Second
 // extractDriver is the small consumer-side interface the sub-model needs from
 // the app layer (engineering rule 3: tiny, defined where it is used). Satisfied
 // by *app.App; the test double in extract_test.go implements it directly.
+// LocalShellSession backs the success-view `s` action: a credential-free shell
+// rooted at the extracted directory.
 type extractDriver interface {
 	Extract(ctx context.Context, req app.ExtractRequest, onProgress func(app.ExtractProgress)) (app.ExtractResult, error)
+	LocalShellSession(dir string) (*app.ShellSession, error)
 }
 
 // extractModel is the self-contained sub-model. Step 07's browse wiring
@@ -609,11 +612,15 @@ func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit), key.Matches(msg, keys.Enter):
 		return m, returnExtract(""), true
 	case key.Matches(msg, keys.Shell):
-		// Step 06 will wire the local-shell helper that drops the user into $SHELL
-		// rooted at m.result.FinalDir with credentials stripped. Until it lands the
-		// action is rendered as unavailable (see extractSuccessBody) and the key is
-		// a no-op that keeps the success screen up rather than bouncing to browse.
-		return m, nil, false
+		// Drop the user into a credential-free shell rooted at the extracted
+		// directory. The session-prep error path mirrors openShellCmd: surface it
+		// via shellExitedMsg (path-free by construction) rather than swallowing it.
+		// The success screen stays up; tea.ExecProcess returns to it on shell exit.
+		sess, err := m.drv.LocalShellSession(m.result.FinalDir)
+		if err != nil {
+			return m, func() tea.Msg { return shellExitedMsg{err: err} }, false
+		}
+		return m, shellCmdFromSession(sess), false
 	}
 	return m, nil, false
 }
@@ -850,9 +857,10 @@ func (m extractModel) helpLine(keys keyMap) string {
 	case extractStateRunning:
 		return joinHelp(keyHelp(keys.Back, "cancel"))
 	case extractStateSuccess:
-		// `s` (shell-here) is advertised in the body as not-yet-available until
-		// step 06 lands, so the footer lists only the active key.
-		return joinHelp(keyHelp(keys.Enter, "back to browse"))
+		return joinHelp(
+			keyHelp(keys.Shell, "shell here"),
+			keyHelp(keys.Enter, "back to browse"),
+		)
 	case extractStateCanceled, extractStateError:
 		if m.result.StagingCreated && stagingDirExists(m.result.StagingDir) {
 			return joinHelp(

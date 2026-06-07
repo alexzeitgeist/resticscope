@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"resticscope/internal/model"
@@ -23,7 +25,8 @@ import (
 type ShellSession struct {
 	Shell   string       // resolved interactive shell binary
 	Env     []string     // child environment; restic password handled per mode
-	Banner  string       // printed before the prompt by InteractiveArgs
+	Banner  string       // printed before the prompt by InteractiveArgs; empty => no banner
+	Dir     string       // optional working directory for the launched shell; empty => inherit
 	Cleanup func() error // removes the temp password file; no-op in env mode
 }
 
@@ -69,13 +72,60 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 	}, nil
 }
 
-// InteractiveArgs returns the argv that prints the banner and then replaces
-// itself with an interactive shell. The wrapper always runs under /bin/sh so its
-// three lines are POSIX regardless of the user's login shell; only the final,
+// ErrLocalShellInvalidDir is returned by LocalShellSession when the requested
+// working directory is empty, not absolute, or not an existing directory. It is
+// deliberately path-free: the wrapped reason names the failed check but never the
+// dir value, so the caller (the extract success view) can surface it without
+// echoing a destination path (framework §3 privacy contract, §16).
+var ErrLocalShellInvalidDir = errors.New("local shell: invalid working directory")
+
+// LocalShellSession returns a ShellSession that drops the user into their shell
+// rooted at dir, with no repository contact whatsoever. Unlike the
+// snapshot-scoped ShellSession it sets no RESTIC_*/AWS_* env vars, passes no
+// password file, prints no banner, and registers a no-op Cleanup — it is the
+// purely cosmetic "open a shell in the extracted directory" launch from the
+// extract success view (framework §16). The inherited environment is filtered so
+// no credential the parent process happens to carry leaks into the child.
+//
+// dir must be an absolute path to an existing directory; otherwise a path-free
+// ErrLocalShellInvalidDir is returned and no session is built.
+func (a *App) LocalShellSession(dir string) (*ShellSession, error) {
+	switch {
+	case dir == "":
+		return nil, fmt.Errorf("%w: dir empty", ErrLocalShellInvalidDir)
+	case !filepath.IsAbs(dir):
+		return nil, fmt.Errorf("%w: dir not absolute", ErrLocalShellInvalidDir)
+	}
+	// Discard os.Stat's error: it embeds the path, which must never reach the
+	// returned error. The static reasons below carry the failed check only.
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: dir not accessible", ErrLocalShellInvalidDir)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%w: dir not a directory", ErrLocalShellInvalidDir)
+	}
+	return &ShellSession{
+		Shell:   resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
+		Env:     stripCredEnv(os.Environ()),
+		Banner:  "",
+		Dir:     dir,
+		Cleanup: func() error { return nil },
+	}, nil
+}
+
+// InteractiveArgs returns the argv that (optionally) prints the banner and then
+// replaces itself with an interactive shell. The wrapper always runs under
+// /bin/sh so it is POSIX regardless of the user's login shell; only the final,
 // exec'd shell is the user's choice. The banner and shell path are single-quoted
-// so neither can break out of the wrapper.
+// so neither can break out of the wrapper. An empty Banner (the local
+// "shell here" session) emits only the exec wrapper, with no leading blank
+// printf line.
 func (s *ShellSession) InteractiveArgs() []string {
-	script := "printf '%s\\n' " + posixQuote(s.Banner) + "; exec " + posixQuote(s.Shell) + " -i"
+	script := "exec " + posixQuote(s.Shell) + " -i"
+	if s.Banner != "" {
+		script = "printf '%s\\n' " + posixQuote(s.Banner) + "; " + script
+	}
 	return []string{"/bin/sh", "-c", script}
 }
 
@@ -206,6 +256,45 @@ func buildShellEnv(base []string, o shellEnvOpts) []string {
 		env = append(env, "RESTIC_PASSWORD_FILE="+o.pwFile)
 	}
 	return env
+}
+
+// credEnvPrefixes name the environment-variable prefixes the local "shell here"
+// session strips from the inherited environment so the spawned shell carries no
+// repository credentials or resticscope context. This is the reverse of
+// buildShellEnv's choice: whatever the snapshot shell *sets* (the RESTIC_*,
+// AWS_*, and RESTICSCOPE_* families), the local shell *strips*. B2_* is included
+// for restic's Backblaze backend even though resticscope's S3 path never sets it.
+var credEnvPrefixes = []string{"RESTIC_", "AWS_", "B2_", "RESTICSCOPE_"}
+
+// credEnvExact are credential keys with no shared prefix to match on.
+var credEnvExact = map[string]bool{"GOOGLE_APPLICATION_CREDENTIALS": true}
+
+// stripCredEnv returns base with every credential / repo-context variable
+// removed (see credEnvPrefixes / credEnvExact). It is pure and the
+// security-critical seam of LocalShellSession, so it is exercised directly by
+// tests. Malformed entries (no '=') are passed through untouched.
+func stripCredEnv(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, kv := range base {
+		k, _, ok := strings.Cut(kv, "=")
+		if ok && isCredEnvKey(k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func isCredEnvKey(k string) bool {
+	if credEnvExact[k] {
+		return true
+	}
+	for _, p := range credEnvPrefixes {
+		if strings.HasPrefix(k, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // shellBanner is the orientation text printed before the prompt (plan §8). It
