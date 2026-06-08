@@ -71,6 +71,20 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/", Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json"},
 		},
+		{
+			// Nested single-file extract: no source rebase, the full path is the
+			// include. --include is appended after --json.
+			name: "nested file include (no source rebase)",
+			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "", IncludePath: "/etc/vzdump.conf", Target: "/abs/staging"},
+			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/etc/vzdump.conf"},
+		},
+		{
+			// Flattened single-file extract: <snap>:<parent> rebase plus a
+			// rebase-relative include, so the file lands directly under --target.
+			name: "flattened file include (source rebase)",
+			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", IncludePath: "/vzdump.conf", Target: "/abs/staging"},
+			want: []string{"--no-lock", "restore", testSnapID + ":/etc", "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/vzdump.conf"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,6 +137,12 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 		{"over-length hex ID", ExtractTreeParams{SnapshotID: testSnapID + "ab", Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
 		{"empty target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: ""}, ErrExtractInvalidTarget},
 		{"relative target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "relative/dir"}, ErrExtractInvalidTarget},
+		// IncludePath is validated by the same argv builder; "/" and an unclean
+		// path are rejected before any argv is produced.
+		{"root include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/", Target: "/abs"}, ErrExtractInvalidInclude},
+		{"unclean include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/etc/../secret", Target: "/abs"}, ErrExtractInvalidInclude},
+		{"non-rooted include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "etc/x", Target: "/abs"}, ErrExtractInvalidInclude},
+		{"NUL in include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/etc/\x00x", Target: "/abs"}, ErrExtractInvalidInclude},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +191,57 @@ func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
 			}
 			assertNoForbiddenArgs(t, got)
 		})
+	}
+}
+
+// TestBuildExtractTreeArgsIncludeLiteralEscaping is the load-bearing safety core:
+// --include is a glob pattern (filepath.Match), so a real filename carrying a
+// metacharacter (\ [ ] * ?) must be backslash-escaped to a literal or restic
+// over-matches siblings / matches the wrong node / matches nothing. The escaping
+// is per-whole-path, not just the basename — a glob char in a parent component is
+// escaped too.
+func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
+	cases := []struct {
+		include string
+		want    string // the emitted --include value
+	}{
+		{"/a*.conf", `/a\*.conf`},
+		{"/backup[1].txt", `/backup\[1\].txt`},
+		{"/question?.txt", `/question\?.txt`},
+		{`/slash\name`, `/slash\\name`},
+		// A glob char in a parent component proves escaping is per-whole-path.
+		{"/et[c]/x", `/et\[c\]/x`},
+	}
+	for _, c := range cases {
+		t.Run(c.include, func(t *testing.T) {
+			got, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, IncludePath: c.include, Target: "/abs"})
+			if err != nil {
+				t.Fatalf("buildExtractTreeArgs: %v", err)
+			}
+			i := slices.Index(got, "--include")
+			if i < 0 || i+1 >= len(got) {
+				t.Fatalf("argv missing --include <value>: %q", got)
+			}
+			if got[i+1] != c.want {
+				t.Errorf("--include value = %q, want %q (literal-escaped)", got[i+1], c.want)
+			}
+		})
+	}
+}
+
+// TestAssertCleanIncludePath pins the IncludePath contract: "" is allowed (no
+// filter), "/" is rejected (too broad, contradicts the one-file invariant), and
+// only a cleaned rooted non-root path is accepted.
+func TestAssertCleanIncludePath(t *testing.T) {
+	for _, p := range []string{"", "/vzdump.conf", "/etc/vzdump.conf", "/a*.conf", `/slash\name`} {
+		if err := assertCleanIncludePath(p); err != nil {
+			t.Errorf("assertCleanIncludePath(%q) = %v, want nil", p, err)
+		}
+	}
+	for _, p := range []string{"/", "/etc/../secret", "etc/x", "/etc/\x00x", "/etc/x/"} {
+		if err := assertCleanIncludePath(p); !errors.Is(err, ErrExtractInvalidInclude) {
+			t.Errorf("assertCleanIncludePath(%q) = %v, want ErrExtractInvalidInclude", p, err)
+		}
 	}
 }
 
@@ -467,6 +538,49 @@ func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "/var/lib/other/unrelated/file") {
 		t.Errorf("error leaked an un-enumerated path: %q", err.Error())
+	}
+}
+
+// TestExtractTreeScrubsFilePathAndBasename covers the single-file mapping's
+// privacy contract: restic echoes the real selected path AND its bare basename
+// (never the escaped pattern), and under nested mode the file's name lives only
+// in IncludePath (Source is empty). Both the full include path and the bare
+// basename must be masked so the residual-'/' guard can't be defeated by a
+// bare-basename mention.
+func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
+	cases := []struct {
+		name        string
+		source      string
+		includePath string
+	}{
+		{"nested file", "", "/etc/vzdump.conf"},
+		{"flattened file", "/etc", "/vzdump.conf"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			const target = "/abs/staging/extract-7f3a"
+			// restic mentions the full selected path and, separately, the bare leaf.
+			stderr := "Fatal: AK-LEAK-123 restoring " + c.includePath + " (item vzdump.conf) failed"
+			fs := &extractTreeStreamFake{err: fakeExit(1), stderr: []byte(stderr)}
+			cl := &Client{
+				Stream: fs,
+				Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAK-123", "[REDACTED]") },
+			}
+			err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+				ExtractTreeParams{SnapshotID: testSnapID, Source: c.source, IncludePath: c.includePath, Target: target}, nil)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "[REDACTED]") {
+				t.Errorf("expected secret mask in error (proves the redactor ran), got %q", msg)
+			}
+			for _, leak := range []string{"AK-LEAK-123", c.includePath, "vzdump.conf", target} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("error leaked %q: %q", leak, msg)
+				}
+			}
+		})
 	}
 }
 

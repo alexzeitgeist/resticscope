@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,8 +41,36 @@ func fileReq() ExtractRequest {
 		SnapshotShort:  "abcd1234",
 		Source:         "/etc/hosts",
 		SourceName:     "hosts",
-		Mode:           ExtractFileBytes,
+		Mode:           ExtractFile,
 		WasRegularFile: true,
+	}
+}
+
+// fileStagingSetup returns an extractTreeSetup that materializes one regular file
+// at staging/<leaf> with a distinctive mode+mtime, the way restic restore would
+// land a single-file extract. leaf is relative (e.g. "hosts" flattened, or
+// "etc/hosts" nested); parent dirs are created as needed. The mode (0640) and
+// mtime are deliberately not 0600/now so the test proves restic's metadata is
+// preserved rather than re-stamped.
+var fileSetupMtime = time.Date(2009, 1, 2, 3, 4, 5, 0, time.UTC)
+
+func fileStagingSetup(leaf string) func(target string) error {
+	return func(target string) error {
+		full := filepath.Join(target, leaf)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(full, []byte("file-body"), 0o640); err != nil {
+			return err
+		}
+		// Defeat the process umask so the exact mode bits hold under any umask
+		// (a hardened umask 077 would otherwise create 0600, which the normalizer
+		// faithfully preserves — failing the 0640 assertion for the wrong reason).
+		// Mirrors TestExtractDirectoryTreeRealRun's explicit Chmod.
+		if err := os.Chmod(full, 0o640); err != nil {
+			return err
+		}
+		return os.Chtimes(full, fileSetupMtime, fileSetupMtime)
 	}
 }
 
@@ -171,7 +200,7 @@ func TestPlanExtractPathsMissingTargetRoot(t *testing.T) {
 
 // --- file-type gate (defense in depth) ---
 
-func TestExtractFileBytesRequiresRegularFile(t *testing.T) {
+func TestExtractFileRequiresRegularFile(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
@@ -187,7 +216,7 @@ func TestExtractFileBytesRequiresRegularFile(t *testing.T) {
 	assertNoSpawnNoMkdir(t, cap, root, err, "topsecret")
 }
 
-func TestExtractFileBytesRejectsDryRun(t *testing.T) {
+func TestExtractFileRejectsDryRun(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
@@ -196,7 +225,7 @@ func TestExtractFileBytesRejectsDryRun(t *testing.T) {
 
 	_, err := a.Extract(context.Background(), req, nil)
 	if !errors.Is(err, ErrExtractInvalidRequest) {
-		t.Fatalf("err = %v, want ErrExtractInvalidRequest (no restic-backed bytes dry-run)", err)
+		t.Fatalf("err = %v, want ErrExtractInvalidRequest (files have no dry-run flow)", err)
 	}
 	assertNoSpawnNoMkdir(t, cap, root, err, "hosts")
 }
@@ -215,9 +244,9 @@ func TestExtractDirectoryTreeRejectsRegularFile(t *testing.T) {
 	assertNoSpawnNoMkdir(t, cap, root, err, "nginx")
 }
 
-// Every non-regular upstream type lands as WasRegularFile=false on a FileBytes
+// Every non-regular upstream type lands as WasRegularFile=false on an ExtractFile
 // request and is rejected identically.
-func TestExtractFileBytesRejectsNonRegularTypes(t *testing.T) {
+func TestExtractFileRejectsNonRegularTypes(t *testing.T) {
 	for _, kind := range []string{"symlink", "device", "fifo", "socket"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
@@ -239,8 +268,8 @@ func assertNoSpawnNoMkdir(t *testing.T, cap *extractCapture, root string, err er
 	t.Helper()
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if cap.treeCalls != 0 || cap.bytesCalls != 0 {
-		t.Errorf("restic spawned on a boundary rejection: tree=%d bytes=%d", cap.treeCalls, cap.bytesCalls)
+	if cap.treeCalls != 0 {
+		t.Errorf("restic spawned on a boundary rejection: tree=%d", cap.treeCalls)
 	}
 	if ents, _ := os.ReadDir(root); len(ents) != 0 {
 		t.Errorf("target root not left empty: %d entries", len(ents))
@@ -270,7 +299,7 @@ func TestExtractFinalExists(t *testing.T) {
 	}
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if cap.bytesCalls != 0 {
+	if cap.treeCalls != 0 {
 		t.Error("restic spawned despite a pre-existing final dir")
 	}
 }
@@ -289,7 +318,7 @@ func TestExtractStagingExists(t *testing.T) {
 	}
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if cap.bytesCalls != 0 {
+	if cap.treeCalls != 0 {
 		t.Error("restic spawned despite a pre-existing staging dir")
 	}
 }
@@ -357,43 +386,135 @@ func TestExtractDirectoryTreeDryRun(t *testing.T) {
 	}
 }
 
-// --- bytes-mode dispatch ---
+// --- single-file extract via restore ---
 
-func TestExtractFileBytes(t *testing.T) {
+// TestExtractFileFlattened drives the default (flattened) file extract: restic
+// restore is called with the parent rebased onto Source and a rebase-relative
+// --include, the file lands directly under final named for its RAW basename, and
+// the normalizer preserves restic's restored metadata (not the old 0600/now).
+func TestExtractFileFlattened(t *testing.T) {
+	cases := []struct {
+		name       string
+		source     string
+		sourceName string
+	}{
+		{"plain basename", "/etc/hosts", "hosts"},
+		// A basename whose sanitized slug differs from the raw name: the restored
+		// file leaf must be the RAW basename ("a*.conf"), never the slug.
+		{"sanitized container slug", "/etc/a*.conf", "a-.conf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cap := &extractCapture{}
+			leaf := path.Base(tc.source)
+			a, fc := newExtractApp(fakeRestic{
+				extractCap:       cap,
+				extractTreeSetup: fileStagingSetup(leaf),
+			}, root)
+			req := fileReq()
+			req.Source = tc.source
+			req.SourceName = tc.sourceName
+			staging, final, perr := PlanExtractPaths(a.Cfg.Extract, req)
+			if perr != nil {
+				t.Fatalf("PlanExtractPaths: %v", perr)
+			}
+
+			result, err := a.Extract(context.Background(), req, nil)
+			if err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+
+			cap.mu.Lock()
+			tp := cap.treeParams
+			cap.mu.Unlock()
+			if tp.Source != path.Dir(tc.source) {
+				t.Errorf("treeParams.Source = %q, want %q (parent rebase)", tp.Source, path.Dir(tc.source))
+			}
+			if want := "/" + leaf; tp.IncludePath != want {
+				t.Errorf("treeParams.IncludePath = %q, want %q", tp.IncludePath, want)
+			}
+			if tp.Target != staging || tp.DryRun {
+				t.Errorf("treeParams = {Target:%q DryRun:%v}, want {%q false}", tp.Target, tp.DryRun, staging)
+			}
+
+			if result.FinalDir != final {
+				t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
+			}
+			if result.Files != 1 || result.Dirs != 0 {
+				t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 0}", result.Files, result.Dirs)
+			}
+
+			// The file lands flattened under final, named for the RAW basename, with
+			// restic's restored metadata (0640, original mtime) preserved.
+			published := filepath.Join(final, leaf)
+			fi, serr := os.Lstat(published)
+			if serr != nil {
+				t.Fatalf("flattened file not present at final/<raw-basename>: %v", serr)
+			}
+			if fi.Mode().Perm() != 0o640 {
+				t.Errorf("published mode = %v, want 0640 preserved (not 0600)", fi.Mode())
+			}
+			if !fi.ModTime().Equal(fileSetupMtime) {
+				t.Errorf("published mtime = %v, want preserved %v (not now)", fi.ModTime(), fileSetupMtime)
+			}
+			// The sanitized slug must NOT be used as the file leaf.
+			if tc.sourceName != leaf {
+				if _, e := os.Lstat(filepath.Join(final, tc.sourceName)); e == nil {
+					t.Errorf("file published under the sanitized slug %q rather than the raw basename %q", tc.sourceName, leaf)
+				}
+			}
+			if _, serr := os.Stat(staging); serr == nil {
+				t.Error("staging dir still present after a successful rename")
+			}
+			if len(fc.saved) != 0 {
+				t.Errorf("extract wrote %d cache entries, want 0", len(fc.saved))
+			}
+		})
+	}
+}
+
+// TestExtractFileNested drives the opt-in nested layout: no source rebase, the
+// full source is the include, and restic reconstructs the parent path so the file
+// lands at final/etc/hosts. The reconstructed parent dir is counted in Dirs.
+func TestExtractFileNested(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
-	a, fc := newExtractApp(fakeRestic{
-		extractCap:         cap,
-		extractBytesData:   []byte("data"),
-		extractBytesResult: resticx.ExtractBytesResult{BytesWritten: 4},
+	a, _ := newExtractApp(fakeRestic{
+		extractCap:       cap,
+		extractTreeSetup: fileStagingSetup("etc/hosts"),
 	}, root)
 	req := fileReq()
+	req.Nested = true
 	staging, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
 	result, err := a.Extract(context.Background(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
+
 	cap.mu.Lock()
-	gotTarget := cap.bytesParams.Target
+	tp := cap.treeParams
 	cap.mu.Unlock()
-	if want := filepath.Join(staging, req.SourceName); gotTarget != want {
-		t.Errorf("bytes target = %q, want %q", gotTarget, want)
+	if tp.Source != "" {
+		t.Errorf("nested treeParams.Source = %q, want \"\" (bare snapshot)", tp.Source)
 	}
+	if tp.IncludePath != req.Source {
+		t.Errorf("nested treeParams.IncludePath = %q, want %q", tp.IncludePath, req.Source)
+	}
+
 	if result.FinalDir != final {
 		t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
 	}
-	if result.Files != 1 || result.Bytes != 4 {
-		t.Errorf("result = {Files:%d Bytes:%d}, want {1 4}", result.Files, result.Bytes)
+	// The reconstructed "etc" parent dir is counted: Files=1, Dirs=1.
+	if result.Files != 1 || result.Dirs != 1 {
+		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1}", result.Files, result.Dirs)
 	}
-	if _, serr := os.Stat(filepath.Join(final, req.SourceName)); serr != nil {
-		t.Errorf("extracted file not present under final: %v", serr)
+	if _, serr := os.Lstat(filepath.Join(final, "etc", "hosts")); serr != nil {
+		t.Errorf("nested file not present at final/etc/hosts: %v", serr)
 	}
 	if _, serr := os.Stat(staging); serr == nil {
 		t.Error("staging dir still present after a successful rename")
-	}
-	if len(fc.saved) != 0 {
-		t.Errorf("extract wrote %d cache entries, want 0", len(fc.saved))
 	}
 }
 
@@ -407,7 +528,7 @@ func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	repoDir := filepath.Join(root, "repo-a")
 	mustMkdirMode(t, repoDir, 0o755)
 
-	a, _ := newExtractApp(fakeRestic{extractBytesData: []byte("x"), extractBytesResult: resticx.ExtractBytesResult{BytesWritten: 1}}, root)
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}, root)
 	req := fileReq()
 	_, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
@@ -425,7 +546,7 @@ func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	}
 }
 
-// --- cancel / timeout (bytes mode) ---
+// --- cancel / timeout (file mode, now via restore) ---
 
 func TestExtractCancel(t *testing.T) {
 	root := t.TempDir()
@@ -481,7 +602,7 @@ func assertPartialStaging(t *testing.T, result ExtractResult, staging string) {
 func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{extractCap: cap, extractBytesData: []byte("x"), extractBytesResult: resticx.ExtractBytesResult{BytesWritten: 1}}, root)
+	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 	req := fileReq()
 	req.Source = "/etc/supersecret-leak"
 	req.SourceName = "supersecret-leak"
@@ -503,7 +624,7 @@ func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 	}
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if cap.bytesCalls != 0 {
+	if cap.treeCalls != 0 {
 		t.Error("restic spawned despite a pre-existing (symlink) final path")
 	}
 }
@@ -517,7 +638,7 @@ func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 func TestExtractUncleanSourceRefusedBeforeStaging(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{extractCap: cap, extractBytesData: []byte("x"), extractBytesResult: resticx.ExtractBytesResult{BytesWritten: 1}}, root)
+	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 	req := fileReq()
 	req.Source = "/etc/../secret"
 	req.SourceName = "secret"
@@ -534,7 +655,7 @@ func TestExtractUncleanSourceRefusedBeforeStaging(t *testing.T) {
 func TestExtractLoggingIsPathFree(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	a, _ := newExtractApp(fakeRestic{extractBytesData: []byte("x"), extractBytesResult: resticx.ExtractBytesResult{BytesWritten: 1}}, root)
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("topsecret")}, root)
 	a.Log = slog.New(slog.NewTextHandler(&buf, nil))
 	req := fileReq()
 	req.Source = "/etc/topsecret"
@@ -575,8 +696,66 @@ func TestExtractSecretsFailurePropagates(t *testing.T) {
 	}
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if cap.bytesCalls != 0 {
+	if cap.treeCalls != 0 {
 		t.Error("restic spawned despite a secrets failure")
+	}
+}
+
+// --- unsupported-platform preflight ---
+
+// On a platform where a live extract cannot publish (normalizer unvalidated /
+// non-Windows-safe include escaping), App.Extract refuses a live (non-dry-run)
+// extract BEFORE any restic spawn or staging mkdir, with a path-free error —
+// while a directory dry-run still proceeds everywhere (it carries no --include
+// and returns before staging/normalize). The test flips the linux/darwin
+// liveExtractSupported var to simulate the unsupported case.
+func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
+	orig := liveExtractSupported
+	liveExtractSupported = false
+	t.Cleanup(func() { liveExtractSupported = orig })
+
+	root := t.TempDir()
+	cap := &extractCapture{}
+	a, _ := newExtractApp(fakeRestic{
+		extractCap: cap,
+		extractTreeEvents: []resticx.ExtractTreeEvent{
+			{Kind: resticx.ExtractTreeVerboseStatus, Action: model.RestoreActionRestored, Item: "/etc/nginx/nginx.conf", Size: 10},
+			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 10},
+		},
+	}, root)
+
+	// A live file extract is refused before restic / staging, path-free.
+	_, err := a.Extract(context.Background(), fileReq(), nil)
+	if err == nil {
+		t.Fatal("expected a refusal on an unsupported platform")
+	}
+	if strings.Contains(err.Error(), "hosts") || strings.Contains(err.Error(), root) {
+		t.Errorf("preflight error leaked a path: %q", err.Error())
+	}
+	cap.mu.Lock()
+	liveCalls := cap.treeCalls
+	cap.mu.Unlock()
+	if liveCalls != 0 {
+		t.Errorf("restic spawned %d times on an unsupported platform, want 0", liveCalls)
+	}
+	if ents, _ := os.ReadDir(root); len(ents) != 0 {
+		t.Errorf("staging created on an unsupported platform: %d entries", len(ents))
+	}
+
+	// A directory dry-run still proceeds everywhere (returns before staging/normalize).
+	dreq := treeReq()
+	dreq.DryRun = true
+	res, derr := a.Extract(context.Background(), dreq, nil)
+	if derr != nil {
+		t.Fatalf("directory dry-run must proceed on any platform: %v", derr)
+	}
+	if len(res.DryRunPreview) != 1 {
+		t.Errorf("dry-run preview = %d rows, want 1", len(res.DryRunPreview))
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if cap.treeCalls != 1 {
+		t.Errorf("treeCalls = %d, want 1 (only the directory dry-run reached restic)", cap.treeCalls)
 	}
 }
 

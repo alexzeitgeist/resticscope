@@ -13,12 +13,23 @@ import (
 	json "github.com/goccy/go-json"
 )
 
-// extract_tree.go is the streaming restic boundary for extracting a whole
-// subtree out of a snapshot — `restic restore <snap>:<source> --target <dir>`.
-// It is the read-only sibling of browse/diff: it assembles a safe argv (every
-// safety invariant in 00-framework.md §5 is encoded in buildExtractTreeArgs and
-// asserted by argv tests), streams restic's --json progress to the caller, and
-// classifies the exit code into the package's existing *Error / ErrorKind shape.
+// extract_tree.go is the streaming restic boundary for `restic restore` — the
+// single restore driver for BOTH a whole-subtree extract (`restic restore
+// <snap>:<source> --target <dir>`) and a single-file extract (the same restore
+// plus `--include <pattern>` selecting one node). It is the read-only sibling of
+// browse/diff: it assembles a safe argv (every safety invariant in
+// 00-framework.md §5 is encoded in buildExtractTreeArgs and asserted by argv
+// tests), streams restic's --json progress to the caller, and classifies the
+// exit code into the package's existing *Error / ErrorKind shape.
+//
+// CRUCIAL: restic's --include is a glob *pattern*, not a literal path — a path
+// component carrying any of \ [ ] * ? is matched with filepath.Match, not by
+// equality (verified in upstream/restic internal/filter/filter.go). So a real
+// filename like a*.conf or backup[1].txt would over-match siblings or match the
+// wrong node. The IncludePath field on ExtractTreeParams is therefore a *literal*
+// path; literalIncludePattern backslash-escapes the metacharacter set at argv
+// build so restic matches exactly that one path. The raw path is what gets
+// validated and scrubbed from stderr; the escaped pattern is an argv-only value.
 //
 // This file is the ONLY place that knows restic's restore --json schema; if
 // restic 0.19 renames a field, only this file and its testdata fixtures change.
@@ -56,8 +67,7 @@ const extractPathMask = "[path]"
 const snapshotIDHexLen = 64
 
 // Extract path-validation sentinels. They are path-free by construction (they
-// never echo the rejected value) so a rejection can be logged safely. Step 03
-// (extract_bytes.go) reuses assertCleanSnapshotID / ErrExtractInvalidSnapshotID.
+// never echo the rejected value) so a rejection can be logged safely.
 var (
 	// ErrExtractInvalidSnapshotID rejects a snapshot reference that is not a
 	// concrete lowercase-hex ID — in particular "latest", which would let restic
@@ -69,6 +79,11 @@ var (
 	ErrExtractInvalidSource = errors.New("resticx: extract source is not a cleaned absolute path")
 	// ErrExtractInvalidTarget rejects an empty or non-absolute --target.
 	ErrExtractInvalidTarget = errors.New("resticx: extract target is not an absolute path")
+	// ErrExtractInvalidInclude rejects an IncludePath that is not a cleaned,
+	// rooted, non-root file path. Unlike Source, "/" is rejected: an include of
+	// "/" is both too broad and contradicts the one-file invariant the include
+	// filter exists to enforce.
+	ErrExtractInvalidInclude = errors.New("resticx: extract include path is not a cleaned non-root absolute path")
 )
 
 // ExtractTreeParams are the inputs to a single restic restore invocation. The
@@ -88,6 +103,16 @@ type ExtractTreeParams struct {
 
 	// Target is the absolute staging dir handed to restic --target.
 	Target string
+
+	// IncludePath is the RAW (cleaned, rooted) snapshot path to select with restic
+	// --include, or "" for "no include filter" (a whole-subtree extract). For a
+	// flattened file it is rebased-relative to Source (e.g. "/vzdump.conf" under
+	// Source "/etc"); for a nested file it is the full path (e.g. "/etc/vzdump.conf"
+	// with Source ""). It is a LITERAL path, NOT a restic pattern: --include is a
+	// glob, so buildExtractTreeArgs escapes it via literalIncludePattern at argv
+	// build. Must be "" or a cleaned non-root rooted path (assertCleanIncludePath);
+	// this layer validates the raw value and never validates the escaped pattern.
+	IncludePath string
 
 	// DryRun toggles --dry-run -vv. Without -vv restic's --json stream omits the
 	// per-file events the preview needs, so the wrapper forces -vv whenever
@@ -211,9 +236,12 @@ func restoreActionOf(action string) model.RestoreAction {
 }
 
 // ExtractTree streams `restic restore <snap>[:<source>] --target <dir>
-// --overwrite never --json` and hands each parsed progress message to onEvent.
-// onEvent returning a non-nil error cancels the run via the child context and
-// that error is surfaced verbatim (mirrors StreamSnapshotTree / StreamDiff).
+// --overwrite never --json [--include <pattern>]` and hands each parsed progress
+// message to onEvent. With params.IncludePath set, restic restores only the
+// matching node (and its reconstructed parent dirs) metadata-faithfully — the
+// single-file path. onEvent returning a non-nil error cancels the run via the
+// child context and that error is surfaced verbatim (mirrors StreamSnapshotTree
+// / StreamDiff).
 //
 // This layer does NOT impose a timeout: a real extract can run far longer than
 // resticx's 2-minute default, so the deadline is the caller's responsibility
@@ -272,14 +300,20 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 // surface for the safety invariants (00-framework.md §5). It emits, in order:
 // --no-lock (a lock would be a write), restore, the bare snapshot or
 // <snap>:<source>, --target <abs>, --overwrite never (never clobber existing
-// files), --json, and for a preview --dry-run -vv. It never emits --path,
-// --delete, or "latest". The bucket-lookup -o option is prepended by ExtractTree,
-// not here, so these argv tests stay free of S3 noise.
+// files), --json, an optional --include <pattern>, and for a preview --dry-run
+// -vv. It never emits --path, --delete, or "latest". The include value is the
+// RAW IncludePath run through literalIncludePattern so restic matches it as a
+// literal, not a glob — the raw path is what gets validated. The bucket-lookup -o
+// option is prepended by ExtractTree, not here, so these argv tests stay free of
+// S3 noise.
 func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 	if err := assertCleanSnapshotID(p.SnapshotID); err != nil {
 		return nil, err
 	}
 	if err := assertCleanSource(p.Source); err != nil {
+		return nil, err
+	}
+	if err := assertCleanIncludePath(p.IncludePath); err != nil {
 		return nil, err
 	}
 	if p.Target == "" || !filepath.IsAbs(p.Target) {
@@ -301,10 +335,54 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		"--overwrite", "never",
 		"--json",
 	}
+	if p.IncludePath != "" {
+		// Escape the raw literal path into a filepath.Match literal so restic
+		// restores exactly that one node, not a glob expansion of it.
+		args = append(args, "--include", literalIncludePattern(p.IncludePath))
+	}
 	if p.DryRun {
 		args = append(args, "--dry-run", "-vv")
 	}
 	return args, nil
+}
+
+// literalIncludePattern backslash-escapes restic's filepath.Match metacharacter
+// set (\ [ ] * ?) in path so each component becomes a literal match, leaving "/"
+// separators intact. With this, restic's --include matches exactly the supplied
+// path instead of treating a real filename like a*.conf or backup[1].txt as a
+// glob. NOT Windows-safe: Go's filepath.Match disables backslash escaping on
+// Windows (treats "\" as a separator), which is why the app layer refuses the
+// publish path on non-(linux|darwin) platforms before this ever runs.
+func literalIncludePattern(p string) string {
+	var b strings.Builder
+	b.Grow(len(p) + 4)
+	for _, r := range p {
+		switch r {
+		case '\\', '[', ']', '*', '?':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// assertCleanIncludePath asserts the IncludePath contract: "" is allowed (no
+// include filter); otherwise it must be NUL-free, rooted, equal to its
+// model.CleanBrowsePath form, and non-root. Unlike assertCleanSource, "/" is
+// rejected — an include of "/" is too broad and contradicts the one-file
+// invariant the include filter exists to enforce. It validates the RAW path,
+// never the escaped pattern.
+func assertCleanIncludePath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if p == "/" ||
+		strings.ContainsRune(p, '\x00') ||
+		!strings.HasPrefix(p, "/") ||
+		p != model.CleanBrowsePath(p) {
+		return ErrExtractInvalidInclude
+	}
+	return nil
 }
 
 // assertCleanSnapshotID rejects anything that is not restic's full, concrete
@@ -343,21 +421,24 @@ func assertCleanSource(src string) error {
 }
 
 // sanitizeExtractStderr prepares restic restore stderr to be safe inside a
-// returned *Error by scrubbing the tree-extract source/target fragments. The
-// shared scrubExtractStderr does the redact/mask/residual-path work.
+// returned *Error by scrubbing the source/target/include fragments. The shared
+// scrubExtractStderr does the redact/mask/residual-path work. IncludePath is
+// scrubbed too because restic echoes the real selected path (never the escaped
+// pattern); under the file mapping the selected file's basename lives only in
+// IncludePath (Source is empty for nested), so without it a bare-basename mention
+// would slip past the residual-'/' guard.
 func (c *Client) sanitizeExtractStderr(stderr []byte, p ExtractTreeParams) []byte {
-	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target))
+	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target, p.IncludePath))
 }
 
-// scrubExtractStderr makes restic stderr safe to embed in a returned *Error and
-// is shared by both extract wrappers (tree and bytes) so the privacy rule has a
-// single implementation. It redacts secrets, masks the supplied path fragments
-// the redactor does not know about, then applies a conservative residual-path
-// guard: any '/' surviving the masking may be an un-enumerated path (a sibling
-// item restic named, the repo URL, /dev/fd/3), which we cannot prove path-free,
-// so the whole stderr is dropped. Only KindUnknown renders Stderr, so the lost
-// detail is a deliberate privacy trade. classify re-runs the redactor on the
-// result, which is a no-op on already-masked text.
+// scrubExtractStderr makes restic stderr safe to embed in a returned *Error. It
+// redacts secrets, masks the supplied path fragments the redactor does not know
+// about, then applies a conservative residual-path guard: any '/' surviving the
+// masking may be an un-enumerated path (a sibling item restic named, the repo
+// URL, /dev/fd/3), which we cannot prove path-free, so the whole stderr is
+// dropped. Only KindUnknown renders Stderr, so the lost detail is a deliberate
+// privacy trade. classify re-runs the redactor on the result, which is a no-op on
+// already-masked text.
 func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 	s := string(stderr)
 	if c.Redact != nil {
@@ -375,17 +456,19 @@ func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 }
 
 // extractPathFragments lists the path strings to scrub from stderr: the full
-// source and target plus their basenames (restic often reports just the leaf or
-// the staging-dir name). The longer fragments are listed first so a basename is
-// only matched where the full path did not already cover it. Shared by the tree
-// and bytes wrappers.
-func extractPathFragments(source, target string) []string {
-	frags := make([]string, 0, 4)
+// source, target, and include path plus their basenames (restic often reports
+// just the leaf or the staging-dir name). The longer fragments are listed first
+// so a basename is only matched where the full path did not already cover it.
+func extractPathFragments(source, target, includePath string) []string {
+	frags := make([]string, 0, 6)
 	if target != "" {
 		frags = append(frags, target, filepath.Base(target))
 	}
 	if source != "" && source != "/" {
 		frags = append(frags, source, filepath.Base(source))
+	}
+	if includePath != "" && includePath != "/" {
+		frags = append(frags, includePath, filepath.Base(includePath))
 	}
 	return frags
 }

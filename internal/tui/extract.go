@@ -42,7 +42,7 @@ type extractState int
 const (
 	extractStateReview     extractState = iota // initial screen, before any restic call
 	extractStatePreview                        // dir: post-dry-run list; file: app-side review (no restic call)
-	extractStateRunning                        // live restore / dump in flight
+	extractStateRunning                        // live restore in flight (file or directory)
 	extractStateSuccess                        // post-rename
 	extractStateCanceled                       // includes context.DeadlineExceeded
 	extractStateError                          // any non-cancel error from App.Extract
@@ -51,9 +51,8 @@ const (
 )
 
 // extractProgressBuffer bounds the progress channel. Sends are non-blocking, so
-// the producer (the in-process io.Reader copy for bytes, or the resticx event
-// callback for trees) never stalls behind a full UI channel. Mirrors
-// browseProgressBuffer / diffProgressBuffer.
+// the producer (the resticx restore event callback) never stalls behind a full
+// UI channel. Mirrors browseProgressBuffer / diffProgressBuffer.
 const extractProgressBuffer = 64
 
 // extractRateWindow is the minimum sample span for the displayed recent
@@ -578,6 +577,13 @@ func (m extractModel) handlePreviewKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 		cmd := m.startRun()
 		m.state = extractStateRunning
 		return m, cmd, false
+	case m.req.Mode == app.ExtractFile && key.Matches(msg, keys.ExtractLayout):
+		// File review only: flip flattened ↔ nested. No re-plan — Nested does not
+		// affect PlanExtractPaths (staging/final container names are unchanged); it
+		// only moves the file inside `final`, which extractFileReviewBody recomputes
+		// on render.
+		m.req.Nested = !m.req.Nested
+		return m, nil, false
 	case key.Matches(msg, keys.Up):
 		m.previewScrollOffset = clampPreviewOffset(m.previewScrollOffset-1, m.previewRows, m.width, m.height)
 		return m, nil, false
@@ -770,7 +776,10 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	var wasFile bool
 	switch {
 	case entry.Type == "file":
-		mode = app.ExtractFileBytes
+		// A regular file restores via restic restore --include. Nested is left at
+		// its zero value (false = flattened), the default layout; the file review
+		// screen's `f` toggle flips it.
+		mode = app.ExtractFile
 		wasFile = true
 	case entry.Type == "dir" || entry.IsDir:
 		mode = app.ExtractDirectoryTree
@@ -819,6 +828,7 @@ func (m extractModel) helpLine(keys keyMap) string {
 		}
 		return joinHelp(
 			keyHelp(keys.ExtractGo, "extract"),
+			keyHelp(keys.ExtractLayout, "layout"),
 			keyHelp(keys.Back, "back"),
 		)
 	case extractStateRunning:

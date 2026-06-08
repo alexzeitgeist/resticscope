@@ -6,39 +6,40 @@ import "charm.land/bubbles/v2/key"
 // help.KeyMap via the per-view helpers below, so the footer help reflects what
 // the keys do in the current view rather than listing every binding at once.
 type keyMap struct {
-	Up         key.Binding
-	Down       key.Binding
-	SearchUp   key.Binding // search: move the result cursor up (arrows + ctrl+k, never plain k)
-	SearchDown key.Binding // search: move the result cursor down (arrows + ctrl+j, never plain j)
-	PageUp     key.Binding
-	PageDown   key.Binding
-	Enter      key.Binding
-	Back       key.Binding
-	Shell      key.Binding
-	Browse     key.Binding
-	Parent     key.Binding // browse: step to the parent directory (backspace/left)
-	Open       key.Binding // browse: open the selected directory (right/l), alias for enter
-	Refresh    key.Binding
-	RefreshAll key.Binding
-	Filter     key.Binding
-	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
-	Sort       key.Binding
-	Group      key.Binding // list: cycle group_by keys + flat view; detail: cycle snapshot section grouping (off → host → tags → paths)
-	Collapse   key.Binding // detail: toggle tree-ID collapse on the snapshot table (folds consecutive same-tree rows into "(+N)")
-	Versions   key.Binding // browse: open the find-versions view for the selected file
-	HostToggle key.Binding // find-versions: toggle the host filter on/off
-	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
-	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
-	Info       key.Binding // detail: open the full snapshot-info modal
-	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
-	Extract    key.Binding // browse: open the extract modal for the selected entry
-	ExtractGo  key.Binding // extract: commit the extract (review→running or preview→running)
-	Target     key.Binding // extract: open the target-root filepicker overlay from review
-	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
-	Delete     key.Binding // extract: delete the staging dir from the cancel/error prompt
-	Help       key.Binding
-	Quit       key.Binding // context-aware q: back from nested views, quit on list
-	HardQuit   key.Binding // unconditional ctrl+c
+	Up            key.Binding
+	Down          key.Binding
+	SearchUp      key.Binding // search: move the result cursor up (arrows + ctrl+k, never plain k)
+	SearchDown    key.Binding // search: move the result cursor down (arrows + ctrl+j, never plain j)
+	PageUp        key.Binding
+	PageDown      key.Binding
+	Enter         key.Binding
+	Back          key.Binding
+	Shell         key.Binding
+	Browse        key.Binding
+	Parent        key.Binding // browse: step to the parent directory (backspace/left)
+	Open          key.Binding // browse: open the selected directory (right/l), alias for enter
+	Refresh       key.Binding
+	RefreshAll    key.Binding
+	Filter        key.Binding
+	Search        key.Binding // browse: open the global filename search (same `/` key as Filter)
+	Sort          key.Binding
+	Group         key.Binding // list: cycle group_by keys + flat view; detail: cycle snapshot section grouping (off → host → tags → paths)
+	Collapse      key.Binding // detail: toggle tree-ID collapse on the snapshot table (folds consecutive same-tree rows into "(+N)")
+	Versions      key.Binding // browse: open the find-versions view for the selected file
+	HostToggle    key.Binding // find-versions: toggle the host filter on/off
+	Mark          key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
+	Diff          key.Binding // detail: open the diff view for the resolved (older, newer) pair
+	Info          key.Binding // detail: open the full snapshot-info modal
+	DiffSwap      key.Binding // diff: swap the directional first/second pair and rerun
+	Extract       key.Binding // browse: open the extract modal for the selected entry
+	ExtractGo     key.Binding // extract: commit the extract (review→running or preview→running)
+	ExtractLayout key.Binding // extract: toggle file layout flattened ↔ nested on the file review
+	Target        key.Binding // extract: open the target-root filepicker overlay from review
+	Keep          key.Binding // extract: keep the staging dir from the cancel/error prompt
+	Delete        key.Binding // extract: delete the staging dir from the cancel/error prompt
+	Help          key.Binding
+	Quit          key.Binding // context-aware q: back from nested views, quit on list
+	HardQuit      key.Binding // unconditional ctrl+c
 
 	// Snapshot-diff filter toggles: one bit each in model.ModifierKind. `?`
 	// collides with Help (the modifier char for bitrot), so the binding is `b`.
@@ -63,37 +64,38 @@ func defaultKeys() keyMap {
 		Down: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 		// Search-result navigation excludes plain j/k so they stay literal query
 		// characters (json, java, kernel, …); arrows and ctrl+j/ctrl+k move instead.
-		SearchUp:   key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
-		SearchDown: key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
-		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
-		PageDown:   key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
-		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
-		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
-		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
-		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
-		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
-		Open:       key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "open")),
-		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
-		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
-		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
-		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
-		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
-		Collapse:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "collapse")),
-		Versions:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
-		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
-		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
-		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
-		Info:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
-		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
-		Extract:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
-		ExtractGo:  key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go")),
-		Target:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
-		Keep:       key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "keep")),
-		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Quit:       key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-		HardQuit:   key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+		SearchUp:      key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
+		SearchDown:    key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
+		PageUp:        key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
+		PageDown:      key.NewBinding(key.WithKeys("pgdown", "ctrl+f"), key.WithHelp("pgdn", "page down")),
+		Enter:         key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		Back:          key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
+		Shell:         key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
+		Browse:        key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
+		Parent:        key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
+		Open:          key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "open")),
+		Refresh:       key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		RefreshAll:    key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
+		Filter:        key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+		Search:        key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
+		Sort:          key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
+		Group:         key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
+		Collapse:      key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "collapse")),
+		Versions:      key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
+		HostToggle:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
+		Mark:          key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
+		Diff:          key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
+		Info:          key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
+		DiffSwap:      key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
+		Extract:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
+		ExtractGo:     key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go")),
+		ExtractLayout: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "layout")),
+		Target:        key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
+		Keep:          key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "keep")),
+		Delete:        key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		Help:          key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Quit:          key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		HardQuit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 
 		DiffFilterAdded:       key.NewBinding(key.WithKeys("+"), key.WithHelp("+", "added")),
 		DiffFilterRemoved:     key.NewBinding(key.WithKeys("-"), key.WithHelp("-", "removed")),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -87,25 +86,20 @@ type fakeRestic struct {
 	diffErr         error             // returned instead of a clean diff
 	diffCap         *diffCapture      // optional; records what StreamDiff was asked
 
-	extractCap         *extractCapture            // optional; records the extract params/call counts
-	extractTreeEvents  []resticx.ExtractTreeEvent // events fed to onEvent in order
-	extractTreeErr     error                      // returned instead of a clean tree run
-	extractTreeSetup   func(target string) error  // optional; builds a synthetic staging tree before returning
-	extractBytesData   []byte                     // optional; written to the bytes target on success
-	extractBytesResult resticx.ExtractBytesResult // returned from ExtractBytes
-	extractBytesErr    error                      // returned instead of a clean bytes run
-	extractBlock       bool                       // block on ctx.Done and return ctx.Err() (cancel/timeout tests)
+	extractCap        *extractCapture            // optional; records the extract params/call counts
+	extractTreeEvents []resticx.ExtractTreeEvent // events fed to onEvent in order
+	extractTreeErr    error                      // returned instead of a clean tree run
+	extractTreeSetup  func(target string) error  // optional; builds a synthetic staging tree before returning
+	extractBlock      bool                       // block on ctx.Done and return ctx.Err() (cancel/timeout tests)
 }
 
-// extractCapture records the arguments ExtractTree / ExtractBytes were called
-// with. It is a pointer field so the value-receiver fake can still record through
-// it; the mutex guards it under concurrency.
+// extractCapture records the arguments ExtractTree was called with. It is a
+// pointer field so the value-receiver fake can still record through it; the mutex
+// guards it under concurrency.
 type extractCapture struct {
-	mu          sync.Mutex
-	treeCalls   int
-	bytesCalls  int
-	treeParams  resticx.ExtractTreeParams
-	bytesParams resticx.ExtractBytesParams
+	mu         sync.Mutex
+	treeCalls  int
+	treeParams resticx.ExtractTreeParams
 }
 
 // diffCapture records StreamDiff's arguments across goroutines.
@@ -212,31 +206,6 @@ func (f fakeRestic) ExtractTree(ctx context.Context, t resticx.Target, c resticx
 	return nil
 }
 
-func (f fakeRestic) ExtractBytes(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractBytesParams, onProgress func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error) {
-	if f.extractCap != nil {
-		f.extractCap.mu.Lock()
-		f.extractCap.bytesCalls++
-		f.extractCap.bytesParams = params
-		f.extractCap.mu.Unlock()
-	}
-	if f.extractBlock {
-		<-ctx.Done()
-		return resticx.ExtractBytesResult{}, ctx.Err()
-	}
-	if f.extractBytesErr != nil {
-		return f.extractBytesResult, f.extractBytesErr
-	}
-	if f.extractBytesData != nil {
-		if err := os.WriteFile(params.Target, f.extractBytesData, 0o600); err != nil {
-			return resticx.ExtractBytesResult{}, err
-		}
-	}
-	if onProgress != nil && f.extractBytesResult.BytesWritten > 0 {
-		onProgress(resticx.ExtractBytesProgress{BytesDone: f.extractBytesResult.BytesWritten})
-	}
-	return f.extractBytesResult, nil
-}
-
 func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error) {
 	if f.browseCap != nil {
 		f.browseCap.mu.Lock()
@@ -295,11 +264,6 @@ func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c 
 func (blockingBrowseRestic) ExtractTree(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error {
 	<-ctx.Done()
 	return ctx.Err()
-}
-
-func (blockingBrowseRestic) ExtractBytes(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractBytesParams, onProgress func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error) {
-	<-ctx.Done()
-	return resticx.ExtractBytesResult{}, ctx.Err()
 }
 
 // --- fake browse store / index writer ---

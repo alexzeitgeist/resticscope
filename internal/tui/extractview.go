@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -108,9 +109,6 @@ func (m Model) extractReviewBody(w int) string {
 		{label: "Type", value: extractTypeLine(em)},
 		{label: "Output", value: extractOutputLine(em.req.Mode)},
 	}
-	if em.req.Mode == app.ExtractFileBytes {
-		rows = append(rows, extractRow{label: "Metadata", value: "not preserved"})
-	}
 	rows = append(rows,
 		extractRow{}, // spacer
 		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
@@ -132,24 +130,48 @@ func (m Model) extractReviewBody(w int) string {
 }
 
 // extractFileReviewBody is the app-side commit-time review screen for file
-// sources (no restic call); enter→preview took us here, g commits.
+// sources (no restic call); enter→preview took us here, g commits, f toggles the
+// layout. The file now restores metadata-faithfully (restic restore --include),
+// and the Layout row reflects the flattened ↔ nested choice the `f` key flips.
 func (m Model) extractFileReviewBody(w int) string {
 	em := m.extract
+	leaf := extractFileLeaf(em.req)
 	rows := []extractRow{
 		{label: "Source", value: em.req.Source},
 		{label: "Type", value: extractTypeLine(em)},
-		{label: "Output", value: "file bytes (no metadata)"},
+		{label: "Output", value: "file · metadata preserved"},
+		{label: "Layout", value: extractLayoutLine(em.req.Nested)},
 		{label: "Overwrite", value: "never"},
 		{},
-		// Bytes land at <staging>/<name> and rename to <final>/<name>, so show
+		// The file lands at <staging>/<leaf> and renames to <final>/<leaf>, so show
 		// the file path the user gets, not the parent directory. Wrap rather than
 		// elide (framework §8) so a long path is fully visible.
-		{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, em.req.SourceName), extractValueWidth(w))},
-		{label: "Final", value: wrapPathValue(filepath.Join(em.final, em.req.SourceName), extractValueWidth(w))},
+		{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, leaf), extractValueWidth(w))},
+		{label: "Final", value: wrapPathValue(filepath.Join(em.final, leaf), extractValueWidth(w))},
 	}
 	body := renderExtractRows(m, rows, w)
-	hint := m.styles.meta.Render("  g ▶ extract")
+	hint := m.styles.meta.Render("  g ▶ extract  ·  f ▶ layout")
 	return body + "\n\n" + clip(hint, w)
+}
+
+// extractFileLeaf is the file's path relative to the output container, derived
+// from the layout choice: the RAW snapshot basename when flattened, the full
+// rooted source (minus its leading "/") when nested. It deliberately uses the raw
+// snapshot basename — never SourceName, which is a sanitized slug used only as
+// the per-op container directory component.
+func extractFileLeaf(req app.ExtractRequest) string {
+	if req.Nested {
+		return strings.TrimPrefix(req.Source, "/")
+	}
+	return path.Base(req.Source)
+}
+
+// extractLayoutLine labels the file layout for the review screen.
+func extractLayoutLine(nested bool) string {
+	if nested {
+		return "nested"
+	}
+	return "flattened"
 }
 
 // extractDirPreviewBody renders the scrollable dry-run preview list.
@@ -288,7 +310,8 @@ func (m Model) extractRunningBody(w int) string {
 }
 
 // extractPercent computes the bar fraction; hasPct is false when
-// BytesTotal == 0 (file mode, or pre-first-report).
+// BytesTotal == 0 (pre-first-report — restic restore reports total_bytes for
+// both file and directory extracts once it starts).
 func extractPercent(em extractModel) (float64, bool) {
 	if em.progress.BytesTotal <= 0 {
 		return 0, false
@@ -522,7 +545,7 @@ func extractSnapshotLine(req app.ExtractRequest) string {
 // doesn't carry them.
 func extractTypeLine(em extractModel) string {
 	kind := "directory"
-	if em.req.Mode == app.ExtractFileBytes {
+	if em.req.Mode == app.ExtractFile {
 		kind = "file"
 	}
 	if em.srcSize > 0 {
@@ -533,8 +556,8 @@ func extractTypeLine(em extractModel) string {
 
 // extractOutputLine names the output shape.
 func extractOutputLine(mode app.ExtractMode) string {
-	if mode == app.ExtractFileBytes {
-		return "file bytes"
+	if mode == app.ExtractFile {
+		return "file"
 	}
 	return "directory tree"
 }

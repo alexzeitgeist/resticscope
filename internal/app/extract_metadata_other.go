@@ -18,6 +18,12 @@ import (
 	"fmt"
 )
 
+// liveExtractSupported is false on platforms the normalizer is not validated on:
+// App.Extract refuses a live extract here before any restic spawn or staging,
+// because the post-restore normalizer is untested and the single-file --include
+// escaping is not Windows-safe. Its sibling in extract_metadata.go is true.
+var liveExtractSupported = false
+
 // extractMetaCounts mirrors the unix struct's shape used by the orchestrator.
 type extractMetaCounts struct {
 	Files          int

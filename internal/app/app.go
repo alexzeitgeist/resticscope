@@ -40,7 +40,6 @@ type Restic interface {
 	FindMatches(ctx context.Context, t resticx.Target, creds resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error)
 	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
 	ExtractTree(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error
-	ExtractBytes(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractBytesParams, onProgress func(resticx.ExtractBytesProgress)) (resticx.ExtractBytesResult, error)
 }
 
 // Secrets resolves a repo's runtime credentials. Satisfied by *secrets.Store.

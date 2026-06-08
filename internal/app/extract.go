@@ -34,8 +34,10 @@ import (
 type ExtractMode int
 
 const (
-	// ExtractFileBytes dumps one regular file's raw bytes (restic dump).
-	ExtractFileBytes ExtractMode = iota
+	// ExtractFile restores one regular file (restic restore --include), preserving
+	// the snapshot's mode/mtime/owner/xattrs — no longer a byte-only dump. The
+	// file lands flattened or nested per ExtractRequest.Nested.
+	ExtractFile ExtractMode = iota
 	// ExtractDirectoryTree restores a whole subtree (restic restore), and is also
 	// the future full-snapshot path.
 	ExtractDirectoryTree
@@ -87,17 +89,27 @@ type ExtractRequest struct {
 	Mode ExtractMode
 
 	// WasRegularFile mirrors the upstream BrowseEntry.Type == "file" check at the
-	// app boundary. Required true for ExtractFileBytes, false for
-	// ExtractDirectoryTree — symlinks/devices/fifos/sockets are rejected here and
-	// regular files cannot be routed through restic restore.
+	// app boundary. Required true for ExtractFile, false for ExtractDirectoryTree —
+	// symlinks/devices/fifos/sockets are rejected here. A regular file now routes
+	// through restic restore (with --include), not a dump.
 	WasRegularFile bool
+
+	// Nested chooses the file layout and is IGNORED for directories. It is phrased
+	// so the zero value is the default: false = flattened (the file lands at
+	// <final>/<name>, the historical dump location, now metadata-preserving),
+	// true = nested (the file lands at <final>/<original/path>). Named Nested
+	// rather than Flatten precisely so a builder that omits it gets the flattened
+	// default — ExtractRequest is an explicit contract where the zero value matters.
+	Nested bool
 
 	// TargetRoot optionally overrides cfg.Extract.TargetRoot for this one call.
 	// Empty means use the configured root; non-empty must be absolute.
 	TargetRoot string
 
-	// DryRun toggles restic restore --dry-run -vv. Must be false for
-	// ExtractFileBytes (restic dump has no dry-run; the file review is TUI-side).
+	// DryRun toggles restic restore --dry-run -vv. Must be false for ExtractFile:
+	// the file flow has no restic dry-run (the file review is TUI-side), and
+	// rejecting it on every platform also closes a hole — an allowed file dry-run
+	// would invoke restic with a non-Windows-safe --include pattern.
 	DryRun bool
 }
 
@@ -296,7 +308,7 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 // mode/file-type mismatches are refused at the boundary.
 func checkExtractModeGate(req ExtractRequest) error {
 	switch req.Mode {
-	case ExtractFileBytes:
+	case ExtractFile:
 		if !req.WasRegularFile {
 			return invalidExtractRequest("mode")
 		}
@@ -304,14 +316,17 @@ func checkExtractModeGate(req ExtractRequest) error {
 			return invalidExtractRequest("source")
 		}
 		if req.DryRun {
-			// restic dump has no dry-run; the bytes-mode review is TUI-only.
+			// Files have no dry-run flow (the review is TUI-side). Rejecting it on
+			// every platform also closes a hole: an allowed file dry-run would invoke
+			// restic with --include <literalIncludePattern(...)>, whose backslash
+			// escaping is not Windows-safe.
 			return invalidExtractRequest("dry_run")
 		}
 		return nil
 	case ExtractDirectoryTree:
 		if req.WasRegularFile {
-			// Regular files are bytes-only in v1; restic restore <snap>:<file> is
-			// not a valid restore shape.
+			// A directory request must not carry a regular-file source; restic
+			// restore <snap>:<file> is not a valid whole-subtree shape.
 			return invalidExtractRequest("mode")
 		}
 		return nil
@@ -338,6 +353,18 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// 2. File-type gate — before any spawn, mkdir, or fresh-target check.
 	if err := checkExtractModeGate(req); err != nil {
 		return result, err
+	}
+
+	// 2b. Unsupported-platform preflight. The publish path runs the post-restore
+	// metadata normalizer, which is validated only on linux/darwin, and the file
+	// path's --include escaping is not Windows-safe — so refuse a live extract on
+	// an unsupported platform BEFORE cred resolution / staging / restic, never
+	// spawning restic with a non-literal include. A dry-run is allowed through:
+	// the only dry-run that reaches here is a directory dry-run (file dry-run is
+	// gate-rejected above), it carries no --include, and it returns before staging
+	// / normalize, so it is Windows-safe and works everywhere.
+	if !req.DryRun && !liveExtractSupported {
+		return result, errors.New("extract: not supported on this platform")
 	}
 
 	// 3. Cred-resolution preamble (same path as ShellSession / BrowseSession).
@@ -393,8 +420,11 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, fmt.Errorf("extract: %w", dispErr)
 	}
 
-	// 8. Metadata normalization gate (live tree extract only).
-	if req.Mode == ExtractDirectoryTree && !req.DryRun {
+	// 8. Metadata normalization gate (every live restore — file and directory —
+	// since both now route through restic restore into staging). A single
+	// flattened file walks to Files=1, Dirs=0; a nested file adds its reconstructed
+	// parent dirs to Dirs. A dry-run returns before this (no staging exists).
+	if !req.DryRun {
 		policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
 		counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
 		if nerr != nil {
@@ -426,37 +456,57 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	result.FinalDir = final
 
 	// Total wall-clock for the operation, measured against the injected clock from
-	// startedAt. This covers both modes — restic dump never reports a duration, and
-	// restic restore's self-reported seconds (a hostile boundary, Rule 5) cover
-	// only the restore, not our normalization + rename.
+	// startedAt. restic restore's self-reported seconds (a hostile boundary, Rule
+	// 5) cover only the restore, not our normalization + rename, so the injected
+	// clock is the authoritative duration for both file and directory extracts.
 	result.Elapsed = a.Clock.Now().Sub(startedAt)
 
 	a.logExtractSuccess(req, result)
 	return result, nil
 }
 
-// dispatchExtract routes to the tree or bytes wrapper.
+// dispatchExtract routes every mode through the single restore driver. Both file
+// and directory extracts are `restic restore` now; the file/directory difference
+// is carried entirely in the resticx params (Source rebase + IncludePath), built
+// by extractTreeParams.
 func (a *App) dispatchExtract(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	switch req.Mode {
-	case ExtractDirectoryTree:
-		return a.extractTree(ctx, r, material, req, staging, result, onProgress)
-	case ExtractFileBytes:
-		return a.extractBytes(ctx, r, material, req, staging, result, onProgress)
-	default:
-		return invalidExtractRequest("mode")
+	return a.extractTree(ctx, r, material, req, staging, result, onProgress)
+}
+
+// extractTreeParams builds the resticx restore params from the request and
+// staging dir, setting the RAW Source / IncludePath (resticx escapes the include
+// to a literal pattern). The three shapes:
+//
+//   - Directory       → Source: req.Source,           IncludePath: ""
+//   - File, flattened → Source: path.Dir(req.Source), IncludePath: "/"+base  (default)
+//   - File, nested    → Source: "",                   IncludePath: req.Source
+//
+// A root-level file ("/foo") flattens via Source path.Dir = "/" (a bare-snapshot
+// source) and IncludePath "/foo", so flattened and nested coincide — correct.
+func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreeParams {
+	p := resticx.ExtractTreeParams{
+		SnapshotID: req.SnapshotID,
+		Source:     req.Source,
+		Target:     staging,
+		DryRun:     req.DryRun,
 	}
+	if req.Mode == ExtractFile {
+		if req.Nested {
+			p.Source = ""
+			p.IncludePath = req.Source
+		} else {
+			p.Source = path.Dir(req.Source)
+			p.IncludePath = "/" + path.Base(req.Source)
+		}
+	}
+	return p
 }
 
 // extractTree drives resticx.ExtractTree and flattens its events into result /
 // onProgress. The summary's file count is recorded here but, for a live run, is
 // later overwritten by the metadata normalizer's authoritative split.
 func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	params := resticx.ExtractTreeParams{
-		SnapshotID: req.SnapshotID,
-		Source:     req.Source,
-		Target:     staging,
-		DryRun:     req.DryRun,
-	}
+	params := extractTreeParams(req, staging)
 	onEvent := func(ev resticx.ExtractTreeEvent) error {
 		switch ev.Kind {
 		case resticx.ExtractTreeStatus:
@@ -486,30 +536,6 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 	return a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent)
 }
 
-// extractBytes drives resticx.ExtractBytes for a single regular file. The target
-// is the per-op staging dir joined with the sanitized source name; resticx opens
-// it O_EXCL. BytesWritten is recorded on every path so a partial copy is still
-// reportable.
-func (a *App) extractBytes(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	params := resticx.ExtractBytesParams{
-		SnapshotID: req.SnapshotID,
-		Source:     req.Source,
-		Target:     filepath.Join(staging, req.SourceName),
-	}
-	onBytes := func(p resticx.ExtractBytesProgress) {
-		if onProgress != nil {
-			onProgress(ExtractProgress{BytesDone: p.BytesDone})
-		}
-	}
-	resp, err := a.Restic.ExtractBytes(ctx, targetOf(r), resticCreds(material), params, onBytes)
-	result.Bytes = resp.BytesWritten
-	if err != nil {
-		return err
-	}
-	result.Files = 1
-	return nil
-}
-
 // freshTargetCheck refuses an extract whose staging or final dir already exists.
 // Both checks run for dry-runs and real runs so a conflict surfaces before the
 // user commits. The rule is path occupancy, so it Lstats (never Stat): a dangling
@@ -533,7 +559,7 @@ func freshTargetCheck(staging, final string) error {
 // repo name, snapshot short ID, a phase marker, and counts — never a path.
 func (a *App) logExtractSuccess(req ExtractRequest, result ExtractResult) {
 	kind := "extract.tree"
-	if req.Mode == ExtractFileBytes {
+	if req.Mode == ExtractFile {
 		kind = "extract.file"
 	}
 	a.logger().Info("extract finished",

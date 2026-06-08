@@ -1087,8 +1087,9 @@ func TestBrowseExtractDirectoryOpensSubModel(t *testing.T) {
 	}
 }
 
-// e on a regular-file row opens the sub-model in file-bytes mode with
-// WasRegularFile set, so the app layer routes restic dump rather than restore.
+// e on a regular-file row opens the sub-model in file mode with WasRegularFile
+// set, so the app layer routes restic restore --include with the flattened
+// (default) layout.
 func TestBrowseExtractFileOpensSubModel(t *testing.T) {
 	m := extractBrowseModel(t, []model.BrowseEntry{
 		{Path: "/etc/hosts", Name: "hosts", Type: "file", Size: 412},
@@ -1100,11 +1101,14 @@ func TestBrowseExtractFileOpensSubModel(t *testing.T) {
 		t.Fatalf("e on a file should open extractView, view = %d", m.view)
 	}
 	req := m.extract.req
-	if req.Mode != app.ExtractFileBytes {
-		t.Errorf("Mode = %v, want ExtractFileBytes", req.Mode)
+	if req.Mode != app.ExtractFile {
+		t.Errorf("Mode = %v, want ExtractFile", req.Mode)
 	}
 	if !req.WasRegularFile {
 		t.Error("a regular file must set WasRegularFile")
+	}
+	if req.Nested {
+		t.Error("a fresh file request must default to flattened (Nested=false)")
 	}
 	if req.SourceName != "hosts" {
 		t.Errorf("SourceName = %q, want hosts", req.SourceName)

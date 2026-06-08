@@ -152,7 +152,7 @@ func fileReq() app.ExtractRequest {
 		SnapshotShort:  "a1b2c3d4",
 		Source:         "/etc/hosts",
 		SourceName:     "hosts",
-		Mode:           app.ExtractFileBytes,
+		Mode:           app.ExtractFile,
 		WasRegularFile: true,
 	}
 }
@@ -308,6 +308,73 @@ func TestExtractFileHappyPath(t *testing.T) {
 	}
 	if calls[0].dryRun {
 		t.Error("file Extract call must not be dry-run")
+	}
+}
+
+// File layout toggle: `f` on the file review flips Nested, switching the rendered
+// Final path from the flattened default (final/<name>) to nested
+// (final/etc/<name>). The `?` help overlay's Extract section advertises the same
+// layout key/label, so the inline help and the overlay stay in sync.
+func TestExtractFileLayoutToggle(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), fileReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.state = extractStatePreview // the file review screen
+	keys := defaultKeys()
+
+	render := func(em extractModel) string {
+		m := newTestModel(t, a)
+		m.view = extractView
+		m.width = 240 // wide enough that the Final path renders on one line
+		m.extract = em
+		return m.extractBody()
+	}
+
+	flatPath := filepath.Join(em.final, "hosts")
+	nestedPath := filepath.Join(em.final, "etc", "hosts")
+
+	// Default layout is flattened: the file lands at final/<name>.
+	flatBody := render(em)
+	if !strings.Contains(flatBody, "flattened") {
+		t.Errorf("flattened review missing the layout label:\n%s", flatBody)
+	}
+	if !strings.Contains(flatBody, flatPath) {
+		t.Errorf("flattened review missing the flattened final path %q:\n%s", flatPath, flatBody)
+	}
+	if strings.Contains(flatBody, nestedPath) {
+		t.Errorf("flattened review unexpectedly showed the nested path:\n%s", flatBody)
+	}
+
+	// f flips to nested.
+	em, _, leave := dispatchKey(em, keys, "f")
+	if leave {
+		t.Fatal("f on file review must not leave the modal")
+	}
+	if !em.req.Nested {
+		t.Fatal("f did not flip req.Nested to true")
+	}
+	nestedBody := render(em)
+	if !strings.Contains(nestedBody, "nested") {
+		t.Errorf("nested review missing the layout label:\n%s", nestedBody)
+	}
+	if !strings.Contains(nestedBody, nestedPath) {
+		t.Errorf("nested review missing the nested final path %q:\n%s", nestedPath, nestedBody)
+	}
+
+	// f again flips back to flattened.
+	em, _, _ = dispatchKey(em, keys, "f")
+	if em.req.Nested {
+		t.Error("second f did not flip back to flattened")
+	}
+
+	// The ? help overlay's Extract (from browse) section carries the layout entry,
+	// matching the inline helpLine hint.
+	help := newTestModel(t, a).helpBody()
+	if !strings.Contains(help, "file layout: flattened/nested") {
+		t.Errorf("help overlay missing the layout entry:\n%s", help)
 	}
 }
 
@@ -571,8 +638,8 @@ func TestExtractClearTransientZerosPaths(t *testing.T) {
 }
 
 // extractRequestFromBrowseEntry: directories produce ExtractDirectoryTree
-// requests, files produce ExtractFileBytes, unsupported types return the
-// sentinel.
+// requests, files produce ExtractFile (defaulting to the flattened layout),
+// unsupported types return the sentinel.
 func TestExtractRequestFromBrowseEntry(t *testing.T) {
 	snap := "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
 
@@ -593,8 +660,11 @@ func TestExtractRequestFromBrowseEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file entry: %v", err)
 	}
-	if got.Mode != app.ExtractFileBytes || !got.WasRegularFile {
-		t.Errorf("file mode/regular = %v/%v, want file-bytes / true", got.Mode, got.WasRegularFile)
+	if got.Mode != app.ExtractFile || !got.WasRegularFile {
+		t.Errorf("file mode/regular = %v/%v, want ExtractFile / true", got.Mode, got.WasRegularFile)
+	}
+	if got.Nested {
+		t.Error("a fresh file request must default to flattened (Nested=false)")
 	}
 
 	weird := model.BrowseEntry{Path: "/dev/null", Name: "null", Type: "char"}
