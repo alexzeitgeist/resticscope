@@ -361,11 +361,36 @@ func (m Model) extractSuccessBody(w int) string {
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
 		"    " + m.styles.meta.Render(em.result.FinalDir),
-		"",
-		"    " + m.styles.dim.Render("s     open a shell in the target directory"),
-		"    " + m.styles.dim.Render("enter back to browse"),
 	}
+	// Count-only warning when the tree carried unsafe symlinks. No names — only the
+	// count — so the line stays path-free even though FinalDir is shown above.
+	if em.result.UnsafeSymlinks > 0 {
+		body = append(body,
+			"",
+			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(em.result)),
+		)
+	}
+	body = append(body,
+		"",
+		"    "+m.styles.dim.Render("s     open a shell in the target directory"),
+		"    "+m.styles.dim.Render("enter back to browse"),
+	)
 	return clipLines(body, w)
+}
+
+// extractUnsafeSymlinkWarning composes the success-screen warning for unsafe
+// symlinks, phrased for the policy that applied. It carries only the count, never
+// a path or a link name.
+func extractUnsafeSymlinkWarning(r app.ExtractResult) string {
+	n := r.UnsafeSymlinks
+	switch r.UnsafeSymlinkPolicy {
+	case "skip":
+		return fmt.Sprintf("%d unsafe symlinks removed from the output.", n)
+	case "placeholder":
+		return fmt.Sprintf("%d unsafe symlinks replaced with inert text files recording their target.", n)
+	default: // keep (and any unknown/empty policy)
+		return fmt.Sprintf("%d unsafe symlinks left in place — targets are absolute or outside the extracted tree and alias your live filesystem; inspect before use.", n)
+	}
 }
 
 // extractTerminalBody renders the canceled / error screen with the

@@ -641,6 +641,41 @@ func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	}
 }
 
+// The success screen appends a count-only warning when the extracted tree
+// carried unsafe symlinks, phrased for the active policy — and leaks no path or
+// link name (only the count).
+func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{
+		Files:               2,
+		FinalDir:            "/extracted/here",
+		UnsafeSymlinks:      3,
+		UnsafeSymlinkPolicy: "keep",
+	}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 240 // wide enough that the warning line is not clipped
+	m.extract = em
+	body := m.extractBody()
+
+	if !strings.Contains(body, "3 unsafe symlinks") {
+		t.Errorf("success view missing the unsafe-symlink count:\n%s", body)
+	}
+	if !strings.Contains(body, "left in place") {
+		t.Errorf("keep-policy warning text missing:\n%s", body)
+	}
+	if strings.Contains(body, dirReq().Source) {
+		t.Errorf("success view leaked the source path:\n%s", body)
+	}
+}
+
 // The success-view `s` action opens a credential-free shell rooted at the
 // extracted directory via the driver's LocalShellSession.
 func TestExtractSuccessShellHere(t *testing.T) {

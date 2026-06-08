@@ -55,6 +55,13 @@ type Diff struct {
 type Extract struct {
 	TargetRoot     string   `toml:"target_root"`
 	ExtractTimeout Duration `toml:"extract_timeout"`
+
+	// UnsafeSymlinks is the policy for a restored symlink whose target is absolute
+	// or escapes the extracted tree (and so would alias the live filesystem):
+	// "keep" (default; leave verbatim + warn, matching restic), "skip" (remove from
+	// the output), or "placeholder" (replace with an inert text file recording the
+	// target). Validated against that enum; defaulted in Decode.
+	UnsafeSymlinks string `toml:"unsafe_symlinks"`
 }
 
 // Global holds process-wide settings.

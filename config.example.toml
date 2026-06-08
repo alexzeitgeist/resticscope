@@ -39,10 +39,14 @@ max_disk_bytes = "2GiB" # session-wide ceiling on the encrypted browse dir; "0" 
 # resticscope never modifies the repository: it spawns a read-only
 # `restic --no-lock dump` (file) / `restic --no-lock restore --overwrite never`
 # (directory) and writes only into a freshly-created per-op subdir under
-# <target_root>/<repo-slug>/. It refuses to write into an existing target. This
-# block is optional; the defaults below apply when it is omitted. Live directory
-# extracts publish only on Linux/macOS; on other platforms, file extract and
-# directory dry-run work, but live directory restore stops before publish.
+# <target_root>/<repo-slug>/. It refuses to write into an existing target. A
+# directory extract publishes a faithful, verbatim copy of what restic restored —
+# original modes, mtimes, xattrs/ACLs, and ownership are all preserved — and only
+# ever acts on "unsafe" symlinks (see unsafe_symlinks below); special files and
+# unsafe links are counted, never fatal. This block is optional; the defaults
+# below apply when it is omitted. Live directory extracts publish only on
+# Linux/macOS; on other platforms, file extract and directory dry-run work, but
+# live directory restore stops before publish.
 [extract]
 # Base directory for extract output. resticscope creates a per-op subdir under
 # <target_root>/<repo-slug>/ and refuses to overwrite an existing one. ~ is
@@ -53,6 +57,16 @@ target_root = "~/resticscope-extracts"
 # cancels the operation and leaves the partial staging dir in place for the user
 # to keep or delete.
 extract_timeout = "30m"
+
+# What to do with a restored symlink whose target is absolute or escapes the
+# extracted tree (and so would alias your LIVE filesystem once the fragment is in
+# a scratch dir):
+#   "keep"        - leave it verbatim and warn (default; matches restic)
+#   "skip"        - remove the unsafe link from the output
+#   "placeholder" - replace it with an inert text file recording the target
+# Targets that stay inside the extracted tree are always kept. resticscope never
+# follows an unsafe link.
+unsafe_symlinks = "keep"
 
 # --- S3 credentials -----------------------------------------------------------
 # A credential is just a NAME for an access-key/secret-key pair; it carries no

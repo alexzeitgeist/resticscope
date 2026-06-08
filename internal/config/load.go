@@ -33,6 +33,9 @@ const (
 	// output lands under target_root by default.
 	defaultExtractTimeout    = 30 * time.Minute
 	defaultExtractTargetRoot = "~/resticscope-extracts"
+	// Restored symlinks that point outside the tree are kept verbatim (+ warn) by
+	// default, matching restic and the wider restore ecosystem.
+	defaultUnsafeSymlinks = "keep"
 )
 
 // Load reads, normalizes, and validates the config at path. The returned
@@ -78,6 +81,7 @@ func Decode(data []byte) (*Config, error) {
 		Extract: Extract{
 			TargetRoot:     defaultExtractTargetRoot,
 			ExtractTimeout: Duration(defaultExtractTimeout),
+			UnsafeSymlinks: defaultUnsafeSymlinks,
 		},
 	}
 	md, err := toml.Decode(string(data), &cfg)

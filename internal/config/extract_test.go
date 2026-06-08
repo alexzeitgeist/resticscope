@@ -19,6 +19,36 @@ func TestExtractDefaultsApplied(t *testing.T) {
 	if got := cfg.Extract.ExtractTimeout.Std(); got != 30*time.Minute {
 		t.Errorf("extract_timeout = %v, want 30m", got)
 	}
+	if cfg.Extract.UnsafeSymlinks != "keep" {
+		t.Errorf("unsafe_symlinks = %q, want default %q", cfg.Extract.UnsafeSymlinks, "keep")
+	}
+}
+
+// unsafe_symlinks is enum-validated: skip/placeholder are accepted, anything else
+// is rejected. The error names the key and the allowed set but never echoes the
+// bad value.
+func TestExtractUnsafeSymlinksEnum(t *testing.T) {
+	for _, ok := range []string{"keep", "skip", "placeholder"} {
+		cfg, err := load(t, minimalTOML+"\n[extract]\nunsafe_symlinks = \""+ok+"\"\n")
+		if err != nil {
+			t.Errorf("unsafe_symlinks = %q rejected: %v", ok, err)
+			continue
+		}
+		if cfg.Extract.UnsafeSymlinks != ok {
+			t.Errorf("unsafe_symlinks = %q, want %q", cfg.Extract.UnsafeSymlinks, ok)
+		}
+	}
+
+	_, err := load(t, minimalTOML+"\n[extract]\nunsafe_symlinks = \"bogus\"\n")
+	if err == nil {
+		t.Fatal("expected a validation error for unsafe_symlinks = \"bogus\", got nil")
+	}
+	if !strings.Contains(err.Error(), "extract.unsafe_symlinks") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "extract.unsafe_symlinks")
+	}
+	if strings.Contains(err.Error(), "bogus") {
+		t.Errorf("error %q leaked the user-supplied value", err.Error())
+	}
 }
 
 // A leading ~ is expanded against the home passed to Normalize, and the result

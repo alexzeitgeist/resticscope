@@ -129,6 +129,15 @@ func (c *Config) validateExtract() []error {
 	if c.Extract.ExtractTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("extract.extract_timeout must be a positive duration, got %q", c.Extract.ExtractTimeout.Std()))
 	}
+	// unsafe_symlinks is seeded to "keep" in Decode, so an omitted key arrives
+	// valid; an explicit empty/unknown value survives to be rejected here. The
+	// message names the key and the allowed set but never echoes the bad value —
+	// same path-free discipline as the rest of the extract config.
+	switch c.Extract.UnsafeSymlinks {
+	case "keep", "skip", "placeholder":
+	default:
+		errs = append(errs, errors.New(`extract.unsafe_symlinks must be "keep", "skip", or "placeholder"`))
+	}
 	return errs
 }
 

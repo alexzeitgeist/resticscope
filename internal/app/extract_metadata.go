@@ -2,71 +2,68 @@
 
 package app
 
-// extract_metadata.go is the v1 directory-metadata normalization gate
-// (00-framework.md §18). restic 0.18.1 exposes no restore flag to suppress
-// ownership/xattr/mode restoration, so after a successful live tree restore — and
-// before the staging dir is renamed to final — this pass walks the staging tree
-// and forces every entry to safe, owner-only metadata:
+// extract_metadata.go is the post-restore staging pass for a live tree extract.
+// restic restores a faithful, verbatim copy of the snapshot — original modes
+// (including suid/sgid/sticky), mtimes, xattrs/ACLs, and ownership — and that is
+// exactly what an extract should publish: every tool in the ecosystem (tar,
+// bsdtar, borg, cpio, rsync) treats a verbatim restore as the norm. So this pass
+// preserves everything intrinsic to a file and never rewrites it.
 //
-//   - regular files → 0600, directories → 0700. A directory is forced
-//     owner-traversable before its children are read (restic restores the
-//     snapshot's original mode, which may lack owner r/x) and is otherwise
-//     normalized post-order; suid/sgid/sticky are dropped by replacing the whole
-//     permission word.
-//   - ownership reset to the effective uid/gid (a no-op when already correct;
-//     a hard failure when it differs and cannot be changed).
-//   - xattrs/ACLs removed via the l* (no-follow) calls; a filesystem that reports
-//     xattrs unsupported — or a single attribute it refuses to remove — is
-//     skipped and counted, not failed (documented v1 tolerance).
-//   - mtimes normalized to one baseline instant, including symlinks (via the
-//     no-follow unix.Lutimes; the link target is never touched).
-//   - symlinks kept only when their target is relative and cannot escape the
-//     extracted tree after lexical cleaning; never followed, never chmod'd, but
-//     their own timestamps are reset like every other node.
-//   - devices/fifos/sockets and any other node type rejected.
+// The one exception is the symlink target, the only *positional* piece of
+// metadata: once a fragment lands in a foreign scratch dir, an absolute or
+// tree-escaping link silently aliases the *live* filesystem (a read returns
+// current data, not backup data; a write through it clobbers a live file). Such
+// links are classified "unsafe" and handled per the [extract] unsafe_symlinks
+// policy — keep + warn (default, matching restic), skip, or placeholder.
 //
-// Every failure returns a path-free ErrExtractMetadataNormalization; the caller
-// leaves staging in place and does not rename.
+// Crucially the pass NEVER aborts the whole tree on classification: unsafe
+// symlinks and device/fifo/socket nodes are counted and (for symlinks) acted on,
+// never treated as a fatal error — the old v1 gate's symlink/special-file abort
+// tripped on common /etc subtrees and yielded nothing. Only a genuine IO error
+// hard-fails, and every such failure returns a path-free metaErr with staging
+// retained for the caller's keep-or-delete:
+//
+//   - Lstat / ReadDir / Chmod under any policy, and
+//   - Remove / WriteFile under the mutating skip/placeholder policies.
+//
+// So the mutating policies carry strictly more failure surface than keep. The
+// pass follows no symlink. The only filesystem mutations on the preserved path
+// are the directory temp-chmod-and-restore used to traverse a dir restic left
+// without owner rwx (see normalizeExtractDir).
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// extractMetaCounts tallies what the normalizer changed. It is count-only — it
-// holds no paths — so it is safe to log.
+// extractMetaCounts tallies what the normalizer saw. It is count-only — it holds
+// no paths — so it is safe to log.
 type extractMetaCounts struct {
-	Files         int // regular files normalized
-	Dirs          int // directories normalized (excludes the staging root)
-	XattrsRemoved int
-	Skipped       int // xattrs left in place because the fs reported them unsupported
+	Files          int // regular files (metadata preserved as restic restored it)
+	Dirs           int // directories (excludes the staging root)
+	UnsafeSymlinks int // symlinks whose target is absolute or escapes the tree
+	Other          int // device/fifo/socket/other special nodes, left in place
 }
 
-// normalizeExtractTreeMetadata walks root (the staging dir) and normalizes every
-// entry's metadata. It follows no symlinks and returns a path-free error on the
-// first failure.
-func normalizeExtractTreeMetadata(ctx context.Context, root string, baseline time.Time) (extractMetaCounts, error) {
+// normalizeExtractTreeMetadata walks root (the staging dir) and reproduces
+// restic's restored metadata for every intrinsic file attribute, deviating only
+// on unsafe symlinks per policy. It follows no symlinks, never aborts on node
+// classification, and returns a path-free error only on a genuine IO failure.
+func normalizeExtractTreeMetadata(ctx context.Context, root string, policy unsafeSymlinkPolicy) (extractMetaCounts, error) {
 	var counts extractMetaCounts
-	euid := os.Geteuid()
-	egid := os.Getegid()
-	err := normalizeExtractNode(ctx, root, root, baseline, euid, egid, true, &counts)
+	err := normalizeExtractNode(ctx, root, root, policy, true, &counts)
 	return counts, err
 }
 
-// normalizeExtractNode normalizes one entry, recursing into directories
-// post-order. isRoot suppresses counting the staging dir itself as a normalized
-// directory. A ctx error is propagated verbatim so a timeout/cancel during the
-// walk is not misreported as a metadata failure.
-func normalizeExtractNode(ctx context.Context, root, p string, baseline time.Time, euid, egid int, isRoot bool, counts *extractMetaCounts) error {
+// normalizeExtractNode handles one entry, recursing into directories. isRoot
+// suppresses counting the staging dir itself as a directory. A ctx error is
+// propagated verbatim so a timeout/cancel during the walk is not misreported as a
+// metadata failure.
+func normalizeExtractNode(ctx context.Context, root, p string, policy unsafeSymlinkPolicy, isRoot bool, counts *extractMetaCounts) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -75,187 +72,142 @@ func normalizeExtractNode(ctx context.Context, root, p string, baseline time.Tim
 		return metaErr(err)
 	}
 	mode := fi.Mode()
-	st, _ := fi.Sys().(*syscall.Stat_t)
 
 	switch {
 	case mode&fs.ModeSymlink != 0:
-		if err := validateExtractSymlink(root, p); err != nil {
+		// Ordered before IsDir(): a symlink is never followed or recursed.
+		unsafe, target, err := classifyExtractSymlink(root, p)
+		if err != nil {
 			return err
 		}
-		if err := chownToEffective(p, st, euid, egid, true); err != nil {
-			return err
+		if !unsafe {
+			return nil // safe link: leave verbatim
 		}
-		if err := removeXattrs(p, counts); err != nil {
-			return err
-		}
-		// Reset the symlink's own timestamps to the baseline like every other
-		// node. os.Chtimes would follow the link (and re-time its target); Lutimes
-		// is guaranteed no-follow on linux/darwin, the only platforms this gate
-		// builds for, so the link's target is never touched.
-		tv := unix.NsecToTimeval(baseline.UnixNano())
-		if err := unix.Lutimes(p, []unix.Timeval{tv, tv}); err != nil {
-			return metaErr(err)
-		}
-		return nil
+		counts.UnsafeSymlinks++
+		return applyUnsafeSymlinkPolicy(p, target, policy)
 
 	case mode.IsDir():
-		// Force the directory owner-traversable before reading it: restic restores
-		// the snapshot's original mode, which may lack owner r/x (e.g. 0000, 0500)
-		// and would otherwise block ReadDir / child Lstat. Staging is private and
-		// the final mode is 0700 regardless, so this is also the canonical mode
-		// normalization — nothing below changes the permission bits.
-		if err := os.Chmod(p, 0o700); err != nil {
-			return metaErr(err)
-		}
-		entries, err := os.ReadDir(p)
-		if err != nil {
-			return metaErr(err)
-		}
-		for _, e := range entries {
-			if err := normalizeExtractNode(ctx, root, filepath.Join(p, e.Name()), baseline, euid, egid, false, counts); err != nil {
-				return err
-			}
-		}
-		// Post-order: ownership, xattrs, and mtime after the children.
-		if err := removeXattrs(p, counts); err != nil {
-			return err
-		}
-		if err := chownToEffective(p, st, euid, egid, false); err != nil {
-			return err
-		}
-		if err := os.Chtimes(p, baseline, baseline); err != nil {
-			return metaErr(err)
-		}
-		if !isRoot {
-			counts.Dirs++
-		}
-		return nil
+		return normalizeExtractDir(ctx, root, p, mode, policy, isRoot, counts)
 
 	case mode.IsRegular():
-		if err := removeXattrs(p, counts); err != nil {
-			return err
-		}
-		if err := chownToEffective(p, st, euid, egid, false); err != nil {
-			return err
-		}
-		if err := os.Chmod(p, 0o600); err != nil {
-			return metaErr(err)
-		}
-		if err := os.Chtimes(p, baseline, baseline); err != nil {
-			return metaErr(err)
-		}
+		// Mode, mtime, xattrs, and ownership are kept exactly as restic restored
+		// them — nothing to do but count.
 		counts.Files++
 		return nil
 
 	default:
-		// Devices, fifos, sockets, and anything else cannot be safely published.
-		return fmt.Errorf("%w: unsupported node type", ErrExtractMetadataNormalization)
-	}
-}
-
-// validateExtractSymlink permits a symlink only when its target is non-empty,
-// NUL-free, relative, and cannot escape root after lexical cleaning. The target
-// is never followed.
-func validateExtractSymlink(root, p string) error {
-	target, err := os.Readlink(p)
-	if err != nil {
-		return metaErr(err)
-	}
-	if target == "" || strings.ContainsRune(target, '\x00') {
-		return fmt.Errorf("%w: unsafe symlink target", ErrExtractMetadataNormalization)
-	}
-	if filepath.IsAbs(target) {
-		return fmt.Errorf("%w: absolute symlink target", ErrExtractMetadataNormalization)
-	}
-	resolved := filepath.Clean(filepath.Join(filepath.Dir(p), target))
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%w: escaping symlink target", ErrExtractMetadataNormalization)
-	}
-	return nil
-}
-
-// chownToEffective resets ownership to euid/egid. It is a no-op when the entry is
-// already owned correctly; otherwise it Lchown/Chowns and fails the extract if it
-// cannot. The failure message is path-free.
-func chownToEffective(p string, st *syscall.Stat_t, euid, egid int, isSymlink bool) error {
-	if st != nil && int(st.Uid) == euid && int(st.Gid) == egid {
+		// Devices, fifos, sockets, and anything else: counted and left in place,
+		// never an abort.
+		counts.Other++
 		return nil
 	}
-	var err error
-	if isSymlink {
-		err = os.Lchown(p, euid, egid)
-	} else {
-		err = os.Chown(p, euid, egid)
-	}
-	if err != nil {
-		return fmt.Errorf("%w: cannot normalize ownership", ErrExtractMetadataNormalization)
-	}
-	return nil
 }
 
-// removeXattrs strips every extended attribute (POSIX ACLs ride here too) from p
-// using the no-follow calls. A filesystem that reports xattrs unsupported is
-// counted as skipped rather than failed.
-func removeXattrs(p string, counts *extractMetaCounts) error {
-	names, err := listXattrNames(p)
-	if err != nil {
-		if isXattrUnsupported(err) {
-			counts.Skipped++
-			return nil
+// normalizeExtractDir reads p's children and recurses, restoring p's original
+// mode afterward. restic restores the snapshot's original directory mode, which
+// may lack owner r/w/x (e.g. 0000, 0500); the pass forces the directory
+// owner-rwx before reading it and restores the original mode after.
+//
+// The mask is 0o700 (owner rwx), not 0o500 (owner r-x): read+execute is enough to
+// *traverse*, but skip/placeholder mutate *children* (Remove/WriteFile), which
+// needs *write* on the parent dir — a 0500 dir is traversable yet not writable,
+// so an r+x-only check would let those policies fail with EACCES. In practice
+// this only bites under root, since a non-root restic leaves staging owned by the
+// running user.
+//
+// The restore uses the original full os.FileMode (not .Perm()) so setgid/sticky
+// on directories survive — .Perm() would silently strip them and reintroduce the
+// metadata clobbering this rewrite exists to remove. It is deferred immediately
+// after the temp-chmod so it runs on EVERY exit — a ReadDir/child error, an
+// unsafe-link mutation failure, or a ctx-cancel mid-recursion — leaving a staging
+// tree retained for keep-or-delete inspection with restic's mode, not the
+// temporary widening. A restore failure surfaces as a path-free metaErr only when
+// nothing else already failed (the original error is the more informative one).
+func normalizeExtractDir(ctx context.Context, root, p string, origMode fs.FileMode, policy unsafeSymlinkPolicy, isRoot bool, counts *extractMetaCounts) (err error) {
+	if origMode.Perm()&0o700 != 0o700 {
+		if cerr := os.Chmod(p, origMode|0o700); cerr != nil {
+			return metaErr(cerr)
 		}
-		return metaErr(err)
-	}
-	for _, name := range names {
-		if err := unix.Lremovexattr(p, name); err != nil {
-			switch {
-			case isXattrUnsupported(err):
-				// The filesystem listed the attribute but refuses to remove it
-				// (rare; e.g. an immutable system/namespace attr). v1 policy is to
-				// tolerate it: count it as skipped rather than fail the whole
-				// extract. A surviving xattr here is an accepted, documented v1
-				// trade-off, not a normalization failure.
-				counts.Skipped++
-				continue
-			case err == unix.ENODATA:
-				// Vanished between list and remove — already gone, nothing to count.
-				continue
-			default:
-				return metaErr(err)
+		defer func() {
+			if rerr := os.Chmod(p, origMode); rerr != nil && err == nil {
+				err = metaErr(rerr)
 			}
+		}()
+	}
+	entries, rderr := os.ReadDir(p)
+	if rderr != nil {
+		return metaErr(rderr)
+	}
+	// The child loop runs between the temp-chmod and the deferred restore, so
+	// unsafe-link mutations always see a writable parent.
+	for _, e := range entries {
+		if cerr := normalizeExtractNode(ctx, root, filepath.Join(p, e.Name()), policy, false, counts); cerr != nil {
+			return cerr
 		}
-		counts.XattrsRemoved++
+	}
+	if !isRoot {
+		counts.Dirs++
 	}
 	return nil
 }
 
-// listXattrNames returns the NUL-separated xattr names on p (no symlink follow).
-func listXattrNames(p string) ([]string, error) {
-	sz, err := unix.Llistxattr(p, nil)
-	if err != nil {
-		return nil, err
+// classifyExtractSymlink reads the link at p and classifies its target via the
+// pure classifySymlinkTarget. It returns whether the target is unsafe, the raw
+// target string (for the placeholder policy), and a path-free metaErr only on a
+// Readlink IO failure. The link is never followed.
+func classifyExtractSymlink(root, p string) (unsafe bool, target string, err error) {
+	target, rerr := os.Readlink(p)
+	if rerr != nil {
+		return false, "", metaErr(rerr)
 	}
-	if sz == 0 {
-		return nil, nil
-	}
-	buf := make([]byte, sz)
-	sz, err = unix.Llistxattr(p, buf)
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, b := range bytes.Split(buf[:sz], []byte{0}) {
-		if len(b) > 0 {
-			names = append(names, string(b))
-		}
-	}
-	return names, nil
+	return classifySymlinkTarget(root, filepath.Dir(p), target), target, nil
 }
 
-// isXattrUnsupported reports whether err means the filesystem does not support
-// xattrs (so removal is a no-op, not a failure).
-func isXattrUnsupported(err error) bool {
-	return err == unix.ENOTSUP || err == unix.EOPNOTSUPP
+// classifySymlinkTarget reports whether a symlink target is unsafe to publish: a
+// target that is empty, NUL-bearing, absolute, or escapes root after lexical
+// cleaning aliases something outside the extracted tree (the live filesystem once
+// the fragment is in a scratch dir). It is pure — no filesystem access, no link
+// follow — so the empty/NUL guards (targets os.Symlink cannot even create) are
+// testable directly.
+func classifySymlinkTarget(root, parentDir, target string) bool {
+	if target == "" || strings.ContainsRune(target, '\x00') {
+		return true
+	}
+	if filepath.IsAbs(target) {
+		return true
+	}
+	resolved := filepath.Clean(filepath.Join(parentDir, target))
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	return false
+}
+
+// applyUnsafeSymlinkPolicy acts on an unsafe symlink at p per policy. The switch
+// default arm is keep, so an empty or unknown policy string falls through to
+// keep (fail-safe, matching restic's verbatim restore). Every Remove/WriteFile
+// failure returns a path-free metaErr — a raw *os.PathError would leak p — which
+// is why the mutating policies carry more failure surface than keep.
+func applyUnsafeSymlinkPolicy(p, target string, policy unsafeSymlinkPolicy) error {
+	switch policy {
+	case unsafeSymlinkSkip:
+		if err := os.Remove(p); err != nil {
+			return metaErr(err)
+		}
+	case unsafeSymlinkPlaceholder:
+		if err := os.Remove(p); err != nil {
+			return metaErr(err)
+		}
+		// An inert text file recording the target the link pointed at: the
+		// information survives without an alias to the live filesystem.
+		if err := os.WriteFile(p, []byte(target+"\n"), 0o600); err != nil {
+			return metaErr(err)
+		}
+	default:
+		// keep (and "" / unknown → keep): leave the link verbatim.
+	}
+	return nil
 }
 
 // metaErr wraps a filesystem failure as ErrExtractMetadataNormalization with the

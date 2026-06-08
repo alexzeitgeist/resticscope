@@ -41,6 +41,21 @@ const (
 	ExtractDirectoryTree
 )
 
+// unsafeSymlinkPolicy selects what the staging metadata pass does with a symlink
+// whose target is absolute or escapes the extracted tree (so it would alias the
+// live filesystem once the fragment lands in a scratch dir). It is the validated
+// [extract] unsafe_symlinks config value. The zero value ("") and any unknown
+// string behave as keep (fail-safe) — see applyUnsafeSymlinkPolicy. The type is
+// defined here (not in extract_metadata.go) so the linux/darwin normalizer and
+// the other-platform stub share one definition.
+type unsafeSymlinkPolicy string
+
+const (
+	unsafeSymlinkKeep        unsafeSymlinkPolicy = "keep"        // leave verbatim + warn (restic-faithful)
+	unsafeSymlinkSkip        unsafeSymlinkPolicy = "skip"        // remove from the output
+	unsafeSymlinkPlaceholder unsafeSymlinkPolicy = "placeholder" // replace with an inert text file recording the target
+)
+
 // ExtractRequest is the explicit contract between the TUI / future CLI and the
 // app layer. Every field is provided by the caller; App.Extract inspects no
 // BrowseEntry. The app layer re-asserts the slug rule and file-type gate before
@@ -106,6 +121,15 @@ type ExtractResult struct {
 	Dirs    int
 	Bytes   int64
 	Elapsed time.Duration
+
+	// UnsafeSymlinks counts symlinks whose target is absolute or escapes the
+	// extracted tree; Other counts device/fifo/socket nodes left in place. Both
+	// come from the normalizer walk (live tree extract only). UnsafeSymlinkPolicy
+	// records which [extract] unsafe_symlinks policy applied, so the TUI can phrase
+	// the warning correctly (kept / removed / replaced).
+	UnsafeSymlinks      int
+	Other               int
+	UnsafeSymlinkPolicy string
 
 	FinalDir string
 
@@ -334,8 +358,9 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, err
 	}
 
-	// baseline normalizes every regular file/dir mtime to one instant.
-	baseline := a.Clock.Now()
+	// startedAt anchors result.Elapsed against the injected clock. Mtimes are no
+	// longer reset, so this is its only use.
+	startedAt := a.Clock.Now()
 
 	// 5. Create the parent and staging dir (real runs only). A pre-existing
 	// parent is left untouched — the user owns its policy; only the new staging
@@ -370,7 +395,8 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 
 	// 8. Metadata normalization gate (live tree extract only).
 	if req.Mode == ExtractDirectoryTree && !req.DryRun {
-		counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, baseline)
+		policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
+		counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
 		if nerr != nil {
 			return result, nerr
 		}
@@ -378,6 +404,9 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		// restic's summary cannot give (total_files folds dirs in).
 		result.Files = counts.Files
 		result.Dirs = counts.Dirs
+		result.UnsafeSymlinks = counts.UnsafeSymlinks
+		result.Other = counts.Other
+		result.UnsafeSymlinkPolicy = a.Cfg.Extract.UnsafeSymlinks
 	}
 
 	// A dry-run never created a staging dir and never renames.
@@ -397,11 +426,10 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	result.FinalDir = final
 
 	// Total wall-clock for the operation, measured against the injected clock from
-	// the same baseline used for mtime normalization. This covers both modes —
-	// restic dump never reports a duration, and restic restore's self-reported
-	// seconds (a hostile boundary, Rule 5) cover only the restore, not our
-	// normalization + rename.
-	result.Elapsed = a.Clock.Now().Sub(baseline)
+	// startedAt. This covers both modes — restic dump never reports a duration, and
+	// restic restore's self-reported seconds (a hostile boundary, Rule 5) cover
+	// only the restore, not our normalization + rename.
+	result.Elapsed = a.Clock.Now().Sub(startedAt)
 
 	a.logExtractSuccess(req, result)
 	return result, nil
@@ -516,6 +544,8 @@ func (a *App) logExtractSuccess(req ExtractRequest, result ExtractResult) {
 		"files", result.Files,
 		"dirs", result.Dirs,
 		"bytes", result.Bytes,
+		"unsafe_symlinks", result.UnsafeSymlinks,
+		"other", result.Other,
 	)
 }
 
