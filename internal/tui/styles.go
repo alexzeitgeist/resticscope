@@ -22,6 +22,7 @@ type styles struct {
 	errText      lipgloss.Style
 	heading      lipgloss.Style // detail-view section titles
 	label        lipgloss.Style // detail-view field labels
+	extractLabel lipgloss.Style // extract-screen field labels (blue, echoing heading hue)
 	good         lipgloss.Style // positive status text
 	bad          lipgloss.Style // negative status text
 	spinner      lipgloss.Style
@@ -64,15 +65,16 @@ func newStyles() styles {
 			Width(nameWidth).
 			Foreground(orange).
 			Bold(true),
-		gutter:  lipgloss.NewStyle().Foreground(orange),
-		meta:    meta,
-		key:     key,
-		errText: lipgloss.NewStyle().Foreground(red),
-		heading: lipgloss.NewStyle().Bold(true).Foreground(blue),
-		label:   lipgloss.NewStyle().Foreground(aqua).Width(labelWidth),
-		good:    lipgloss.NewStyle().Foreground(green),
-		bad:     lipgloss.NewStyle().Foreground(red),
-		spinner: lipgloss.NewStyle().Foreground(aqua),
+		gutter:       lipgloss.NewStyle().Foreground(orange),
+		meta:         meta,
+		key:          key,
+		errText:      lipgloss.NewStyle().Foreground(red),
+		heading:      lipgloss.NewStyle().Bold(true).Foreground(blue),
+		label:        lipgloss.NewStyle().Foreground(aqua).Width(labelWidth),
+		extractLabel: lipgloss.NewStyle().Foreground(blue).Width(labelWidth),
+		good:         lipgloss.NewStyle().Foreground(green),
+		bad:          lipgloss.NewStyle().Foreground(red),
+		spinner:      lipgloss.NewStyle().Foreground(aqua),
 		help: helpbubble.Styles{
 			ShortKey:       key,
 			ShortDesc:      meta,

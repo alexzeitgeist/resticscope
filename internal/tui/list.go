@@ -439,7 +439,7 @@ func (m Model) footerView() string {
 		// Extract owns a per-state footer driven by its sub-model state machine
 		// (review/running/terminal each advertise different keys), so it
 		// renders directly here instead of through the bubble-help binding list.
-		return clip(m.extract.helpLine(m.keys), w)
+		return clip(m.extract.helpLine(m.keys, m.styles), w)
 	}
 	searching := m.browseSearching || m.diffSearching
 	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching, infoScrollable: m.infoScrollable()}), w)

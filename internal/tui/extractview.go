@@ -45,11 +45,16 @@ func extractTitle(em extractModel) string {
 	case extractStateKeepDelete:
 		return "extract: cleanup"
 	default:
-		// review — include the repo for orientation.
-		if em.req.Repo != "" {
-			return "extract: " + em.req.Repo
+		// review — include the repo and short snapshot id for orientation,
+		// mirroring browse's "browse: <repo> · <shortid>" header.
+		if em.req.Repo == "" {
+			return "extract"
 		}
-		return "extract"
+		title := "extract: " + em.req.Repo
+		if short := extractShortSnap(em.req); short != "" {
+			title += " · " + short
+		}
+		return title
 	}
 }
 
@@ -57,11 +62,11 @@ func extractTitle(em extractModel) string {
 func extractHeaderHint(em extractModel) string {
 	switch em.state {
 	case extractStateRunning:
-		return "esc cancel"
+		return "q cancel"
 	case extractStateSuccess, extractStateCanceled, extractStateError:
 		return "enter back"
 	default:
-		return "esc back"
+		return "q back"
 	}
 }
 
@@ -93,36 +98,34 @@ func (m Model) extractBody() string {
 // Matches §14 review mockups.
 func (m Model) extractReviewBody(w int) string {
 	em := m.extract
+	// Repo + short snapshot id live in the header title; the source size is folded
+	// into the Source row, so Type is gone. The key hints live in the footer only.
 	rows := []extractRow{
-		{label: "Repo", value: em.req.Repo},
-		{label: "Snapshot", value: extractSnapshotLine(em.req)},
-		{label: "Source", value: em.req.Source},
-		{label: "Type", value: extractTypeLine(em)},
+		{label: "Source", value: extractSourceValue(em)},
+		{label: "Output", value: extractOutputLine(em.req.Mode)},
 	}
 	if em.req.Mode == app.ExtractFile {
 		// File source: restores metadata-faithfully, landing flattened or nested per
 		// the Layout row (the `f` key flips it). Show the file path the user gets
 		// (<dir>/<leaf>), not the parent directory; wrap rather than elide
-		// (framework §8) so a long path is fully visible.
+		// (framework §8) so a long path is fully visible. Layout sits at the bottom
+		// since the Staging/Final leaf already reflects the choice.
 		leaf := extractFileLeaf(em.req)
 		rows = append(rows,
-			extractRow{label: "Output", value: "file · metadata preserved"},
-			extractRow{label: "Layout", value: extractLayoutLine(em.req.Nested)},
 			extractRow{}, // spacer
 			extractRow{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, leaf), extractValueWidth(w))},
 			extractRow{label: "Final", value: wrapPathValue(filepath.Join(em.final, leaf), extractValueWidth(w))},
+			extractRow{}, // spacer
+			extractRow{label: "Layout", value: extractLayoutLine(em.req.Nested)},
 		)
-		hint := m.styles.meta.Render("  enter ▶ extract  ·  f ▶ layout")
-		return renderExtractRows(m, rows, w) + "\n\n" + clip(hint, w)
+		return renderExtractRows(m, rows, w)
 	}
 	// Directory source: show the output directory tree.
 	rows = append(rows,
-		extractRow{label: "Output", value: extractOutputLine(em.req.Mode)},
 		extractRow{}, // spacer
 		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
 	)
-	hint := m.styles.meta.Render("  enter ▶ extract")
-	return renderExtractRows(m, rows, w) + "\n\n" + clip(hint, w)
+	return renderExtractRows(m, rows, w)
 }
 
 // extractFileLeaf is the file's path relative to the output container, derived
@@ -381,44 +384,40 @@ func renderExtractRows(m Model, rows []extractRow, w int) string {
 			out = append(out, "")
 			continue
 		}
-		labelCell := m.styles.label.Render(r.label)
+		labelCell := m.styles.extractLabel.Render(r.label)
 		vlines := strings.Split(r.value, "\n")
-		first := clip("  "+labelCell+"  "+m.styles.name.UnsetWidth().Render(vlines[0]), w)
+		// Values render in the terminal's default foreground (unstyled), matching the
+		// browse list's entry names (browseRow) and the detail view's field values —
+		// the bright "main content" color — rather than the dimmer cream of styles.name.
+		first := clip("  "+labelCell+"  "+vlines[0], w)
 		out = append(out, first)
 		indent := strings.Repeat(" ", 2+labelWidth+2)
 		for _, v := range vlines[1:] {
-			out = append(out, clip(indent+m.styles.meta.Render(v), w))
+			out = append(out, clip(indent+v, w))
 		}
 	}
 	return strings.Join(out, "\n")
 }
 
-// extractSnapshotLine renders the snapshot short + (long…) form per the mockup.
-func extractSnapshotLine(req app.ExtractRequest) string {
-	short := req.SnapshotShort
-	if short == "" && len(req.SnapshotID) >= 8 {
-		short = req.SnapshotID[:8]
+// extractShortSnap returns the snapshot's short id for the header title,
+// preferring the precomputed SnapshotShort and falling back to the first 8 chars
+// of the full id (via shortID). Empty when neither is set.
+func extractShortSnap(req app.ExtractRequest) string {
+	if req.SnapshotShort != "" {
+		return req.SnapshotShort
 	}
-	long := req.SnapshotID
-	if len(long) > 20 {
-		long = long[:20] + "…"
-	}
-	return fmt.Sprintf("%s  (%s)", short, long)
+	return shortID(req.SnapshotID)
 }
 
-// extractTypeLine renders the "file · 412 B" / "directory · 4.2 MiB" cell. The
-// size is the originating BrowseEntry's (a directory's recursive subtree size),
-// shown only when known; per-entry counts are omitted in v1 since the request
-// doesn't carry them.
-func extractTypeLine(em extractModel) string {
-	kind := "directory"
-	if em.req.Mode == app.ExtractFile {
-		kind = "file"
-	}
+// extractSourceValue renders the Source row: the snapshot source path with the
+// originating entry's size in parentheses when known (a directory's recursive
+// subtree size). The size is what the dropped Type row used to carry; it is shown
+// only when known since the request doesn't carry per-entry counts.
+func extractSourceValue(em extractModel) string {
 	if em.srcSize > 0 {
-		return kind + " · " + humanize.Bytes(em.srcSize)
+		return em.req.Source + " (" + humanize.Bytes(em.srcSize) + ")"
 	}
-	return kind
+	return em.req.Source
 }
 
 // extractOutputLine names the output shape.

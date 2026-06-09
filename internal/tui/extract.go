@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -683,49 +682,53 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 
 // extractFootRender produces the modal's footer help line for the current
 // state. Kept here next to handleKey so the two stay in sync.
-func (m extractModel) helpLine(keys keyMap) string {
+func (m extractModel) helpLine(keys keyMap, st styles) string {
 	switch m.state {
 	case extractStateReview:
 		if m.req.Mode == app.ExtractFile {
-			return joinHelp(
-				keyHelp(keys.Enter, "extract"),
-				keyHelp(keys.ExtractLayout, "layout"),
-				keyHelp(keys.Target, "target"),
-				keyHelp(keys.Back, "back"),
+			return joinHelp(st,
+				keyHelp(st, keys.Enter, "extract"),
+				keyHelp(st, keys.ExtractLayout, "layout"),
+				keyHelp(st, keys.Target, "target"),
+				keyHelp(st, keys.Back, "back"),
 			)
 		}
-		return joinHelp(
-			keyHelp(keys.Enter, "extract"),
-			keyHelp(keys.Target, "target"),
-			keyHelp(keys.Back, "back"),
+		return joinHelp(st,
+			keyHelp(st, keys.Enter, "extract"),
+			keyHelp(st, keys.Target, "target"),
+			keyHelp(st, keys.Back, "back"),
 		)
 	case extractStateRunning:
-		return joinHelp(keyHelp(keys.Back, "cancel"))
+		return joinHelp(st, keyHelp(st, keys.Back, "cancel"))
 	case extractStateSuccess:
-		return joinHelp(
-			keyHelp(keys.Shell, "shell here"),
-			keyHelp(keys.Enter, "back to browse"),
+		return joinHelp(st,
+			keyHelp(st, keys.Shell, "shell here"),
+			keyHelp(st, keys.Enter, "back to browse"),
 		)
 	case extractStateCanceled, extractStateError:
 		if m.result.StagingCreated && stagingDirExists(m.result.StagingDir) {
-			return joinHelp(
-				keyHelp(keys.Keep, "keep"),
-				keyHelp(keys.Delete, "delete"),
+			return joinHelp(st,
+				keyHelp(st, keys.Keep, "keep"),
+				keyHelp(st, keys.Delete, "delete"),
 			)
 		}
-		return joinHelp(keyHelp(keys.Enter, "back to browse"))
+		return joinHelp(st, keyHelp(st, keys.Enter, "back to browse"))
 	case extractStateFilePicker:
-		return joinHelp(keyHelp(keys.Back, "back"))
+		return joinHelp(st, keyHelp(st, keys.Back, "back"))
 	case extractStateKeepDelete:
-		return joinHelp(keyHelp(keys.Back, "back to browse"))
+		return joinHelp(st, keyHelp(st, keys.Back, "back to browse"))
 	}
 	return ""
 }
 
-func keyHelp(b key.Binding, desc string) string {
-	return fmt.Sprintf("%s %s", strings.Join(b.Keys(), "/"), desc)
+// keyHelp renders one "<key> <desc>" hint with the key colored like every other
+// view's footer. It uses the binding's help label (b.Help().Key), not its raw
+// bound keys: Back is bound to esc but advertises "q" (see keys.go), so this is
+// what shows the canonical "q back" the rest of the app already uses.
+func keyHelp(st styles, b key.Binding, desc string) string {
+	return st.key.Render(b.Help().Key) + " " + st.meta.Render(desc)
 }
 
-func joinHelp(parts ...string) string {
-	return strings.Join(parts, " · ")
+func joinHelp(st styles, parts ...string) string {
+	return strings.Join(parts, st.dim.Render(" · "))
 }

@@ -342,7 +342,7 @@ func TestExtractFileLayoutToggle(t *testing.T) {
 	}
 
 	// The ? help overlay's Extract (from browse) section carries the layout entry,
-	// matching the inline helpLine hint.
+	// matching the footer helpLine's `f layout` hint.
 	help := newTestModel(t, a).helpBody()
 	if !strings.Contains(help, "file layout: flattened/nested") {
 		t.Errorf("help overlay missing the layout entry:\n%s", help)
@@ -898,8 +898,9 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	if em.state != extractStateError {
 		t.Fatalf("state = %v, want error", em.state)
 	}
-	if strings.Contains(em.helpLine(keys), "delete") {
-		t.Errorf("help line offered delete for a non-owned staging dir: %q", em.helpLine(keys))
+	st := newStyles()
+	if strings.Contains(em.helpLine(keys, st), "delete") {
+		t.Errorf("help line offered delete for a non-owned staging dir: %q", em.helpLine(keys, st))
 	}
 	em2, _, _ := dispatchKey(em, keys, "d")
 	if em2.state == extractStateKeepDelete {
