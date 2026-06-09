@@ -85,10 +85,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Quit), "quit"},
 		}},
 		{"Extract (from browse)", []helpEntry{
-			{move, "scroll preview"},
-			{page, "page up/down"},
-			{keyLabel(k.Enter), "dry-run / review"},
-			{keyLabel(k.ExtractGo), "extract for real"},
+			{keyLabel(k.Enter), "extract"},
 			{keyLabel(k.ExtractLayout), "file layout: flattened/nested"},
 			{keyLabel(k.Target), "choose target root"},
 			{keyLabel(k.Shell), "shell at extracted dir"},

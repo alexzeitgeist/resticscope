@@ -1168,15 +1168,11 @@ func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
 	drv.push(extractResp{blockOn: block, err: context.Canceled})
 	m.extract.drv = drv
 
-	// File source: enter → preview (no restic call), g → running (starts Extract).
-	m = update(t, m, press("enter"))
-	if m.extract.state != extractStatePreview {
-		t.Fatalf("precondition: enter on file review should reach preview, state = %v", m.extract.state)
-	}
-	next, cmd := m.Update(press("g"))
+	// File source: enter commits straight to the live extract (no dry-run preview).
+	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if m.extract.state != extractStateRunning {
-		t.Fatalf("precondition: g should start the run, state = %v", m.extract.state)
+		t.Fatalf("precondition: enter should start the run, state = %v", m.extract.state)
 	}
 
 	// Run the worker leaf in a goroutine; it blocks in Extract until the per-op

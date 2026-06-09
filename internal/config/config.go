@@ -49,8 +49,8 @@ type Diff struct {
 // (later) full snapshot out of a backup with a read-only restic invocation and
 // writes it to the local filesystem. TargetRoot is the base directory for every
 // extract's per-op output subdir; it is stored expanded and absolute after
-// Normalize/Validate. ExtractTimeout caps a single extract run (dry-run or real)
-// — extracting a large tree can take minutes, so it has its own timeout instead
+// Normalize/Validate. ExtractTimeout caps a single extract run — extracting a
+// large tree can take minutes, so it has its own timeout instead
 // of sharing global.restic_command_timeout.
 type Extract struct {
 	TargetRoot     string   `toml:"target_root"`

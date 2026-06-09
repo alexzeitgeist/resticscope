@@ -40,12 +40,12 @@ import (
 	"strings"
 )
 
-// liveExtractSupported reports whether a live (non-dry-run) extract can publish
-// on this platform. The post-restore metadata normalizer is validated only on
-// linux/darwin, and the single-file --include escaping is not Windows-safe, so a
-// live extract is refused elsewhere by an app-level preflight (App.Extract). It
-// is a var, not a const, so a linux/darwin test can flip it to exercise the
-// refusal path. Its sibling in extract_metadata_other.go is false.
+// liveExtractSupported reports whether an extract can publish on this platform.
+// The post-restore metadata normalizer is validated only on linux/darwin, and
+// the single-file --include escaping is not Windows-safe, so an extract is
+// refused elsewhere by an app-level preflight (App.Extract). It is a var, not a
+// const, so a linux/darwin test can flip it to exercise the refusal path. Its
+// sibling in extract_metadata_other.go is false.
 var liveExtractSupported = true
 
 // extractMetaCounts tallies what the normalizer saw. It is count-only — it holds

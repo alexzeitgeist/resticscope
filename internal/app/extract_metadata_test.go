@@ -313,8 +313,8 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	}
 
 	cap.mu.Lock()
-	if cap.treeParams.Target != staging || cap.treeParams.DryRun || cap.treeParams.Source != req.Source {
-		t.Errorf("tree params = %+v, want Target=%q DryRun=false Source=%q", cap.treeParams, staging, req.Source)
+	if cap.treeParams.Target != staging || cap.treeParams.Source != req.Source {
+		t.Errorf("tree params = %+v, want Target=%q Source=%q", cap.treeParams, staging, req.Source)
 	}
 	cap.mu.Unlock()
 

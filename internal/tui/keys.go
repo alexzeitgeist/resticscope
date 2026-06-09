@@ -32,8 +32,7 @@ type keyMap struct {
 	Info          key.Binding // detail: open the full snapshot-info modal
 	DiffSwap      key.Binding // diff: swap the directional first/second pair and rerun
 	Extract       key.Binding // browse: open the extract modal for the selected entry
-	ExtractGo     key.Binding // extract: commit the extract (review→running or preview→running)
-	ExtractLayout key.Binding // extract: toggle file layout flattened ↔ nested on the file review
+	ExtractLayout key.Binding // extract: toggle file layout flattened ↔ nested on the review screen
 	Target        key.Binding // extract: open the target-root filepicker overlay from review
 	Keep          key.Binding // extract: keep the staging dir from the cancel/error prompt
 	Delete        key.Binding // extract: delete the staging dir from the cancel/error prompt
@@ -88,7 +87,6 @@ func defaultKeys() keyMap {
 		Info:          key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
 		DiffSwap:      key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
 		Extract:       key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
-		ExtractGo:     key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "go")),
 		ExtractLayout: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "layout")),
 		Target:        key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
 		Keep:          key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "keep")),
@@ -226,7 +224,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		}
 	case extractView:
 		return [][]key.Binding{
-			{k.Up, k.Down, k.PageUp, k.PageDown, k.Enter, k.ExtractGo, k.Target},
+			{k.Enter, k.ExtractLayout, k.Target},
 			{k.Shell, k.Keep, k.Delete, k.Back},
 		}
 	case helpView:

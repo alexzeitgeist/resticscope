@@ -26,9 +26,8 @@ import (
 // --- fakes ---
 
 // extractCall records one Extract call so a test can assert request shape and
-// call order without races with the goroutine spawned by startRun / startDryRun.
+// call order without races with the goroutine spawned by startRun.
 type extractCall struct {
-	dryRun     bool
 	targetRoot string
 	source     string
 }
@@ -66,7 +65,7 @@ func (f *fakeExtractDriver) push(r extractResp) {
 
 func (f *fakeExtractDriver) Extract(ctx context.Context, req app.ExtractRequest, onProgress func(app.ExtractProgress)) (app.ExtractResult, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, extractCall{dryRun: req.DryRun, targetRoot: req.TargetRoot, source: req.Source})
+	f.calls = append(f.calls, extractCall{targetRoot: req.TargetRoot, source: req.Source})
 	var resp extractResp
 	if len(f.queue) > 0 {
 		resp = f.queue[0]
@@ -222,37 +221,20 @@ func dispatchKey(em extractModel, keys keyMap, k string) (extractModel, tea.Cmd,
 
 // --- tests ---
 
-// Directory source happy path: review → preview (dry-run) → running → success.
+// Directory source happy path: review → running → success. enter commits the
+// live extract directly — there is no dry-run preview step.
 func TestExtractDirectoryHappyPath(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
 
-	dryRows := []app.ExtractPreviewItem{
-		{Action: model.RestoreActionRestored, Item: "./nginx.conf", Size: 2100},
-		{Action: model.RestoreActionRestored, Item: "./sites-enabled/default", Size: 1800},
-	}
-	drv.push(extractResp{result: app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, DryRunPreview: dryRows}})
 	drv.push(extractResp{result: app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, FinalDir: em.final, Elapsed: 2 * time.Second}})
 
 	em, cmd, leave := dispatchKey(em, keys, "enter")
 	if leave {
 		t.Fatal("enter on review must not leave the modal")
 	}
-	msg := runCmd(t, cmd)
-	em.applyDryRunDone(msg.(extractDryRunDoneMsg))
-	if em.state != extractStatePreview {
-		t.Fatalf("after dry-run msg, state = %v, want preview", em.state)
-	}
-	if len(em.previewRows) != 2 {
-		t.Fatalf("previewRows = %d, want 2", len(em.previewRows))
-	}
-
-	em, cmd, leave = dispatchKey(em, keys, "g")
-	if leave {
-		t.Fatal("g on preview must not leave the modal")
-	}
 	if em.state != extractStateRunning {
-		t.Fatalf("after g, state = %v, want running", em.state)
+		t.Fatalf("after enter, state = %v, want running", em.state)
 	}
 	leaves := runBatchLeaves(t, cmd)
 	for _, m := range leaves {
@@ -265,34 +247,23 @@ func TestExtractDirectoryHappyPath(t *testing.T) {
 	}
 
 	calls := drv.callsSnapshot()
-	if len(calls) != 2 {
-		t.Fatalf("Extract called %d times, want 2", len(calls))
+	if len(calls) != 1 {
+		t.Fatalf("Extract called %d times, want 1", len(calls))
 	}
-	if !calls[0].dryRun || calls[1].dryRun {
-		t.Errorf("call dryRun flags = [%v %v], want [true false]", calls[0].dryRun, calls[1].dryRun)
+	if calls[0].source != dirReq().Source {
+		t.Errorf("Extract source = %q, want %q", calls[0].source, dirReq().Source)
 	}
 }
 
-// File source happy path: review → preview (no restic call) → running → success.
+// File source happy path: review → running → success. enter commits directly.
 func TestExtractFileHappyPath(t *testing.T) {
 	em, drv := newExtractFixture(t, fileReq())
 	keys := defaultKeys()
 	drv.push(extractResp{result: app.ExtractResult{Files: 1, Bytes: 412, FinalDir: em.final, Elapsed: time.Second}})
 
 	em, cmd, _ := dispatchKey(em, keys, "enter")
-	if em.state != extractStatePreview {
-		t.Fatalf("after enter on file review, state = %v, want preview", em.state)
-	}
-	if cmd != nil {
-		t.Errorf("enter on file review should not start a Cmd; got %T", cmd())
-	}
-	if got := len(drv.callsSnapshot()); got != 0 {
-		t.Fatalf("Extract called %d times before g, want 0", got)
-	}
-
-	em, cmd, _ = dispatchKey(em, keys, "g")
 	if em.state != extractStateRunning {
-		t.Fatalf("after g on file preview, state = %v, want running", em.state)
+		t.Fatalf("after enter on file review, state = %v, want running", em.state)
 	}
 	for _, m := range runBatchLeaves(t, cmd) {
 		if done, ok := m.(extractRunDoneMsg); ok {
@@ -306,13 +277,13 @@ func TestExtractFileHappyPath(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("Extract called %d times, want 1", len(calls))
 	}
-	if calls[0].dryRun {
-		t.Error("file Extract call must not be dry-run")
+	if calls[0].source != fileReq().Source {
+		t.Errorf("Extract source = %q, want %q", calls[0].source, fileReq().Source)
 	}
 }
 
-// File layout toggle: `f` on the file review flips Nested, switching the rendered
-// Final path from the flattened default (final/<name>) to nested
+// File layout toggle: `f` on the review screen flips Nested, switching the
+// rendered Final path from the flattened default (final/<name>) to nested
 // (final/etc/<name>). The `?` help overlay's Extract section advertises the same
 // layout key/label, so the inline help and the overlay stay in sync.
 func TestExtractFileLayoutToggle(t *testing.T) {
@@ -322,7 +293,7 @@ func TestExtractFileLayoutToggle(t *testing.T) {
 		t.Fatalf("newExtractModel: %v", err)
 	}
 	em.drv = &fakeExtractDriver{}
-	em.state = extractStatePreview // the file review screen
+	em.state = extractStateReview // file source review screen carries the layout toggle
 	keys := defaultKeys()
 
 	render := func(em extractModel) string {
@@ -501,7 +472,7 @@ func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 		blockOn: block,
 	})
 
-	// Skip the dry-run dance by jumping straight into running with startRun.
+	// Jump straight into running with startRun.
 	cmd := em.startRun()
 	em.state = extractStateRunning
 
@@ -569,15 +540,20 @@ func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 	keys := defaultKeys()
 	drv.push(extractResp{err: app.ErrExtractFinalExists})
 
-	// Drive straight to startDryRun → applyDryRunDone path so we land on an error
-	// before any staging is created.
-	cmd := em.startDryRun()
-	em.applyDryRunDone(runCmd(t, cmd).(extractDryRunDoneMsg))
+	// The live run fails the fresh-target check before any staging is created, so
+	// the result reports StagingCreated=false.
+	cmd := em.startRun()
+	em.state = extractStateRunning
+	for _, msg := range runBatchLeaves(t, cmd) {
+		if done, ok := msg.(extractRunDoneMsg); ok {
+			em.applyRunDone(done)
+		}
+	}
 	if em.state != extractStateError {
 		t.Fatalf("after error msg, state = %v, want error", em.state)
 	}
 	if em.result.StagingCreated {
-		t.Error("dry-run that returned ErrExtractFinalExists must not have StagingCreated")
+		t.Error("an extract that returned ErrExtractFinalExists must not have StagingCreated")
 	}
 
 	em, cmd, leave := dispatchKey(em, keys, "enter")
@@ -613,8 +589,6 @@ func TestExtractStaleRunDoneDropped(t *testing.T) {
 // owns the call site and tests can hit the helper without a full route.
 func TestExtractClearTransientZerosPaths(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: "./x", Size: 1}}
-	em.previewSummary = app.ExtractResult{Files: 1}
 	em.result = app.ExtractResult{FinalDir: "/some/where", StagingDir: "/staging"}
 	em.err = errors.New("boom")
 
@@ -625,9 +599,6 @@ func TestExtractClearTransientZerosPaths(t *testing.T) {
 	}
 	if em.staging != "" || em.final != "" {
 		t.Errorf("clearTransient left paths: staging=%q final=%q", em.staging, em.final)
-	}
-	if em.previewRows != nil || em.previewSummary.Files != 0 {
-		t.Errorf("clearTransient left preview state")
 	}
 	if em.result.FinalDir != "" || em.result.StagingDir != "" {
 		t.Errorf("clearTransient left result paths: %+v", em.result)
@@ -855,49 +826,6 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	}
 }
 
-// A long dry-run preview item path must wrap onto continuation lines, never be
-// truncated — this is the screen where the user inspects what will be extracted.
-func TestExtractPreviewWrapsLongItemPath(t *testing.T) {
-	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
-	if err != nil {
-		t.Fatalf("newExtractModel: %v", err)
-	}
-	em.drv = &fakeExtractDriver{}
-	em.state = extractStatePreview
-	long := "./etc/nginx/sites-available/deeply/nested/path/to/a/config-file-with-a-very-long-name.conf"
-	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: long}}
-	em.previewSummary = app.ExtractResult{Files: 1}
-
-	m := newTestModel(t, a)
-	m.view = extractView
-	m.width = 60 // narrow enough that the path must wrap
-	m.height = 24
-	m.extract = em
-
-	body := m.extractBody()
-
-	// No single line carries the whole path (proves it isn't on one line)...
-	for _, ln := range strings.Split(body, "\n") {
-		if strings.Contains(ln, long) {
-			t.Fatalf("long item path rendered on a single line (not wrapped):\n%q", ln)
-		}
-	}
-	// ...yet every character of the path is present once whitespace/newlines are
-	// stripped (proves it was wrapped, not elided).
-	stripWS := func(s string) string {
-		return strings.Map(func(r rune) rune {
-			if r == ' ' || r == '\n' || r == '\t' {
-				return -1
-			}
-			return r
-		}, s)
-	}
-	if !strings.Contains(stripWS(body), long) {
-		t.Fatalf("long item path was elided rather than wrapped:\n%s", body)
-	}
-}
-
 // Privacy on render: the cancel/error screens must never echo the source path,
 // and the staging path appears only alongside the keep/delete prompt.
 func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
@@ -960,8 +888,13 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	// App.Extract refuses with ErrExtractStagingExists before any mkdir, so the
 	// result reports StagingCreated=false and an empty StagingDir.
 	drv.push(extractResp{err: app.ErrExtractStagingExists})
-	cmd := em.startDryRun()
-	em.applyDryRunDone(runCmd(t, cmd).(extractDryRunDoneMsg))
+	cmd := em.startRun()
+	em.state = extractStateRunning
+	for _, msg := range runBatchLeaves(t, cmd) {
+		if done, ok := msg.(extractRunDoneMsg); ok {
+			em.applyRunDone(done)
+		}
+	}
 	if em.state != extractStateError {
 		t.Fatalf("state = %v, want error", em.state)
 	}
@@ -977,65 +910,22 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	}
 }
 
-// gen check on dry-run: a stale extractDryRunDoneMsg from a superseded run is
-// discarded; the current-gen message advances to preview.
-func TestExtractStaleDryRunDropped(t *testing.T) {
-	em, _ := newExtractFixture(t, dirReq())
-	em.state = extractStateReview
-	em.dryRunning = true
-	em.gen = 7
-
-	em.applyDryRunDone(extractDryRunDoneMsg{
-		gen:    6,
-		result: app.ExtractResult{DryRunPreview: []app.ExtractPreviewItem{{Item: "./leak"}}},
-	})
-	if em.state != extractStateReview {
-		t.Errorf("stale dry-run changed state to %v", em.state)
-	}
-	if len(em.previewRows) != 0 {
-		t.Errorf("stale dry-run leaked %d preview rows", len(em.previewRows))
-	}
-
-	em.applyDryRunDone(extractDryRunDoneMsg{
-		gen:    7,
-		result: app.ExtractResult{DryRunPreview: []app.ExtractPreviewItem{{Item: "./ok"}}},
-	})
-	if em.state != extractStatePreview || len(em.previewRows) != 1 {
-		t.Errorf("current-gen dry-run did not advance: state=%v rows=%d", em.state, len(em.previewRows))
-	}
-}
-
-// esc from the dry-run preview returns to review (dropping rows); a second esc
-// leaves the modal and the root's clearTransient zeros every transient field.
-// This exercises the real key-routing path rather than calling clearTransient
-// directly.
-func TestExtractEscFromPreviewReturnsThenClears(t *testing.T) {
+// esc from review leaves the modal and the root's clearTransient zeros every
+// transient field. This exercises the real key-routing path rather than calling
+// clearTransient directly.
+func TestExtractEscFromReviewClears(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
 	em.drv = &fakeExtractDriver{}
-	em.state = extractStatePreview
-	em.previewRows = []app.ExtractPreviewItem{{Action: model.RestoreActionRestored, Item: "./a"}, {Action: model.RestoreActionRestored, Item: "./b"}}
-	em.previewSummary = app.ExtractResult{Files: 2}
-	em.previewScrollOffset = 1
 
 	m := newTestModel(t, a)
 	m.view = extractView
 	m.extract = em
 
-	// First esc: preview → review, rows dropped.
-	next, _ := m.Update(press("esc"))
-	m = next.(Model)
-	if m.extract.state != extractStateReview {
-		t.Fatalf("after esc, state = %v, want review", m.extract.state)
-	}
-	if m.extract.previewRows != nil {
-		t.Error("esc from preview did not drop preview rows")
-	}
-
-	// Second esc: review → leave; run the returned back-to-browse cmd.
+	// esc on review leaves; run the returned back-to-browse cmd.
 	next, cmd := m.Update(press("esc"))
 	m = next.(Model)
 	if cmd == nil {

@@ -105,12 +105,6 @@ type ExtractRequest struct {
 	// TargetRoot optionally overrides cfg.Extract.TargetRoot for this one call.
 	// Empty means use the configured root; non-empty must be absolute.
 	TargetRoot string
-
-	// DryRun toggles restic restore --dry-run -vv. Must be false for ExtractFile:
-	// the file flow has no restic dry-run (the file review is TUI-side), and
-	// rejecting it on every platform also closes a hole — an allowed file dry-run
-	// would invoke restic with a non-Windows-safe --include pattern.
-	DryRun bool
 }
 
 // ExtractProgress is the flattened progress the orchestrator hands to the TUI.
@@ -125,9 +119,9 @@ type ExtractProgress struct {
 }
 
 // ExtractResult is returned from App.Extract. FinalDir is set only after a clean
-// non-dry rename. StagingDir/StagingCreated are set the instant the staging dir
-// is created and are returned even alongside a later error, so the TUI can offer
-// keep-or-delete for output this run owns. DryRunPreview is in-memory only.
+// rename. StagingDir/StagingCreated are set the instant the staging dir is
+// created and are returned even alongside a later error, so the TUI can offer
+// keep-or-delete for output this run owns.
 type ExtractResult struct {
 	Files   int
 	Dirs    int
@@ -147,15 +141,6 @@ type ExtractResult struct {
 
 	StagingDir     string
 	StagingCreated bool
-
-	DryRunPreview []ExtractPreviewItem
-}
-
-// ExtractPreviewItem is one row of a directory dry-run preview.
-type ExtractPreviewItem struct {
-	Action model.RestoreAction // restored / metadata / skipped, typed at the resticx boundary
-	Item   string              // relative path under the subtree root
-	Size   int64
 }
 
 // Extract sentinels. All are path-free by construction; the messages name a
@@ -315,13 +300,6 @@ func checkExtractModeGate(req ExtractRequest) error {
 		if req.Source == "" || req.Source == "/" {
 			return invalidExtractRequest("source")
 		}
-		if req.DryRun {
-			// Files have no dry-run flow (the review is TUI-side). Rejecting it on
-			// every platform also closes a hole: an allowed file dry-run would invoke
-			// restic with --include <literalIncludePattern(...)>, whose backslash
-			// escaping is not Windows-safe.
-			return invalidExtractRequest("dry_run")
-		}
 		return nil
 	case ExtractDirectoryTree:
 		if req.WasRegularFile {
@@ -338,9 +316,13 @@ func checkExtractModeGate(req ExtractRequest) error {
 // Extract is the single entry point. It validates the request, gates on file
 // type, resolves credentials, refuses an existing target, creates the staging
 // dir, dispatches to the right resticx wrapper under a per-op timeout,
-// normalizes live tree-extract metadata, and renames staging → final on clean
+// normalizes the extracted-tree metadata, and renames staging → final on clean
 // completion. Every returned error is path-free. onProgress is best-effort and
 // nil-tolerant; it is called from the resticx goroutine.
+//
+// A bad source (one restic cannot restore) surfaces here only after the staging
+// dir is created, since there is no pre-flight dry-run; the staging dir is then
+// reported via StagingCreated so the caller can offer keep-or-delete.
 func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(ExtractProgress)) (ExtractResult, error) {
 	var result ExtractResult
 
@@ -357,13 +339,10 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 
 	// 2b. Unsupported-platform preflight. The publish path runs the post-restore
 	// metadata normalizer, which is validated only on linux/darwin, and the file
-	// path's --include escaping is not Windows-safe — so refuse a live extract on
-	// an unsupported platform BEFORE cred resolution / staging / restic, never
-	// spawning restic with a non-literal include. A dry-run is allowed through:
-	// the only dry-run that reaches here is a directory dry-run (file dry-run is
-	// gate-rejected above), it carries no --include, and it returns before staging
-	// / normalize, so it is Windows-safe and works everywhere.
-	if !req.DryRun && !liveExtractSupported {
+	// path's --include escaping is not Windows-safe — so refuse the extract on an
+	// unsupported platform BEFORE cred resolution / staging / restic, never
+	// spawning restic with a non-literal include.
+	if !liveExtractSupported {
 		return result, errors.New("extract: not supported on this platform")
 	}
 
@@ -380,7 +359,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, err
 	}
 
-	// 4. Fresh-target check (mandatory for both dry-runs and real runs).
+	// 4. Fresh-target check.
 	if err := freshTargetCheck(staging, final); err != nil {
 		return result, err
 	}
@@ -389,24 +368,22 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// longer reset, so this is its only use.
 	startedAt := a.Clock.Now()
 
-	// 5. Create the parent and staging dir (real runs only). A pre-existing
-	// parent is left untouched — the user owns its policy; only the new staging
-	// (and, via rename, final) dirs are 0700.
-	if !req.DryRun {
-		if err := os.MkdirAll(filepath.Dir(staging), 0o700); err != nil {
-			return result, pathFreeExtractErr("create target parent", err)
-		}
-		if err := os.Mkdir(staging, 0o700); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				return result, ErrExtractStagingExists
-			}
-			return result, pathFreeExtractErr("create staging", err)
-		}
-		result.StagingDir = staging
-		result.StagingCreated = true
+	// 5. Create the parent and staging dir. A pre-existing parent is left
+	// untouched — the user owns its policy; only the new staging (and, via
+	// rename, final) dirs are 0700.
+	if err := os.MkdirAll(filepath.Dir(staging), 0o700); err != nil {
+		return result, pathFreeExtractErr("create target parent", err)
 	}
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return result, ErrExtractStagingExists
+		}
+		return result, pathFreeExtractErr("create staging", err)
+	}
+	result.StagingDir = staging
+	result.StagingCreated = true
 
-	// 6. Per-op timeout (wraps both dry-runs and real runs).
+	// 6. Per-op timeout.
 	runCtx, cancel := context.WithTimeout(ctx, a.Cfg.Extract.ExtractTimeout.Std())
 	defer cancel()
 
@@ -420,29 +397,21 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, fmt.Errorf("extract: %w", dispErr)
 	}
 
-	// 8. Metadata normalization gate (every live restore — file and directory —
-	// since both now route through restic restore into staging). A single
-	// flattened file walks to Files=1, Dirs=0; a nested file adds its reconstructed
-	// parent dirs to Dirs. A dry-run returns before this (no staging exists).
-	if !req.DryRun {
-		policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
-		counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
-		if nerr != nil {
-			return result, nerr
-		}
-		// The normalizer walk is authoritative for the live file/dir split, which
-		// restic's summary cannot give (total_files folds dirs in).
-		result.Files = counts.Files
-		result.Dirs = counts.Dirs
-		result.UnsafeSymlinks = counts.UnsafeSymlinks
-		result.Other = counts.Other
-		result.UnsafeSymlinkPolicy = a.Cfg.Extract.UnsafeSymlinks
+	// 8. Metadata normalization (every restore — file and directory — since both
+	// route through restic restore into staging). A single flattened file walks to
+	// Files=1, Dirs=0; a nested file adds its reconstructed parent dirs to Dirs.
+	policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
+	counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
+	if nerr != nil {
+		return result, nerr
 	}
-
-	// A dry-run never created a staging dir and never renames.
-	if req.DryRun {
-		return result, nil
-	}
+	// The normalizer walk is authoritative for the live file/dir split, which
+	// restic's summary cannot give (total_files folds dirs in).
+	result.Files = counts.Files
+	result.Dirs = counts.Dirs
+	result.UnsafeSymlinks = counts.UnsafeSymlinks
+	result.Other = counts.Other
+	result.UnsafeSymlinkPolicy = a.Cfg.Extract.UnsafeSymlinks
 
 	// 9. Rename on clean completion. Re-check final immediately before the rename
 	// rather than trusting os.Rename's behavior for an existing directory. Lstat
@@ -488,7 +457,6 @@ func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreePa
 		SnapshotID: req.SnapshotID,
 		Source:     req.Source,
 		Target:     staging,
-		DryRun:     req.DryRun,
 	}
 	if req.Mode == ExtractFile {
 		if req.Nested {
@@ -519,12 +487,6 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 					SecondsElapsed: float64(ev.SecondsElapsed),
 				})
 			}
-		case resticx.ExtractTreeVerboseStatus:
-			if req.DryRun {
-				result.DryRunPreview = append(result.DryRunPreview, ExtractPreviewItem{
-					Action: ev.Action, Item: ev.Item, Size: ev.Size,
-				})
-			}
 		case resticx.ExtractTreeSummary:
 			result.Files = int(ev.FilesRestored)
 			result.Bytes = ev.BytesRestored
@@ -536,9 +498,9 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 	return a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent)
 }
 
-// freshTargetCheck refuses an extract whose staging or final dir already exists.
-// Both checks run for dry-runs and real runs so a conflict surfaces before the
-// user commits. The rule is path occupancy, so it Lstats (never Stat): a dangling
+// freshTargetCheck refuses an extract whose staging or final dir already exists,
+// so a conflict surfaces before any staging side effect. The rule is path
+// occupancy, so it Lstats (never Stat): a dangling
 // symlink at either path is an occupant and must fail here, not later as a rename
 // error. The sentinels are path-free; a non-ENOENT failure is wrapped path-free.
 func freshTargetCheck(staging, final string) error {

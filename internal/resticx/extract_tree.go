@@ -87,9 +87,8 @@ var (
 )
 
 // ExtractTreeParams are the inputs to a single restic restore invocation. The
-// caller (app.Extract) builds Source/Target/SnapshotID and, for DryRun=false,
-// creates the staging Target with 0700 before calling. For DryRun=true the
-// Target is only a planned path: this layer never creates or stats it.
+// caller (app.Extract) builds Source/Target/SnapshotID and creates the staging
+// Target with 0700 before calling.
 type ExtractTreeParams struct {
 	// SnapshotID is the concrete lowercase-hex snapshot ID. Never "latest".
 	SnapshotID string
@@ -113,11 +112,6 @@ type ExtractTreeParams struct {
 	// build. Must be "" or a cleaned non-root rooted path (assertCleanIncludePath);
 	// this layer validates the raw value and never validates the escaped pattern.
 	IncludePath string
-
-	// DryRun toggles --dry-run -vv. Without -vv restic's --json stream omits the
-	// per-file events the preview needs, so the wrapper forces -vv whenever
-	// DryRun is set.
-	DryRun bool
 }
 
 // ExtractTreeEventKind tags which ExtractTreeEvent fields are populated.
@@ -126,9 +120,6 @@ type ExtractTreeEventKind int
 const (
 	// ExtractTreeStatus is a live-progress tick (message_type "status").
 	ExtractTreeStatus ExtractTreeEventKind = iota
-	// ExtractTreeVerboseStatus is a per-file action under --dry-run -vv
-	// (message_type "verbose_status").
-	ExtractTreeVerboseStatus
 	// ExtractTreeSummary is the final tally (message_type "summary").
 	ExtractTreeSummary
 	// ExtractTreeError is a restic per-item error (message_type "error"). restic
@@ -158,15 +149,11 @@ type ExtractTreeEvent struct {
 	BytesRestored  int64
 	BytesSkipped   int64
 
-	// Per-file action — populated for VerboseStatus.
-	Action model.RestoreAction
-	Item   string
-	Size   int64
-
-	// restic error event — populated for Error. Item is reused for the error's
-	// item path. These strings may carry paths; the caller decides what to do
-	// with them (the in-memory-only discipline is enforced by the app/TUI). They
-	// are NEVER written into a returned *Error by this layer.
+	// restic error event — populated for Error. Item carries the error's item
+	// path. These strings may carry paths; the caller decides what to do with
+	// them (the in-memory-only discipline is enforced by the app/TUI). They are
+	// NEVER written into a returned *Error by this layer.
+	Item         string
 	ErrorMessage string
 	During       string
 }
@@ -184,9 +171,7 @@ type restoreMessage struct {
 	TotalBytes     int64   `json:"total_bytes"`
 	BytesRestored  int64   `json:"bytes_restored"`
 	BytesSkipped   int64   `json:"bytes_skipped"`
-	Action         string  `json:"action"`
 	Item           string  `json:"item"`
-	Size           int64   `json:"size"`
 	Error          struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -204,8 +189,6 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 			FilesDeleted: m.FilesDeleted, TotalBytes: m.TotalBytes, BytesRestored: m.BytesRestored,
 			BytesSkipped: m.BytesSkipped,
 		}, true
-	case "verbose_status":
-		return ExtractTreeEvent{Kind: ExtractTreeVerboseStatus, Action: restoreActionOf(m.Action), Item: m.Item, Size: m.Size}, true
 	case "summary":
 		return ExtractTreeEvent{
 			Kind: ExtractTreeSummary, SecondsElapsed: m.SecondsElapsed, TotalFiles: m.TotalFiles,
@@ -216,22 +199,6 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 		return ExtractTreeEvent{Kind: ExtractTreeError, ErrorMessage: m.Error.Message, During: m.During, Item: m.Item}, true
 	default:
 		return ExtractTreeEvent{}, false
-	}
-}
-
-// restoreActionOf maps restic's restore verbose_status action vocabulary to the
-// typed model.RestoreAction. This is the ONLY place that knows the raw action
-// strings; an unrecognized action becomes RestoreActionOther.
-func restoreActionOf(action string) model.RestoreAction {
-	switch action {
-	case "restored":
-		return model.RestoreActionRestored
-	case "updated metadata":
-		return model.RestoreActionMetadata
-	case "skipped":
-		return model.RestoreActionSkipped
-	default:
-		return model.RestoreActionOther
 	}
 }
 
@@ -300,8 +267,8 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 // surface for the safety invariants (00-framework.md §5). It emits, in order:
 // --no-lock (a lock would be a write), restore, the bare snapshot or
 // <snap>:<source>, --target <abs>, --overwrite never (never clobber existing
-// files), --json, an optional --include <pattern>, and for a preview --dry-run
-// -vv. It never emits --path, --delete, or "latest". The include value is the
+// files), --json, and an optional --include <pattern>. It never emits --path,
+// --delete, or "latest". The include value is the
 // RAW IncludePath run through literalIncludePattern so restic matches it as a
 // literal, not a glob — the raw path is what gets validated. The bucket-lookup -o
 // option is prepended by ExtractTree, not here, so these argv tests stay free of
@@ -339,9 +306,6 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		// Escape the raw literal path into a filepath.Match literal so restic
 		// restores exactly that one node, not a glob expansion of it.
 		args = append(args, "--include", literalIncludePattern(p.IncludePath))
-	}
-	if p.DryRun {
-		args = append(args, "--dry-run", "-vv")
 	}
 	return args, nil
 }

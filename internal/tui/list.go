@@ -437,7 +437,7 @@ func (m Model) footerView() string {
 	w, _ := m.effSize()
 	if m.view == extractView {
 		// Extract owns a per-state footer driven by its sub-model state machine
-		// (review/preview/running/terminal each advertise different keys), so it
+		// (review/running/terminal each advertise different keys), so it
 		// renders directly here instead of through the bubble-help binding list.
 		return clip(m.extract.helpLine(m.keys), w)
 	}

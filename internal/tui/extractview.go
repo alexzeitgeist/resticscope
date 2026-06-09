@@ -9,7 +9,6 @@ import (
 
 	"resticscope/internal/app"
 	"resticscope/internal/humanize"
-	"resticscope/internal/model"
 )
 
 // extractview.go renders extractView. Each state has its own body; the root
@@ -33,11 +32,6 @@ func (m Model) extractHeaderView() string {
 // extractTitle picks the title label for the current sub-state.
 func extractTitle(em extractModel) string {
 	switch em.state {
-	case extractStatePreview:
-		if em.req.Mode == app.ExtractDirectoryTree {
-			return "extract: dry-run preview"
-		}
-		return "extract: review"
 	case extractStateRunning:
 		return "extract: running"
 	case extractStateSuccess:
@@ -79,11 +73,6 @@ func (m Model) extractBody() string {
 	switch m.extract.state {
 	case extractStateReview:
 		return m.extractReviewBody(w)
-	case extractStatePreview:
-		if m.extract.req.Mode == app.ExtractDirectoryTree {
-			return m.extractDirPreviewBody(w)
-		}
-		return m.extractFileReviewBody(w)
 	case extractStateRunning:
 		return m.extractRunningBody(w)
 	case extractStateSuccess:
@@ -98,8 +87,10 @@ func (m Model) extractBody() string {
 	return ""
 }
 
-// extractReviewBody renders the labeled "what will happen" screen — file source
-// or directory source. Matches §14 review mockups.
+// extractReviewBody renders the single labeled "what will happen" screen for both
+// file and directory sources. enter commits straight to the live extract (there
+// is no dry-run preview step); for a file source `f` toggles the layout in place.
+// Matches §14 review mockups.
 func (m Model) extractReviewBody(w int) string {
 	em := m.extract
 	rows := []extractRow{
@@ -107,51 +98,31 @@ func (m Model) extractReviewBody(w int) string {
 		{label: "Snapshot", value: extractSnapshotLine(em.req)},
 		{label: "Source", value: em.req.Source},
 		{label: "Type", value: extractTypeLine(em)},
-		{label: "Output", value: extractOutputLine(em.req.Mode)},
 	}
+	if em.req.Mode == app.ExtractFile {
+		// File source: restores metadata-faithfully, landing flattened or nested per
+		// the Layout row (the `f` key flips it). Show the file path the user gets
+		// (<dir>/<leaf>), not the parent directory; wrap rather than elide
+		// (framework §8) so a long path is fully visible.
+		leaf := extractFileLeaf(em.req)
+		rows = append(rows,
+			extractRow{label: "Output", value: "file · metadata preserved"},
+			extractRow{label: "Layout", value: extractLayoutLine(em.req.Nested)},
+			extractRow{}, // spacer
+			extractRow{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, leaf), extractValueWidth(w))},
+			extractRow{label: "Final", value: wrapPathValue(filepath.Join(em.final, leaf), extractValueWidth(w))},
+		)
+		hint := m.styles.meta.Render("  enter ▶ extract  ·  f ▶ layout")
+		return renderExtractRows(m, rows, w) + "\n\n" + clip(hint, w)
+	}
+	// Directory source: show the output directory tree.
 	rows = append(rows,
+		extractRow{label: "Output", value: extractOutputLine(em.req.Mode)},
 		extractRow{}, // spacer
 		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
-		extractRow{label: "Overwrite", value: "never"},
 	)
-	body := renderExtractRows(m, rows, w)
-	if em.dryRunning {
-		// A restic restore --dry-run is in flight; the screen stays on review
-		// but advertises the wait instead of the enter/target hint.
-		return body + "\n\n" + clip(m.styles.meta.Render("  running dry-run…"), w)
-	}
-	hint := m.styles.meta.Render("  enter ▶ ")
-	if em.req.Mode == app.ExtractDirectoryTree {
-		hint += m.styles.meta.Render("dry-run preview")
-	} else {
-		hint += m.styles.meta.Render("review")
-	}
-	return body + "\n\n" + clip(hint, w)
-}
-
-// extractFileReviewBody is the app-side commit-time review screen for file
-// sources (no restic call); enter→preview took us here, g commits, f toggles the
-// layout. The file now restores metadata-faithfully (restic restore --include),
-// and the Layout row reflects the flattened ↔ nested choice the `f` key flips.
-func (m Model) extractFileReviewBody(w int) string {
-	em := m.extract
-	leaf := extractFileLeaf(em.req)
-	rows := []extractRow{
-		{label: "Source", value: em.req.Source},
-		{label: "Type", value: extractTypeLine(em)},
-		{label: "Output", value: "file · metadata preserved"},
-		{label: "Layout", value: extractLayoutLine(em.req.Nested)},
-		{label: "Overwrite", value: "never"},
-		{},
-		// The file lands at <staging>/<leaf> and renames to <final>/<leaf>, so show
-		// the file path the user gets, not the parent directory. Wrap rather than
-		// elide (framework §8) so a long path is fully visible.
-		{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, leaf), extractValueWidth(w))},
-		{label: "Final", value: wrapPathValue(filepath.Join(em.final, leaf), extractValueWidth(w))},
-	}
-	body := renderExtractRows(m, rows, w)
-	hint := m.styles.meta.Render("  g ▶ extract  ·  f ▶ layout")
-	return body + "\n\n" + clip(hint, w)
+	hint := m.styles.meta.Render("  enter ▶ extract")
+	return renderExtractRows(m, rows, w) + "\n\n" + clip(hint, w)
 }
 
 // extractFileLeaf is the file's path relative to the output container, derived
@@ -172,110 +143,6 @@ func extractLayoutLine(nested bool) string {
 		return "nested"
 	}
 	return "flattened"
-}
-
-// extractDirPreviewBody renders the scrollable dry-run preview list.
-func (m Model) extractDirPreviewBody(w int) string {
-	em := m.extract
-	header := clip(m.styles.meta.Render("  "+extractPreviewHeader(em)), w)
-	summary := clip(m.styles.meta.Render("  Summary  "+extractPreviewSummaryLine(em.previewSummary)), w)
-	rows := em.previewRows
-	if len(rows) == 0 {
-		empty := clip(m.styles.meta.Render("  (no entries)"), w)
-		return strings.Join([]string{header, summary, "", empty}, "\n")
-	}
-	// Reserve four lines (header, summary, blank, scroll-note) above the rows;
-	// the rest is the line budget. Rows may wrap to several lines each, so fill
-	// the budget line-by-line from the (clamped) top row rather than assuming one
-	// line per row — the clamp guarantees the chosen start fills the last page.
-	_, h := m.effSize()
-	budget := m.extractPreviewVisible()
-	start := clampPreviewOffset(em.previewScrollOffset, rows, w, h)
-	lines := make([]string, 0, budget+4)
-	lines = append(lines, header, summary, "")
-	used, end := 0, start
-	for end < len(rows) && used < budget {
-		rl := renderExtractPreviewRowLines(rows[end], w)
-		if used+len(rl) > budget && used > 0 {
-			break // this row won't fit and we've shown at least one; stop cleanly
-		}
-		for _, ln := range rl {
-			if used >= budget {
-				break // a single oversized row is capped, never overflowing the pane
-			}
-			lines = append(lines, clip(ln, w))
-			used++
-		}
-		end++
-	}
-	if start > 0 || end < len(rows) {
-		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(rows))), w))
-	}
-	return strings.Join(lines, "\n")
-}
-
-// extractPreviewHeader is the "<source> → <final>  <overwrite>" line above the
-// summary, matching the mockup.
-func extractPreviewHeader(em extractModel) string {
-	return em.req.Source + " → " + collapsePath(em.final) + "  never"
-}
-
-// extractPreviewSummaryLine flattens the partial result fields into a single
-// "N files · M dirs · X · 0 skipped" line.
-func extractPreviewSummaryLine(r app.ExtractResult) string {
-	return fmt.Sprintf("%d files · %d dirs · %s · 0 skipped",
-		r.Files, r.Dirs, humanize.Bytes(r.Bytes))
-}
-
-// renderExtractPreviewRowLines renders one dry-run preview item as one or more
-// lines: the action prefix and the item path on the first line, with the size
-// right-aligned when it fits, and any wrapped path remainder on indented
-// continuation lines. The path is wrapped (framework §14 / step 05), never
-// elided — this is the screen where the user inspects exactly what will be
-// extracted, so a deep path must stay fully readable.
-func renderExtractPreviewRowLines(item app.ExtractPreviewItem, w int) []string {
-	if w <= 0 {
-		w = defaultWidth
-	}
-	prefix := actionPrefix(item.Action)
-	const pathCol = 4 // "  " indent + prefix(1) + space(1)
-	avail := w - pathCol
-	if avail < 1 {
-		avail = 1
-	}
-	chunks := strings.Split(wrapPathValue(item.Item, avail), "\n")
-	lines := make([]string, 0, len(chunks))
-	for i, ch := range chunks {
-		if i == 0 {
-			lines = append(lines, "  "+prefix+" "+ch)
-		} else {
-			lines = append(lines, strings.Repeat(" ", pathCol)+ch)
-		}
-	}
-	// Right-align the size on the first line, but only when it fits without
-	// overlapping the path; otherwise drop it — never elide the path to fit it.
-	if item.Size > 0 {
-		size := humanize.Bytes(item.Size)
-		if first := lines[0]; len([]rune(first))+2+len([]rune(size)) <= w {
-			pad := w - len([]rune(first)) - len([]rune(size))
-			lines[0] = first + strings.Repeat(" ", pad) + size
-		}
-	}
-	return lines
-}
-
-// actionPrefix maps the restore action to its one-character prefix glyph.
-func actionPrefix(action model.RestoreAction) string {
-	switch action {
-	case model.RestoreActionRestored:
-		return "+"
-	case model.RestoreActionMetadata:
-		return "~"
-	case model.RestoreActionSkipped:
-		return "-"
-	default:
-		return " "
-	}
 }
 
 // extractRunningBody renders the live-progress screen.
@@ -623,66 +490,6 @@ func collapsePath(p string) string {
 	// Slice on a rune boundary so a multi-byte path component (Unicode dir or
 	// snapshot names) is never split mid-rune into invalid UTF-8.
 	return "…" + string(r[len(r)-max+1:])
-}
-
-// extractPreviewVisible reserves rows above and below the preview list for
-// header, summary, blank, and scroll-note (4 lines plus the surrounding
-// header/footer the root View() already accounts for).
-func (m Model) extractPreviewVisible() int {
-	_, h := m.effSize()
-	return extractPreviewVisibleAt(h)
-}
-
-// extractPreviewVisibleAt is the height-only form of extractPreviewVisible, used
-// by the scroll handler (which holds the synced terminal height but not the root
-// Model). Both agree on the window size so the offset never climbs past the
-// top-anchored window's max start and strands the first Up presses. The extract
-// footer is always a single help line, so the footer reservation is the constant
-// 1 rather than a measured footerRows().
-func extractPreviewVisibleAt(h int) int {
-	if h <= 0 {
-		h = defaultHeight
-	}
-	overhead := headerRows + 2*gapRows + 1 + 4 // +1 footer, +4 preview scaffolding
-	if n := h - overhead; n >= 1 {
-		return n
-	}
-	return 1
-}
-
-// clampPreviewOffset bounds a preview scroll offset so the last page pins to the
-// bottom. Because rows can wrap to several lines, the largest useful top row is
-// the earliest one that — taken with everything below it — still fits one budget
-// of lines; it is found by walking up from the last row and summing real line
-// heights. This keeps the final page full (no scroll dead-zone) while staying
-// reachable for tall rows, where a naive "len - visibleRows" bound would either
-// strand the bottom rows or leave a dead-zone. For one-line rows it reduces to
-// len - budget, matching the simple case.
-func clampPreviewOffset(off int, rows []app.ExtractPreviewItem, w, height int) int {
-	if off < 0 {
-		off = 0
-	}
-	n := len(rows)
-	if n == 0 {
-		return 0
-	}
-	if off > n-1 {
-		off = n - 1
-	}
-	budget := extractPreviewVisibleAt(height)
-	used, maxStart := 0, n-1
-	for i := n - 1; i >= 0; i-- {
-		hgt := len(renderExtractPreviewRowLines(rows[i], w))
-		if used+hgt > budget {
-			break
-		}
-		used += hgt
-		maxStart = i
-	}
-	if off > maxStart {
-		off = maxStart
-	}
-	return off
 }
 
 // clipLines clips each line in s to w cells and joins them with "\n".

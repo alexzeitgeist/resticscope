@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/resticx"
 )
 
 // longSnapID is a concrete 64-hex snapshot ID for requests. Its first 8 chars are
@@ -216,20 +214,6 @@ func TestExtractFileRequiresRegularFile(t *testing.T) {
 	assertNoSpawnNoMkdir(t, cap, root, err, "topsecret")
 }
 
-func TestExtractFileRejectsDryRun(t *testing.T) {
-	root := t.TempDir()
-	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
-	req := fileReq()
-	req.DryRun = true
-
-	_, err := a.Extract(context.Background(), req, nil)
-	if !errors.Is(err, ErrExtractInvalidRequest) {
-		t.Fatalf("err = %v, want ErrExtractInvalidRequest (files have no dry-run flow)", err)
-	}
-	assertNoSpawnNoMkdir(t, cap, root, err, "hosts")
-}
-
 func TestExtractDirectoryTreeRejectsRegularFile(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
@@ -323,69 +307,6 @@ func TestExtractStagingExists(t *testing.T) {
 	}
 }
 
-func TestExtractDryRunFreshTargetConflict(t *testing.T) {
-	root := t.TempDir()
-	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
-	req := treeReq()
-	req.DryRun = true
-	_, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
-	mustMkdirAll(t, final)
-
-	_, err := a.Extract(context.Background(), req, nil)
-	if !errors.Is(err, ErrExtractFinalExists) {
-		t.Fatalf("dry-run err = %v, want ErrExtractFinalExists", err)
-	}
-	cap.mu.Lock()
-	defer cap.mu.Unlock()
-	if cap.treeCalls != 0 {
-		t.Error("dry-run spawned restic despite a fresh-target conflict")
-	}
-}
-
-// --- dry-run dispatch ---
-
-func TestExtractDirectoryTreeDryRun(t *testing.T) {
-	root := t.TempDir()
-	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{
-		extractCap: cap,
-		extractTreeEvents: []resticx.ExtractTreeEvent{
-			{Kind: resticx.ExtractTreeVerboseStatus, Action: model.RestoreActionRestored, Item: "/etc/nginx/nginx.conf", Size: 120},
-			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 120},
-		},
-	}, root)
-	req := treeReq()
-	req.DryRun = true
-
-	result, err := a.Extract(context.Background(), req, nil)
-	if err != nil {
-		t.Fatalf("Extract dry-run: %v", err)
-	}
-	// No directories are created for a dry-run.
-	if ents, _ := os.ReadDir(root); len(ents) != 0 {
-		t.Errorf("dry-run created %d dir(s) under the target root, want 0", len(ents))
-	}
-	staging, _, _ := PlanExtractPaths(a.Cfg.Extract, req)
-	cap.mu.Lock()
-	gotTarget := cap.treeParams.Target
-	gotDry := cap.treeParams.DryRun
-	gotSource := cap.treeParams.Source
-	cap.mu.Unlock()
-	if gotTarget != staging || !gotDry || gotSource != req.Source {
-		t.Errorf("tree params = {Target:%q DryRun:%v Source:%q}, want {%q true %q}", gotTarget, gotDry, gotSource, staging, req.Source)
-	}
-	if len(result.DryRunPreview) != 1 || result.DryRunPreview[0].Action != model.RestoreActionRestored || result.DryRunPreview[0].Item != "/etc/nginx/nginx.conf" || result.DryRunPreview[0].Size != 120 {
-		t.Errorf("DryRunPreview = %+v, want one restored row", result.DryRunPreview)
-	}
-	if result.FinalDir != "" {
-		t.Errorf("FinalDir = %q, want empty for a dry-run", result.FinalDir)
-	}
-	if result.Files != 1 || result.Bytes != 120 {
-		t.Errorf("summary not aggregated: Files=%d Bytes=%d", result.Files, result.Bytes)
-	}
-}
-
 // --- single-file extract via restore ---
 
 // TestExtractFileFlattened drives the default (flattened) file extract: restic
@@ -434,8 +355,8 @@ func TestExtractFileFlattened(t *testing.T) {
 			if want := "/" + leaf; tp.IncludePath != want {
 				t.Errorf("treeParams.IncludePath = %q, want %q", tp.IncludePath, want)
 			}
-			if tp.Target != staging || tp.DryRun {
-				t.Errorf("treeParams = {Target:%q DryRun:%v}, want {%q false}", tp.Target, tp.DryRun, staging)
+			if tp.Target != staging {
+				t.Errorf("treeParams.Target = %q, want %q", tp.Target, staging)
 			}
 
 			if result.FinalDir != final {
@@ -703,12 +624,10 @@ func TestExtractSecretsFailurePropagates(t *testing.T) {
 
 // --- unsupported-platform preflight ---
 
-// On a platform where a live extract cannot publish (normalizer unvalidated /
-// non-Windows-safe include escaping), App.Extract refuses a live (non-dry-run)
-// extract BEFORE any restic spawn or staging mkdir, with a path-free error —
-// while a directory dry-run still proceeds everywhere (it carries no --include
-// and returns before staging/normalize). The test flips the linux/darwin
-// liveExtractSupported var to simulate the unsupported case.
+// On a platform where the extract cannot publish (normalizer unvalidated /
+// non-Windows-safe include escaping), App.Extract refuses BEFORE any restic
+// spawn or staging mkdir, with a path-free error. The test flips the
+// linux/darwin liveExtractSupported var to simulate the unsupported case.
 func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 	orig := liveExtractSupported
 	liveExtractSupported = false
@@ -716,15 +635,9 @@ func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 
 	root := t.TempDir()
 	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{
-		extractCap: cap,
-		extractTreeEvents: []resticx.ExtractTreeEvent{
-			{Kind: resticx.ExtractTreeVerboseStatus, Action: model.RestoreActionRestored, Item: "/etc/nginx/nginx.conf", Size: 10},
-			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 10},
-		},
-	}, root)
+	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 
-	// A live file extract is refused before restic / staging, path-free.
+	// A file extract is refused before restic / staging, path-free.
 	_, err := a.Extract(context.Background(), fileReq(), nil)
 	if err == nil {
 		t.Fatal("expected a refusal on an unsupported platform")
@@ -733,29 +646,12 @@ func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 		t.Errorf("preflight error leaked a path: %q", err.Error())
 	}
 	cap.mu.Lock()
-	liveCalls := cap.treeCalls
-	cap.mu.Unlock()
-	if liveCalls != 0 {
-		t.Errorf("restic spawned %d times on an unsupported platform, want 0", liveCalls)
+	defer cap.mu.Unlock()
+	if cap.treeCalls != 0 {
+		t.Errorf("restic spawned %d times on an unsupported platform, want 0", cap.treeCalls)
 	}
 	if ents, _ := os.ReadDir(root); len(ents) != 0 {
 		t.Errorf("staging created on an unsupported platform: %d entries", len(ents))
-	}
-
-	// A directory dry-run still proceeds everywhere (returns before staging/normalize).
-	dreq := treeReq()
-	dreq.DryRun = true
-	res, derr := a.Extract(context.Background(), dreq, nil)
-	if derr != nil {
-		t.Fatalf("directory dry-run must proceed on any platform: %v", derr)
-	}
-	if len(res.DryRunPreview) != 1 {
-		t.Errorf("dry-run preview = %d rows, want 1", len(res.DryRunPreview))
-	}
-	cap.mu.Lock()
-	defer cap.mu.Unlock()
-	if cap.treeCalls != 1 {
-		t.Errorf("treeCalls = %d, want 1 (only the directory dry-run reached restic)", cap.treeCalls)
 	}
 }
 

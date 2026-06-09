@@ -47,15 +47,15 @@ max_disk_bytes = "2GiB" # session-wide ceiling on the encrypted browse dir; "0" 
 # a nested layout that rebuilds the original path. resticscope only ever acts on
 # "unsafe" symlinks (see unsafe_symlinks below); special files and unsafe links are
 # counted, never fatal. This block is optional; the defaults below apply when it is
-# omitted. A live extract publishes only on Linux/macOS; on other platforms it is
-# refused before restic runs, but the directory dry-run preview still works.
+# omitted. An extract publishes only on Linux/macOS; on other platforms it is
+# refused before restic runs.
 [extract]
 # Base directory for extract output. resticscope creates a per-op subdir under
 # <target_root>/<repo-slug>/ and refuses to overwrite an existing one. ~ is
 # expanded to the user's home directory.
 target_root = "~/resticscope-extracts"
 
-# Hard cap on a single extract operation (dry-run or real). Exceeding the cap
+# Hard cap on a single extract operation. Exceeding the cap
 # cancels the operation and leaves the partial staging dir in place for the user
 # to keep or delete.
 extract_timeout = "30m"

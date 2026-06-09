@@ -57,11 +57,6 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			want: []string{"--no-lock", "restore", testSnapID + ":/etc/nginx", "--target", "/abs/staging", "--overwrite", "never", "--json"},
 		},
 		{
-			name: "directory source dry-run appends --dry-run -vv",
-			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging", DryRun: true},
-			want: []string{"--no-lock", "restore", testSnapID + ":/etc/nginx", "--target", "/abs/staging", "--overwrite", "never", "--json", "--dry-run", "-vv"},
-		},
-		{
 			name: "empty source is the whole snapshot (bare ID, no colon)",
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "", Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json"},
@@ -106,13 +101,6 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			}
 			if i := slices.Index(got, "--target"); i < 0 || i+1 >= len(got) || got[i+1] != tt.p.Target {
 				t.Error("argv must carry --target <Target>")
-			}
-			if tt.p.DryRun {
-				di := slices.Index(got, "--dry-run")
-				vi := slices.Index(got, "-vv")
-				if di < 0 || vi < 0 {
-					t.Error("dry-run argv must carry both --dry-run and -vv")
-				}
 			}
 		})
 	}
@@ -300,68 +288,6 @@ func TestExtractTreeParsesProgressFixture(t *testing.T) {
 	}
 	if last.TotalFiles != 9 || last.TotalBytes != 268435571 {
 		t.Errorf("summary = %+v, want 9 files / 268435571 bytes", last)
-	}
-}
-
-func TestExtractTreeParsesDryRunFixture(t *testing.T) {
-	fs := &extractTreeStreamFake{data: string(readFixture(t, "restic-0.18-restore-dryrun.ndjson"))}
-	c := &Client{Stream: fs}
-
-	var events []ExtractTreeEvent
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
-		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging", DryRun: true},
-		func(e ExtractTreeEvent) error { events = append(events, e); return nil })
-	if err != nil {
-		t.Fatalf("ExtractTree: %v", err)
-	}
-
-	var verbose int
-	var sawSized bool
-	for _, e := range events {
-		if e.Kind == ExtractTreeVerboseStatus {
-			verbose++
-			if e.Action == model.RestoreActionOther || e.Item == "" {
-				t.Errorf("verbose_status missing action/item: %+v", e)
-			}
-			if e.Size > 0 {
-				sawSized = true
-			}
-		}
-	}
-	if verbose < 1 {
-		t.Errorf("want at least one verbose_status event, got %d", verbose)
-	}
-	if !sawSized {
-		t.Error("want at least one verbose_status carrying a non-zero size")
-	}
-	if last := events[len(events)-1]; last.Kind != ExtractTreeSummary {
-		t.Errorf("dry-run stream must end with a summary, got kind %v", last.Kind)
-	}
-	// The first verbose line is the big blob; pin its parsed shape.
-	if first := events[0]; first.Kind != ExtractTreeVerboseStatus || first.Item != "/bigblob.bin" || first.Size != 268435456 {
-		t.Errorf("first event = %+v, want verbose_status /bigblob.bin size 268435456", first)
-	}
-}
-
-// TestRestoreActionOf pins every arm of the restic action vocabulary mapping.
-// The dry-run fixture only carries "restored", so without this the metadata /
-// skipped arms would be uncovered and a typo there would surface only as a wrong
-// preview glyph two layers away.
-func TestRestoreActionOf(t *testing.T) {
-	cases := []struct {
-		action string
-		want   model.RestoreAction
-	}{
-		{"restored", model.RestoreActionRestored},
-		{"updated metadata", model.RestoreActionMetadata},
-		{"skipped", model.RestoreActionSkipped},
-		{"deleted", model.RestoreActionOther},
-		{"", model.RestoreActionOther},
-	}
-	for _, c := range cases {
-		if got := restoreActionOf(c.action); got != c.want {
-			t.Errorf("restoreActionOf(%q) = %v, want %v", c.action, got, c.want)
-		}
 	}
 }
 

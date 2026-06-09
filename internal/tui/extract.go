@@ -20,16 +20,14 @@ import (
 )
 
 // extract.go is the TUI sub-model for the extract feature: a self-contained Bubble
-// Tea model that walks the user from a "review" screen through a preview (real
-// `restic restore --dry-run` for directories; app-side review for files) to a
-// "running" screen and then to success / cancel / error. It owns the per-op
-// generation token and cancel context (mirroring browse.go), the embedded
-// bubbles/filepicker for target-root override, the dry-run preview list, the
-// sampled-rate progress line, and the keep-or-delete overlay. The sub-model
-// holds source / staging / final / dry-run paths only for the lifetime of the
-// modal — clearExtract zeros every transient field on every exit path so no
-// path data lingers in the model (non-negotiable #1, same discipline as
-// browse / find-versions / snapshot-diff).
+// Tea model that walks the user from a "review" screen straight to a "running"
+// screen and then to success / cancel / error. It owns the per-op generation
+// token and cancel context (mirroring browse.go), the embedded bubbles/filepicker
+// for target-root override, the sampled-rate progress line, and the keep-or-delete
+// overlay. The sub-model holds source / staging / final paths only for the
+// lifetime of the modal — clearExtract zeros every transient field on every exit
+// path so no path data lingers in the model (non-negotiable #1, same discipline
+// as browse / find-versions / snapshot-diff).
 //
 // Browse wires the `e` key to construct this sub-model from the selected
 // BrowseEntry via extractRequestFromBrowseEntry. The success-view `s` action
@@ -41,7 +39,6 @@ type extractState int
 
 const (
 	extractStateReview     extractState = iota // initial screen, before any restic call
-	extractStatePreview                        // dir: post-dry-run list; file: app-side review (no restic call)
 	extractStateRunning                        // live restore in flight (file or directory)
 	extractStateSuccess                        // post-rename
 	extractStateCanceled                       // includes context.DeadlineExceeded
@@ -84,15 +81,8 @@ type extractModel struct {
 
 	state extractState
 
-	// dryRunning is true between dispatching a directory dry-run and its
-	// extractDryRunDoneMsg. The review screen stays put (state is still
-	// extractStateReview) but shows a "running dry-run…" notice and ignores a
-	// second enter / target press so the in-flight restic call isn't doubled.
-	dryRunning bool
-
-	// req is the active request. For directory sources the sub-model calls
-	// Extract twice (DryRun=true then DryRun=false); for file sources only
-	// once (DryRun=false). TargetRoot is updated by the filepicker overlay.
+	// req is the active request. enter dispatches a single live Extract for both
+	// file and directory sources. TargetRoot is updated by the filepicker overlay.
 	req app.ExtractRequest
 
 	// srcSize is the source node's size from the originating BrowseEntry (a
@@ -124,13 +114,6 @@ type extractModel struct {
 	result app.ExtractResult
 	err    error
 
-	// previewRows / previewSummary are populated only after a successful
-	// directory dry-run. previewScrollOffset is reset on every entry to
-	// extractStatePreview.
-	previewRows         []app.ExtractPreviewItem
-	previewSummary      app.ExtractResult
-	previewScrollOffset int
-
 	// progress is the latest sampled snapshot during running. rateBaseN /
 	// rateBaseAt / rate compute the sampled MiB/s for the running view, using
 	// the same window-sampled approach as the browse indexer (copy of the
@@ -150,11 +133,10 @@ type extractModel struct {
 	// line on the next return to browse (used by errors that survive the modal).
 	noticeAfterClose string
 
-	// width/height are synced from the root model's WindowSizeMsg so the
-	// lazily-built filepicker viewport and the dry-run preview's width-aware
-	// scroll clamp size from the live terminal. (Rendering itself reads the
-	// root's size; these are for the key handlers, which don't hold the Model.)
-	width, height int
+	// height is synced from the root model's WindowSizeMsg so the lazily-built
+	// filepicker viewport sizes from the live terminal. (Rendering itself reads
+	// the root's size; this is for ensureFilepicker, which doesn't hold the Model.)
+	height int
 }
 
 // ErrExtractUnsupportedType is the TUI-side sentinel returned by
@@ -204,14 +186,10 @@ func (m *extractModel) supersede() {
 func (m *extractModel) clearTransient() {
 	m.supersede()
 	m.state = extractStateReview
-	m.dryRunning = false
 	m.req = app.ExtractRequest{}
 	m.srcSize = 0
 	m.staging = ""
 	m.final = ""
-	m.previewRows = nil
-	m.previewSummary = app.ExtractResult{}
-	m.previewScrollOffset = 0
 	m.result = app.ExtractResult{}
 	m.err = nil
 	m.progress = app.ExtractProgress{}
@@ -223,13 +201,6 @@ func (m *extractModel) clearTransient() {
 	m.filepickerInit = false
 	m.filepickerErr = ""
 	m.noticeAfterClose = ""
-}
-
-// extractDryRunDoneMsg carries the result of a directory dry-run.
-type extractDryRunDoneMsg struct {
-	gen    int
-	result app.ExtractResult
-	err    error
 }
 
 // extractRunDoneMsg carries the result of a live run.
@@ -260,23 +231,6 @@ type extractBackToBrowseMsg struct {
 	notice string
 }
 
-// startDryRun kicks off restic restore --dry-run -vv --json for the directory
-// source and returns the Cmd. Files do not take this path.
-func (m *extractModel) startDryRun() tea.Cmd {
-	m.supersede()
-	m.dryRunning = true
-	runCtx, cancel := context.WithCancel(m.parentCtx)
-	m.cancel = cancel
-	gen := m.gen
-	req := m.req
-	req.DryRun = true
-	drv := m.drv
-	return func() tea.Msg {
-		res, err := drv.Extract(runCtx, req, nil)
-		return extractDryRunDoneMsg{gen: gen, result: res, err: err}
-	}
-}
-
 // startRun kicks off the live extract. Returns a tea.Batch of the worker Cmd
 // and the progress-pump Cmd. Mirrors browse.beginIndex.
 func (m *extractModel) startRun() tea.Cmd {
@@ -285,7 +239,6 @@ func (m *extractModel) startRun() tea.Cmd {
 	m.cancel = cancel
 	gen := m.gen
 	req := m.req
-	req.DryRun = false
 	drv := m.drv
 
 	progress := make(chan app.ExtractProgress, extractProgressBuffer)
@@ -376,31 +329,6 @@ func (m extractModel) updateFilePicker(msg tea.Msg) (extractModel, tea.Cmd) {
 	return m, cmd
 }
 
-// applyDryRunDone installs a finished dry-run result. A stale-gen message is
-// dropped. On error we transition to extractStateError; on success the rows
-// land in previewRows and we transition to extractStatePreview.
-func (m *extractModel) applyDryRunDone(msg extractDryRunDoneMsg) {
-	if msg.gen != m.gen {
-		return
-	}
-	m.dryRunning = false
-	if msg.err != nil {
-		m.err = msg.err
-		m.result = msg.result
-		if isExtractCancelErr(msg.err) {
-			m.state = extractStateCanceled
-		} else {
-			m.state = extractStateError
-		}
-		return
-	}
-	m.previewRows = msg.result.DryRunPreview
-	m.previewSummary = msg.result
-	m.previewSummary.DryRunPreview = nil // defense in depth — the rows live on previewRows
-	m.previewScrollOffset = 0
-	m.state = extractStatePreview
-}
-
 // applyRunDone installs the result of a live run.
 func (m *extractModel) applyRunDone(msg extractRunDoneMsg) {
 	if msg.gen != m.gen {
@@ -484,8 +412,8 @@ func (m *extractModel) applyDeleteStagingDone(msg extractDeleteStagingDoneMsg) {
 }
 
 // back is the routing entry-point for `q` from the root. It mirrors the same
-// per-state behavior the in-modal esc binding triggers (cancel running, drop a
-// preview, accept defaults on terminal states, etc.) without having to
+// per-state behavior the in-modal esc binding triggers (cancel running, close
+// the filepicker, accept defaults on terminal states, etc.) without having to
 // synthesize a KeyPressMsg.
 func (m extractModel) back(keys keyMap) (extractModel, tea.Cmd, bool) {
 	switch m.state {
@@ -493,12 +421,6 @@ func (m extractModel) back(keys keyMap) (extractModel, tea.Cmd, bool) {
 		if m.cancel != nil {
 			m.cancel()
 		}
-		return m, nil, false
-	case extractStatePreview:
-		m.previewRows = nil
-		m.previewScrollOffset = 0
-		m.previewSummary = app.ExtractResult{}
-		m.state = extractStateReview
 		return m, nil, false
 	case extractStateFilePicker:
 		m.state = extractStateReview
@@ -518,8 +440,6 @@ func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel,
 	switch m.state {
 	case extractStateReview:
 		return m.handleReviewKey(keys, msg)
-	case extractStatePreview:
-		return m.handlePreviewKey(keys, msg)
 	case extractStateRunning:
 		return m.handleRunningKey(keys, msg)
 	case extractStateSuccess:
@@ -537,65 +457,25 @@ func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel,
 func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit):
-		// Leaving while a dry-run is in flight is fine: clearTransient on the
-		// way out supersedes the per-op context, so the worker is canceled and
-		// its late done-msg is dropped by the gen check.
 		return m, returnExtract(""), true
-	case m.dryRunning:
-		// A dry-run is in flight; swallow every other key so a second enter /
-		// target can't double-fire restic or open the picker mid-run.
-		return m, nil, false
 	case key.Matches(msg, keys.Target):
 		m.state = extractStateFilePicker
 		m.filepickerErr = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
+	case m.req.Mode == app.ExtractFile && key.Matches(msg, keys.ExtractLayout):
+		// File source only: flip flattened ↔ nested in place. No re-plan — Nested
+		// does not affect PlanExtractPaths (staging/final container names are
+		// unchanged); it only moves the file inside `final`, which the review body
+		// recomputes on render.
+		m.req.Nested = !m.req.Nested
+		return m, nil, false
 	case key.Matches(msg, keys.Enter):
-		if m.req.Mode == app.ExtractDirectoryTree {
-			cmd := m.startDryRun()
-			return m, cmd, false
-		}
-		// File source: no restic dry-run; transition straight to the app-side
-		// review screen. previewRows stays nil.
-		m.state = extractStatePreview
-		return m, nil, false
-	}
-	return m, nil, false
-}
-
-func (m extractModel) handlePreviewKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
-	switch {
-	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit):
-		// Back from preview returns to review (not browse), so dry-run rows
-		// are dropped and the user can re-pick target or hit enter again.
-		m.previewRows = nil
-		m.previewScrollOffset = 0
-		m.previewSummary = app.ExtractResult{}
-		m.state = extractStateReview
-		return m, nil, false
-	case key.Matches(msg, keys.ExtractGo):
+		// Commit straight to the live extract — a single Extract for both file and
+		// directory sources. There is no dry-run preview step.
 		cmd := m.startRun()
 		m.state = extractStateRunning
 		return m, cmd, false
-	case m.req.Mode == app.ExtractFile && key.Matches(msg, keys.ExtractLayout):
-		// File review only: flip flattened ↔ nested. No re-plan — Nested does not
-		// affect PlanExtractPaths (staging/final container names are unchanged); it
-		// only moves the file inside `final`, which extractFileReviewBody recomputes
-		// on render.
-		m.req.Nested = !m.req.Nested
-		return m, nil, false
-	case key.Matches(msg, keys.Up):
-		m.previewScrollOffset = clampPreviewOffset(m.previewScrollOffset-1, m.previewRows, m.width, m.height)
-		return m, nil, false
-	case key.Matches(msg, keys.Down):
-		m.previewScrollOffset = clampPreviewOffset(m.previewScrollOffset+1, m.previewRows, m.width, m.height)
-		return m, nil, false
-	case key.Matches(msg, keys.PageUp):
-		m.previewScrollOffset = clampPreviewOffset(m.previewScrollOffset-10, m.previewRows, m.width, m.height)
-		return m, nil, false
-	case key.Matches(msg, keys.PageDown):
-		m.previewScrollOffset = clampPreviewOffset(m.previewScrollOffset+10, m.previewRows, m.width, m.height)
-		return m, nil, false
 	}
 	return m, nil, false
 }
@@ -806,29 +686,17 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 func (m extractModel) helpLine(keys keyMap) string {
 	switch m.state {
 	case extractStateReview:
-		if m.req.Mode == app.ExtractDirectoryTree {
+		if m.req.Mode == app.ExtractFile {
 			return joinHelp(
-				keyHelp(keys.Enter, "dry-run"),
+				keyHelp(keys.Enter, "extract"),
+				keyHelp(keys.ExtractLayout, "layout"),
 				keyHelp(keys.Target, "target"),
 				keyHelp(keys.Back, "back"),
 			)
 		}
 		return joinHelp(
-			keyHelp(keys.Enter, "review"),
+			keyHelp(keys.Enter, "extract"),
 			keyHelp(keys.Target, "target"),
-			keyHelp(keys.Back, "back"),
-		)
-	case extractStatePreview:
-		if m.req.Mode == app.ExtractDirectoryTree {
-			return joinHelp(
-				keyHelp(keys.ExtractGo, "extract"),
-				keyHelp(keys.Up, "scroll"),
-				keyHelp(keys.Back, "back"),
-			)
-		}
-		return joinHelp(
-			keyHelp(keys.ExtractGo, "extract"),
-			keyHelp(keys.ExtractLayout, "layout"),
 			keyHelp(keys.Back, "back"),
 		)
 	case extractStateRunning:

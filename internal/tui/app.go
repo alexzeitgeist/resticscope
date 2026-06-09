@@ -282,10 +282,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		// Keep the extract sub-model sized too: it owns an embedded filepicker
-		// whose viewport we size ourselves (AutoHeight is off), and the dry-run
-		// preview's scroll clamp wraps rows to width, so a live resize while either
-		// is open must reflow.
-		m.extract.width = msg.Width
+		// whose viewport we size ourselves (AutoHeight is off), so a live resize
+		// while it is open must reflow.
 		m.extract.height = msg.Height
 		if m.extract.filepickerInit {
 			m.extract.filepicker.SetHeight(extractFilePickerHeight(msg.Height))
@@ -311,18 +309,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applySnapshotDiffMsg(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
-	case extractDryRunDoneMsg:
+	case extractRunDoneMsg:
 		// Every extract message is gated on the modal being active: the sub-model's
 		// gen restarts at 0 each session, so a late message from a prior session
 		// must not be applied (or worse, switch the view) once the user has left.
 		// "Active" includes the help overlay opened over extract — otherwise a
 		// completion that lands while help is open would be dropped and strand the
 		// modal (it returns to extract via prevView, not a real exit).
-		if m.extractActive() {
-			m.extract.applyDryRunDone(msg)
-		}
-		return m, nil
-	case extractRunDoneMsg:
 		if m.extractActive() {
 			m.extract.applyRunDone(msg)
 		}
@@ -386,8 +379,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // opened over it and returns to it via prevView). Extract async messages and the
 // filepicker's async reads must be honored in both — help is an overlay, not a
 // real extract exit, and clearTransient is not called when it opens — otherwise a
-// dry-run/run completion, progress tick, or staging delete that lands while help
-// is up would be silently dropped and strand the modal.
+// run completion, progress tick, or staging delete that lands while help is up
+// would be silently dropped and strand the modal.
 func (m Model) extractActive() bool {
 	return m.view == extractView || (m.view == helpView && m.prevView == extractView)
 }
