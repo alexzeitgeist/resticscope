@@ -86,7 +86,6 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		}},
 		{"Extract (from browse)", []helpEntry{
 			{keyLabel(k.Enter), "extract"},
-			{keyLabel(k.ExtractLayout), "file layout: flattened/nested"},
 			{keyLabel(k.Target), "choose target root"},
 			{keyLabel(k.Shell), "shell at extracted dir"},
 			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},

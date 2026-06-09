@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -289,8 +290,10 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
 	old := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
-	setup := func(target string) error {
-		conf := filepath.Join(target, "nginx.conf")
+	// restic reconstructs the leaf dir "nginx" at staging/nginx and puts the file
+	// inside it (treeReq source is /etc/nginx).
+	setup := dirStagingSetup("nginx", func(node string) error {
+		conf := filepath.Join(node, "nginx.conf")
 		if err := os.WriteFile(conf, []byte("server {}"), 0o666); err != nil {
 			return err
 		}
@@ -298,7 +301,7 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 			return err
 		}
 		return os.Chtimes(conf, old, old)
-	}
+	})
 	a, fc := newExtractApp(fakeRestic{
 		extractCap:        cap,
 		extractTreeSetup:  setup,
@@ -312,14 +315,23 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 
+	// Both modes now use the rebase-parent + --include shape so restic reconstructs
+	// the leaf node (and applies its metadata): Source is the parent, IncludePath
+	// the leaf.
 	cap.mu.Lock()
-	if cap.treeParams.Target != staging || cap.treeParams.Source != req.Source {
-		t.Errorf("tree params = %+v, want Target=%q Source=%q", cap.treeParams, staging, req.Source)
-	}
+	tp := cap.treeParams
 	cap.mu.Unlock()
+	if tp.Target != staging || tp.Source != path.Dir(req.Source) || tp.IncludePath != "/"+path.Base(req.Source) {
+		t.Errorf("tree params = %+v, want Target=%q Source=%q IncludePath=%q", tp, staging, path.Dir(req.Source), "/"+path.Base(req.Source))
+	}
 
 	if result.FinalDir != final {
 		t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
+	}
+	// For a directory extract FinalPath coincides with FinalDir (the mirrored tree
+	// root).
+	if result.FinalPath != final {
+		t.Errorf("FinalPath = %q, want %q", result.FinalPath, final)
 	}
 	// The normalizer ran before the rename and PRESERVED the restored metadata: the
 	// file is still 0666 with its setgid bit and original mtime, under the final dir.
@@ -330,8 +342,9 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	if !fi.ModTime().Equal(old) {
 		t.Errorf("file mtime = %v, want preserved %v", fi.ModTime(), old)
 	}
-	if result.Files != 1 || result.Dirs != 0 {
-		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 0} from the normalizer walk", result.Files, result.Dirs)
+	// The walk counts the reconstructed leaf dir "nginx" (Dirs=1) plus its file.
+	if result.Files != 1 || result.Dirs != 1 {
+		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1} from the normalizer walk", result.Files, result.Dirs)
 	}
 	if result.UnsafeSymlinks != 0 || result.Other != 0 {
 		t.Errorf("result = {UnsafeSymlinks:%d Other:%d}, want {0 0}", result.UnsafeSymlinks, result.Other)
@@ -344,24 +357,32 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	}
 }
 
-// TestExtractDirectoryTreeRootModeIsPrivate pins the privacy invariant that now
-// rests on two external facts: resticscope creates staging 0700, and restic's
-// subpath restore never applies the source dir's own mode to --target. The
-// rewritten normalizer no longer force-chmods the root, so the published output
-// root must still be 0700 while a restored CHILD directory keeps its (wider)
-// restic mode. A future change to root handling that widened the container would
-// trip this.
-func TestExtractDirectoryTreeRootModeIsPrivate(t *testing.T) {
+// TestExtractDirectoryLeafMetadataPreserved pins the fix for the directory leaf
+// losing its own metadata. In the mirror tree the extracted directory node IS the
+// user's real directory, so it must carry its snapshot mode/mtime — restic
+// reconstructs the leaf at staging/<base> via --include (it CREATES the node
+// rather than restoring contents into resticscope's pre-made 0700 staging root),
+// so the published leaf keeps its (wider) restic mode while the SCAFFOLDING
+// ancestor resticscope synthesizes to place it at its mirror path stays private
+// 0700. A regression to the contents-rebase shape (the old bug) would publish the
+// leaf at 0700 and trip this.
+func TestExtractDirectoryLeafMetadataPreserved(t *testing.T) {
 	root := t.TempDir()
+	old := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	// restic reconstructs the leaf dir "nginx" (treeReq source /etc/nginx) WITH its
+	// snapshot metadata: wider-than-0700 mode, setgid, and an old mtime.
 	setup := func(target string) error {
-		sub := filepath.Join(target, "conf.d")
-		if err := os.Mkdir(sub, 0o750); err != nil {
+		node := filepath.Join(target, "nginx")
+		if err := os.Mkdir(node, 0o750); err != nil {
 			return err
 		}
-		if err := os.Chmod(sub, 0o750|os.ModeSetgid); err != nil { // wider than 0700 + setgid → preserved
+		if err := os.Chmod(node, 0o750|os.ModeSetgid); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(sub, "site"), []byte("x"), 0o640)
+		if err := os.WriteFile(filepath.Join(node, "site"), []byte("x"), 0o640); err != nil {
+			return err
+		}
+		return os.Chtimes(node, old, old) // last, so writing the child doesn't bump it
 	}
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 	req := treeReq()
@@ -371,16 +392,21 @@ func TestExtractDirectoryTreeRootModeIsPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	// The per-op output root is resticscope's private container, not user data.
-	if di := lstat(t, final); di.Mode().Perm() != 0o700 {
-		t.Errorf("final output root mode = %v, want 0700 (private container)", di.Mode())
+	// The published leaf dir keeps its snapshot metadata — NOT resticscope's 0700.
+	di := lstat(t, final)
+	if di.Mode().Perm() != 0o750 || di.Mode()&os.ModeSetgid == 0 {
+		t.Errorf("leaf dir mode = %v, want 0750 with setgid preserved (not 0700)", di.Mode())
 	}
-	// The restored child directory keeps its restic mode, including setgid.
-	if cd := lstat(t, filepath.Join(final, "conf.d")); cd.Mode().Perm() != 0o750 || cd.Mode()&os.ModeSetgid == 0 {
-		t.Errorf("child dir mode = %v, want 0750 with setgid preserved", cd.Mode())
+	if !di.ModTime().Equal(old) {
+		t.Errorf("leaf dir mtime = %v, want preserved %v (not extract time)", di.ModTime(), old)
 	}
-	if result.Dirs != 1 {
-		t.Errorf("result.Dirs = %d, want 1", result.Dirs)
+	// The synthesized scaffolding ancestor stays resticscope's private 0700.
+	if pd := lstat(t, filepath.Dir(final)); pd.Mode().Perm() != 0o700 {
+		t.Errorf("scaffolding ancestor mode = %v, want 0700 (private)", pd.Mode())
+	}
+	// The leaf dir itself is counted now: Files=1 (site), Dirs=1 (nginx).
+	if result.Files != 1 || result.Dirs != 1 {
+		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1}", result.Files, result.Dirs)
 	}
 }
 
@@ -397,12 +423,12 @@ func TestExtractDirectoryTreeSpecialFilePublishes(t *testing.T) {
 	}
 	mustSetup(t, os.Remove(probe))
 
-	setup := func(target string) error {
-		if err := syscall.Mkfifo(filepath.Join(target, "pipe"), 0o644); err != nil {
+	setup := dirStagingSetup("special-dir", func(node string) error {
+		if err := syscall.Mkfifo(filepath.Join(node, "pipe"), 0o644); err != nil {
 			return err
 		}
-		return os.Symlink("/etc/passwd", filepath.Join(target, "abslink")) // unsafe, kept by default
-	}
+		return os.Symlink("/etc/passwd", filepath.Join(node, "abslink")) // unsafe, kept by default
+	})
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 	req := treeReq()
 	req.Source = "/etc/special-dir"
@@ -436,12 +462,12 @@ func TestExtractDirectoryTreeSpecialFilePublishes(t *testing.T) {
 func TestExtractTreeLoggingIsPathFree(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	setup := func(target string) error {
-		if err := os.WriteFile(filepath.Join(target, "f"), []byte("x"), 0o600); err != nil {
+	setup := dirStagingSetup("topsecret-tree", func(node string) error {
+		if err := os.WriteFile(filepath.Join(node, "f"), []byte("x"), 0o600); err != nil {
 			return err
 		}
-		return os.Symlink("/etc/shadow", filepath.Join(target, "leak-link")) // unsafe → counted
-	}
+		return os.Symlink("/etc/shadow", filepath.Join(node, "leak-link")) // unsafe → counted
+	})
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 	a.Log = slog.New(slog.NewTextHandler(&buf, nil))
 	req := treeReq()

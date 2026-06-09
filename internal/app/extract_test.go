@@ -72,6 +72,24 @@ func fileStagingSetup(leaf string) func(target string) error {
 	}
 }
 
+// dirStagingSetup returns an extractTreeSetup that materializes the restored
+// directory node at staging/<base> — the way restic reconstructs a rebased subdir
+// via --include (it CREATES the leaf node, so its metadata is preserved) — then
+// runs build(node) to populate it. base is the RAW source basename. A nil build
+// leaves the leaf dir empty.
+func dirStagingSetup(base string, build func(node string) error) func(target string) error {
+	return func(target string) error {
+		node := filepath.Join(target, base)
+		if err := os.MkdirAll(node, 0o755); err != nil {
+			return err
+		}
+		if build == nil {
+			return nil
+		}
+		return build(node)
+	}
+}
+
 // newExtractApp wires an App over a temp target root and returns the cache so a
 // test can assert nothing was persisted.
 func newExtractApp(r fakeRestic, root string) (*App, *fakeCache) {
@@ -90,13 +108,21 @@ func TestPlanExtractPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanExtractPaths: %v", err)
 	}
-	wantFinal := "/srv/restore/repo-a/abcd1234-nginx-2bbac144"
+	// Pure mirror tree: the source's true path under the per-snapshot dir.
+	wantFinal := "/srv/restore/repo-a/abcd1234/etc/nginx"
+	// Staging is repo-level (a sibling of the <short>/ snapshot dirs), carrying the
+	// short id in its name; the hash input is still the raw source, so 2bbac144 is
+	// unchanged from the flat scheme.
 	wantStaging := "/srv/restore/repo-a/.resticscope-staging-abcd1234-nginx-2bbac144"
 	if final != wantFinal {
 		t.Errorf("final = %q, want %q", final, wantFinal)
 	}
 	if staging != wantStaging {
 		t.Errorf("staging = %q, want %q", staging, wantStaging)
+	}
+	// Staging lives at the repo level, NOT under the <short>/ mirror subtree.
+	if dir := filepath.Dir(staging); dir != "/srv/restore/repo-a" {
+		t.Errorf("filepath.Dir(staging) = %q, want the repo dir /srv/restore/repo-a", dir)
 	}
 }
 
@@ -131,32 +157,98 @@ func TestPlanExtractPathsRepoSlug(t *testing.T) {
 func TestPlanExtractPathsHashDeterminismAndCollision(t *testing.T) {
 	cfg := config.Extract{TargetRoot: "/srv/restore"}
 	r1 := fileReq() // /etc/hosts
-	_, a, err := PlanExtractPaths(cfg, r1)
+	sa, fa, err := PlanExtractPaths(cfg, r1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, b, err := PlanExtractPaths(cfg, r1)
+	sb, fb, err := PlanExtractPaths(cfg, r1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b {
-		t.Errorf("same source produced different paths: %q vs %q", a, b)
+	// Same source is deterministic in both staging and final.
+	if sa != sb || fa != fb {
+		t.Errorf("same source produced different paths: staging %q vs %q, final %q vs %q", sa, sb, fa, fb)
 	}
-	if !strings.HasSuffix(a, "-4a666ea3") {
-		t.Errorf("unexpected hash for /etc/hosts: %q", a)
+	// The hash now lives only on the (repo-level) staging name; finals are
+	// path-distinct by the mirror layout.
+	if !strings.HasSuffix(sa, "-4a666ea3") {
+		t.Errorf("unexpected staging hash for /etc/hosts: %q", sa)
 	}
-	// A different source with the same basename must hash differently.
+	if fa != "/srv/restore/repo-a/abcd1234/etc/hosts" {
+		t.Errorf("final = %q, want the mirror path .../abcd1234/etc/hosts", fa)
+	}
+	// A different source with the same basename hashes differently (staging) and is
+	// path-distinct (final).
 	r2 := fileReq()
 	r2.Source = "/var/backups/hosts"
-	_, c, err := PlanExtractPaths(cfg, r2)
+	sc, fc, err := PlanExtractPaths(cfg, r2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(c, "-1190c10e") {
-		t.Errorf("unexpected hash for /var/backups/hosts: %q", c)
+	if !strings.HasSuffix(sc, "-1190c10e") {
+		t.Errorf("unexpected staging hash for /var/backups/hosts: %q", sc)
 	}
-	if a == c {
-		t.Error("two distinct sources with the same basename collided")
+	if fc != "/srv/restore/repo-a/abcd1234/var/backups/hosts" {
+		t.Errorf("final = %q, want the mirror path .../abcd1234/var/backups/hosts", fc)
+	}
+	if fa == fc {
+		t.Error("two distinct sources produced the same mirror final")
+	}
+	if sa == sc {
+		t.Error("two distinct sources with the same basename collided in staging")
+	}
+}
+
+// TestPlanExtractStagingOutsideMirrorTree is the regression for the namespace
+// finding: staging dirs live at the repo level, never inside the <short>/ mirror
+// subtree, so a real snapshot path that mimics a staging name can never collide
+// with a future staging path. A source named like a staging dir mirrors under
+// <short>/etc/…; the staging computed for a real sibling stays a direct child of
+// the repo dir.
+func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
+	cfg := config.Extract{TargetRoot: "/srv/restore"}
+	const repoDir = "/srv/restore/repo-a"
+
+	mimic := fileReq()
+	mimic.Source = "/etc/.resticscope-staging-hosts-4a666ea3"
+	name, err := SanitizeExtractSlug(path.Base(mimic.Source))
+	if err != nil {
+		t.Fatalf("SanitizeExtractSlug: %v", err)
+	}
+	mimic.SourceName = name
+	mimicStaging, mimicFinal, err := PlanExtractPaths(cfg, mimic)
+	if err != nil {
+		t.Fatalf("PlanExtractPaths(mimic): %v", err)
+	}
+	// The mimicking source mirrors under <short>/, not at the repo level.
+	if want := repoDir + "/abcd1234/etc/.resticscope-staging-hosts-4a666ea3"; mimicFinal != want {
+		t.Errorf("mimic final = %q, want %q (under <short>/)", mimicFinal, want)
+	}
+
+	// The staging dir computed for the real /etc/hosts.
+	hostsStaging, _, err := PlanExtractPaths(cfg, fileReq())
+	if err != nil {
+		t.Fatalf("PlanExtractPaths(hosts): %v", err)
+	}
+	if want := repoDir + "/.resticscope-staging-abcd1234-hosts-4a666ea3"; hostsStaging != want {
+		t.Errorf("hosts staging = %q, want %q (repo level)", hostsStaging, want)
+	}
+
+	// The mimic's mirror final and the real source's repo-level staging are
+	// disjoint: no ErrExtractStagingExists cross-collision is possible.
+	if mimicFinal == hostsStaging {
+		t.Errorf("mimic final collided with hosts staging: %q", mimicFinal)
+	}
+
+	// Equivalent invariant: every staging is a direct child of repoDir and never
+	// carries <short> as a path component below repoDir.
+	for _, st := range []string{mimicStaging, hostsStaging} {
+		if dir := filepath.Dir(st); dir != repoDir {
+			t.Errorf("staging %q is not a direct child of repoDir %q", st, repoDir)
+		}
+		if strings.Contains(st, "/abcd1234/") {
+			t.Errorf("staging %q descends through the <short>/ mirror subtree", st)
+		}
 	}
 }
 
@@ -359,19 +451,23 @@ func TestExtractFileFlattened(t *testing.T) {
 				t.Errorf("treeParams.Target = %q, want %q", tp.Target, staging)
 			}
 
-			if result.FinalDir != final {
-				t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
+			// The file lands AT its mirror path: FinalPath is the node itself,
+			// FinalDir its containing mirror dir.
+			if result.FinalPath != final {
+				t.Errorf("FinalPath = %q, want %q", result.FinalPath, final)
+			}
+			if want := filepath.Dir(final); result.FinalDir != want {
+				t.Errorf("FinalDir = %q, want %q (containing mirror dir)", result.FinalDir, want)
 			}
 			if result.Files != 1 || result.Dirs != 0 {
 				t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 0}", result.Files, result.Dirs)
 			}
 
-			// The file lands flattened under final, named for the RAW basename, with
-			// restic's restored metadata (0640, original mtime) preserved.
-			published := filepath.Join(final, leaf)
-			fi, serr := os.Lstat(published)
+			// The file lands AT final (the mirror path, named for the RAW basename),
+			// with restic's restored metadata (0640, original mtime) preserved.
+			fi, serr := os.Lstat(final)
 			if serr != nil {
-				t.Fatalf("flattened file not present at final/<raw-basename>: %v", serr)
+				t.Fatalf("file not present at its mirror path: %v", serr)
 			}
 			if fi.Mode().Perm() != 0o640 {
 				t.Errorf("published mode = %v, want 0640 preserved (not 0600)", fi.Mode())
@@ -379,14 +475,17 @@ func TestExtractFileFlattened(t *testing.T) {
 			if !fi.ModTime().Equal(fileSetupMtime) {
 				t.Errorf("published mtime = %v, want preserved %v (not now)", fi.ModTime(), fileSetupMtime)
 			}
-			// The sanitized slug must NOT be used as the file leaf.
-			if tc.sourceName != leaf {
-				if _, e := os.Lstat(filepath.Join(final, tc.sourceName)); e == nil {
-					t.Errorf("file published under the sanitized slug %q rather than the raw basename %q", tc.sourceName, leaf)
-				}
+			// The mirror path uses the RAW basename, never the sanitized slug.
+			if got := filepath.Base(final); got != leaf {
+				t.Errorf("final basename = %q, want the raw basename %q", got, leaf)
 			}
+			if tc.sourceName != leaf && filepath.Base(final) == tc.sourceName {
+				t.Errorf("final used the sanitized slug %q as its basename rather than the raw basename %q", tc.sourceName, leaf)
+			}
+			// The hidden staging dir is gone after a successful publish
+			// (link + unlink + rmdir).
 			if _, serr := os.Stat(staging); serr == nil {
-				t.Error("staging dir still present after a successful rename")
+				t.Error("staging dir still present after a successful publish")
 			}
 			if len(fc.saved) != 0 {
 				t.Errorf("extract wrote %d cache entries, want 0", len(fc.saved))
@@ -395,47 +494,55 @@ func TestExtractFileFlattened(t *testing.T) {
 	}
 }
 
-// TestExtractFileNested drives the opt-in nested layout: no source rebase, the
-// full source is the include, and restic reconstructs the parent path so the file
-// lands at final/etc/hosts. The reconstructed parent dir is counted in Dirs.
-func TestExtractFileNested(t *testing.T) {
+// TestExtractFileRefusesOccupiedTargetWithoutOverwrite proves the os.Link
+// no-replace guard — not freshTargetCheck or a publish-time Lstat — protects an
+// existing file at the target. The custom setup runs inside ExtractTree (after
+// freshTargetCheck, before publish): it both materializes the staging file AND
+// writes sentinel bytes to final, simulating a concurrent writer that wins the
+// TOCTOU race. Because deep mirror ancestors are created lazily in publishExtract,
+// the setup must MkdirAll(filepath.Dir(final)) before writing the sentinel so the
+// run reaches the os.Link guard rather than failing during setup.
+func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 	root := t.TempDir()
-	cap := &extractCapture{}
-	a, _ := newExtractApp(fakeRestic{
-		extractCap:       cap,
-		extractTreeSetup: fileStagingSetup("etc/hosts"),
-	}, root)
-	req := fileReq()
-	req.Nested = true
-	staging, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
+	cfg := config.Extract{TargetRoot: root, ExtractTimeout: config.Duration(2 * time.Minute)}
+	req := fileReq() // /etc/hosts
+	staging, final, perr := PlanExtractPaths(cfg, req)
+	if perr != nil {
+		t.Fatalf("PlanExtractPaths: %v", perr)
+	}
+
+	sentinel := []byte("DO-NOT-CLOBBER")
+	setup := func(target string) error {
+		if err := fileStagingSetup("hosts")(target); err != nil {
+			return err
+		}
+		// publishExtract builds the deep mirror ancestors lazily, so create them
+		// here before planting the sentinel at final.
+		if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(final, sentinel, 0o600)
+	}
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 
 	result, err := a.Extract(context.Background(), req, nil)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
+	if !errors.Is(err, ErrExtractFinalExists) {
+		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
-
-	cap.mu.Lock()
-	tp := cap.treeParams
-	cap.mu.Unlock()
-	if tp.Source != "" {
-		t.Errorf("nested treeParams.Source = %q, want \"\" (bare snapshot)", tp.Source)
+	// The existing bytes are untouched: os.Link never replaces.
+	got, rerr := os.ReadFile(final)
+	if rerr != nil {
+		t.Fatalf("sentinel file gone after a refused publish: %v", rerr)
 	}
-	if tp.IncludePath != req.Source {
-		t.Errorf("nested treeParams.IncludePath = %q, want %q", tp.IncludePath, req.Source)
+	if string(got) != string(sentinel) {
+		t.Errorf("sentinel overwritten: got %q, want %q", got, sentinel)
 	}
-
-	if result.FinalDir != final {
-		t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
+	// Staging is retained for keep/delete.
+	if !result.StagingCreated || result.StagingDir != staging {
+		t.Errorf("result = {StagingCreated:%v StagingDir:%q}, want {true %q}", result.StagingCreated, result.StagingDir, staging)
 	}
-	// The reconstructed "etc" parent dir is counted: Files=1, Dirs=1.
-	if result.Files != 1 || result.Dirs != 1 {
-		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1}", result.Files, result.Dirs)
-	}
-	if _, serr := os.Lstat(filepath.Join(final, "etc", "hosts")); serr != nil {
-		t.Errorf("nested file not present at final/etc/hosts: %v", serr)
-	}
-	if _, serr := os.Stat(staging); serr == nil {
-		t.Error("staging dir still present after a successful rename")
+	if _, serr := os.Stat(staging); serr != nil {
+		t.Errorf("staging not retained after a refused publish: %v", serr)
 	}
 }
 
@@ -462,8 +569,151 @@ func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	if got := modeOf(t, repoDir); got != 0o755 {
 		t.Errorf("repo dir mode = %o, want 0755 (pre-existing, never chmod'd)", got)
 	}
-	if got := modeOf(t, final); got != 0o700 {
-		t.Errorf("final dir mode = %o, want 0700 (new per-op dir)", got)
+	// final is now a 0640 file (the mirror leaf), so check its containing per-op
+	// mirror dir instead — that is the new dir publishExtract creates at 0700.
+	if got := modeOf(t, filepath.Dir(final)); got != 0o700 {
+		t.Errorf("per-op mirror dir mode = %o, want 0700 (new dir)", got)
+	}
+}
+
+// --- merge / overlap behavior (the headline of the mirror-tree change) ---
+
+// TestExtractMergeSharesSnapshotAncestor: two files from one snapshot under the
+// same parent merge into a shared <short>/etc/ ancestor — the merge fills empty
+// space, reuses the ancestor (never re-chmod'ing it), and leaves the first file
+// untouched.
+func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
+	root := t.TempDir()
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}, root)
+
+	hosts := fileReq() // /etc/hosts
+	_, hostsFinal, _ := PlanExtractPaths(a.Cfg.Extract, hosts)
+	res1, err := a.Extract(context.Background(), hosts, nil)
+	if err != nil {
+		t.Fatalf("extract /etc/hosts: %v", err)
+	}
+
+	// A sibling file under the same /etc — its own staging materializer.
+	a.Restic = fakeRestic{extractTreeSetup: fileStagingSetup("passwd")}
+	passwd := fileReq()
+	passwd.Source = "/etc/passwd"
+	passwd.SourceName = "passwd"
+	_, passwdFinal, _ := PlanExtractPaths(a.Cfg.Extract, passwd)
+	res2, err := a.Extract(context.Background(), passwd, nil)
+	if err != nil {
+		t.Fatalf("extract /etc/passwd: %v", err)
+	}
+
+	// Both land under the same <short>/etc/ ancestor (mode 0700), reused not
+	// recreated.
+	shared := filepath.Dir(hostsFinal)
+	if filepath.Dir(passwdFinal) != shared {
+		t.Errorf("passwd parent = %q, want shared ancestor %q", filepath.Dir(passwdFinal), shared)
+	}
+	if got := modeOf(t, shared); got != 0o700 {
+		t.Errorf("shared ancestor mode = %o, want 0700", got)
+	}
+	if res1.FinalPath == res2.FinalPath {
+		t.Errorf("FinalPath not distinct per file: both %q", res1.FinalPath)
+	}
+	if res1.FinalPath != hostsFinal || res2.FinalPath != passwdFinal {
+		t.Errorf("FinalPath mismatch: got %q/%q, want %q/%q", res1.FinalPath, res2.FinalPath, hostsFinal, passwdFinal)
+	}
+	// The first file is present and untouched by the second extract.
+	body, rerr := os.ReadFile(hostsFinal)
+	if rerr != nil {
+		t.Fatalf("first file gone after the second extract: %v", rerr)
+	}
+	if string(body) != "file-body" {
+		t.Errorf("first file body = %q, want unchanged", string(body))
+	}
+	if _, serr := os.Lstat(passwdFinal); serr != nil {
+		t.Errorf("second file missing: %v", serr)
+	}
+}
+
+// TestExtractRefusesParentOfExistingChild: a file extract creates <short>/etc/hosts,
+// then extracting the whole /etc directory is refused — its leaf <short>/etc is
+// occupied by the partial extract — and the existing child is untouched.
+func TestExtractRefusesParentOfExistingChild(t *testing.T) {
+	root := t.TempDir()
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}, root)
+
+	hosts := fileReq() // /etc/hosts
+	_, hostsFinal, _ := PlanExtractPaths(a.Cfg.Extract, hosts)
+	if _, err := a.Extract(context.Background(), hosts, nil); err != nil {
+		t.Fatalf("extract /etc/hosts: %v", err)
+	}
+	before, rerr := os.ReadFile(hostsFinal)
+	if rerr != nil {
+		t.Fatalf("read child: %v", rerr)
+	}
+	modeBefore := modeOf(t, hostsFinal)
+
+	// Now the whole /etc directory: <short>/etc is occupied. restic reconstructs
+	// the leaf at staging/etc.
+	a.Restic = fakeRestic{extractTreeSetup: dirStagingSetup("etc", func(node string) error {
+		return os.WriteFile(filepath.Join(node, "newfile"), []byte("x"), 0o644)
+	})}
+	dir := treeReq()
+	dir.Source = "/etc"
+	dir.SourceName = "etc"
+	if _, err := a.Extract(context.Background(), dir, nil); !errors.Is(err, ErrExtractFinalExists) {
+		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
+	}
+	after, rerr := os.ReadFile(hostsFinal)
+	if rerr != nil {
+		t.Fatalf("existing child gone after the refused dir extract: %v", rerr)
+	}
+	if string(after) != string(before) {
+		t.Errorf("existing child body changed: %q -> %q", before, after)
+	}
+	if got := modeOf(t, hostsFinal); got != modeBefore {
+		t.Errorf("existing child mode changed: %o -> %o", modeBefore, got)
+	}
+}
+
+// TestExtractRefusesChildOfExistingParent: a directory extract creates <short>/etc
+// (restic reconstructs the leaf at staging/etc, so staging/etc/hosts becomes
+// <short>/etc/hosts after the rename), then extracting the file /etc/hosts is
+// refused — its mirror leaf already exists in the tree — and the existing file is
+// untouched.
+func TestExtractRefusesChildOfExistingParent(t *testing.T) {
+	root := t.TempDir()
+	// restic reconstructs /etc's node at staging/etc, so staging/etc/hosts becomes
+	// <short>/etc/hosts after the rename.
+	a, _ := newExtractApp(fakeRestic{extractTreeSetup: dirStagingSetup("etc", func(node string) error {
+		return os.WriteFile(filepath.Join(node, "hosts"), []byte("dir-hosts"), 0o644)
+	})}, root)
+
+	dir := treeReq()
+	dir.Source = "/etc"
+	dir.SourceName = "etc"
+	_, dirFinal, _ := PlanExtractPaths(a.Cfg.Extract, dir)
+	if _, err := a.Extract(context.Background(), dir, nil); err != nil {
+		t.Fatalf("extract /etc: %v", err)
+	}
+	childPath := filepath.Join(dirFinal, "hosts") // <short>/etc/hosts
+	if _, err := os.Lstat(childPath); err != nil {
+		t.Fatalf("dir extract did not place the child: %v", err)
+	}
+
+	// Now the file /etc/hosts: its mirror leaf == the dir's child, already present.
+	a.Restic = fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}
+	file := fileReq() // /etc/hosts
+	_, fileFinal, _ := PlanExtractPaths(a.Cfg.Extract, file)
+	if fileFinal != childPath {
+		t.Fatalf("file final %q != dir child %q (mirror paths should coincide)", fileFinal, childPath)
+	}
+	if _, err := a.Extract(context.Background(), file, nil); !errors.Is(err, ErrExtractFinalExists) {
+		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
+	}
+	body, rerr := os.ReadFile(childPath)
+	if rerr != nil {
+		t.Fatalf("existing child gone: %v", rerr)
+	}
+	if string(body) != "dir-hosts" {
+		t.Errorf("existing child changed to %q, want dir-hosts", string(body))
 	}
 }
 

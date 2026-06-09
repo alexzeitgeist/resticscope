@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,8 +16,15 @@ import (
 //
 // Privacy: the only path values rendered here are the ones the sub-model
 // already holds for the lifetime of the modal — req.Source, m.staging, m.final,
-// and (only when StagingCreated=true) m.result.StagingDir / FinalDir.
+// and (after a clean publish) m.result.FinalDir / FinalPath / StagingDir.
 // extract.go's clearTransient zeroes all of those on every back-to-browse exit.
+//
+// Note m.final / FinalPath now EMBED the source path (the mirror layout puts the
+// source's true path under the snapshot dir), so they appear only in the review
+// and success bodies — the user's own in-progress / completed action — never in
+// the error / cancel terminal bodies or logs. The terminal bodies show only the
+// staging path (which carries just the sanitized basename) plus a path-free hint.
+// (logExtractSuccess stays path-free — snapshot short + counts only.)
 
 // extractHeaderView is the top header line on the extract view.
 func (m Model) extractHeaderView() string {
@@ -94,58 +99,22 @@ func (m Model) extractBody() string {
 
 // extractReviewBody renders the single labeled "what will happen" screen for both
 // file and directory sources. enter commits straight to the live extract (there
-// is no dry-run preview step); for a file source `f` toggles the layout in place.
-// Matches §14 review mockups.
+// is no dry-run preview step). Both modes mirror the source to its true path under
+// the per-snapshot directory, so one Target row (em.final, the exact mirror path)
+// serves both. Matches §14 review mockups.
 func (m Model) extractReviewBody(w int) string {
 	em := m.extract
 	// Repo + short snapshot id live in the header title; the source size is folded
 	// into the Source row, so Type is gone. The key hints live in the footer only.
+	// Target wraps rather than elides (framework §8) so a long mirror path is
+	// fully visible.
 	rows := []extractRow{
 		{label: "Source", value: extractSourceValue(em)},
 		{label: "Output", value: extractOutputLine(em.req.Mode)},
+		{}, // spacer
+		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
 	}
-	if em.req.Mode == app.ExtractFile {
-		// File source: restores metadata-faithfully, landing flattened or nested per
-		// the Layout row (the `f` key flips it). Show the file path the user gets
-		// (<dir>/<leaf>), not the parent directory; wrap rather than elide
-		// (framework §8) so a long path is fully visible. Layout sits at the bottom
-		// since the Staging/Final leaf already reflects the choice.
-		leaf := extractFileLeaf(em.req)
-		rows = append(rows,
-			extractRow{}, // spacer
-			extractRow{label: "Staging", value: wrapPathValue(filepath.Join(em.staging, leaf), extractValueWidth(w))},
-			extractRow{label: "Final", value: wrapPathValue(filepath.Join(em.final, leaf), extractValueWidth(w))},
-			extractRow{}, // spacer
-			extractRow{label: "Layout", value: extractLayoutLine(em.req.Nested)},
-		)
-		return renderExtractRows(m, rows, w)
-	}
-	// Directory source: show the output directory tree.
-	rows = append(rows,
-		extractRow{}, // spacer
-		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
-	)
 	return renderExtractRows(m, rows, w)
-}
-
-// extractFileLeaf is the file's path relative to the output container, derived
-// from the layout choice: the RAW snapshot basename when flattened, the full
-// rooted source (minus its leading "/") when nested. It deliberately uses the raw
-// snapshot basename — never SourceName, which is a sanitized slug used only as
-// the per-op container directory component.
-func extractFileLeaf(req app.ExtractRequest) string {
-	if req.Nested {
-		return strings.TrimPrefix(req.Source, "/")
-	}
-	return path.Base(req.Source)
-}
-
-// extractLayoutLine labels the file layout for the review screen.
-func extractLayoutLine(nested bool) string {
-	if nested {
-		return "nested"
-	}
-	return "flattened"
 }
 
 // extractRunningBody renders the live-progress screen.
@@ -253,10 +222,10 @@ func (m Model) extractSuccessBody(w int) string {
 		"  " + summary,
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
-		"    " + m.styles.meta.Render(em.result.FinalDir),
+		"    " + m.styles.meta.Render(em.result.FinalPath),
 	}
 	// Count-only warning when the tree carried unsafe symlinks. No names — only the
-	// count — so the line stays path-free even though FinalDir is shown above.
+	// count — so the line stays path-free even though FinalPath is shown above.
 	if em.result.UnsafeSymlinks > 0 {
 		body = append(body,
 			"",
@@ -299,6 +268,10 @@ func (m Model) extractTerminalBody(w int) string {
 	}
 	lines := []string{"  " + headline}
 	if em.result.StagingCreated && em.result.StagingDir != "" && stagingDirExists(em.result.StagingDir) {
+		// Staging keep-or-delete is the action here; the refusal hint (which points
+		// at the `t` retarget key) is deliberately omitted — the user must resolve
+		// the staging dir first, and handleTerminalKey does not honor `t` in this
+		// branch (it would orphan the staging dir).
 		lines = append(lines,
 			"",
 			"  "+m.styles.meta.Render("Staging output (extract did not complete):"),
@@ -315,6 +288,12 @@ func (m Model) extractTerminalBody(w int) string {
 			"    "+m.styles.dim.Render("d     delete the staging dir"),
 		)
 	} else if em.err != nil {
+		// No staging to resolve: surface the actionable refusal hint (only for an
+		// occupied-target/staging refusal — handleTerminalKey honors `t` here), then
+		// the back affordance.
+		if hint := extractRefusalHint(em); hint != "" {
+			lines = append(lines, "", "  "+m.styles.dim.Render(hint))
+		}
 		lines = append(lines,
 			"",
 			"    "+m.styles.dim.Render("enter back to browse"),
@@ -346,6 +325,21 @@ func extractErrorHeadline(em extractModel) string {
 		return "extract failed"
 	}
 	return firstLine(em.err.Error())
+}
+
+// extractRefusalHint returns a path-free, one-line resolution hint for the
+// terminal body when the extract was refused because the target (or staging) path
+// was already occupied — the merge only ever fills empty space, so the user must
+// pick a different target or clear the occupant. The `t` key it names is honored
+// by handleTerminalKey in the same (no-staging) branch this hint renders in, so it
+// is never a dead key. Pure TUI guidance: it names no path (the app-layer error is
+// path-free too). Empty for any other outcome, so a cancel or a genuine IO error
+// shows no hint.
+func extractRefusalHint(em extractModel) string {
+	if isExtractRefusal(em.err) {
+		return "press t to choose another target, or remove the existing output"
+	}
+	return ""
 }
 
 // extractKeepDeleteBody mirrors extractTerminalBody during the brief window

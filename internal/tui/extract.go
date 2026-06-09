@@ -462,13 +462,6 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 		m.filepickerErr = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
-	case m.req.Mode == app.ExtractFile && key.Matches(msg, keys.ExtractLayout):
-		// File source only: flip flattened ↔ nested in place. No re-plan — Nested
-		// does not affect PlanExtractPaths (staging/final container names are
-		// unchanged); it only moves the file inside `final`, which the review body
-		// recomputes on render.
-		m.req.Nested = !m.req.Nested
-		return m, nil, false
 	case key.Matches(msg, keys.Enter):
 		// Commit straight to the live extract — a single Extract for both file and
 		// directory sources. There is no dry-run preview step.
@@ -529,6 +522,18 @@ func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extra
 		return m, nil, false
 	}
 	switch {
+	case isExtractRefusal(m.err) && key.Matches(msg, keys.Target):
+		// The refusal hint tells the user to press t to choose another target; honor
+		// it here so the key is not a no-op. There is no staging to orphan in this
+		// branch (the staging-exists case is handled above with keep/delete), so the
+		// failed run's transient outcome is cleared and we reopen the picker — a
+		// selection re-plans and lands back on review, ready to retry.
+		m.err = nil
+		m.result = app.ExtractResult{}
+		m.state = extractStateFilePicker
+		m.filepickerErr = ""
+		cmd := m.ensureFilepicker()
+		return m, cmd, false
 	case key.Matches(msg, keys.Enter), key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit):
 		return m, returnExtract(""), true
 	}
@@ -593,7 +598,7 @@ func planExtractOverride(cfg config.Extract, base app.ExtractRequest, root strin
 		return base, "", "", errors.New("staging directory already exists")
 	}
 	if _, lerr := os.Lstat(final); lerr == nil {
-		return base, "", "", errors.New("target directory already exists")
+		return base, "", "", errors.New("target already exists")
 	}
 	return req, staging, final, nil
 }
@@ -631,6 +636,15 @@ func isExtractCancelErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// isExtractRefusal reports whether err is an occupied-target/staging refusal — the
+// only terminal error whose remedy is to retarget (t) or clear the occupant. It
+// gates the actionable refusal hint, the terminal-state `t` affordance, and the
+// terminal footer so the three stay in lockstep: the hint never names a key the
+// handler ignores.
+func isExtractRefusal(err error) bool {
+	return errors.Is(err, app.ErrExtractFinalExists) || errors.Is(err, app.ErrExtractStagingExists)
+}
+
 // returnExtract dispatches a back-to-browse message carrying an optional
 // notice. We use a Cmd so the sub-model stays self-contained and the root
 // Model owns the actual view switch + clear.
@@ -655,9 +669,8 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	var wasFile bool
 	switch {
 	case entry.Type == "file":
-		// A regular file restores via restic restore --include. Nested is left at
-		// its zero value (false = flattened), the default layout; the file review
-		// screen's `f` toggle flips it.
+		// A regular file restores via restic restore --include and lands at its true
+		// mirror path under the per-snapshot directory.
 		mode = app.ExtractFile
 		wasFile = true
 	case entry.Type == "dir" || entry.IsDir:
@@ -685,14 +698,8 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 func (m extractModel) helpLine(keys keyMap, st styles) string {
 	switch m.state {
 	case extractStateReview:
-		if m.req.Mode == app.ExtractFile {
-			return joinHelp(st,
-				keyHelp(st, keys.Enter, "extract"),
-				keyHelp(st, keys.ExtractLayout, "layout"),
-				keyHelp(st, keys.Target, "target"),
-				keyHelp(st, keys.Back, "back"),
-			)
-		}
+		// Mirroring is inherently nested — one review footer for both file and
+		// directory sources, no layout toggle.
 		return joinHelp(st,
 			keyHelp(st, keys.Enter, "extract"),
 			keyHelp(st, keys.Target, "target"),
@@ -710,6 +717,14 @@ func (m extractModel) helpLine(keys keyMap, st styles) string {
 			return joinHelp(st,
 				keyHelp(st, keys.Keep, "keep"),
 				keyHelp(st, keys.Delete, "delete"),
+			)
+		}
+		if isExtractRefusal(m.err) {
+			// Advertise the retarget affordance the hint points to (handleTerminalKey
+			// honors t in this branch).
+			return joinHelp(st,
+				keyHelp(st, keys.Target, "target"),
+				keyHelp(st, keys.Enter, "back to browse"),
 			)
 		}
 		return joinHelp(st, keyHelp(st, keys.Enter, "back to browse"))

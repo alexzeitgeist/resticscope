@@ -282,73 +282,6 @@ func TestExtractFileHappyPath(t *testing.T) {
 	}
 }
 
-// File layout toggle: `f` on the review screen flips Nested, switching the
-// rendered Final path from the flattened default (final/<name>) to nested
-// (final/etc/<name>). The `?` help overlay's Extract section advertises the same
-// layout key/label, so the inline help and the overlay stay in sync.
-func TestExtractFileLayoutToggle(t *testing.T) {
-	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), fileReq(), 0)
-	if err != nil {
-		t.Fatalf("newExtractModel: %v", err)
-	}
-	em.drv = &fakeExtractDriver{}
-	em.state = extractStateReview // file source review screen carries the layout toggle
-	keys := defaultKeys()
-
-	render := func(em extractModel) string {
-		m := newTestModel(t, a)
-		m.view = extractView
-		m.width = 240 // wide enough that the Final path renders on one line
-		m.extract = em
-		return m.extractBody()
-	}
-
-	flatPath := filepath.Join(em.final, "hosts")
-	nestedPath := filepath.Join(em.final, "etc", "hosts")
-
-	// Default layout is flattened: the file lands at final/<name>.
-	flatBody := render(em)
-	if !strings.Contains(flatBody, "flattened") {
-		t.Errorf("flattened review missing the layout label:\n%s", flatBody)
-	}
-	if !strings.Contains(flatBody, flatPath) {
-		t.Errorf("flattened review missing the flattened final path %q:\n%s", flatPath, flatBody)
-	}
-	if strings.Contains(flatBody, nestedPath) {
-		t.Errorf("flattened review unexpectedly showed the nested path:\n%s", flatBody)
-	}
-
-	// f flips to nested.
-	em, _, leave := dispatchKey(em, keys, "f")
-	if leave {
-		t.Fatal("f on file review must not leave the modal")
-	}
-	if !em.req.Nested {
-		t.Fatal("f did not flip req.Nested to true")
-	}
-	nestedBody := render(em)
-	if !strings.Contains(nestedBody, "nested") {
-		t.Errorf("nested review missing the layout label:\n%s", nestedBody)
-	}
-	if !strings.Contains(nestedBody, nestedPath) {
-		t.Errorf("nested review missing the nested final path %q:\n%s", nestedPath, nestedBody)
-	}
-
-	// f again flips back to flattened.
-	em, _, _ = dispatchKey(em, keys, "f")
-	if em.req.Nested {
-		t.Error("second f did not flip back to flattened")
-	}
-
-	// The ? help overlay's Extract (from browse) section carries the layout entry,
-	// matching the footer helpLine's `f layout` hint.
-	help := newTestModel(t, a).helpBody()
-	if !strings.Contains(help, "file layout: flattened/nested") {
-		t.Errorf("help overlay missing the layout entry:\n%s", help)
-	}
-}
-
 // `m` is not bound to anything in the extract sub-model — it must be a no-op
 // in review state.
 func TestExtractIgnoresUnknownKey(t *testing.T) {
@@ -449,6 +382,42 @@ func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 	}
 	if _, _, _, err := planExtractOverride(em.cfg, em.req, existing); err == nil {
 		t.Error("planExtractOverride should reject when final already exists")
+	}
+}
+
+// planExtractOverride reuses a pre-existing ANCESTOR dir (the merge fills empty
+// space) but refuses when the exact leaf is occupied — the mirror-tree merge rule
+// on the `t` override path. Pairs with TestExtractPlanOverrideRejectsExisting,
+// which only covers a pre-existing repo dir + exact-final rejection.
+func TestExtractPlanOverrideAcceptsAncestorRejectsLeaf(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	root := t.TempDir()
+
+	// Derive the final under this root (no filesystem side effects yet).
+	_, _, final, err := planExtractOverride(em.cfg, em.req, root)
+	if err != nil {
+		t.Fatalf("planExtractOverride (clean root): %v", err)
+	}
+
+	// Pre-create only the ANCESTOR dir (the shared <short>/etc/), leaving the exact
+	// leaf free → the override still succeeds, since ancestors are reused.
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		t.Fatalf("MkdirAll ancestor: %v", err)
+	}
+	if _, _, _, err := planExtractOverride(em.cfg, em.req, root); err != nil {
+		t.Errorf("override should accept when only the ancestor exists: %v", err)
+	}
+
+	// Now occupy the exact leaf → rejected with the "target already exists" string.
+	if err := os.MkdirAll(final, 0o700); err != nil {
+		t.Fatalf("MkdirAll leaf: %v", err)
+	}
+	_, _, _, err = planExtractOverride(em.cfg, em.req, root)
+	if err == nil {
+		t.Fatal("override should reject when the exact leaf exists")
+	}
+	if !strings.Contains(err.Error(), "target already exists") {
+		t.Errorf("reject error = %q, want it to contain \"target already exists\"", err.Error())
 	}
 }
 
@@ -565,21 +534,66 @@ func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 	}
 }
 
+// A no-staging "already exists" refusal makes `t` reopen the target picker, so the
+// actionable hint ("press t to choose another target") never points at a dead key;
+// the footer advertises the same affordance, and a non-refusal error does neither.
+func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
+	keys := defaultKeys()
+	st := newStyles()
+
+	// Refusal, no staging created (a freshTargetCheck refusal).
+	em, _ := newExtractFixture(t, dirReq())
+	em.state = extractStateError
+	em.err = app.ErrExtractFinalExists
+	em.result = app.ExtractResult{FinalPath: em.final}
+
+	if foot := em.helpLine(keys, st); !strings.Contains(foot, "target") {
+		t.Errorf("terminal refusal footer missing the target affordance: %q", foot)
+	}
+	next, _, leave := dispatchKey(em, keys, "t")
+	if leave {
+		t.Fatal("t on a refusal error must not leave the modal")
+	}
+	if next.state != extractStateFilePicker {
+		t.Fatalf("t did not reopen the filepicker; state = %v", next.state)
+	}
+	// The failed run's transient outcome is cleared so nothing stale renders in the
+	// picker/review it lands on.
+	if next.err != nil || next.result.FinalPath != "" {
+		t.Errorf("t did not clear the failed run's transient state: err=%v result=%+v", next.err, next.result)
+	}
+
+	// A non-refusal terminal error neither advertises nor honors t.
+	em2, _ := newExtractFixture(t, dirReq())
+	em2.state = extractStateError
+	em2.err = errors.New("extract: staging metadata normalization failed")
+	if foot := em2.helpLine(keys, st); strings.Contains(foot, "target") {
+		t.Errorf("non-refusal footer should not advertise target: %q", foot)
+	}
+	next2, _, leave2 := dispatchKey(em2, keys, "t")
+	if leave2 || next2.state != extractStateError {
+		t.Errorf("t on a non-refusal error should be a no-op; state=%v leave=%v", next2.state, leave2)
+	}
+}
+
 // gen check: stale extractRunDoneMsg from a previous run is discarded.
 func TestExtractStaleRunDoneDropped(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	em.state = extractStateRunning
 	em.gen = 5
 
-	em.applyRunDone(extractRunDoneMsg{gen: 4, err: nil, result: app.ExtractResult{FinalDir: "/should/not/leak"}})
+	em.applyRunDone(extractRunDoneMsg{gen: 4, err: nil, result: app.ExtractResult{FinalDir: "/should/not/leak", FinalPath: "/should/not/leak"}})
 	if em.state != extractStateRunning {
 		t.Errorf("stale msg flipped state to %v, want running", em.state)
 	}
 	if em.result.FinalDir != "" {
 		t.Errorf("stale msg leaked FinalDir = %q", em.result.FinalDir)
 	}
+	if em.result.FinalPath != "" {
+		t.Errorf("stale msg leaked FinalPath = %q", em.result.FinalPath)
+	}
 
-	em.applyRunDone(extractRunDoneMsg{gen: 5, result: app.ExtractResult{FinalDir: "/ok"}})
+	em.applyRunDone(extractRunDoneMsg{gen: 5, result: app.ExtractResult{FinalDir: "/ok", FinalPath: "/ok/file"}})
 	if em.state != extractStateSuccess {
 		t.Errorf("current-gen msg did not advance state; state = %v", em.state)
 	}
@@ -589,7 +603,7 @@ func TestExtractStaleRunDoneDropped(t *testing.T) {
 // owns the call site and tests can hit the helper without a full route.
 func TestExtractClearTransientZerosPaths(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	em.result = app.ExtractResult{FinalDir: "/some/where", StagingDir: "/staging"}
+	em.result = app.ExtractResult{FinalDir: "/some/where", FinalPath: "/some/where/file", StagingDir: "/staging"}
 	em.err = errors.New("boom")
 
 	em.clearTransient()
@@ -600,7 +614,9 @@ func TestExtractClearTransientZerosPaths(t *testing.T) {
 	if em.staging != "" || em.final != "" {
 		t.Errorf("clearTransient left paths: staging=%q final=%q", em.staging, em.final)
 	}
-	if em.result.FinalDir != "" || em.result.StagingDir != "" {
+	// FinalPath embeds the source path (the mirror layout), so the whole-struct
+	// reset must zero it alongside FinalDir/StagingDir.
+	if em.result.FinalDir != "" || em.result.FinalPath != "" || em.result.StagingDir != "" {
 		t.Errorf("clearTransient left result paths: %+v", em.result)
 	}
 	if em.err != nil {
@@ -633,9 +649,6 @@ func TestExtractRequestFromBrowseEntry(t *testing.T) {
 	}
 	if got.Mode != app.ExtractFile || !got.WasRegularFile {
 		t.Errorf("file mode/regular = %v/%v, want ExtractFile / true", got.Mode, got.WasRegularFile)
-	}
-	if got.Nested {
-		t.Error("a fresh file request must default to flattened (Nested=false)")
 	}
 
 	weird := model.BrowseEntry{Path: "/dev/null", Name: "null", Type: "char"}
@@ -696,6 +709,7 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	em.result = app.ExtractResult{
 		Files:               2,
 		FinalDir:            "/extracted/here",
+		FinalPath:           "/extracted/here", // success view renders FinalPath
 		UnsafeSymlinks:      3,
 		UnsafeSymlinkPolicy: "keep",
 	}
@@ -840,11 +854,19 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(staging) })
 
+	// em.final / FinalPath now embed the source path (the mirror layout), so the
+	// terminal bodies must never render them. em.final for /etc/nginx contains the
+	// substring "/etc/nginx", so a leak of either trips the source-path assertion.
+	mirror := em.final
+	if !strings.Contains(mirror, dirReq().Source) {
+		t.Fatalf("test premise broken: mirror final %q does not embed the source path", mirror)
+	}
+
 	// Canceled with a staging dir this run created → prompt + staging path shown,
-	// source path never shown.
+	// source path / mirror final never shown.
 	em.state = extractStateCanceled
 	em.err = context.Canceled
-	em.result = app.ExtractResult{StagingDir: staging, StagingCreated: true}
+	em.result = app.ExtractResult{StagingDir: staging, StagingCreated: true, FinalPath: mirror}
 	em.progress = app.ExtractProgress{FilesDone: 3, FilesTotal: 10, BytesDone: 1024}
 
 	m := newTestModel(t, a)
@@ -857,21 +879,33 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	if strings.Contains(body, dirReq().Source) {
 		t.Errorf("cancel view leaked source path %q:\n%s", dirReq().Source, body)
 	}
+	if strings.Contains(body, mirror) {
+		t.Errorf("cancel view leaked the source-embedding mirror final %q:\n%s", mirror, body)
+	}
 	if !strings.Contains(body, staging) {
 		t.Errorf("cancel view with a created staging dir should show the staging path:\n%s", body)
 	}
 
-	// Error without staging → no keep/delete prompt, no staging path, no source.
+	// Error without staging → no keep/delete prompt, no staging path, no source,
+	// no mirror final. The refusal hint (path-free) may appear.
 	em.state = extractStateError
 	em.err = app.ErrExtractFinalExists
-	em.result = app.ExtractResult{}
+	em.result = app.ExtractResult{FinalPath: mirror}
 	m.extract = em
 	body = m.extractBody()
 	if strings.Contains(body, dirReq().Source) {
 		t.Errorf("error view leaked source path:\n%s", body)
 	}
+	if strings.Contains(body, mirror) {
+		t.Errorf("error view leaked the source-embedding mirror final %q:\n%s", mirror, body)
+	}
 	if strings.Contains(body, "Staging output") {
 		t.Errorf("error without created staging must not show the keep/delete prompt:\n%s", body)
+	}
+	// The actionable refusal hint is shown (path-free) so the user knows how to
+	// resolve an "already exists" refusal.
+	if !strings.Contains(body, "choose another target") {
+		t.Errorf("error view missing the actionable refusal hint:\n%s", body)
 	}
 }
 

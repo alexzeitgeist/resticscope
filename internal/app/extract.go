@@ -36,7 +36,7 @@ type ExtractMode int
 const (
 	// ExtractFile restores one regular file (restic restore --include), preserving
 	// the snapshot's mode/mtime/owner/xattrs — no longer a byte-only dump. The
-	// file lands flattened or nested per ExtractRequest.Nested.
+	// file lands at its true mirror path under the per-snapshot directory.
 	ExtractFile ExtractMode = iota
 	// ExtractDirectoryTree restores a whole subtree (restic restore), and is also
 	// the future full-snapshot path.
@@ -94,14 +94,6 @@ type ExtractRequest struct {
 	// through restic restore (with --include), not a dump.
 	WasRegularFile bool
 
-	// Nested chooses the file layout and is IGNORED for directories. It is phrased
-	// so the zero value is the default: false = flattened (the file lands at
-	// <final>/<name>, the historical dump location, now metadata-preserving),
-	// true = nested (the file lands at <final>/<original/path>). Named Nested
-	// rather than Flatten precisely so a builder that omits it gets the flattened
-	// default — ExtractRequest is an explicit contract where the zero value matters.
-	Nested bool
-
 	// TargetRoot optionally overrides cfg.Extract.TargetRoot for this one call.
 	// Empty means use the configured root; non-empty must be absolute.
 	TargetRoot string
@@ -118,10 +110,10 @@ type ExtractProgress struct {
 	SecondsRemaining float64
 }
 
-// ExtractResult is returned from App.Extract. FinalDir is set only after a clean
-// rename. StagingDir/StagingCreated are set the instant the staging dir is
-// created and are returned even alongside a later error, so the TUI can offer
-// keep-or-delete for output this run owns.
+// ExtractResult is returned from App.Extract. FinalDir / FinalPath are set only
+// after a clean publish. StagingDir/StagingCreated are set the instant the
+// staging dir is created and are returned even alongside a later error, so the
+// TUI can offer keep-or-delete for output this run owns.
 type ExtractResult struct {
 	Files   int
 	Dirs    int
@@ -137,7 +129,12 @@ type ExtractResult struct {
 	Other               int
 	UnsafeSymlinkPolicy string
 
-	FinalDir string
+	// FinalDir is a directory the shell-here action can cd into; FinalPath is the
+	// exact published node. For a directory extract the two coincide (the mirrored
+	// tree root). For a file extract FinalDir is the file's containing mirror dir
+	// (a shared <short>/<dir>/ on a merge) and FinalPath is the file itself.
+	FinalDir  string
+	FinalPath string
 
 	StagingDir     string
 	StagingCreated bool
@@ -152,16 +149,20 @@ var (
 	// ErrExtractStagingExists is returned when the planned staging dir already
 	// exists (fresh-target check, or the exclusive mkdir saw it).
 	ErrExtractStagingExists = errors.New("extract: staging directory already exists")
-	// ErrExtractFinalExists is returned when the planned final dir already exists
-	// (fresh-target check, or the pre-rename re-check).
-	ErrExtractFinalExists = errors.New("extract: target directory already exists")
+	// ErrExtractFinalExists is returned when the planned final path/leaf is already
+	// occupied (fresh-target check, the directory pre-publish re-check, or os.Link's
+	// EEXIST for a file). The leaf may be a regular file, so the message says
+	// "target", not "target directory".
+	ErrExtractFinalExists = errors.New("extract: target already exists")
 	// ErrExtractMetadataNormalization is returned when the post-restore staging
 	// metadata pass fails or finds metadata that cannot be safely normalized.
 	// Staging is left in place and no rename is attempted.
 	ErrExtractMetadataNormalization = errors.New("extract: staging metadata normalization failed")
-	// ErrExtractRenameFailed is returned when os.Rename(staging, final) fails on
-	// the clean-completion path (e.g. EXDEV — which should never happen since they
-	// share a parent).
+	// ErrExtractRenameFailed is returned when the publish move — os.Rename for a
+	// directory, os.Link for a file — fails on the clean-completion path. With
+	// repo-level staging and a deep mirror final, the two can straddle a filesystem
+	// boundary when the user mounts a filesystem inside the repo dir, so EXDEV is
+	// now possible here; staging is retained for keep/delete on failure.
 	ErrExtractRenameFailed = errors.New("extract: staging rename failed")
 )
 
@@ -278,13 +279,23 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 		return "", "", invalidExtractRequest("target_root")
 	}
 
+	// Pure mirror tree: file and directory both land at their true path under a
+	// per-snapshot directory. relpath is "" for the root source, so final collapses
+	// to the snapshot dir itself.
+	relpath := filepath.FromSlash(strings.TrimPrefix(req.Source, "/")) // "" when Source=="/"
+	repoDir := filepath.Join(targetRoot, repoSlug)
+	snapDir := filepath.Join(repoDir, req.SnapshotShort)
+	final = filepath.Join(snapDir, relpath) // == snapDir when relpath==""
+
 	sum := sha256.Sum256([]byte(req.Source))
 	hash := hex.EncodeToString(sum[:])[:8]
-	subdir := req.SnapshotShort + "-" + req.SourceName + "-" + hash
-
-	repoDir := filepath.Join(targetRoot, repoSlug)
-	final = filepath.Join(repoDir, subdir)
-	staging = filepath.Join(repoDir, ".resticscope-staging-"+subdir)
+	// Staging is a hidden dir at the REPO level (a sibling of the <short>/ snapshot
+	// dirs), NOT inside the mirror subtree — so it can never collide with mirrored
+	// snapshot content (real content always lives under an 8-hex <short>/ dir).
+	// Same filesystem as final (all under repoDir), so rename/link stays atomic in
+	// the normal app-created tree. <short>+SourceName+hash keep it unique per
+	// (snapshot, source); the user never sees it. SourceName (<=64) bounds NAME_MAX.
+	staging = filepath.Join(repoDir, ".resticscope-staging-"+req.SnapshotShort+"-"+req.SourceName+"-"+hash)
 	return staging, final, nil
 }
 
@@ -398,8 +409,8 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	}
 
 	// 8. Metadata normalization (every restore — file and directory — since both
-	// route through restic restore into staging). A single flattened file walks to
-	// Files=1, Dirs=0; a nested file adds its reconstructed parent dirs to Dirs.
+	// route through restic restore into staging). A file is always Files=1, Dirs=0;
+	// a directory walk adds its restored subdirectories to Dirs.
 	policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
 	counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
 	if nerr != nil {
@@ -413,16 +424,20 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	result.Other = counts.Other
 	result.UnsafeSymlinkPolicy = a.Cfg.Extract.UnsafeSymlinks
 
-	// 9. Rename on clean completion. Re-check final immediately before the rename
-	// rather than trusting os.Rename's behavior for an existing directory. Lstat
-	// (not Stat) so a dangling symlink occupying the path is treated as present.
-	if _, serr := os.Lstat(final); serr == nil {
-		return result, ErrExtractFinalExists
+	// 9. Publish on clean completion: build the deep mirror ancestor chain, then
+	// move staging into its true mirror path (rename for a directory, no-replace
+	// link for a file). publishExtract owns the no-overwrite guarantee.
+	if err := publishExtract(req.Mode, req.Source, staging, final); err != nil {
+		return result, err
 	}
-	if err := os.Rename(staging, final); err != nil {
-		return result, fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+	result.FinalPath = final
+	if req.Mode == ExtractFile {
+		// FinalDir must be a directory the shell-here action can cd into; for a file
+		// that is the containing mirror dir (a shared <short>/<dir>/ after a merge).
+		result.FinalDir = filepath.Dir(final)
+	} else {
+		result.FinalDir = final
 	}
-	result.FinalDir = final
 
 	// Total wall-clock for the operation, measured against the injected clock from
 	// startedAt. restic restore's self-reported seconds (a hostile boundary, Rule
@@ -434,39 +449,107 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	return result, nil
 }
 
+// publishExtract moves the restored leaf node into its true mirror path. It is the
+// authoritative no-overwrite primitive: the merge only ever fills empty space, so
+// it builds the deep mirror ancestor chain (reusing pre-existing ancestors, never
+// chmod'ing them) and then refuses any extract whose exact leaf is occupied.
+//
+// restic reconstructs the extracted node (file or directory) at staging/<base> via
+// the rebase-parent + --include shape, so the PUBLISHED node is staging/<base> for
+// both modes — and that is exactly why the leaf keeps its snapshot metadata
+// (restic CREATES the node instead of restoring contents into resticscope's
+// pre-made 0700 staging root). The whole-snapshot case (source=="/") has no <base>:
+// staging itself is the tree. The two modes then need different primitives:
+//
+//   - Directory: os.Rename(node, final) is no-replace for data — rename(2) on a
+//     directory source succeeds only onto a missing path or an empty directory
+//     (ENOTDIR against a file, ENOTEMPTY against a non-empty dir), so it can never
+//     overwrite data; the only residual is adopting an externally-created empty dir
+//     (harmless). The Lstat is an advisory early refuse.
+//   - File: os.Link + unlink. link(2) fails EEXIST if final exists and never
+//     replaces, so it closes the TOCTOU race a publish-time Lstat cannot. There is
+//     no Lstat here — os.Link is the no-replace guard. final is valid the instant
+//     os.Link returns; the staging copy is then unlinked.
+//
+// After publishing, the now-empty staging container is removed (best-effort).
+// Staging lives at repo level, so MkdirAll(filepath.Dir(final)) here is the only
+// place the leaf's parents are created — doing it lazily means an extract
+// interrupted during restic leaves only the repo-level staging dir, no empty
+// mirror ancestors. EEXIST/EXDEV surface as ErrExtractFinalExists/
+// ErrExtractRenameFailed; the returned errors stay path-free.
+func publishExtract(mode ExtractMode, source, staging, final string) error {
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		return pathFreeExtractErr("create target parent", err)
+	}
+	// The node restic reconstructed: staging/<base> for a real source, or staging
+	// itself for the whole-snapshot ("/") case (which has no <base> to reconstruct).
+	node := staging
+	if source != "/" {
+		node = filepath.Join(staging, path.Base(source))
+	}
+	switch mode {
+	case ExtractDirectoryTree:
+		if _, err := os.Lstat(final); err == nil { // advisory early refuse
+			return ErrExtractFinalExists
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return pathFreeExtractErr("stat target", err)
+		}
+		// rename cannot overwrite a file or a non-empty dir; safe.
+		if err := os.Rename(node, final); err != nil {
+			return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+		}
+	case ExtractFile:
+		// Hard-link the node into place (no-replace), then unlink the staging copy.
+		if err := os.Link(node, final); err != nil {
+			if errors.Is(err, os.ErrExist) { // lost the race / occupied → refuse, never clobber
+				return ErrExtractFinalExists
+			}
+			return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+		}
+		_ = os.Remove(node) // best-effort; final already holds the inode
+	}
+	// Remove the now-empty staging container. Skipped for the whole-snapshot case,
+	// where staging was itself renamed into final above.
+	if node != staging {
+		_ = os.Remove(staging)
+	}
+	return nil
+}
+
 // dispatchExtract routes every mode through the single restore driver. Both file
-// and directory extracts are `restic restore` now; the file/directory difference
-// is carried entirely in the resticx params (Source rebase + IncludePath), built
-// by extractTreeParams.
+// and directory extracts are `restic restore` with the same params shape (rebase
+// parent + --include the leaf, built by extractTreeParams); the file/directory
+// difference is only in publishExtract's primitive (link vs rename).
 func (a *App) dispatchExtract(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
 	return a.extractTree(ctx, r, material, req, staging, result, onProgress)
 }
 
 // extractTreeParams builds the resticx restore params from the request and
 // staging dir, setting the RAW Source / IncludePath (resticx escapes the include
-// to a literal pattern). The three shapes:
+// to a literal pattern). File and directory share ONE shape — rebase the parent,
+// reconstruct the leaf at staging/<base> via --include:
 //
-//   - Directory       → Source: req.Source,           IncludePath: ""
-//   - File, flattened → Source: path.Dir(req.Source), IncludePath: "/"+base  (default)
-//   - File, nested    → Source: "",                   IncludePath: req.Source
+//   - File / directory → Source: path.Dir(req.Source), IncludePath: "/"+base
+//   - Whole snapshot "/" → bare restore (Source "", IncludePath ""): staging itself
 //
-// A root-level file ("/foo") flattens via Source path.Dir = "/" (a bare-snapshot
-// source) and IncludePath "/foo", so flattened and nested coincide — correct.
+// The shared shape is load-bearing for metadata fidelity: with --include, restic
+// CREATES the leaf node (file or directory) and applies its snapshot
+// mode/mtime/owner/xattrs. A bare `<snap>:<source>` restore would instead rebase
+// the directory's CONTENTS into resticscope's pre-created 0700 staging root,
+// leaving the leaf directory's own metadata unset — restic never touches its
+// --target root's metadata. publishExtract then moves staging/<base> into the
+// mirror path (link for a file, rename for a directory). A root-level source
+// ("/foo") rebases via Source path.Dir = "/" (a bare-snapshot source).
 func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreeParams {
-	p := resticx.ExtractTreeParams{
-		SnapshotID: req.SnapshotID,
-		Source:     req.Source,
-		Target:     staging,
+	p := resticx.ExtractTreeParams{SnapshotID: req.SnapshotID, Target: staging}
+	if req.Source == "/" {
+		// Whole-snapshot extract (future detail-view path): no parent to rebase and
+		// no single node to reconstruct, so restic restores into staging directly and
+		// staging itself becomes the published tree.
+		return p
 	}
-	if req.Mode == ExtractFile {
-		if req.Nested {
-			p.Source = ""
-			p.IncludePath = req.Source
-		} else {
-			p.Source = path.Dir(req.Source)
-			p.IncludePath = "/" + path.Base(req.Source)
-		}
-	}
+	p.Source = path.Dir(req.Source)
+	p.IncludePath = "/" + path.Base(req.Source)
 	return p
 }
 
