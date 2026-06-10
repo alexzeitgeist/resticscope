@@ -366,7 +366,7 @@ func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected 
 // collapse can fold consecutive same-tree rows into "(+N)" heads.
 func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string {
 	cur := clampCursor(m.snapCursor, len(d.nodes))
-	start, end := snapshotWindow(cur, len(d.nodes), m.detailSnapVisible())
+	start, end := scrollWindow(cur, len(d.nodes), m.detailSnapVisible())
 
 	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
@@ -675,24 +675,6 @@ func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 			m.detailSnapDetailRows() // the selected-snapshot sub-panel
 	}
 	return overhead
-}
-
-// snapshotWindow returns the [start, end) slice bounds for a scrolling window of
-// the given size that keeps cursor visible and centered when possible.
-func snapshotWindow(cursor, total, size int) (start, end int) {
-	if total <= size {
-		return 0, total
-	}
-	start = cursor - size/2
-	if start < 0 {
-		start = 0
-	}
-	end = start + size
-	if end > total {
-		end = total
-		start = end - size
-	}
-	return start, end
 }
 
 func bucketLabel(repo config.Repo) string {

@@ -170,7 +170,7 @@ func (s *browseStream) consume(r io.Reader) error {
 			}
 			node := model.BrowseNode{
 				Path: n.Path, Name: n.Name, Type: n.Type, LinkTarget: n.LinkTarget,
-				IsDir: n.Type == "dir", Size: n.Size, ModTime: n.ModTime, Permissions: n.Permissions,
+				IsDir: n.Type == model.NodeTypeDir, Size: n.Size, ModTime: n.ModTime, Permissions: n.Permissions,
 			}
 			if n.UID != nil && n.GID != nil {
 				node.UID = *n.UID

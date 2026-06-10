@@ -35,7 +35,7 @@ const (
 	defaultExtractTargetRoot = "~/resticscope-extracts"
 	// Restored symlinks that point outside the tree are kept verbatim (+ warn) by
 	// default, matching restic and the wider restore ecosystem.
-	defaultUnsafeSymlinks = "keep"
+	defaultUnsafeSymlinks = UnsafeSymlinksKeep
 )
 
 // Load reads, normalizes, and validates the config at path. The returned

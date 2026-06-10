@@ -134,7 +134,7 @@ func (c *Config) validateExtract() []error {
 	// message names the key and the allowed set but never echoes the bad value —
 	// same path-free discipline as the rest of the extract config.
 	switch c.Extract.UnsafeSymlinks {
-	case "keep", "skip", "placeholder":
+	case UnsafeSymlinksKeep, UnsafeSymlinksSkip, UnsafeSymlinksPlaceholder:
 	default:
 		errs = append(errs, errors.New(`extract.unsafe_symlinks must be "keep", "skip", or "placeholder"`))
 	}

@@ -52,9 +52,9 @@ const (
 type unsafeSymlinkPolicy string
 
 const (
-	unsafeSymlinkKeep        unsafeSymlinkPolicy = "keep"        // leave verbatim + warn (restic-faithful)
-	unsafeSymlinkSkip        unsafeSymlinkPolicy = "skip"        // remove from the output
-	unsafeSymlinkPlaceholder unsafeSymlinkPolicy = "placeholder" // replace with an inert text file recording the target
+	unsafeSymlinkKeep        = unsafeSymlinkPolicy(config.UnsafeSymlinksKeep)        // leave verbatim + warn (restic-faithful)
+	unsafeSymlinkSkip        = unsafeSymlinkPolicy(config.UnsafeSymlinksSkip)        // remove from the output
+	unsafeSymlinkPlaceholder = unsafeSymlinkPolicy(config.UnsafeSymlinksPlaceholder) // replace with an inert text file recording the target
 )
 
 // extractMetaCounts tallies what the post-restore normalizer saw. It is

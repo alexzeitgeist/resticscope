@@ -433,7 +433,7 @@ func (m Model) openBrowseVersions() (Model, tea.Cmd) {
 	if e == nil {
 		return m, nil
 	}
-	if e.Type != "file" {
+	if e.Type != model.NodeTypeFile {
 		m.browseNotice = "versions: select a regular file"
 		return m, nil
 	}

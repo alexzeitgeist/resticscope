@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"resticscope/internal/app"
+	"resticscope/internal/config"
 	"resticscope/internal/humanize"
 )
 
@@ -266,9 +267,9 @@ func (m Model) extractSuccessBody(w int) string {
 // It carries only the count, never a path or a link name.
 func extractUnsafeSymlinkWarning(n int, policy string) string {
 	switch policy {
-	case "skip":
+	case config.UnsafeSymlinksSkip:
 		return fmt.Sprintf("%d unsafe symlinks removed from the output.", n)
-	case "placeholder":
+	case config.UnsafeSymlinksPlaceholder:
 		return fmt.Sprintf("%d unsafe symlinks replaced with inert text files recording their target.", n)
 	default: // keep (and any unknown/empty policy)
 		return fmt.Sprintf("%d unsafe symlinks left in place — targets are absolute or outside the extracted tree and alias your live filesystem; inspect before use.", n)

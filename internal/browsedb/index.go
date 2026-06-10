@@ -237,7 +237,7 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	}
 	name := model.BrowseName(n.Name, p)
 	typ := normalizeType(n.Type, n.IsDir)
-	isDir := n.IsDir || typ == "dir"
+	isDir := n.IsDir || typ == model.NodeTypeDir
 	if isDir {
 		did, err := itx.ensureCleanDir(ctx, p)
 		if err != nil {
@@ -381,7 +381,7 @@ func normalizeType(t string, isDir bool) string {
 		return t
 	}
 	if isDir {
-		return "dir"
+		return model.NodeTypeDir
 	}
-	return "file"
+	return model.NodeTypeFile
 }

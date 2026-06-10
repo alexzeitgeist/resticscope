@@ -305,7 +305,7 @@ func (m Model) listView() string {
 // past the last row.
 func (m Model) renderFlatList(rows []app.RepoStatus, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(rows))
-	start, end := listWindow(cursor, len(rows), m.visibleRepos())
+	start, end := scrollWindow(cursor, len(rows), m.visibleRepos())
 	lines := make([]string, 0, end-start+1)
 	for i := start; i < end; i++ {
 		lines = append(lines, m.renderRow(rows[i], l, i == cursor, width))

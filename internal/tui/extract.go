@@ -768,12 +768,12 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	var mode app.ExtractMode
 	var wasFile bool
 	switch {
-	case entry.Type == "file":
+	case entry.Type == model.NodeTypeFile:
 		// A regular file restores via restic restore --include and lands at its true
 		// mirror path under the per-snapshot directory.
 		mode = app.ExtractFile
 		wasFile = true
-	case entry.Type == "dir" || entry.IsDir:
+	case entry.Type == model.NodeTypeDir || entry.IsDir:
 		mode = app.ExtractDirectoryTree
 	default:
 		return app.ExtractRequest{}, ErrExtractUnsupportedType
@@ -802,7 +802,7 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 // reported as a regular file. Routing through extractRequestFromBrowseEntry
 // keeps the path and slug rules from drifting between the two entry points.
 func extractRequestFromFindVersion(repo, snapID, p string) (app.ExtractRequest, error) {
-	return extractRequestFromBrowseEntry(repo, snapID, model.BrowseEntry{Path: p, Type: "file"})
+	return extractRequestFromBrowseEntry(repo, snapID, model.BrowseEntry{Path: p, Type: model.NodeTypeFile})
 }
 
 // extractRequestFromSnapshot translates a detail-view snapshot selection into

@@ -226,7 +226,7 @@ func (m Model) diffList(w int) string {
 		return header + "\n" + clip(m.styles.meta.Render("  (no changes in this directory)"), tw)
 	}
 	cur := clampCursor(m.diffCursor, total)
-	start, end := snapshotWindow(cur, total, m.diffVisible())
+	start, end := scrollWindow(cur, total, m.diffVisible())
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {
@@ -272,7 +272,7 @@ func (m Model) diffSearchList(w int) string {
 		return header
 	}
 	cur := clampCursor(m.diffSearchCursor, total)
-	start, end := snapshotWindow(cur, total, m.diffVisible())
+	start, end := scrollWindow(cur, total, m.diffVisible())
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {

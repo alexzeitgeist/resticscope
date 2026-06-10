@@ -4,7 +4,7 @@ import "charm.land/lipgloss/v2"
 
 // layout.go derives the list view's vertical budget from the captured terminal
 // size. The screen, top to bottom, is a one-row header, a blank gap, the repo
-// list, a blank gap, and the footer; the list scrolls a window (listWindow) so a
+// list, a blank gap, and the footer; the list scrolls a window (scrollWindow) so a
 // long repo set never pushes the footer off-screen. Everything here is a pure
 // function of the size — nothing reaches into app/model state.
 
@@ -80,10 +80,11 @@ func clampCursor(i, total int) int {
 	return i
 }
 
-// listWindow returns the [start, end) bounds of a scrolling window of the given
-// visible size that keeps cursor on screen, centering it when possible. It
-// mirrors snapshotWindow's contract for the repo list.
-func listWindow(cursor, total, visible int) (start, end int) {
+// scrollWindow returns the [start, end) bounds of a scrolling window of the
+// given visible size that keeps cursor on screen, centering it when possible.
+// Every scrolling list (repos, snapshots, browse rows, diff rows, versions)
+// windows through it.
+func scrollWindow(cursor, total, visible int) (start, end int) {
 	if total <= visible {
 		return 0, total
 	}

@@ -129,7 +129,7 @@ func (m Model) findList(w int) string {
 
 	total := len(m.findRows)
 	cur := clampCursor(m.findCursor, total)
-	start, end := snapshotWindow(cur, total, m.findVisible())
+	start, end := scrollWindow(cur, total, m.findVisible())
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)
 	for i := start; i < end; i++ {

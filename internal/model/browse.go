@@ -31,6 +31,14 @@ type BrowseScanSummary struct {
 	Complete bool
 }
 
+// Node types as restic spells them in its JSON output ("dir"/"file"/"symlink"/
+// special). BrowseNode.Type and BrowseEntry.Type carry these raw strings;
+// every layer that branches on them compares against these constants.
+const (
+	NodeTypeFile = "file"
+	NodeTypeDir  = "dir"
+)
+
 // BrowseNode is one flat node as decoded from `restic ls --json`. Path is the
 // absolute path within the snapshot. OwnerKnown distinguishes a node that
 // carried uid/gid (so UID:GID is meaningful, including a real root-owned 0:0)

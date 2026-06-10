@@ -148,7 +148,7 @@ func (m Model) browseTableList(w int, rows []model.BrowseEntry, cursor int, show
 	}
 
 	cur := clampCursor(cursor, total)
-	start, end := snapshotWindow(cur, total, m.browseVisible())
+	start, end := scrollWindow(cur, total, m.browseVisible())
 
 	lines := make([]string, 0, end-start+2)
 	lines = append(lines, header)

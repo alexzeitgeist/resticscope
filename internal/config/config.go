@@ -45,6 +45,15 @@ type Diff struct {
 	Timeout Duration `toml:"timeout"`
 }
 
+// The allowed [extract] unsafe_symlinks policy values. Validate rejects
+// anything else; the app's metadata pass and the TUI's success-screen warning
+// both branch on these constants, so the enum lives here with the field.
+const (
+	UnsafeSymlinksKeep        = "keep"        // leave verbatim + warn (default, restic-faithful)
+	UnsafeSymlinksSkip        = "skip"        // remove from the output
+	UnsafeSymlinksPlaceholder = "placeholder" // replace with an inert text file recording the target
+)
+
 // Extract bounds the in-app extract feature, which copies a file, directory, or
 // (later) full snapshot out of a backup with a read-only restic invocation and
 // writes it to the local filesystem. TargetRoot is the base directory for every
