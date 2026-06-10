@@ -193,6 +193,55 @@ func TestRunExtractHelperUnknownInvokerForcesNoCache(t *testing.T) {
 	}
 }
 
+// TestRunExtractHelperCachePathNotADir covers the prepareHelperCache gate: a
+// pre-existing file or symlink where the per-repo cache dir belongs must
+// disable the shared cache (fall back to --no-cache), never be handed to a
+// root-run restic or the recursive chown-back.
+func TestRunExtractHelperCachePathNotADir(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, repoCache string)
+	}{
+		{"file", func(t *testing.T, repoCache string) {
+			if err := os.WriteFile(repoCache, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlink", func(t *testing.T, repoCache string) {
+			if err := os.Symlink(t.TempDir(), repoCache); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, cacheRoot := t.TempDir(), t.TempDir()
+			repoCache := resticx.RepoCacheDir(cacheRoot, "repo-a")
+			if err := os.MkdirAll(filepath.Dir(repoCache), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			tc.plant(t, repoCache)
+
+			fake := fakeRestic{
+				extractTreeEvents: []resticx.ExtractTreeEvent{
+					{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 4},
+				},
+				extractTreeSetup: dirStagingSetup("nginx", nil),
+				extractCap:       &extractCapture{},
+			}
+			opts := ExtractHelperOpts{Euid: 0, OwnerUID: os.Getuid(), OwnerGID: os.Getgid(), Clock: fixedClock{now}, Restic: fake}
+
+			var out bytes.Buffer
+			err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
+			if err != nil {
+				t.Fatalf("RunExtractHelper: %v", err)
+			}
+			if !fake.extractCap.treeParams.NoCache {
+				t.Errorf("helper restore params: NoCache = false, want true (%s at cache path)", tc.name)
+			}
+		})
+	}
+}
+
 func TestRunExtractHelperRefusesNonRoot(t *testing.T) {
 	opts := helperOpts(fakeRestic{})
 	opts.Euid = 1000

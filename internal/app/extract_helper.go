@@ -26,9 +26,12 @@ package app
 //     slower than a normal one. A root-run restic must neither duplicate the
 //     cache under /root nor leave root-owned entries in the user's cache, so
 //     the helper pre-creates the per-repo cache dir chain owned by the
-//     invoking user and chowns every cache entry back after the run. When no
-//     cache dir or no invoking user is known, the restore falls back to
-//     --no-cache.
+//     invoking user and chowns every cache entry back after the run. That
+//     chown-back is authorized by proof, not trust: cache_dir is user config,
+//     so the share (and the re-own) only happens after the per-repo leaf is
+//     verified to be a real directory owned by the invoking user
+//     (prepareHelperCache). On any mismatch — no cache dir, unknown invoker,
+//     file/symlink/foreign-owned leaf — the restore falls back to --no-cache.
 //   - Directories the helper creates AROUND the extracted content (the target
 //     scaffolding and mirror ancestors) are chown'd to the invoking user
 //     (SUDO_UID/SUDO_GID, resolved by cmd) so later non-privileged extracts
@@ -244,16 +247,16 @@ func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helper
 		return result, err
 	}
 
-	// Shared cache: pre-create the per-repo cache dir chain owned by the
-	// invoking user (restic's own MkdirAll would leave root-owned ancestors),
-	// and hand every cache entry back to the user after the run — restic
-	// writes each cache miss as root, and a root-owned 0700 fanout subdir
-	// would refuse the user's own later cache writes. The cache is an
-	// optimization: failing to prepare it degrades to --no-cache, never fails
-	// the extract. The deferred chown-back covers success, failure, and
-	// cancellation alike.
+	// Shared cache: prepare the per-repo cache dir (created user-owned, and —
+	// the privilege-boundary check — proven to be a real directory owned by
+	// the invoking user before root writes into it or re-owns it), and hand
+	// every cache entry back to the user after the run — restic writes each
+	// cache miss as root, and a root-owned 0700 fanout subdir would refuse
+	// the user's own later cache writes. The cache is an optimization:
+	// failing to prepare it degrades to --no-cache, never fails the extract.
+	// The deferred chown-back covers success, failure, and cancellation alike.
 	if repoCache != "" {
-		if err := mkdirAllOwned(repoCache, opts.OwnerUID, opts.OwnerGID); err != nil {
+		if !prepareHelperCache(repoCache, opts.OwnerUID, opts.OwnerGID) {
 			repoCache = ""
 		} else {
 			defer chownCacheForOwner(repoCache, opts.OwnerUID, opts.OwnerGID)
@@ -345,6 +348,30 @@ func mkdirAllOwned(dir string, uid, gid int) error {
 		}
 	}
 	return nil
+}
+
+// prepareHelperCache makes the per-repo cache dir safe for a root-run restic
+// to share: every missing level is created owned by the invoking user, and
+// the final path is verified to be a real directory (no file, no symlink)
+// owned by that user. The ownership proof is what authorizes the later
+// recursive chown-back — cache_dir is user CONFIG, not a vetted path, so a
+// cache root pointed at a shared or system location must never have its
+// pre-existing tree re-owned to the invoker; and a symlink leaf would both
+// let restic write through to an unexpected target and escape the chown walk
+// (WalkDir does not follow a symlink root). Ancestor symlinks (a linked
+// ~/.cache is a normal setup) stay allowed: they do not widen what the leaf
+// walk re-owns. false means run --no-cache instead.
+func prepareHelperCache(repoCache string, uid, gid int) bool {
+	if err := mkdirAllOwned(repoCache, uid, gid); err != nil {
+		return false
+	}
+	// Re-Lstat rather than trusting mkdirAllOwned: its target-exists check is
+	// deliberately lenient (a pre-existing leaf of any type counts as done).
+	info, err := os.Lstat(repoCache)
+	if err != nil || !info.Mode().IsDir() {
+		return false
+	}
+	return ownedByUID(info, uid)
 }
 
 // chownCacheForOwner hands the shared per-repo restic cache back to the
