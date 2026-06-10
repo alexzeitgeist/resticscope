@@ -1492,3 +1492,157 @@ func TestExtractFooterBackLabelOriginNeutral(t *testing.T) {
 		t.Errorf("success footer = %q, want 'enter back'", got)
 	}
 }
+
+// --- find-versions view → per-version extract wiring ---
+
+// extractFindVersionsModel parks a Model in findVersionsView with a valid
+// [extract] config and two version rows whose newest occurrences point at
+// distinct well-formed snapshots — the exact state an `e` press needs. It
+// bypasses the full browse → v flow (covered by the find-versions tests) to
+// isolate the extract dispatch.
+func extractFindVersionsModel(t *testing.T) Model {
+	t.Helper()
+	a := extractApp(t)
+	m := newTestModel(t, a)
+	m.view = findVersionsView
+	m.findRepo = "repo-a"
+	m.findPath = "/etc/debian_version"
+	m.findRows = []model.FileVersion{
+		{Size: 5, Occurrences: []model.FileVersionOccurrence{
+			{SnapshotID: extractTestSnapID, ShortID: extractTestSnapID[:8]},
+			{SnapshotID: extractTestSnapIDOlder, ShortID: extractTestSnapIDOlder[:8]},
+		}},
+		{Size: 7, Occurrences: []model.FileVersionOccurrence{
+			{SnapshotID: extractTestSnapIDOlder, ShortID: extractTestSnapIDOlder[:8]},
+		}},
+	}
+	return m
+}
+
+// e on a version row opens the extract sub-model in file mode against the
+// version's NEWEST occurrence — the snapshot the Latest column shows — with
+// the return view pinned to find-versions and the review size carried from
+// the version row.
+func TestFindVersionsExtractKeyOpensSubModel(t *testing.T) {
+	m := extractFindVersionsModel(t)
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e on a version row should open extractView, view = %d", m.view)
+	}
+	req := m.extract.req
+	if req.Repo != "repo-a" {
+		t.Errorf("Repo = %q, want repo-a", req.Repo)
+	}
+	if req.SnapshotID != extractTestSnapID {
+		t.Errorf("SnapshotID = %q, want the newest occurrence %q", req.SnapshotID, extractTestSnapID)
+	}
+	if req.Source != "/etc/debian_version" {
+		t.Errorf("Source = %q, want /etc/debian_version", req.Source)
+	}
+	if req.SourceName != "debian_version" {
+		t.Errorf("SourceName = %q, want debian_version", req.SourceName)
+	}
+	if req.Mode != app.ExtractFile || !req.WasRegularFile {
+		t.Errorf("Mode/WasRegularFile = %v/%v, want file extract", req.Mode, req.WasRegularFile)
+	}
+	if m.extractReturn != findVersionsView {
+		t.Errorf("extractReturn = %d, want findVersionsView", m.extractReturn)
+	}
+	if m.extract.srcSize != 5 {
+		t.Errorf("srcSize = %d, want 5 (the version row's size)", m.extract.srcSize)
+	}
+}
+
+// The cursor selects which version is extracted: the second row's newest
+// occurrence is the older snapshot.
+func TestFindVersionsExtractUsesCursorRow(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m = update(t, m, press("j"))
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e should open extractView, view = %d", m.view)
+	}
+	if m.extract.req.SnapshotID != extractTestSnapIDOlder {
+		t.Errorf("SnapshotID = %q, want the second row's occurrence %q", m.extract.req.SnapshotID, extractTestSnapIDOlder)
+	}
+	if m.extract.srcSize != 7 {
+		t.Errorf("srcSize = %d, want 7", m.extract.srcSize)
+	}
+}
+
+// Leaving a find-versions-launched extract lands back on the find-versions
+// view with its result table intact, not on browse.
+func TestFindVersionsExtractReturnsToFindVersions(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m = update(t, m, press("e"))
+	if m.view != extractView {
+		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
+	}
+
+	next, cmd := m.Update(press("esc"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("esc on review should return an exit cmd")
+	}
+	m = update(t, m, cmd())
+
+	if m.view != findVersionsView {
+		t.Errorf("after leaving extract, view = %d, want findVersionsView", m.view)
+	}
+	if m.extract.req.Source != "" {
+		t.Errorf("sub-model not zeroed on exit: %+v", m.extract.req)
+	}
+	if m.extractReturn != listView {
+		t.Errorf("extractReturn = %d, want reset to the zero value", m.extractReturn)
+	}
+	if m.findPath != "/etc/debian_version" || len(m.findRows) != 2 {
+		t.Errorf("find state should survive the modal round-trip: path=%q rows=%d", m.findPath, len(m.findRows))
+	}
+}
+
+// e with no result rows (loading just cleared them, or no matches) is a no-op:
+// no sub-model, no view change.
+func TestFindVersionsExtractNoRowsIsNoop(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m.findRows = nil
+
+	m = update(t, m, press("e"))
+
+	if m.view != findVersionsView {
+		t.Errorf("e with no rows should stay in find-versions, view = %d", m.view)
+	}
+	if m.extract.req.Source != "" {
+		t.Errorf("no sub-model should be built; req = %+v", m.extract.req)
+	}
+}
+
+// e while a find is loading is swallowed by the loading guard — the row set is
+// about to be replaced, so the selection is not actionable.
+func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m.findLoading = true
+
+	m = update(t, m, press("e"))
+
+	if m.view != findVersionsView {
+		t.Errorf("e while loading should stay in find-versions, view = %d", m.view)
+	}
+	if m.extract.req.Source != "" {
+		t.Errorf("no sub-model should be built while loading; req = %+v", m.extract.req)
+	}
+}
+
+// The find-versions footer advertises the extract action so it is
+// discoverable in context.
+func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "e extract") {
+		t.Errorf("find-versions footer should advertise 'e extract'\n---\n%s", footer)
+	}
+}

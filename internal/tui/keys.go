@@ -31,7 +31,7 @@ type keyMap struct {
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
 	Info       key.Binding // detail: open the full snapshot-info modal
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
-	Extract    key.Binding // browse: extract the selected entry; detail: extract the whole snapshot
+	Extract    key.Binding // browse: extract the selected entry; detail: the whole snapshot; find-versions: the selected version
 	Target     key.Binding // extract: open the target-root filepicker overlay from review
 	Priv       key.Binding // extract: toggle the privileged (sudo) restore on review
 	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
@@ -149,7 +149,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case browseView:
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
-		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
+		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Extract, k.Back}
 	case snapshotDiffView:
 		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
 	case extractView:
@@ -223,7 +223,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case findVersionsView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.HostToggle, k.Back},
+			{k.HostToggle, k.Extract, k.Back},
 		}
 	case snapshotDiffView:
 		return [][]key.Binding{

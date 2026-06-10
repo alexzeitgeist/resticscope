@@ -31,9 +31,11 @@ import (
 //
 // Browse wires the `e` key to construct this sub-model from the selected
 // BrowseEntry via extractRequestFromBrowseEntry; detail wires its `e` to the
-// whole-snapshot request (Source "/") via extractRequestFromSnapshot. The
-// success-view `s` action opens a credential-free local shell rooted at the
-// extracted directory via App.LocalShellSession.
+// whole-snapshot request (Source "/") via extractRequestFromSnapshot;
+// find-versions wires its `e` to the selected version's newest occurrence via
+// extractRequestFromFindVersion. The success-view `s` action opens a
+// credential-free local shell rooted at the extracted directory via
+// App.LocalShellSession.
 
 // extractState is the modal's state machine.
 type extractState int
@@ -789,6 +791,16 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 		Mode:           mode,
 		WasRegularFile: wasFile,
 	}, nil
+}
+
+// extractRequestFromFindVersion translates a find-versions row into a file
+// ExtractRequest against one of the version's occurrence snapshots. The find
+// table lists versions of the regular file browse launched `v` from, so the
+// request is the same file shape browse's `e` builds — routed through
+// extractRequestFromBrowseEntry with a synthetic file entry so the path and
+// slug rules can never drift between the two entry points.
+func extractRequestFromFindVersion(repo, snapID, p string) (app.ExtractRequest, error) {
+	return extractRequestFromBrowseEntry(repo, snapID, model.BrowseEntry{Path: p, Type: "file"})
 }
 
 // extractRequestFromSnapshot translates a detail-view snapshot selection into

@@ -87,6 +87,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 		{"Extract", []helpEntry{
 			{keyLabel(k.Enter), "extract"},
 			{keyLabel(k.Target), "choose target root"},
+			{keyLabel(k.Priv), "toggle extract as root"},
 			{keyLabel(k.Shell), "shell at extracted dir"},
 			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back"},
@@ -123,6 +124,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{move, "move cursor"},
 			{page, "page up/down"},
 			{keyLabel(k.HostToggle), "toggle host filter"},
+			{keyLabel(k.Extract), "extract this version"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to browse"},
 		}},
 		{"Diff", []helpEntry{

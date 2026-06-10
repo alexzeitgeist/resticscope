@@ -127,8 +127,47 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.findCursor = clampCursor(m.findCursor-m.findVisible(), len(m.findRows))
 	case key.Matches(msg, m.keys.PageDown):
 		m.findCursor = clampCursor(m.findCursor+m.findVisible(), len(m.findRows))
+	case key.Matches(msg, m.keys.Extract):
+		// e extracts the queried file from the selected version's newest
+		// occurrence snapshot, through the shared extract modal. Sits below the
+		// findLoading guard so it can't fire against a row set being replaced.
+		m = m.openExtractVersion()
 	}
 	return m, nil
+}
+
+// openExtractVersion launches the extract modal for the version row under the
+// cursor, extracting the queried file from the version's newest occurrence —
+// the snapshot the Latest column shows, so the output lands under that
+// snapshot's mirror dir. Errors surface on the status line and stay in
+// find-versions; only a clean construction switches to extractView. The find
+// state stays on the model while the modal is open (same as browse), so
+// leaving the modal lands back on the intact result table.
+func (m Model) openExtractVersion() Model {
+	if m.findCursor >= len(m.findRows) {
+		return m
+	}
+	v := m.findRows[m.findCursor]
+	if len(v.Occurrences) == 0 {
+		return m
+	}
+	req, err := extractRequestFromFindVersion(m.findRepo, v.Occurrences[0].SnapshotID, m.findPath)
+	if err != nil {
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m
+	}
+	sub, err := newExtractModel(m.app, m.ctx, req, v.Size)
+	if err != nil {
+		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
+		// offending field, so the notice carries no path either.
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m
+	}
+	m.statusMsg = ""
+	m.extract = sub
+	m.extractReturn = findVersionsView
+	m.view = extractView
+	return m
 }
 
 // findVersionsBack leaves the find-versions view and returns to browse with

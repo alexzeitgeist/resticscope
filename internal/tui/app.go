@@ -181,10 +181,10 @@ type Model struct {
 	extract extractModel
 
 	// extractReturn is the view the extract modal exits to, set by each launch
-	// site beside its switch to extractView and reset when the sub-model is
-	// dropped. The exit handler treats anything other than detailView as
-	// browse, so a stale or unset value (the zero value is listView) lands on
-	// the historical default.
+	// site (browse, detail, find-versions) beside its switch to extractView and
+	// reset when the sub-model is dropped. The exit handler treats anything
+	// outside that set as browse, so a stale or unset value (the zero value is
+	// listView) lands on the historical default.
 	extractReturn view
 }
 
@@ -356,9 +356,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// #1: no filenames linger after leaving the modal).
 		m.extract.supersede()
 		m.extract = extractModel{}
-		m.view = browseView
-		if m.extractReturn == detailView {
-			m.view = detailView
+		// Land on the originating view; anything unset or stale falls back to
+		// browse, the historical default.
+		switch m.extractReturn {
+		case detailView, findVersionsView:
+			m.view = m.extractReturn
+		default:
+			m.view = browseView
 		}
 		m.extractReturn = listView
 		if msg.notice != "" {
