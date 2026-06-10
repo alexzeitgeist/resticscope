@@ -203,14 +203,14 @@ func (m Model) renderInfoRow(r infoRow, labelW, width int) []string {
 	prefix := "  "
 	indent := prefix + strings.Repeat(" ", labelW) + "  "
 	labelCell := m.styles.label.UnsetWidth().Render(padRight(r.label, labelW))
-	first := clip(prefix+labelCell+"  "+m.styles.meta.Render(r.values[0]), width)
+	first := clip(prefix+labelCell+"  "+r.values[0], width)
 	if !r.multi || len(r.values) == 1 {
 		return []string{first}
 	}
 	lines := make([]string, 0, len(r.values))
 	lines = append(lines, first)
 	for _, v := range r.values[1:] {
-		lines = append(lines, clip(indent+m.styles.meta.Render(v), width))
+		lines = append(lines, clip(indent+v, width))
 	}
 	return lines
 }
