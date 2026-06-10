@@ -3,10 +3,10 @@ package app
 // extract_helper.go is the root side of the privileged extract: the runtime
 // behind the hidden `resticscope extract-helper` subcommand, which the TUI's
 // non-root process launches via `sudo -n -- <self> extract-helper`. The helper
-// runs the SAME restore→normalize→publish pipeline as App.Extract — it reuses
-// PlanExtractPaths, checkExtractModeGate, FreshTargetCheck, driveExtractTree,
-// normalizeExtractTreeMetadata, and publishExtract — but as root, so restic
-// applies the snapshot's file ownership (which it skips as non-root).
+// re-asserts the boundary checks, then runs the literal same
+// restore→normalize→publish pipeline as App.Extract (runExtractPipeline) —
+// but as root, so restic applies the snapshot's file ownership (which it
+// skips as non-root).
 //
 // Privilege-boundary contract:
 //   - The request payload (repo target, resolved credentials, ExtractRequest,
@@ -40,11 +40,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"resticscope/internal/config"
 	"resticscope/internal/resticx"
+	"resticscope/internal/secrets"
 
 	json "github.com/goccy/go-json"
 )
@@ -170,7 +170,10 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 			Stream: resticx.ExecRunner{},
 			// No CacheDir: the restore runs --no-cache, so restic touches no
 			// cache at all (no /root duplicate, no root-owned user-cache files).
-			Redact: helperRedactor(payload.Creds),
+			// The helper has no secrets.Store, so this Redactor over the
+			// payload's three values is its whole redaction surface (rule 8) —
+			// they are the only secrets that exist in this process.
+			Redact: secrets.NewRedactor(payload.Creds.ResticPassword, payload.Creds.SecretKey, payload.Creds.AccessKey).Redact,
 		}
 	}
 
@@ -189,18 +192,20 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 	return nil
 }
 
-// runHelperExtract is the root-side mirror of App.Extract steps 1–9. The
-// deliberate differences: scaffolding dirs are created owned by the invoking
-// user, restic runs --no-cache, and there is no cred resolution or logging
-// (the parent owns both).
+// runHelperExtract re-asserts the boundary checks (regardless of what the
+// parent verified) and then runs the same shared pipeline as App.Extract.
+// Every deliberate root-side delta is an extractPipeline seam: scaffolding
+// dirs are created owned by the invoking user, restic runs --no-cache,
+// progress leaves as NDJSON events — and there is no cred resolution or
+// logging (the parent owns both).
 func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helperPayload, opts ExtractHelperOpts, enc *json.Encoder) (ExtractResult, error) {
 	var result ExtractResult
 	req := payload.Request
 
-	// 1+2. Validate request, file-type gate, platform gate — re-asserted at the
-	// privilege boundary regardless of what the parent checked. The parent set
-	// req.TargetRoot to the effective absolute root, so the config side of
-	// PlanExtractPaths can stay zero here.
+	// Validate request, file-type gate, platform gate, fresh-target check —
+	// re-asserted at the privilege boundary. The parent set req.TargetRoot to
+	// the effective absolute root, so the config side of PlanExtractPaths can
+	// stay zero here.
 	staging, final, err := PlanExtractPaths(config.Extract{}, req)
 	if err != nil {
 		return result, err
@@ -211,80 +216,32 @@ func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helper
 	if !liveExtractSupported {
 		return result, errors.New("extract: not supported on this platform")
 	}
-
-	// 3. Fresh-target check.
 	if err := FreshTargetCheck(staging, final); err != nil {
 		return result, err
 	}
 
-	startedAt := opts.Clock.Now()
-
-	// 4. Create the staging parent chain owned by the invoking user (a later
-	// non-privileged extract must be able to merge next to this one), then the
-	// staging dir itself. Staging stays root-owned while the run is live; it is
-	// removed on success and chown'd to the user on failure.
-	if err := mkdirAllOwned(filepath.Dir(staging), opts.OwnerUID, opts.OwnerGID); err != nil {
-		return result, pathFreeExtractErr("create target parent", err)
-	}
-	if err := os.Mkdir(staging, 0o700); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return result, ErrExtractStagingExists
-		}
-		return result, pathFreeExtractErr("create staging", err)
-	}
-	result.StagingDir = staging
-	result.StagingCreated = true
-
-	// 5. Helper-side timeout (the parent enforces the same bound and the pipe
-	// close backs both up).
-	runCtx := ctx
-	if payload.TimeoutSeconds > 0 {
-		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(payload.TimeoutSeconds)*time.Second)
-		defer cancel()
-	}
-
-	// 6. Restore, streaming progress up the pipe. Encode failures are swallowed:
-	// a wedged stdout surfaces soon enough via the result/error encode.
-	params := extractTreeParams(req, staging)
-	params.NoCache = true
-	onProgress := func(p ExtractProgress) {
-		_ = enc.Encode(helperEvent{Kind: helperEventProgress, Progress: &p})
-	}
-	if dispErr := driveExtractTree(runCtx, drv, payload.Target, payload.Creds, params, &result, onProgress); dispErr != nil {
-		if ce := runCtx.Err(); ce != nil {
-			return result, fmt.Errorf("extract: %w", ce)
-		}
-		return result, fmt.Errorf("extract: %w", dispErr)
-	}
-
-	// 7. Metadata normalization — identical pass, just running as root.
-	counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, unsafeSymlinkPolicy(payload.UnsafeSymlinks))
-	if nerr != nil {
-		return result, nerr
-	}
-	result.Files = counts.Files
-	result.Dirs = counts.Dirs
-	result.UnsafeSymlinks = counts.UnsafeSymlinks
-	result.Other = counts.Other
-
-	// 8. Publish. The mirror ancestor chain is created here, owned by the
-	// invoking user, so publishExtract's own MkdirAll is a no-op and the only
-	// root-owned nodes that land in the mirror are the extracted ones.
-	if err := mkdirAllOwned(filepath.Dir(final), opts.OwnerUID, opts.OwnerGID); err != nil {
-		return result, pathFreeExtractErr("create target parent", err)
-	}
-	if err := publishExtract(req.Mode, req.Source, staging, final); err != nil {
-		return result, err
-	}
-	result.FinalPath = final
-	if req.Mode == ExtractFile {
-		result.FinalDir = filepath.Dir(final)
-	} else {
-		result.FinalDir = final
-	}
-	result.Elapsed = opts.Clock.Now().Sub(startedAt)
-	return result, nil
+	// Steps 5–9, shared with App.Extract. mkdirAllOwned keeps every
+	// scaffolding dir (staging parent, mirror ancestors) owned by the invoking
+	// user, so a later non-privileged extract can still merge into the same
+	// tree and the only root-owned nodes that land in the mirror are the
+	// extracted ones; staging itself stays root-owned while the run is live
+	// (removed on success, chown'd back to the user on failure by the caller).
+	// The parent enforces the same timeout bound and the pipe close backs both
+	// up. Progress-encode failures are swallowed: a wedged stdout surfaces
+	// soon enough via the result/error encode.
+	return runExtractPipeline(ctx, req, staging, final, extractPipeline{
+		drv:     drv,
+		target:  payload.Target,
+		creds:   payload.Creds,
+		policy:  unsafeSymlinkPolicy(payload.UnsafeSymlinks),
+		timeout: time.Duration(payload.TimeoutSeconds) * time.Second,
+		clock:   opts.Clock,
+		noCache: true,
+		mkdir:   func(dir string) error { return mkdirAllOwned(dir, opts.OwnerUID, opts.OwnerGID) },
+		onProgress: func(p ExtractProgress) {
+			_ = enc.Encode(helperEvent{Kind: helperEventProgress, Progress: &p})
+		},
+	})
 }
 
 // helperErrCode maps a pipeline error to its wire code so the parent can
@@ -301,22 +258,6 @@ func helperErrCode(err error) string {
 		return helperCodeFinalExists
 	default:
 		return helperCodeGeneric
-	}
-}
-
-// helperRedactor scrubs the payload's secret values from restic stderr before
-// resticx embeds it in a classified error. The helper has no secrets.Store, so
-// this closure is its whole redaction surface (rule 8) — it knows exactly the
-// three values that exist in this process.
-func helperRedactor(creds resticx.Creds) func(string) string {
-	secretsVals := []string{creds.ResticPassword, creds.SecretKey, creds.AccessKey}
-	return func(s string) string {
-		for _, v := range secretsVals {
-			if v != "" {
-				s = strings.ReplaceAll(s, v, "[redacted]")
-			}
-		}
-		return s
 	}
 }
 

@@ -26,7 +26,6 @@ import (
 	"resticscope/internal/config"
 	"resticscope/internal/model"
 	"resticscope/internal/resticx"
-	"resticscope/internal/secrets"
 )
 
 // ExtractMode selects the underlying restic shape. It is source-driven — the TUI
@@ -356,15 +355,6 @@ func checkExtractModeGate(req ExtractRequest) error {
 func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(ExtractProgress)) (ExtractResult, error) {
 	var result ExtractResult
 
-	// 0. A privileged request runs the whole restore→normalize→publish pipeline
-	// in a root helper process (sudo + self re-exec): elevating only the restic
-	// child is not enough, because the normalizer walk and the hardlink publish
-	// both fail as non-root against a root-owned tree. Validation, credential
-	// resolution, and the fresh-target check still run here first, in-process.
-	if req.Privileged {
-		return a.extractPrivileged(ctx, req, onProgress)
-	}
-
 	// 1. Validate request (also derives the paths).
 	staging, final, err := PlanExtractPaths(a.Cfg.Extract, req)
 	if err != nil {
@@ -403,14 +393,77 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, err
 	}
 
+	// 4b. A privileged request runs the rest of the pipeline (steps 5–9) in a
+	// root helper process (sudo + self re-exec): elevating only the restic
+	// child is not enough, because the normalizer walk and the hardlink publish
+	// both fail as non-root against a root-owned tree. Steps 1–4 above ran
+	// in-process — fail fast, and credentials resolve with the user's own
+	// environment (secrets_command never runs under sudo).
+	if req.Privileged {
+		return a.extractPrivileged(ctx, req, staging, r, material, onProgress)
+	}
+
+	result, err = runExtractPipeline(ctx, req, staging, final, extractPipeline{
+		drv:        a.Restic,
+		target:     targetOf(r),
+		creds:      resticCreds(material),
+		policy:     unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks),
+		timeout:    a.Cfg.Extract.ExtractTimeout.Std(),
+		clock:      a.Clock,
+		mkdir:      func(dir string) error { return os.MkdirAll(dir, 0o700) },
+		onProgress: onProgress,
+	})
+	if err != nil {
+		return result, err
+	}
+	a.logExtractSuccess(req, result)
+	return result, nil
+}
+
+// extractPipeline carries the per-caller seams of the shared restore pipeline.
+// The in-process path and the root helper run the exact same steps and differ
+// only at these injected points.
+type extractPipeline struct {
+	drv    extractTreeDriver
+	target resticx.Target
+	creds  resticx.Creds
+	policy unsafeSymlinkPolicy
+	clock  Clock
+
+	// timeout bounds the restore; <=0 means no local deadline (the helper runs
+	// without one when the parent sent no bound — its stdin-EOF kill switch
+	// still ends the run).
+	timeout time.Duration
+
+	// noCache forces --no-cache on the restore: the root helper must neither
+	// duplicate the user's cache under /root nor leave root-owned files in it.
+	noCache bool
+
+	// mkdir creates every scaffolding dir AROUND the extracted content (the
+	// staging parent and the mirror ancestors): plain 0700 MkdirAll in-process,
+	// mkdirAllOwned in the helper so the invoking user keeps ownership of dirs
+	// created next to root-owned content.
+	mkdir func(dir string) error
+
+	onProgress func(ExtractProgress)
+}
+
+// runExtractPipeline is the shared core of an extract — steps 5–9 of
+// App.Extract: create staging, run the restore under the per-op timeout,
+// normalize the staged tree's metadata, and publish staging → final. Both the
+// in-process path and the root helper (runHelperExtract) call it, so the two
+// can never drift; callers own validation, cred resolution, and logging.
+func runExtractPipeline(ctx context.Context, req ExtractRequest, staging, final string, p extractPipeline) (ExtractResult, error) {
+	var result ExtractResult
+
 	// startedAt anchors result.Elapsed against the injected clock. Mtimes are no
 	// longer reset, so this is its only use.
-	startedAt := a.Clock.Now()
+	startedAt := p.clock.Now()
 
 	// 5. Create the parent and staging dir. A pre-existing parent is left
 	// untouched — the user owns its policy; only the new staging (and, via
 	// rename, final) dirs are 0700.
-	if err := os.MkdirAll(filepath.Dir(staging), 0o700); err != nil {
+	if err := p.mkdir(filepath.Dir(staging)); err != nil {
 		return result, pathFreeExtractErr("create target parent", err)
 	}
 	if err := os.Mkdir(staging, 0o700); err != nil {
@@ -423,14 +476,20 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	result.StagingCreated = true
 
 	// 6. Per-op timeout.
-	runCtx, cancel := context.WithTimeout(ctx, a.Cfg.Extract.ExtractTimeout.Std())
-	defer cancel()
+	runCtx := ctx
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
 
 	// 7. Run the restore. Both file and directory extracts are `restic restore`
 	// with the same params shape (rebase parent + --include the leaf, built by
 	// extractTreeParams); the file/directory difference is only in
 	// publishExtract's primitive (link vs rename).
-	if dispErr := a.extractTree(runCtx, r, material, req, staging, &result, onProgress); dispErr != nil {
+	params := extractTreeParams(req, staging)
+	params.NoCache = p.noCache
+	if dispErr := driveExtractTree(runCtx, p.drv, p.target, p.creds, params, &result, p.onProgress); dispErr != nil {
 		// Prefer the local timeout/cancel verdict so the app boundary surfaces a
 		// context error regardless of how resticx classified the interruption.
 		if ce := runCtx.Err(); ce != nil {
@@ -442,8 +501,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// 8. Metadata normalization (every restore — file and directory — since both
 	// route through restic restore into staging). A file is always Files=1, Dirs=0;
 	// a directory walk adds its restored subdirectories to Dirs.
-	policy := unsafeSymlinkPolicy(a.Cfg.Extract.UnsafeSymlinks)
-	counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, policy)
+	counts, nerr := normalizeExtractTreeMetadata(runCtx, staging, p.policy)
 	if nerr != nil {
 		return result, nerr
 	}
@@ -457,7 +515,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// 9. Publish on clean completion: build the deep mirror ancestor chain, then
 	// move staging into its true mirror path (rename for a directory, no-replace
 	// link for a file). publishExtract owns the no-overwrite guarantee.
-	if err := publishExtract(req.Mode, req.Source, staging, final); err != nil {
+	if err := publishExtract(req.Mode, req.Source, staging, final, p.mkdir); err != nil {
 		return result, err
 	}
 	result.FinalPath = final
@@ -473,9 +531,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// startedAt. restic restore's self-reported seconds (a hostile boundary, Rule
 	// 5) cover only the restore, not our normalization + rename, so the injected
 	// clock is the authoritative duration for both file and directory extracts.
-	result.Elapsed = a.Clock.Now().Sub(startedAt)
-
-	a.logExtractSuccess(req, result)
+	result.Elapsed = p.clock.Now().Sub(startedAt)
 	return result, nil
 }
 
@@ -502,13 +558,15 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 //     os.Link returns; the staging copy is then unlinked.
 //
 // After publishing, the now-empty staging container is removed (best-effort).
-// Staging lives at repo level, so MkdirAll(filepath.Dir(final)) here is the only
+// Staging lives at repo level, so mkdir(filepath.Dir(final)) here is the only
 // place the leaf's parents are created — doing it lazily means an extract
 // interrupted during restic leaves only the repo-level staging dir, no empty
-// mirror ancestors. EEXIST/EXDEV surface as ErrExtractFinalExists/
+// mirror ancestors, and threading the caller's mkdir means the helper's
+// ownership policy applies wherever ancestors are created, not just where the
+// helper guessed they would be. EEXIST/EXDEV surface as ErrExtractFinalExists/
 // ErrExtractRenameFailed; the returned errors stay path-free.
-func publishExtract(mode ExtractMode, source, staging, final string) error {
-	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(dir string) error) error {
+	if err := mkdir(filepath.Dir(final)); err != nil {
 		return pathFreeExtractErr("create target parent", err)
 	}
 	// The node restic reconstructed: staging/<base> for a real source, or staging
@@ -581,13 +639,6 @@ func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreePa
 // constructing a full App.
 type extractTreeDriver interface {
 	ExtractTree(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error
-}
-
-// extractTree drives resticx.ExtractTree and flattens its events into result /
-// onProgress. The summary's file count is recorded here but, for a live run, is
-// later overwritten by the metadata normalizer's authoritative split.
-func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	return driveExtractTree(ctx, a.Restic, targetOf(r), resticCreds(material), extractTreeParams(req, staging), result, onProgress)
 }
 
 // driveExtractTree runs one restic restore via drv and flattens its events into

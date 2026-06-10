@@ -1,24 +1,29 @@
 package app
 
 // extract_privileged.go is the parent (non-root) side of the privileged
-// extract. App.Extract routes a req.Privileged request here; this file owns
-// the same validation/cred-resolution preamble as the in-process path, then
-// hands the pipeline to the root helper (extract_helper.go) through a
-// PrivilegedRunner and maps the helper's wire events back onto the ordinary
-// ExtractResult / sentinel-error surface — the TUI cannot tell the two paths
-// apart except by the ownership of what lands on disk.
+// extract. App.Extract runs its shared preamble (validation, gates, cred
+// resolution with the user's own environment, fresh-target check) and then
+// routes a req.Privileged request here; this file hands the pipeline to the
+// root helper (extract_helper.go) through a PrivilegedRunner and maps the
+// helper's wire events back onto the ordinary ExtractResult / sentinel-error
+// surface — the TUI cannot tell the two paths apart except by the ownership
+// of what lands on disk.
 //
-// Credentials are resolved HERE, in the user's own process and environment
-// (secrets_command never runs under sudo), and ride to the helper inside the
-// stdin payload. The errors returned here follow the same path-free contract
-// as App.Extract: helper messages are path-free by construction, and runner
-// failures are reduced to their first line of (path-free) sudo/helper stderr.
+// The resolved credentials ride to the helper inside the stdin payload
+// (secrets_command never runs under sudo). The errors returned here follow
+// the same path-free contract as App.Extract: helper messages are path-free
+// by construction, and runner failures are reduced to their first line of
+// (path-free) sudo/helper stderr.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+
+	"resticscope/internal/config"
+	"resticscope/internal/secrets"
 
 	json "github.com/goccy/go-json"
 )
@@ -37,6 +42,10 @@ type PrivilegedRunner interface {
 	// finishes; ctx cancellation must close the stdin pipe so a root helper the
 	// caller cannot signal still winds down.
 	Run(ctx context.Context, payload []byte, onLine func(line []byte) error) error
+	// AuthCommand returns the interactive command that pre-authorizes a
+	// subsequent Run without prompting (e.g. `sudo -v`). The TUI runs it on
+	// the user's real TTY after a failed Probe.
+	AuthCommand() *exec.Cmd
 }
 
 // ErrPrivilegedExtractUnavailable is returned when no PrivilegedRunner is
@@ -54,44 +63,26 @@ func (a *App) PrivilegedExtractProbe(ctx context.Context) error {
 	return a.Priv.Probe(ctx)
 }
 
-// extractPrivileged mirrors App.Extract's steps 1–4 in-process (fail fast,
-// resolve creds with the user's environment), then delegates steps 5–9 to the
-// root helper and reassembles its terminal event into the ordinary result /
-// sentinel surface.
-func (a *App) extractPrivileged(ctx context.Context, req ExtractRequest, onProgress func(ExtractProgress)) (ExtractResult, error) {
+// PrivilegedAuthCommand returns the runner's interactive pre-authorization
+// command (e.g. `sudo -v`), or nil when no runner is wired. The TUI runs it
+// via tea.ExecProcess after a failed probe, so the elevation mechanism stays
+// the runner's knowledge — the UI never hardcodes sudo.
+func (a *App) PrivilegedAuthCommand() *exec.Cmd {
+	if a.Priv == nil {
+		return nil
+	}
+	return a.Priv.AuthCommand()
+}
+
+// extractPrivileged delegates steps 5–9 to the root helper and reassembles
+// its terminal event into the ordinary result / sentinel surface. App.Extract
+// has already run steps 1–4 (validation, gates, cred resolution, fresh-target
+// check) and passes the derived staging path, repo, and resolved material —
+// the helper re-asserts the boundary checks itself at the privilege boundary.
+func (a *App) extractPrivileged(ctx context.Context, req ExtractRequest, staging string, r config.Repo, material secrets.Material, onProgress func(ExtractProgress)) (ExtractResult, error) {
 	var result ExtractResult
 	if a.Priv == nil {
 		return result, ErrPrivilegedExtractUnavailable
-	}
-
-	// 1+2. Validate request, gates — same order as App.Extract.
-	staging, final, err := PlanExtractPaths(a.Cfg.Extract, req)
-	if err != nil {
-		return result, err
-	}
-	if err := checkExtractModeGate(req); err != nil {
-		return result, err
-	}
-	if !liveExtractSupported {
-		return result, errors.New("extract: not supported on this platform")
-	}
-
-	// 3. Cred resolution — in the user's process, with the user's environment.
-	r, ok := a.repo(req.Repo)
-	if !ok {
-		return result, fmt.Errorf("extract: unknown repo %q", req.Repo)
-	}
-	if _, ok := a.Cfg.Credential(r.Credential); !ok {
-		return result, fmt.Errorf("extract: credential %q not found", r.Credential)
-	}
-	material, err := a.Secrets.Resolve(r.Name, r.Credential)
-	if err != nil {
-		return result, err
-	}
-
-	// 4. Fresh-target check (the helper re-checks at the privilege boundary).
-	if err := FreshTargetCheck(staging, final); err != nil {
-		return result, err
 	}
 
 	startedAt := a.Clock.Now()
@@ -99,7 +90,6 @@ func (a *App) extractPrivileged(ctx context.Context, req ExtractRequest, onProgr
 	// The helper reads no config file, so the request must carry the effective
 	// target root explicitly.
 	helperReq := req
-	helperReq.Privileged = false
 	if helperReq.TargetRoot == "" {
 		helperReq.TargetRoot = a.Cfg.Extract.TargetRoot
 	}
@@ -134,13 +124,11 @@ func (a *App) extractPrivileged(ctx context.Context, req ExtractRequest, onProgr
 			}
 		case helperEventResult:
 			if ev.Result != nil {
-				res := *ev.Result
-				helperResult = &res
+				helperResult = ev.Result
 			}
 		case helperEventError:
 			if ev.Error != nil {
-				fail := *ev.Error
-				helperFail = &fail
+				helperFail = ev.Error
 			}
 		}
 		return nil

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,8 @@ type fakePrivRunner struct {
 }
 
 func (f *fakePrivRunner) Probe(ctx context.Context) error { return f.probeErr }
+
+func (f *fakePrivRunner) AuthCommand() *exec.Cmd { return exec.Command("true") }
 
 func (f *fakePrivRunner) Run(ctx context.Context, payload []byte, onLine func([]byte) error) error {
 	f.mu.Lock()
@@ -81,8 +84,7 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 	}
 
 	// The payload must carry the resolved creds, the wire version, and an
-	// explicit absolute target root; Privileged is cleared (the helper must not
-	// recurse).
+	// explicit absolute target root.
 	var payload helperPayload
 	if err := json.Unmarshal(runner.payloads[0], &payload); err != nil {
 		t.Fatalf("payload: %v", err)
@@ -95,9 +97,6 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 	}
 	if payload.Request.TargetRoot != root {
 		t.Errorf("payload target root = %q, want %q", payload.Request.TargetRoot, root)
-	}
-	if payload.Request.Privileged {
-		t.Error("payload request still flagged Privileged")
 	}
 	if payload.TimeoutSeconds != int64((2 * time.Minute).Seconds()) {
 		t.Errorf("payload timeout = %d, want 120", payload.TimeoutSeconds)

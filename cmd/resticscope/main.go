@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"resticscope/internal/app"
 )
 
 func main() {
@@ -44,9 +46,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdCache(ctx, rest, stdout, stderr)
 	case "secrets":
 		return cmdSecrets(ctx, rest, stdout, stderr)
-	case "extract-helper":
+	case app.ExtractHelperSubcommand:
 		// Internal: the root side of a privileged extract, launched by the TUI
-		// via `sudo -n -- <self> extract-helper`, request on stdin.
+		// via `sudo -n -- <self> extract-helper`, request on stdin. The shared
+		// constant keeps this case routing exactly the argv the runner builds.
 		return cmdExtractHelper(ctx, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)

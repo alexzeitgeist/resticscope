@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -112,6 +113,12 @@ func (f *fakeExtractDriver) PrivilegedExtractProbe(ctx context.Context) error {
 	defer f.mu.Unlock()
 	f.probeCalls++
 	return f.probeErr
+}
+
+func (f *fakeExtractDriver) PrivilegedAuthCommand() *exec.Cmd {
+	// Never run by the tests (it rides inside a tea.ExecProcess Cmd the tests
+	// must not execute); non-nil so applySudoProbe takes the interactive path.
+	return exec.Command("true")
 }
 
 func (f *fakeExtractDriver) callsSnapshot() []extractCall {

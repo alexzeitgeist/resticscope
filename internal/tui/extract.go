@@ -57,12 +57,15 @@ const extractProgressBuffer = 64
 // by *app.App; the test double in extract_test.go implements it directly.
 // LocalShellSession backs the success-view `s` action: a credential-free shell
 // rooted at the extracted directory. PrivilegedExtractProbe backs the review
-// `p` toggle's commit path: nil means a sudo helper launch will not prompt, an
-// error sends the user through interactive `sudo -v` first.
+// `p` toggle's commit path: nil means a privileged helper launch will not
+// prompt; on an error PrivilegedAuthCommand supplies the interactive
+// authentication command (e.g. `sudo -v`) to run first — the elevation
+// mechanism is the app layer's knowledge, never hardcoded here.
 type extractDriver interface {
 	Extract(ctx context.Context, req app.ExtractRequest, onProgress func(app.ExtractProgress)) (app.ExtractResult, error)
 	LocalShellSession(dir string) (*app.ShellSession, error)
 	PrivilegedExtractProbe(ctx context.Context) error
+	PrivilegedAuthCommand() *exec.Cmd
 }
 
 // extractModel is the self-contained sub-model. Browse wiring constructs one per
@@ -454,22 +457,21 @@ func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel,
 }
 
 func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
+	// One debounce for the whole screen: while the sudo probe / interactive
+	// auth is in flight, only esc still acts.
+	if m.sudoBusy && !key.Matches(msg, keys.Back) {
+		return m, nil, false
+	}
 	switch {
 	case key.Matches(msg, keys.Back):
 		return m.back()
 	case key.Matches(msg, keys.Target):
-		if m.sudoBusy {
-			return m, nil, false
-		}
 		m.state = extractStateFilePicker
 		m.filepickerErr = ""
 		m.reviewNotice = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
 	case key.Matches(msg, keys.Priv):
-		if m.sudoBusy {
-			return m, nil, false
-		}
 		// Toggle the privileged (sudo) restore: restic only applies snapshot
 		// ownership when it runs as root. Whether sudo is actually ready is
 		// checked on commit, not here.
@@ -477,23 +479,30 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 		m.reviewNotice = ""
 		return m, nil, false
 	case key.Matches(msg, keys.Enter):
-		if m.sudoBusy {
-			return m, nil, false
-		}
 		m.reviewNotice = ""
 		if m.req.Privileged {
-			// Privileged commit: confirm passwordless sudo before dispatching; the
+			// Privileged commit: confirm cached sudo auth before dispatching; the
 			// run starts on the probe (or interactive-auth) message.
 			m.sudoBusy = true
 			return m, m.sudoProbeCmd(), false
 		}
 		// Commit straight to the live extract — a single Extract for both file and
 		// directory sources. There is no dry-run preview step.
-		cmd := m.startRun()
-		m.state = extractStateRunning
+		cmd := m.commitRun()
 		return m, cmd, false
 	}
 	return m, nil, false
+}
+
+// commitRun is the single dispatch point for committing the review screen: it
+// clears the sudo gate, starts the live extract, and moves to running. All
+// three commit paths (plain enter, clean sudo probe, interactive auth
+// success) funnel through it.
+func (m *extractModel) commitRun() tea.Cmd {
+	m.sudoBusy = false
+	cmd := m.startRun()
+	m.state = extractStateRunning
+	return cmd
 }
 
 // sudoProbeCmd asks the app layer whether a privileged helper launch would
@@ -516,18 +525,16 @@ func (m *extractModel) applySudoProbe(msg extractSudoProbeMsg) tea.Cmd {
 		return nil
 	}
 	if msg.err == nil {
-		m.sudoBusy = false
-		cmd := m.startRun()
-		m.state = extractStateRunning
-		return cmd
+		return m.commitRun()
 	}
-	if errors.Is(msg.err, app.ErrPrivilegedExtractUnavailable) {
+	authCmd := m.drv.PrivilegedAuthCommand()
+	if errors.Is(msg.err, app.ErrPrivilegedExtractUnavailable) || authCmd == nil {
 		m.sudoBusy = false
 		m.reviewNotice = "privileged extract not available"
 		return nil
 	}
 	gen := m.gen
-	return tea.ExecProcess(exec.Command("sudo", "-v"), func(err error) tea.Msg {
+	return tea.ExecProcess(authCmd, func(err error) tea.Msg {
 		return extractSudoAuthMsg{gen: gen, err: err}
 	})
 }
@@ -538,14 +545,12 @@ func (m *extractModel) applySudoAuth(msg extractSudoAuthMsg) tea.Cmd {
 	if msg.gen != m.gen || m.state != extractStateReview || !m.sudoBusy {
 		return nil
 	}
-	m.sudoBusy = false
 	if msg.err != nil {
+		m.sudoBusy = false
 		m.reviewNotice = "sudo authentication failed — cannot extract as root"
 		return nil
 	}
-	cmd := m.startRun()
-	m.state = extractStateRunning
-	return cmd
+	return m.commitRun()
 }
 
 func (m extractModel) handleRunningKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
@@ -576,10 +581,16 @@ func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 // handleTerminalKey routes the canceled / error screens. When the result
 // reports StagingCreated=true and the staging dir still exists on disk, the
 // user is given the keep-or-delete prompt. Otherwise enter/esc returns to
-// browse directly. The staging probe is re-run per keypress (a dir the user
-// deleted out-of-band must stop offering the prompt) and cached on
-// stagingExists for the render path.
+// browse directly. The staging probe is re-run before any key this state acts
+// on (a dir the user deleted out-of-band must stop offering the prompt) and
+// cached on stagingExists for the render path; ignored keys skip it, since the
+// underlying Lstat can block against an automounted target root.
 func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
+	if !key.Matches(msg, keys.Delete) && !key.Matches(msg, keys.Keep) &&
+		!key.Matches(msg, keys.Enter) && !key.Matches(msg, keys.Back) &&
+		!key.Matches(msg, keys.Target) {
+		return m, nil, false
+	}
 	m.stagingExists = m.stagingPending()
 	if m.stagingExists {
 		switch {

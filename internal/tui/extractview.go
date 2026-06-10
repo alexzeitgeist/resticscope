@@ -426,19 +426,14 @@ func extractSourceValue(em extractModel) string {
 	return em.req.Source
 }
 
-// extractOutputLine names the output shape.
-func extractOutputLine(mode app.ExtractMode) string {
-	if mode == app.ExtractFile {
-		return "file"
-	}
-	return "directory tree"
-}
-
-// extractOutputValue is the Output row: the shape plus the privileged marker
+// extractOutputValue is the Output row: the shape, plus the privileged marker
 // when the `p` toggle is on (the restore then runs as root via sudo so the
 // snapshot's file ownership is applied).
 func extractOutputValue(em extractModel) string {
-	out := extractOutputLine(em.req.Mode)
+	out := "directory tree"
+	if em.req.Mode == app.ExtractFile {
+		out = "file"
+	}
 	if em.req.Privileged {
 		out += " · as root (ownership preserved)"
 	}

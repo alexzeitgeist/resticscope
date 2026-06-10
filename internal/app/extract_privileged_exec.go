@@ -19,7 +19,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+
+	"resticscope/internal/resticx"
 )
 
 const (
@@ -42,10 +45,10 @@ const (
 	// records; 1 MiB is far above any legitimate line.
 	helperEventLineMax = 1 << 20
 
-	// helperSubcommand is the hidden cmd/resticscope subcommand the runner
-	// re-execs. Kept here, next to the argv assembly, so runner and cmd wiring
-	// share one constant.
-	helperSubcommand = "extract-helper"
+	// ExtractHelperSubcommand is the hidden cmd/resticscope subcommand the
+	// runner re-execs. Exported so cmd's dispatch switch routes the exact
+	// string the runner assembles into argv.
+	ExtractHelperSubcommand = "extract-helper"
 )
 
 // SudoPrivilegedRunner launches `sudo -n -- <Exe> extract-helper`. Exe is the
@@ -67,13 +70,14 @@ func NewSudoPrivilegedRunner() (*SudoPrivilegedRunner, error) {
 	return &SudoPrivilegedRunner{Exe: exe}, nil
 }
 
-// Probe runs `sudo -n true`. nil means a helper launch will not prompt
-// (cached credentials or NOPASSWD); an error carries sudo's first stderr line
+// Probe runs `sudo -n true`. nil means sudo credentials are already cached and
+// a helper launch should not prompt; an error carries sudo's first stderr line
 // (path-free: sudo names no repo or target paths) so the TUI can decide to
 // authenticate interactively.
 func (r *SudoPrivilegedRunner) Probe(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, sudoProbeTimeout)
 	defer cancel()
+	// Best-effort timestamp-cache probe: command-specific sudoers policy can false-negative/false-positive against the real helper argv.
 	cmd := exec.CommandContext(ctx, "sudo", "-n", "true")
 	// No stdin: a misconfigured sudo must fail, never read the terminal.
 	cmd.Stdin = nil
@@ -87,12 +91,19 @@ func (r *SudoPrivilegedRunner) Probe(ctx context.Context) error {
 	return fmt.Errorf("sudo -n: %w", err)
 }
 
+// AuthCommand is the interactive half of the sudo flow: `sudo -v` prompts on
+// the user's real TTY and warms the credential cache that Run's `sudo -n`
+// then hits without prompting.
+func (r *SudoPrivilegedRunner) AuthCommand() *exec.Cmd {
+	return exec.Command("sudo", "-v")
+}
+
 // Run launches the helper, writes payload to its stdin (keeping the pipe open
 // as the liveness channel), and streams stdout lines to onLine. See the
 // package comment for the control-channel design; the error path returns the
 // first line of captured stderr, which the helper keeps path-free.
 func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine func(line []byte) error) error {
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "--", r.Exe, helperSubcommand)
+	cmd := exec.CommandContext(ctx, "sudo", "-n", "--", r.Exe, ExtractHelperSubcommand)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -102,14 +113,17 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 	if err != nil {
 		return err
 	}
-	var stderr cappedBuffer
-	stderr.limit = helperStderrLimit
+	var stderr resticx.LimitedBuffer
+	stderr.Limit = helperStderrLimit
 	cmd.Stderr = &stderr
 
 	// ctx cancellation closes stdin instead of the default SIGKILL, which
 	// would fail with EPERM against a root child. WaitDelay then guarantees
-	// Wait returns even if the helper ignores the EOF.
-	cmd.Cancel = func() error { return stdin.Close() }
+	// Wait returns even if the helper ignores the EOF. closeStdin is
+	// once-wrapped so the explicit post-loop close and a ctx cancel racing it
+	// cannot turn the second close's ErrClosed into a spurious Wait error.
+	closeStdin := sync.OnceValue(func() error { return stdin.Close() })
+	cmd.Cancel = closeStdin
 	cmd.WaitDelay = helperWaitDelay
 
 	if err := cmd.Start(); err != nil {
@@ -118,10 +132,9 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 	go func() {
 		// Deliver the payload; deliberately do NOT close stdin — the open pipe
 		// is what tells the helper the parent is alive. cmd.Cancel (ctx) or the
-		// deferred close below ends it.
+		// post-loop close ends it.
 		_, _ = stdin.Write(payload)
 	}()
-	defer func() { _ = stdin.Close() }()
 
 	var cbErr error
 	sc := bufio.NewScanner(stdout)
@@ -135,6 +148,12 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 			break
 		}
 	}
+	// The event stream is over — stdout EOF on the happy path, or the callback
+	// refused a line. Close stdin BEFORE draining/waiting: EOF is the only
+	// stop signal this process can deliver to a root child, and on a callback
+	// error the helper would otherwise keep restoring (for up to the full
+	// extract timeout) toward a result the parent has already discarded.
+	_ = closeStdin()
 	// Drain leftover stdout so the helper is never wedged on a full pipe
 	// while we wait for it (mirrors resticx.ExecRunner.RunStream).
 	_, _ = io.Copy(io.Discard, stdout)
@@ -164,24 +183,3 @@ func firstNonEmptyLine(b []byte) string {
 	}
 	return ""
 }
-
-// cappedBuffer accepts writes up to limit bytes and silently discards the
-// rest, reporting full acceptance so the writer never blocks. Local sibling of
-// resticx's limitedBuffer (unexported there).
-type cappedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	accepted := len(p)
-	if remaining := b.limit - b.buf.Len(); remaining > 0 {
-		if len(p) > remaining {
-			p = p[:remaining]
-		}
-		_, _ = b.buf.Write(p)
-	}
-	return accepted, nil
-}
-
-func (b *cappedBuffer) Bytes() []byte { return b.buf.Bytes() }

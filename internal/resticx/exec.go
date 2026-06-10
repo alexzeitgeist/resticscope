@@ -84,8 +84,8 @@ func (ExecRunner) RunStream(ctx context.Context, env []string, password string, 
 		return nil, startErr
 	}
 
-	var errBuf limitedBuffer
-	errBuf.limit = streamStderrLimit
+	var errBuf LimitedBuffer
+	errBuf.Limit = streamStderrLimit
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -106,18 +106,20 @@ func (ExecRunner) RunStream(ctx context.Context, env []string, password string, 
 	return errBuf.Bytes(), waitErr
 }
 
-// limitedBuffer is a bytes.Buffer that stops accepting data past limit bytes,
-// reporting every write as fully accepted so the writer never blocks. It caps
-// the stderr captured by RunStream.
-type limitedBuffer struct {
+// LimitedBuffer is a bytes.Buffer that stops accepting data past Limit bytes
+// (0 means unlimited), reporting every write as fully accepted so the writer
+// never blocks. It caps the stderr captured by RunStream and by the app's
+// privileged-helper runner — anywhere output from a hostile child process is
+// kept around.
+type LimitedBuffer struct {
 	buf   bytes.Buffer
-	limit int64
+	Limit int64
 }
 
-func (b *limitedBuffer) Write(p []byte) (int, error) {
+func (b *LimitedBuffer) Write(p []byte) (int, error) {
 	accepted := len(p)
-	if b.limit > 0 {
-		remaining := b.limit - int64(b.buf.Len())
+	if b.Limit > 0 {
+		remaining := b.Limit - int64(b.buf.Len())
 		if remaining <= 0 {
 			return accepted, nil
 		}
@@ -129,4 +131,4 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return accepted, nil
 }
 
-func (b *limitedBuffer) Bytes() []byte { return b.buf.Bytes() }
+func (b *LimitedBuffer) Bytes() []byte { return b.buf.Bytes() }
