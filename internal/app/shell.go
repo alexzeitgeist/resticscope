@@ -82,10 +82,21 @@ var ErrLocalShellInvalidDir = errors.New("local shell: invalid working directory
 // LocalShellSession returns a ShellSession that drops the user into their shell
 // rooted at dir, with no repository contact whatsoever. Unlike the
 // snapshot-scoped ShellSession it sets no RESTIC_*/AWS_* env vars, passes no
-// password file, prints no banner, and registers a no-op Cleanup — it is the
-// purely cosmetic "open a shell in the extracted directory" launch from the
-// extract success view (framework §16). The inherited environment is filtered so
-// no credential the parent process happens to carry leaks into the child.
+// password file, and registers a no-op Cleanup — it is the purely cosmetic
+// "open a shell in the extracted directory" launch from the extract success
+// view (framework §16). The inherited environment is filtered so no credential
+// the parent process happens to carry leaks into the child.
+//
+// When dir itself is not enterable by the user — a privileged extract can
+// leave the target root-owned 0700 — the session starts in the nearest
+// enterable ancestor instead, and the (normally empty) Banner says so. Probing
+// up front matters: the alternative is the child shell's chdir failing AFTER
+// tea.ExecProcess has already suspended the TUI, which renders as a screen
+// flicker plus a cryptic "fork/exec: permission denied". After a privileged
+// extract the fallback lands in the immediate parent, because the helper keeps
+// every scaffolding dir owned by the invoking user. The banner names paths;
+// that is fine — it prints only in the user's own terminal, never into errors
+// or logs (the §3 privacy contract covers those).
 //
 // dir must be an absolute path to an existing directory; otherwise a path-free
 // ErrLocalShellInvalidDir is returned and no session is built.
@@ -105,13 +116,36 @@ func (a *App) LocalShellSession(dir string) (*ShellSession, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("%w: dir not a directory", ErrLocalShellInvalidDir)
 	}
+	shellDir := nearestEnterableDir(dir)
+	if shellDir == "" { // not even / is enterable; nowhere sane to start
+		return nil, fmt.Errorf("%w: dir not enterable", ErrLocalShellInvalidDir)
+	}
+	banner := ""
+	if shellDir != dir {
+		banner = fmt.Sprintf("%s is enterable only by its owner — starting in %s instead (use sudo to enter it)", dir, shellDir)
+	}
 	return &ShellSession{
 		Shell:   resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
 		Env:     stripCredEnv(os.Environ()),
-		Banner:  "",
-		Dir:     dir,
+		Banner:  banner,
+		Dir:     shellDir,
 		Cleanup: func() error { return nil },
 	}, nil
+}
+
+// nearestEnterableDir walks from dir toward the filesystem root and returns
+// the first directory the user can enter, or "" when even the root is closed.
+// dir is absolute and exists (the caller validated it); in the common case it
+// is returned unchanged.
+func nearestEnterableDir(dir string) string {
+	for cur := dir; ; cur = filepath.Dir(cur) {
+		if canEnterDir(cur) {
+			return cur
+		}
+		if cur == filepath.Dir(cur) {
+			return ""
+		}
+	}
 }
 
 // InteractiveArgs returns the argv that (optionally) prints the banner and then

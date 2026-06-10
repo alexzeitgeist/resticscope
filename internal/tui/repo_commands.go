@@ -66,7 +66,8 @@ func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
 // shell session via tea.ExecProcess, and runs Cleanup once the child exits. It
 // honors sess.Dir when set, so the same builder serves both the repo/snapshot
 // shell (openShellCmd, no Dir) and the extract success-view local shell
-// (LocalShellSession, Dir = the extracted directory).
+// (LocalShellSession, Dir = the extracted directory or its nearest enterable
+// ancestor).
 func shellCmdFromSession(sess *app.ShellSession) tea.Cmd {
 	args := sess.InteractiveArgs()
 	c := exec.Command(args[0], args[1:]...)

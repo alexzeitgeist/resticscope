@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -279,6 +280,40 @@ func TestLocalShellSessionFallbackShell(t *testing.T) {
 	}
 	if sess.Shell != "/bin/sh" {
 		t.Errorf("fallback Shell = %q, want /bin/sh", sess.Shell)
+	}
+}
+
+func TestLocalShellSessionUnenterableDirFallsBack(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("canEnterDir probes only on linux/darwin")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root can enter anything; the fallback never triggers")
+	}
+	// Models a privileged extract's target: the extracted node itself is
+	// enterable only by its (root) owner while the parent scaffolding belongs
+	// to the user. Chmod 0 on an own dir denies ourselves the same way.
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "rootowned")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // let TempDir cleanup descend
+
+	a := localShellApp("/bin/sh")
+	sess, err := a.LocalShellSession(dir)
+	if err != nil {
+		t.Fatalf("LocalShellSession: %v", err)
+	}
+	if sess.Dir != parent {
+		t.Errorf("Dir = %q, want the enterable parent %q", sess.Dir, parent)
+	}
+	// The relocation must explain itself; a silent parent drop reads as a bug.
+	if !strings.Contains(sess.Banner, "sudo") {
+		t.Errorf("Banner = %q, want a fallback explanation mentioning sudo", sess.Banner)
 	}
 }
 
