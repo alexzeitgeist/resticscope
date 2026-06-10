@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -112,6 +113,9 @@ func TestExtractPrivilegedSentinelRoundTrip(t *testing.T) {
 		{helperCodeFinalExists, ErrExtractFinalExists},
 		{helperCodeCanceled, context.Canceled},
 		{helperCodeDeadline, context.DeadlineExceeded},
+		{helperCodeInvalidRequest, ErrExtractInvalidRequest},
+		{helperCodeMetadataNorm, ErrExtractMetadataNormalization},
+		{helperCodeRenameFailed, ErrExtractRenameFailed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.code, func(t *testing.T) {
@@ -166,6 +170,38 @@ func TestExtractPrivilegedValidatesBeforeLaunch(t *testing.T) {
 	}
 	if len(runner.payloads) != 0 {
 		t.Error("invalid request still reached the helper runner")
+	}
+}
+
+// TestHelperWireSentinelRoundTrip drives every classifiable pipeline error
+// through the full wire contract — helperErrCode on the helper side, then
+// helperSentinelError on the parent side — and asserts both the errors.Is
+// identity and any cause detail survive the process boundary.
+func TestHelperWireSentinelRoundTrip(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		want   error
+		detail string
+	}{
+		{"canceled", fmt.Errorf("extract: %w", context.Canceled), context.Canceled, ""},
+		{"deadline", fmt.Errorf("extract: %w", context.DeadlineExceeded), context.DeadlineExceeded, ""},
+		{"staging_exists", ErrExtractStagingExists, ErrExtractStagingExists, ""},
+		{"final_exists", ErrExtractFinalExists, ErrExtractFinalExists, ""},
+		{"invalid_request", invalidExtractRequest("source_name"), ErrExtractInvalidRequest, "source_name"},
+		{"metadata_normalization", fmt.Errorf("%w: %v", ErrExtractMetadataNormalization, "operation not permitted"), ErrExtractMetadataNormalization, "operation not permitted"},
+		{"rename_failed", fmt.Errorf("%w: %v", ErrExtractRenameFailed, "cross-device link"), ErrExtractRenameFailed, "cross-device link"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := helperSentinelError(helperErrCode(tt.err), tt.err.Error())
+			if !errors.Is(got, tt.want) {
+				t.Fatalf("errors.Is identity lost across the wire: %v -> %v", tt.err, got)
+			}
+			if tt.detail != "" && !strings.Contains(got.Error(), tt.detail) {
+				t.Errorf("cause detail lost across the wire: %q does not contain %q", got.Error(), tt.detail)
+			}
+		})
 	}
 }
 

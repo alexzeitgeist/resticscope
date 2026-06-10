@@ -80,11 +80,14 @@ const (
 	helperEventResult   = "result"
 	helperEventError    = "error"
 
-	helperCodeCanceled      = "canceled"
-	helperCodeDeadline      = "deadline"
-	helperCodeStagingExists = "staging_exists"
-	helperCodeFinalExists   = "final_exists"
-	helperCodeGeneric       = "generic"
+	helperCodeCanceled       = "canceled"
+	helperCodeDeadline       = "deadline"
+	helperCodeStagingExists  = "staging_exists"
+	helperCodeFinalExists    = "final_exists"
+	helperCodeInvalidRequest = "invalid_request"
+	helperCodeMetadataNorm   = "metadata_normalization"
+	helperCodeRenameFailed   = "rename_failed"
+	helperCodeGeneric        = "generic"
 )
 
 // helperEvent is one NDJSON line on the helper's stdout.
@@ -256,6 +259,12 @@ func helperErrCode(err error) string {
 		return helperCodeStagingExists
 	case errors.Is(err, ErrExtractFinalExists):
 		return helperCodeFinalExists
+	case errors.Is(err, ErrExtractInvalidRequest):
+		return helperCodeInvalidRequest
+	case errors.Is(err, ErrExtractMetadataNormalization):
+		return helperCodeMetadataNorm
+	case errors.Is(err, ErrExtractRenameFailed):
+		return helperCodeRenameFailed
 	default:
 		return helperCodeGeneric
 	}

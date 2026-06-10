@@ -1130,6 +1130,45 @@ func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 	}
 }
 
+// A probe result that was already in flight when the user backed out of the
+// busy review screen must not start the run: back supersedes the generation at
+// keypress time, so the stale probe (and a stale interactive-auth outcome) is
+// dropped even when its message is delivered before the root processes
+// extractBackToBrowseMsg.
+func TestPrivilegedProbeAfterBackDoesNotStartRun(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	keys := defaultKeys()
+
+	em, _, _ = dispatchKey(em, keys, "p")
+	em, cmd, _ := dispatchKey(em, keys, "enter")
+	probe, ok := runCmd(t, cmd).(extractSudoProbeMsg)
+	if !ok {
+		t.Fatalf("commit cmd produced %T, want extractSudoProbeMsg", probe)
+	}
+	staleGen := probe.gen
+
+	em, backCmd, leave := dispatchKey(em, keys, "esc")
+	if !leave || backCmd == nil {
+		t.Fatalf("esc on busy review: leave=%v cmd=%v, want back-to-browse", leave, backCmd)
+	}
+
+	// If the stale probe slipped past the gen guard it would dispatch this
+	// response as a root extract — calls below would catch it.
+	drv.push(extractResp{result: app.ExtractResult{}})
+	if c := em.applySudoProbe(probe); c != nil {
+		t.Fatal("stale probe after back still produced a command")
+	}
+	if c := em.applySudoAuth(extractSudoAuthMsg{gen: staleGen, err: nil}); c != nil {
+		t.Fatal("stale auth success after back still produced a command")
+	}
+	if em.state == extractStateRunning {
+		t.Fatal("stale probe/auth after back started the run")
+	}
+	if got := len(drv.callsSnapshot()); got != 0 {
+		t.Fatalf("Extract dispatched after back: %d calls", got)
+	}
+}
+
 // ErrPrivilegedExtractUnavailable is terminal: no sudo -v round trip, just a
 // review notice.
 func TestPrivilegedCommitUnavailable(t *testing.T) {

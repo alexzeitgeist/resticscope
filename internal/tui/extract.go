@@ -430,6 +430,12 @@ func (m extractModel) back() (extractModel, tea.Cmd, bool) {
 		return m, nil, false
 	case extractStateCanceled, extractStateError, extractStateKeepDelete,
 		extractStateReview, extractStateSuccess:
+		// Supersede NOW, not when the root processes extractBackToBrowseMsg:
+		// a gen-tagged result already in flight (e.g. the sudo probe behind a
+		// busy review) could otherwise land first and commit a run the user
+		// just backed out of. The root's supersede on the back message is then
+		// a harmless second bump.
+		m.supersede()
 		return m, returnExtract(m.noticeAfterClose), true
 	}
 	return m, nil, false
@@ -482,7 +488,9 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 		m.reviewNotice = ""
 		if m.req.Privileged {
 			// Privileged commit: confirm cached sudo auth before dispatching; the
-			// run starts on the probe (or interactive-auth) message.
+			// run starts on the probe (or interactive-auth) message. The probe is
+			// a new async step, so it gets its own generation like every other.
+			m.supersede()
 			m.sudoBusy = true
 			return m, m.sudoProbeCmd(), false
 		}

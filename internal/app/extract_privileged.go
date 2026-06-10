@@ -185,12 +185,36 @@ func helperSentinelError(code, msg string) error {
 		return ErrExtractStagingExists
 	case helperCodeFinalExists:
 		return ErrExtractFinalExists
+	case helperCodeInvalidRequest:
+		return helperDetailedSentinel(ErrExtractInvalidRequest, msg)
+	case helperCodeMetadataNorm:
+		return helperDetailedSentinel(ErrExtractMetadataNormalization, msg)
+	case helperCodeRenameFailed:
+		return helperDetailedSentinel(ErrExtractRenameFailed, msg)
 	}
 	if msg == "" {
 		msg = "extract: helper failed"
 	}
 	return errors.New(msg)
 }
+
+// helperDetailedSentinel rebuilds a sentinel whose in-process form wraps a
+// cause ("%w: detail"). The helper's message is that full Error() text, so it
+// is kept verbatim while Unwrap restores the errors.Is identity.
+func helperDetailedSentinel(sentinel error, msg string) error {
+	if msg == "" || msg == sentinel.Error() {
+		return sentinel
+	}
+	return &helperSentinelDetail{sentinel: sentinel, msg: msg}
+}
+
+type helperSentinelDetail struct {
+	sentinel error
+	msg      string
+}
+
+func (e *helperSentinelDetail) Error() string { return e.msg }
+func (e *helperSentinelDetail) Unwrap() error { return e.sentinel }
 
 // probeHelperStaging reports whether the planned staging dir exists on disk —
 // the fallback staging fate when the helper vanished without a terminal event.
