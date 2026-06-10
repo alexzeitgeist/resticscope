@@ -62,6 +62,7 @@ func privReq() ExtractRequest {
 func TestExtractPrivilegedHappyPath(t *testing.T) {
 	root := t.TempDir()
 	a, fc := newExtractApp(fakeRestic{}, root)
+	a.Cfg.Global.CacheDir = "/cache/resticscope"
 	want := ExtractResult{Files: 3, Dirs: 1, Bytes: 42, FinalDir: root + "/repo-a/abcd1234/etc/nginx", FinalPath: root + "/repo-a/abcd1234/etc/nginx"}
 	runner := &fakePrivRunner{lines: []string{
 		mustEventLine(t, helperEvent{Kind: helperEventProgress, Progress: &ExtractProgress{BytesDone: 21, BytesTotal: 42}}),
@@ -98,6 +99,9 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 	}
 	if payload.Request.TargetRoot != root {
 		t.Errorf("payload target root = %q, want %q", payload.Request.TargetRoot, root)
+	}
+	if payload.CacheDir != "/cache/resticscope" {
+		t.Errorf("payload cache dir = %q, want the config cache root", payload.CacheDir)
 	}
 	if payload.TimeoutSeconds != int64((2 * time.Minute).Seconds()) {
 		t.Errorf("payload timeout = %d, want 120", payload.TimeoutSeconds)

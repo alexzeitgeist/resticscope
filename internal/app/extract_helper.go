@@ -20,8 +20,15 @@ package app
 //   - Cancellation is stdin EOF: the parent closes the pipe (or dies) and the
 //     helper cancels its context, which kills the restic child. The parent
 //     cannot signal a root-owned process, so the pipe IS the kill switch.
-//   - restic runs with --no-cache: a root-run restic must neither duplicate
-//     the user's cache under /root nor leave root-owned files in it.
+//   - restic shares the invoking user's per-repo cache (the parent sends the
+//     resticscope cache root): without it every index/tree-blob read is a
+//     remote round trip and a privileged extract runs orders of magnitude
+//     slower than a normal one. A root-run restic must neither duplicate the
+//     cache under /root nor leave root-owned entries in the user's cache, so
+//     the helper pre-creates the per-repo cache dir chain owned by the
+//     invoking user and chowns every cache entry back after the run. When no
+//     cache dir or no invoking user is known, the restore falls back to
+//     --no-cache.
 //   - Directories the helper creates AROUND the extracted content (the target
 //     scaffolding and mirror ancestors) are chown'd to the invoking user
 //     (SUDO_UID/SUDO_GID, resolved by cmd) so later non-privileged extracts
@@ -52,7 +59,7 @@ import (
 // helperPayloadVersion guards the stdin wire shape. The parent and helper are
 // the same binary in normal operation, but a stale installed binary under sudo
 // must fail loudly rather than misread the request.
-const helperPayloadVersion = 1
+const helperPayloadVersion = 2
 
 // helperPayload is the single JSON value the parent writes to the helper's
 // stdin. It carries everything the pipeline needs so the helper reads no
@@ -66,6 +73,10 @@ type helperPayload struct {
 
 	// UnsafeSymlinks is the parent's validated [extract] unsafe_symlinks policy.
 	UnsafeSymlinks string `json:"unsafe_symlinks"`
+	// CacheDir is the parent's resticscope cache root (Global.CacheDir). When
+	// set and the invoking user is known, the helper's restic shares the
+	// user's per-repo cache instead of running --no-cache; see runHelperExtract.
+	CacheDir string `json:"cache_dir"`
 	// TimeoutSeconds is the parent's extract_timeout; <=0 means no helper-side
 	// deadline (the parent's pipe close still bounds the run).
 	TimeoutSeconds int64 `json:"timeout_seconds"`
@@ -166,21 +177,31 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 		cancel()
 	}()
 
+	// repoCache is the user's per-repo restic cache the restore may share; ""
+	// forces --no-cache (no cache dir from the parent, or an unknown invoker —
+	// nobody to hand root-written cache entries back to).
+	repoCache := ""
+	if payload.CacheDir != "" && opts.OwnerUID >= 0 && opts.OwnerGID >= 0 {
+		repoCache = resticx.RepoCacheDir(payload.CacheDir, payload.Target.Name)
+	}
+
 	drv := opts.Restic
 	if drv == nil {
 		drv = &resticx.Client{
 			Runner: resticx.ExecRunner{},
 			Stream: resticx.ExecRunner{},
-			// No CacheDir: the restore runs --no-cache, so restic touches no
-			// cache at all (no /root duplicate, no root-owned user-cache files).
-			// The helper has no secrets.Store, so this Redactor over the
-			// payload's three values is its whole redaction surface (rule 8) —
-			// they are the only secrets that exist in this process.
-			Redact: secrets.NewRedactor(payload.Creds.ResticPassword, payload.Creds.SecretKey, payload.Creds.AccessKey).Redact,
+			// CacheDir points restic at the user's cache when the share is
+			// permitted; when the pipeline falls back to --no-cache restic
+			// ignores it entirely. The helper has no secrets.Store, so this
+			// Redactor over the payload's three values is its whole redaction
+			// surface (rule 8) — they are the only secrets that exist in this
+			// process.
+			CacheDir: payload.CacheDir,
+			Redact:   secrets.NewRedactor(payload.Creds.ResticPassword, payload.Creds.SecretKey, payload.Creds.AccessKey).Redact,
 		}
 	}
 
-	result, runErr := runHelperExtract(runCtx, drv, payload, opts, enc)
+	result, runErr := runHelperExtract(runCtx, drv, payload, opts, repoCache, enc)
 	if runErr != nil {
 		// Hand the retained staging back to the invoking user so keep-or-delete
 		// in the (non-root) TUI still works on a tree restic populated as root.
@@ -198,10 +219,10 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 // runHelperExtract re-asserts the boundary checks (regardless of what the
 // parent verified) and then runs the same shared pipeline as App.Extract.
 // Every deliberate root-side delta is an extractPipeline seam: scaffolding
-// dirs are created owned by the invoking user, restic runs --no-cache,
-// progress leaves as NDJSON events — and there is no cred resolution or
-// logging (the parent owns both).
-func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helperPayload, opts ExtractHelperOpts, enc *json.Encoder) (ExtractResult, error) {
+// dirs are created owned by the invoking user, restic shares the user's repo
+// cache (repoCache; "" falls back to --no-cache), progress leaves as NDJSON
+// events — and there is no cred resolution or logging (the parent owns both).
+func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helperPayload, opts ExtractHelperOpts, repoCache string, enc *json.Encoder) (ExtractResult, error) {
 	var result ExtractResult
 	req := payload.Request
 
@@ -223,6 +244,22 @@ func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helper
 		return result, err
 	}
 
+	// Shared cache: pre-create the per-repo cache dir chain owned by the
+	// invoking user (restic's own MkdirAll would leave root-owned ancestors),
+	// and hand every cache entry back to the user after the run — restic
+	// writes each cache miss as root, and a root-owned 0700 fanout subdir
+	// would refuse the user's own later cache writes. The cache is an
+	// optimization: failing to prepare it degrades to --no-cache, never fails
+	// the extract. The deferred chown-back covers success, failure, and
+	// cancellation alike.
+	if repoCache != "" {
+		if err := mkdirAllOwned(repoCache, opts.OwnerUID, opts.OwnerGID); err != nil {
+			repoCache = ""
+		} else {
+			defer chownCacheForOwner(repoCache, opts.OwnerUID, opts.OwnerGID)
+		}
+	}
+
 	// Steps 5–9, shared with App.Extract. mkdirAllOwned keeps every
 	// scaffolding dir (staging parent, mirror ancestors) owned by the invoking
 	// user, so a later non-privileged extract can still merge into the same
@@ -239,7 +276,7 @@ func runHelperExtract(ctx context.Context, drv extractTreeDriver, payload helper
 		policy:  unsafeSymlinkPolicy(payload.UnsafeSymlinks),
 		timeout: time.Duration(payload.TimeoutSeconds) * time.Second,
 		clock:   opts.Clock,
-		noCache: true,
+		noCache: repoCache == "",
 		mkdir:   func(dir string) error { return mkdirAllOwned(dir, opts.OwnerUID, opts.OwnerGID) },
 		onProgress: func(p ExtractProgress) {
 			_ = enc.Encode(helperEvent{Kind: helperEventProgress, Progress: &p})
@@ -308,6 +345,27 @@ func mkdirAllOwned(dir string, uid, gid int) error {
 		}
 	}
 	return nil
+}
+
+// chownCacheForOwner hands the shared per-repo restic cache back to the
+// invoking user after a privileged run. restic wrote any cache miss as the
+// process user (root here): index files, metadata packs, and possibly new
+// 0700 fanout subdirs the user's own restic could no longer write into. Cache
+// entries are content-addressed and written via tmp+rename, so re-owning them
+// is safe against concurrent non-root restics. Best-effort: a node left
+// root-owned costs at worst a cache write error in a later non-elevated run,
+// never extract correctness.
+func chownCacheForOwner(dir string, uid, gid int) {
+	if dir == "" || uid < 0 || gid < 0 {
+		return
+	}
+	_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // keep walking what we can
+		}
+		_ = os.Lchown(p, uid, gid)
+		return nil
+	})
 }
 
 // chownStagingForCleanup hands a failed run's staging tree to the invoking

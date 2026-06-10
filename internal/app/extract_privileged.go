@@ -99,6 +99,9 @@ func (a *App) extractPrivileged(ctx context.Context, req ExtractRequest, staging
 		Creds:          resticCreds(material),
 		Request:        helperReq,
 		UnsafeSymlinks: a.Cfg.Extract.UnsafeSymlinks,
+		// The cache root lets the helper's restic share this user's per-repo
+		// cache (chowning entries back after the run) instead of --no-cache.
+		CacheDir:       a.Cfg.Global.CacheDir,
 		TimeoutSeconds: int64(a.Cfg.Extract.ExtractTimeout.Std().Seconds()),
 	})
 	if err != nil {

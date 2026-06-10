@@ -89,7 +89,9 @@ func TestRunExtractHelperTreeHappyPath(t *testing.T) {
 		t.Fatalf("RunExtractHelper: %v", err)
 	}
 
-	// The restore must run --no-cache: a root restic may not touch any cache.
+	// No cache dir in the payload (and an unknown invoker): the restore must
+	// fall back to --no-cache — a root restic may not touch a cache it cannot
+	// hand back to the user.
 	if !fake.extractCap.treeParams.NoCache {
 		t.Error("helper restore params: NoCache = false, want true")
 	}
@@ -118,6 +120,76 @@ func TestRunExtractHelperTreeHappyPath(t *testing.T) {
 	// Staging container is removed after a clean publish.
 	if _, err := os.Lstat(last.Result.StagingDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("staging dir still present after publish: %v", err)
+	}
+}
+
+// cachePayloadFor is helperPayloadFor plus a cache root, for the shared-cache
+// tests.
+func cachePayloadFor(t *testing.T, req ExtractRequest, root, cacheRoot string) []byte {
+	t.Helper()
+	req.TargetRoot = root
+	b, err := json.Marshal(helperPayload{
+		Version:        helperPayloadVersion,
+		Target:         resticx.Target{Name: "repo-a"},
+		Creds:          resticx.Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"},
+		Request:        req,
+		CacheDir:       cacheRoot,
+		TimeoutSeconds: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestRunExtractHelperSharedCache(t *testing.T) {
+	root, cacheRoot := t.TempDir(), t.TempDir()
+	fake := fakeRestic{
+		extractTreeEvents: []resticx.ExtractTreeEvent{
+			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 4},
+		},
+		extractTreeSetup: dirStagingSetup("nginx", nil),
+		extractCap:       &extractCapture{},
+	}
+	// A known invoker (ourselves — chown to one's own uid/gid needs no root)
+	// plus a cache root in the payload enables the shared cache.
+	opts := ExtractHelperOpts{Euid: 0, OwnerUID: os.Getuid(), OwnerGID: os.Getgid(), Clock: fixedClock{now}, Restic: fake}
+
+	var out bytes.Buffer
+	err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
+	if err != nil {
+		t.Fatalf("RunExtractHelper: %v", err)
+	}
+	if fake.extractCap.treeParams.NoCache {
+		t.Error("helper restore params: NoCache = true, want false (shared cache)")
+	}
+	// The per-repo cache dir chain is pre-created (user-owned in production).
+	if info, err := os.Stat(resticx.RepoCacheDir(cacheRoot, "repo-a")); err != nil || !info.IsDir() {
+		t.Errorf("per-repo cache dir not pre-created: %v", err)
+	}
+}
+
+func TestRunExtractHelperUnknownInvokerForcesNoCache(t *testing.T) {
+	root, cacheRoot := t.TempDir(), t.TempDir()
+	fake := fakeRestic{
+		extractTreeEvents: []resticx.ExtractTreeEvent{
+			{Kind: resticx.ExtractTreeSummary, FilesRestored: 1, BytesRestored: 4},
+		},
+		extractTreeSetup: dirStagingSetup("nginx", nil),
+		extractCap:       &extractCapture{},
+	}
+	// helperOpts leaves OwnerUID/GID at -1: with nobody to hand root-written
+	// cache entries back to, the cache root in the payload must be ignored.
+	var out bytes.Buffer
+	err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, helperOpts(fake))
+	if err != nil {
+		t.Fatalf("RunExtractHelper: %v", err)
+	}
+	if !fake.extractCap.treeParams.NoCache {
+		t.Error("helper restore params: NoCache = false, want true (unknown invoker)")
+	}
+	if _, err := os.Stat(resticx.RepoCacheDir(cacheRoot, "repo-a")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("per-repo cache dir should not be created for an unknown invoker: %v", err)
 	}
 }
 

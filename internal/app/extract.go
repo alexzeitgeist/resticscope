@@ -435,8 +435,9 @@ type extractPipeline struct {
 	// still ends the run).
 	timeout time.Duration
 
-	// noCache forces --no-cache on the restore: the root helper must neither
-	// duplicate the user's cache under /root nor leave root-owned files in it.
+	// noCache forces --no-cache on the restore. The root helper sets it as the
+	// fallback when it cannot share the invoking user's repo cache (no cache
+	// dir in the payload, unknown invoker, or cache-dir setup failure).
 	noCache bool
 
 	// mkdir creates every scaffolding dir AROUND the extracted content (the
