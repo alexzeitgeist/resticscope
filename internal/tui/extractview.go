@@ -115,8 +115,13 @@ func (m Model) extractReviewBody(w int) string {
 		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
 	}
 	body := renderExtractRows(m.styles, rows, w)
-	// Path-free sudo notice (auth failed / privileged unavailable) under the rows.
-	if em.reviewNotice != "" {
+	// One slot under the rows: while the sudo probe is in flight, a neutral hint
+	// that the terminal may be handed over to sudo; otherwise the path-free red
+	// notice (auth failed / privileged unavailable). Never both — every transition
+	// that sets one clears the other.
+	if em.sudoBusy {
+		body += "\n\n" + clip("  "+m.styles.meta.Render("checking sudo access — the terminal may switch to a sudo password prompt"), w)
+	} else if em.reviewNotice != "" {
 		body += "\n\n" + clip("  "+m.styles.errText.Render(em.reviewNotice), w)
 	}
 	return body

@@ -93,9 +93,12 @@ func (r *SudoPrivilegedRunner) Probe(ctx context.Context) error {
 
 // AuthCommand is the interactive half of the sudo flow: `sudo -v` prompts on
 // the user's real TTY and warms the credential cache that Run's `sudo -n`
-// then hits without prompting.
+// then hits without prompting. The -p prompt carries the explanation because
+// the TUI is suspended while sudo owns the terminal and cannot frame the ask
+// itself; it stays path-free like everything else in this file.
 func (r *SudoPrivilegedRunner) AuthCommand() *exec.Cmd {
-	return exec.Command("sudo", "-v")
+	return exec.Command("sudo", "-v",
+		"-p", "resticscope needs sudo to extract as root (preserves snapshot ownership): ")
 }
 
 // Run launches the helper, writes payload to its stdin (keeping the pipe open

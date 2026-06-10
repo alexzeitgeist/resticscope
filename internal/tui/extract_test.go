@@ -1190,6 +1190,29 @@ func TestPrivilegedCommitUnavailable(t *testing.T) {
 	}
 }
 
+// The single slot under the review rows: nothing when idle, the neutral
+// "checking sudo access" hint while the probe/auth is in flight, the red
+// notice after a failure.
+func TestExtractReviewBodySudoSlot(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	m := Model{styles: newStyles(), extract: em}
+
+	if got := stripANSI(m.extractReviewBody(100)); strings.Contains(got, "checking sudo access") {
+		t.Errorf("idle review shows the sudo-busy hint\n---\n%s", got)
+	}
+
+	m.extract.sudoBusy = true
+	if got := stripANSI(m.extractReviewBody(100)); !strings.Contains(got, "checking sudo access") {
+		t.Errorf("busy review missing the sudo hint\n---\n%s", got)
+	}
+
+	m.extract.sudoBusy = false
+	m.extract.reviewNotice = "sudo authentication failed — cannot extract as root"
+	if got := stripANSI(m.extractReviewBody(100)); !strings.Contains(got, "sudo authentication failed") {
+		t.Errorf("review missing the failure notice\n---\n%s", got)
+	}
+}
+
 // A stale probe/auth message (superseded gen or wrong state) is dropped.
 func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
