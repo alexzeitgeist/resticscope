@@ -350,11 +350,14 @@ func (m Model) extractKeepDeleteBody(w int) string {
 	}, w)
 }
 
-// extractFilePickerBody renders the embedded filepicker overlay.
+// extractFilePickerBody renders the embedded filepicker overlay. The picker's
+// View() is clipped line-by-line to the body width: bubbles' filepicker has no
+// width concept (no SetWidth/AutoWidth as of v2.1.0), so a long entry name
+// would otherwise overflow past the layout boundary.
 func (m Model) extractFilePickerBody(w int) string {
 	em := m.extract
 	header := clip(m.styles.meta.Render("  "+em.filepicker.CurrentDirectory), w)
-	body := em.filepicker.View()
+	body := clipLines(strings.Split(em.filepicker.View(), "\n"), w)
 	out := []string{header, "", body}
 	if em.filepickerErr != "" {
 		out = append(out, "", clip(m.styles.errText.Render("  "+em.filepickerErr), w))

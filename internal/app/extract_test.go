@@ -111,9 +111,9 @@ func TestPlanExtractPaths(t *testing.T) {
 	// Pure mirror tree: the source's true path under the per-snapshot dir.
 	wantFinal := "/srv/restore/repo-a/abcd1234/etc/nginx"
 	// Staging is repo-level (a sibling of the <short>/ snapshot dirs), carrying the
-	// short id in its name; the hash input is still the raw source, so 2bbac144 is
-	// unchanged from the flat scheme.
-	wantStaging := "/srv/restore/repo-a/.resticscope-staging-abcd1234-nginx-2bbac144"
+	// short id in its name; the hash is the first 16 hex chars of SHA-256 over the
+	// raw source path.
+	wantStaging := "/srv/restore/repo-a/.resticscope-staging-abcd1234-nginx-2bbac1448fc84276"
 	if final != wantFinal {
 		t.Errorf("final = %q, want %q", final, wantFinal)
 	}
@@ -171,7 +171,7 @@ func TestPlanExtractPathsHashDeterminismAndCollision(t *testing.T) {
 	}
 	// The hash now lives only on the (repo-level) staging name; finals are
 	// path-distinct by the mirror layout.
-	if !strings.HasSuffix(sa, "-4a666ea3") {
+	if !strings.HasSuffix(sa, "-4a666ea3a3b04a24") {
 		t.Errorf("unexpected staging hash for /etc/hosts: %q", sa)
 	}
 	if fa != "/srv/restore/repo-a/abcd1234/etc/hosts" {
@@ -185,7 +185,7 @@ func TestPlanExtractPathsHashDeterminismAndCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(sc, "-1190c10e") {
+	if !strings.HasSuffix(sc, "-1190c10e93ffd94a") {
 		t.Errorf("unexpected staging hash for /var/backups/hosts: %q", sc)
 	}
 	if fc != "/srv/restore/repo-a/abcd1234/var/backups/hosts" {
@@ -210,7 +210,7 @@ func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 	const repoDir = "/srv/restore/repo-a"
 
 	mimic := fileReq()
-	mimic.Source = "/etc/.resticscope-staging-hosts-4a666ea3"
+	mimic.Source = "/etc/.resticscope-staging-hosts-4a666ea3a3b04a24"
 	name, err := SanitizeExtractSlug(path.Base(mimic.Source))
 	if err != nil {
 		t.Fatalf("SanitizeExtractSlug: %v", err)
@@ -221,7 +221,7 @@ func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 		t.Fatalf("PlanExtractPaths(mimic): %v", err)
 	}
 	// The mimicking source mirrors under <short>/, not at the repo level.
-	if want := repoDir + "/abcd1234/etc/.resticscope-staging-hosts-4a666ea3"; mimicFinal != want {
+	if want := repoDir + "/abcd1234/etc/.resticscope-staging-hosts-4a666ea3a3b04a24"; mimicFinal != want {
 		t.Errorf("mimic final = %q, want %q (under <short>/)", mimicFinal, want)
 	}
 
@@ -230,7 +230,7 @@ func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanExtractPaths(hosts): %v", err)
 	}
-	if want := repoDir + "/.resticscope-staging-abcd1234-hosts-4a666ea3"; hostsStaging != want {
+	if want := repoDir + "/.resticscope-staging-abcd1234-hosts-4a666ea3a3b04a24"; hostsStaging != want {
 		t.Errorf("hosts staging = %q, want %q (repo level)", hostsStaging, want)
 	}
 

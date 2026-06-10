@@ -288,13 +288,16 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 	final = filepath.Join(snapDir, relpath) // == snapDir when relpath==""
 
 	sum := sha256.Sum256([]byte(req.Source))
-	hash := hex.EncodeToString(sum[:])[:8]
+	hash := hex.EncodeToString(sum[:])[:16]
 	// Staging is a hidden dir at the REPO level (a sibling of the <short>/ snapshot
 	// dirs), NOT inside the mirror subtree — so it can never collide with mirrored
 	// snapshot content (real content always lives under an 8-hex <short>/ dir).
 	// Same filesystem as final (all under repoDir), so rename/link stays atomic in
 	// the normal app-created tree. <short>+SourceName+hash keep it unique per
-	// (snapshot, source); the user never sees it. SourceName (<=64) bounds NAME_MAX.
+	// (snapshot, source); the user never sees it. The hash is 16 hex chars (64
+	// bits) — for same-basename sources it is the sole disambiguator, and 8 chars
+	// (32 bits) would reach birthday-collision territory within one snapshot.
+	// SourceName (<=64) bounds NAME_MAX (total stays well under 255).
 	staging = filepath.Join(repoDir, ".resticscope-staging-"+req.SnapshotShort+"-"+req.SourceName+"-"+hash)
 	return staging, final, nil
 }
