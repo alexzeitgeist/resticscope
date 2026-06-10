@@ -74,6 +74,47 @@ func (m Model) selectedSnapshot() *model.Snapshot {
 	return &head
 }
 
+// openExtractSnapshot launches the extract modal for the whole snapshot under
+// the detail cursor (Source "/") — the detail-view counterpart of browse's
+// openExtract. A nil selection or a request/setup error surfaces on the status
+// line and stays in detail; only a clean construction switches to extractView.
+// On a grouped or collapsed row the head snapshot is extracted, matching what
+// enter/browse, `s`, and `i` act on.
+func (m Model) openExtractSnapshot() Model {
+	snap := m.selectedSnapshot()
+	if snap == nil {
+		m.statusMsg = "no snapshot selected"
+		return m
+	}
+	name, ok := m.actionRepo()
+	if !ok {
+		return m
+	}
+	req, err := extractRequestFromSnapshot(name, snap)
+	if err != nil {
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m
+	}
+	// Display-only size for the review screen's Type line. Nil for pre-0.17
+	// snapshots, where 0 renders without a size suffix.
+	var srcSize int64
+	if snap.Summary != nil {
+		srcSize = snap.Summary.TotalBytesProcessed
+	}
+	sub, err := newExtractModel(m.app, m.ctx, req, srcSize)
+	if err != nil {
+		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
+		// offending field, so the notice carries no path either.
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m
+	}
+	m.statusMsg = ""
+	m.extract = sub
+	m.extractReturn = detailView
+	m.view = extractView
+	return m
+}
+
 func (m Model) detailHeaderView() string {
 	row, _ := m.detailRow()
 	left := m.styles.title.Render(row.Name) + "  " +

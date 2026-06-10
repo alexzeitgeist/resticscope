@@ -84,7 +84,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Group), "cycle group key"},
 			{keyLabel(k.Quit), "quit"},
 		}},
-		{"Extract (from browse)", []helpEntry{
+		{"Extract", []helpEntry{
 			{keyLabel(k.Enter), "extract"},
 			{keyLabel(k.Target), "choose target root"},
 			{keyLabel(k.Shell), "shell at extracted dir"},
@@ -100,6 +100,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Info), "snapshot info"},
 			{keyLabel(k.Mark), "toggle diff mark"},
 			{keyLabel(k.Diff), "open diff for marks"},
+			{keyLabel(k.Extract), "extract whole snapshot"},
 			{keyLabel(k.Group), "cycle group: host/tags/paths"},
 			{keyLabel(k.Collapse), "toggle tree-id collapse"},
 			{keyLabel(k.Shell), "shell at snapshot"},

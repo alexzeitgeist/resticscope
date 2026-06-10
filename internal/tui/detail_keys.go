@@ -63,6 +63,10 @@ func (m Model) handleDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "no snapshot selected"
 		}
+	case key.Matches(msg, m.keys.Extract):
+		// e extracts the WHOLE selected snapshot (Source "/") through the same
+		// modal browse uses for files/dirs; leaving the modal returns here.
+		m = m.openExtractSnapshot()
 	case key.Matches(msg, m.keys.Group):
 		// g cycles the detail snapshot table's section grouping
 		// (off → host → tags → paths → off). cycleSnapGroup anchors on the

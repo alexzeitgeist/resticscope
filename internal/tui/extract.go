@@ -30,9 +30,10 @@ import (
 // find-versions / snapshot-diff).
 //
 // Browse wires the `e` key to construct this sub-model from the selected
-// BrowseEntry via extractRequestFromBrowseEntry. The success-view `s` action
-// opens a credential-free local shell rooted at the extracted directory via
-// App.LocalShellSession.
+// BrowseEntry via extractRequestFromBrowseEntry; detail wires its `e` to the
+// whole-snapshot request (Source "/") via extractRequestFromSnapshot. The
+// success-view `s` action opens a credential-free local shell rooted at the
+// extracted directory via App.LocalShellSession.
 
 // extractState is the modal's state machine.
 type extractState int
@@ -229,9 +230,10 @@ type extractSudoAuthMsg struct {
 }
 
 // extractBackToBrowseMsg is dispatched by the sub-model when it wants the root
-// model to leave extractView. The root model handles the view switch and drops
-// the whole sub-model (zeroing every transient path field). We use a message
-// rather than a direct mutation so the sub-model stays self-contained.
+// model to leave extractView. The root model handles the switch back to the
+// originating view (browse or detail, per extractReturn) and drops the whole
+// sub-model (zeroing every transient path field). We use a message rather than
+// a direct mutation so the sub-model stays self-contained.
 type extractBackToBrowseMsg struct {
 	notice string
 }
@@ -789,6 +791,27 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	}, nil
 }
 
+// extractRequestFromSnapshot translates a detail-view snapshot selection into
+// the whole-snapshot ExtractRequest (Source "/"). The detail `e` keypress uses
+// it before opening the modal. PlanExtractPaths requires SourceName ==
+// SnapshotShort for the root source and collapses the final path to the
+// snapshot dir itself, so the published tree lands at
+// <target_root>/<repo>/<short>/.
+func extractRequestFromSnapshot(repo string, snap *model.Snapshot) (app.ExtractRequest, error) {
+	if snap == nil || len(snap.ID) < 8 {
+		return app.ExtractRequest{}, errors.New("snapshot id too short")
+	}
+	short := snap.ID[:8]
+	return app.ExtractRequest{
+		Repo:          repo,
+		SnapshotID:    snap.ID,
+		SnapshotShort: short,
+		Source:        "/",
+		SourceName:    short,
+		Mode:          app.ExtractDirectoryTree,
+	}, nil
+}
+
 // shortHelp produces the modal's per-state footer bindings, rendered by
 // footerView through the same bubbles help model as every other view (so the
 // styling and separator can never drift). Kept here next to handleKey so the
@@ -802,7 +825,9 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 	case extractStateRunning:
 		return []key.Binding{helpAs(keys.Back, "cancel")}
 	case extractStateSuccess:
-		return []key.Binding{helpAs(keys.Shell, "shell here"), helpAs(keys.Enter, "back to browse")}
+		// "back" rather than "back to browse": the modal launches from browse
+		// and detail alike, and the sub-model doesn't know its origin.
+		return []key.Binding{helpAs(keys.Shell, "shell here"), helpAs(keys.Enter, "back")}
 	case extractStateCanceled, extractStateError:
 		if m.stagingExists {
 			return []key.Binding{keys.Keep, keys.Delete}
@@ -810,13 +835,13 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 		if isExtractRefusal(m.err) {
 			// Advertise the retarget affordance the hint points to (handleTerminalKey
 			// honors t in this branch).
-			return []key.Binding{keys.Target, helpAs(keys.Enter, "back to browse")}
+			return []key.Binding{keys.Target, helpAs(keys.Enter, "back")}
 		}
-		return []key.Binding{helpAs(keys.Enter, "back to browse")}
+		return []key.Binding{helpAs(keys.Enter, "back")}
 	case extractStateFilePicker:
 		return []key.Binding{keys.Back}
 	case extractStateKeepDelete:
-		return []key.Binding{helpAs(keys.Back, "back to browse")}
+		return []key.Binding{helpAs(keys.Back, "back")}
 	}
 	return nil
 }

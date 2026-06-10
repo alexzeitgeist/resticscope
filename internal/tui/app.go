@@ -172,12 +172,20 @@ type Model struct {
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
 	diffProgress  chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
 
-	// Extract sub-model. Constructed on `e` from browse (step 07) and hosted
-	// here while m.view == extractView. The sub-model owns its own state
-	// machine, generation token, per-op cancel, embedded filepicker, and
-	// transient-clear discipline; the root Model just routes keys and messages
-	// to it and swaps view back to browse on extractBackToBrowseMsg.
+	// Extract sub-model. Constructed on `e` from browse (selected entry) or
+	// detail (whole snapshot) and hosted here while m.view == extractView. The
+	// sub-model owns its own state machine, generation token, per-op cancel,
+	// embedded filepicker, and transient-clear discipline; the root Model just
+	// routes keys and messages to it and swaps view back to the originating
+	// view on extractBackToBrowseMsg.
 	extract extractModel
+
+	// extractReturn is the view the extract modal exits to, set by each launch
+	// site beside its switch to extractView and reset when the sub-model is
+	// dropped. The exit handler treats anything other than detailView as
+	// browse, so a stale or unset value (the zero value is listView) lands on
+	// the historical default.
+	extractReturn view
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -349,6 +357,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.extract.supersede()
 		m.extract = extractModel{}
 		m.view = browseView
+		if m.extractReturn == detailView {
+			m.view = detailView
+		}
+		m.extractReturn = listView
 		if msg.notice != "" {
 			m.statusMsg = msg.notice
 		}

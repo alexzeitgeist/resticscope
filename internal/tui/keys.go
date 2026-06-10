@@ -31,7 +31,7 @@ type keyMap struct {
 	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
 	Info       key.Binding // detail: open the full snapshot-info modal
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
-	Extract    key.Binding // browse: open the extract modal for the selected entry
+	Extract    key.Binding // browse: extract the selected entry; detail: extract the whole snapshot
 	Target     key.Binding // extract: open the target-root filepicker overlay from review
 	Priv       key.Binding // extract: toggle the privileged (sudo) restore on review
 	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
@@ -145,15 +145,9 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Extract, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
 	case browseView:
-		// The compact footer is width-bound, and browse already fills it. Collapse
-		// the two cursor-movement bindings into one "↑/↓ move" entry so the extract
-		// action fits alongside the existing browse keys without clipping
-		// shell/back on an ~100-col terminal. j/k still move (the ? overlay lists
-		// them); only the footer hint is condensed.
-		move := key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
-		return []key.Binding{move, helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
@@ -189,6 +183,15 @@ func helpAs(b key.Binding, desc string) key.Binding {
 	return b
 }
 
+// moveHelp is the condensed "↑/↓ move" footer entry the width-bound browse and
+// detail footers share: the two cursor-movement bindings collapse into one so
+// the extract action fits alongside the existing keys without clipping
+// shell/back on an ~100-col terminal. j/k still move (the ? overlay lists
+// them); only the footer hint is condensed.
+func moveHelp() key.Binding {
+	return key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
+}
+
 func (h viewHelp) FullHelp() [][]key.Binding {
 	k := h.keys
 	if h.filtering {
@@ -206,7 +209,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{helpAs(k.Enter, "browse"), k.Shell, k.Browse},
+			{helpAs(k.Enter, "browse"), k.Shell, k.Browse, k.Extract},
 			{k.Mark, k.Diff, k.Info},
 			{k.Group, k.Collapse},
 			{k.Refresh, k.Back},

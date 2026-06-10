@@ -369,8 +369,9 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 
 // openExtract launches the extract modal for the selected browse entry. Browse's
 // row listing is children-only (00-framework.md §22), so the selection is always
-// a non-root file or directory; the Source == "/" full-snapshot path is reserved
-// for the deferred detail-view entry point and is unreachable here. Symlinks and
+// a non-root file or directory; the Source == "/" full-snapshot path belongs to
+// the detail-view entry point (openExtractSnapshot) and is unreachable here.
+// Symlinks and
 // special nodes are rejected with a path-free notice and no view change; a
 // path-planning or setup error likewise stays in browse. Only a clean
 // construction switches to extractView. The sub-model's parentCtx is m.ctx — the
@@ -403,6 +404,7 @@ func (m Model) openExtract() (Model, tea.Cmd) {
 	}
 	m.browseNotice = ""
 	m.extract = sub
+	m.extractReturn = browseView
 	m.view = extractView
 	return m, nil
 }

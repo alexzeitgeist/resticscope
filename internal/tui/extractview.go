@@ -249,7 +249,7 @@ func (m Model) extractSuccessBody(w int) string {
 	body = append(body,
 		"",
 		"    "+m.styles.dim.Render("s     open a shell in the target directory"),
-		"    "+m.styles.dim.Render("enter back to browse"),
+		"    "+m.styles.dim.Render("enter back"),
 	)
 	return clipLines(body, w)
 }
@@ -310,7 +310,7 @@ func (m Model) extractTerminalBody(w int) string {
 		}
 		lines = append(lines,
 			"",
-			"    "+m.styles.dim.Render("enter back to browse"),
+			"    "+m.styles.dim.Render("enter back"),
 		)
 	}
 	return clipLines(lines, w)

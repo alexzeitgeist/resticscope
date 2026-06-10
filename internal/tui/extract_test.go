@@ -1230,3 +1230,265 @@ func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
 		t.Fatal("stale-gen auth msg must be dropped")
 	}
 }
+
+// --- detail view → whole-snapshot extract wiring ---
+
+// extractTestSnapIDOlder is a second well-formed 64-hex snapshot id for the
+// detail fixture's older row.
+const extractTestSnapIDOlder = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+
+// extractDetailModel parks a Model on repo-a's detail view with a valid
+// [extract] config and two well-formed 64-hex snapshot ids (the shape
+// PlanExtractPaths requires — the detail `e` dispatch passes the cached
+// snapshot id straight through). Newest-first ordering puts the
+// Summary-bearing snapshot under the starting cursor; the older row carries no
+// Summary (the pre-restic-0.17 shape).
+func extractDetailModel(t *testing.T) Model {
+	t.Helper()
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {
+			Name:          "repo-a",
+			RefreshedAt:   testNow,
+			LastSnapshot:  testNow.Add(-time.Hour),
+			SnapshotCount: 2,
+			Snapshots: []model.Snapshot{
+				{ID: extractTestSnapIDOlder, ShortID: extractTestSnapIDOlder[:8], Time: testNow.Add(-2 * time.Hour), Hostname: "h"},
+				{
+					ID: extractTestSnapID, ShortID: extractTestSnapID[:8], Time: testNow.Add(-time.Hour), Hostname: "h",
+					Summary: &model.SnapshotSummary{TotalBytesProcessed: 4096},
+				},
+			},
+		},
+	})
+	cfg, _ := extractCfg(t)
+	a.Cfg.Extract = cfg
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	if m.view != detailView {
+		t.Fatalf("precondition: enter should open detailView, view = %d", m.view)
+	}
+	return m
+}
+
+// extractRequestFromSnapshot builds the whole-snapshot request shape: Source
+// "/", SourceName == SnapshotShort (the rule PlanExtractPaths re-asserts for
+// the root source), directory-tree mode.
+func TestExtractRequestFromSnapshot(t *testing.T) {
+	req, err := extractRequestFromSnapshot("repo-a", &model.Snapshot{ID: extractTestSnapID})
+	if err != nil {
+		t.Fatalf("extractRequestFromSnapshot: %v", err)
+	}
+	if req.Source != "/" {
+		t.Errorf("Source = %q, want /", req.Source)
+	}
+	short := extractTestSnapID[:8]
+	if req.SourceName != short || req.SnapshotShort != short {
+		t.Errorf("SourceName/SnapshotShort = %q/%q, want %q", req.SourceName, req.SnapshotShort, short)
+	}
+	if req.SnapshotID != extractTestSnapID {
+		t.Errorf("SnapshotID = %q, want %q", req.SnapshotID, extractTestSnapID)
+	}
+	if req.Mode != app.ExtractDirectoryTree {
+		t.Errorf("Mode = %v, want ExtractDirectoryTree", req.Mode)
+	}
+	if req.WasRegularFile {
+		t.Error("a whole snapshot must not be flagged WasRegularFile")
+	}
+	if req.TargetRoot != "" {
+		t.Errorf("TargetRoot = %q, want empty (cfg default)", req.TargetRoot)
+	}
+
+	if _, err := extractRequestFromSnapshot("repo-a", nil); err == nil {
+		t.Error("nil snapshot must be rejected")
+	}
+	if _, err := extractRequestFromSnapshot("repo-a", &model.Snapshot{ID: "ab12"}); err == nil {
+		t.Error("a too-short id must be rejected")
+	}
+}
+
+// A whole-snapshot request plans final as the snapshot dir itself
+// (<target_root>/<repo>/<short>) and staging as the hidden repo-level sibling,
+// per PlanExtractPaths' root-source collapse.
+func TestExtractRequestFromSnapshotPlansSnapshotDir(t *testing.T) {
+	cfg, root := extractCfg(t)
+	req, err := extractRequestFromSnapshot("repo-a", &model.Snapshot{ID: extractTestSnapID})
+	if err != nil {
+		t.Fatalf("extractRequestFromSnapshot: %v", err)
+	}
+	staging, final, err := app.PlanExtractPaths(cfg, req)
+	if err != nil {
+		t.Fatalf("PlanExtractPaths: %v", err)
+	}
+	if want := filepath.Join(root, "repo-a", extractTestSnapID[:8]); final != want {
+		t.Errorf("final = %q, want the snapshot dir itself %q", final, want)
+	}
+	if filepath.Dir(staging) != filepath.Join(root, "repo-a") {
+		t.Errorf("staging = %q, want a repo-level sibling of the snapshot dirs", staging)
+	}
+	if !strings.HasPrefix(filepath.Base(staging), ".resticscope-staging-") {
+		t.Errorf("staging = %q, want the hidden staging prefix", staging)
+	}
+}
+
+// e on the detail view opens the extract sub-model for the WHOLE selected
+// snapshot, with the return view pinned to detail and the review size carried
+// from the snapshot summary.
+func TestDetailExtractKeyOpensSubModel(t *testing.T) {
+	m := extractDetailModel(t)
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e on detail should open extractView, view = %d", m.view)
+	}
+	req := m.extract.req
+	if req.Repo != "repo-a" {
+		t.Errorf("Repo = %q, want repo-a", req.Repo)
+	}
+	if req.SnapshotID != extractTestSnapID {
+		t.Errorf("SnapshotID = %q, want the newest snapshot %q", req.SnapshotID, extractTestSnapID)
+	}
+	if req.Source != "/" {
+		t.Errorf("Source = %q, want /", req.Source)
+	}
+	if req.SourceName != extractTestSnapID[:8] {
+		t.Errorf("SourceName = %q, want %q", req.SourceName, extractTestSnapID[:8])
+	}
+	if req.Mode != app.ExtractDirectoryTree {
+		t.Errorf("Mode = %v, want ExtractDirectoryTree", req.Mode)
+	}
+	if m.extractReturn != detailView {
+		t.Errorf("extractReturn = %d, want detailView", m.extractReturn)
+	}
+	if m.extract.srcSize != 4096 {
+		t.Errorf("srcSize = %d, want 4096 (carried from Summary.TotalBytesProcessed)", m.extract.srcSize)
+	}
+}
+
+// A snapshot without a Summary (pre-restic-0.17) still extracts; srcSize stays
+// 0, which the review Type line renders without a size suffix.
+func TestDetailExtractWithoutSummary(t *testing.T) {
+	m := extractDetailModel(t)
+	m = update(t, m, press("j")) // cursor to the older, summary-less snapshot
+
+	m = update(t, m, press("e"))
+
+	if m.view != extractView {
+		t.Fatalf("e should open extractView, view = %d", m.view)
+	}
+	if m.extract.req.SnapshotID != extractTestSnapIDOlder {
+		t.Errorf("SnapshotID = %q, want the older snapshot %q", m.extract.req.SnapshotID, extractTestSnapIDOlder)
+	}
+	if m.extract.srcSize != 0 {
+		t.Errorf("srcSize = %d, want 0 for a summary-less snapshot", m.extract.srcSize)
+	}
+}
+
+// Leaving a detail-launched extract lands back on the detail view (not
+// browse), with the sub-model zeroed and the return view reset.
+func TestDetailExtractReturnsToDetail(t *testing.T) {
+	m := extractDetailModel(t)
+	m = update(t, m, press("e"))
+	if m.view != extractView {
+		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
+	}
+
+	next, cmd := m.Update(press("esc"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("esc on review should return an exit cmd")
+	}
+	m = update(t, m, cmd())
+
+	if m.view != detailView {
+		t.Errorf("after leaving extract, view = %d, want detailView", m.view)
+	}
+	if m.extract.req.Source != "" || m.extract.staging != "" || m.extract.final != "" {
+		t.Errorf("sub-model not zeroed on exit: %+v", m.extract.req)
+	}
+	if m.extractReturn != listView {
+		t.Errorf("extractReturn = %d, want reset to the zero value", m.extractReturn)
+	}
+	if m.detailName != "repo-a" {
+		t.Errorf("detailName = %q, want repo-a (detail context intact)", m.detailName)
+	}
+}
+
+// e on an empty repo surfaces the same kind of status hint the info arm uses
+// and builds no sub-model.
+func TestDetailExtractEmptyRepoStatusHint(t *testing.T) {
+	a := testApp(map[string]model.RepoState{
+		"repo-a": {Name: "repo-a", RefreshedAt: testNow},
+	})
+	cfg, _ := extractCfg(t)
+	a.Cfg.Extract = cfg
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	if m.view != detailView {
+		t.Fatalf("precondition: enter should open detailView, view = %d", m.view)
+	}
+
+	m = update(t, m, press("e"))
+
+	if m.view != detailView {
+		t.Errorf("e with no snapshots should stay in detail, view = %d", m.view)
+	}
+	if m.statusMsg != "no snapshot selected" {
+		t.Errorf("statusMsg = %q, want the no-selection hint", m.statusMsg)
+	}
+	if m.extract.req.Source != "" {
+		t.Errorf("no sub-model should be built; req = %+v", m.extract.req)
+	}
+}
+
+// A cached snapshot id that isn't 64-hex (e.g. written by an old cache shape)
+// is refused by PlanExtractPaths inside newExtractModel: a path-free status
+// notice, no view change. detailApp's ids ("id-newest") are exactly that shape.
+func TestDetailExtractMalformedIDStaysInDetail(t *testing.T) {
+	a := detailApp(t)
+	cfg, _ := extractCfg(t)
+	a.Cfg.Extract = cfg
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+
+	m = update(t, m, press("e"))
+
+	if m.view != detailView {
+		t.Errorf("e with a malformed id should stay in detail, view = %d", m.view)
+	}
+	if !strings.HasPrefix(m.statusMsg, "extract:") {
+		t.Errorf("statusMsg = %q, want an extract error notice", m.statusMsg)
+	}
+	if strings.Contains(m.statusMsg, "id-") {
+		t.Errorf("error notice leaked the snapshot id: %q", m.statusMsg)
+	}
+}
+
+// The detail footer advertises the extract action so it is discoverable in
+// context. Rendered wide so the full short-help line is visible.
+func TestDetailFooterAdvertisesExtract(t *testing.T) {
+	m := extractDetailModel(t)
+	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "e extract") {
+		t.Errorf("detail footer should advertise 'e extract'\n---\n%s", footer)
+	}
+}
+
+// The modal's exit affordance says plain "back": the modal launches from
+// browse and detail alike and the sub-model doesn't know its origin, so it
+// must never claim a destination.
+func TestExtractFooterBackLabelOriginNeutral(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	keys := defaultKeys()
+	for _, st := range []extractState{extractStateSuccess, extractStateError, extractStateKeepDelete} {
+		em.state = st
+		if got := footHelp(em, keys); strings.Contains(got, "back to browse") {
+			t.Errorf("state %v footer = %q, want origin-neutral 'back'", st, got)
+		}
+	}
+	em.state = extractStateSuccess
+	if got := footHelp(em, keys); !strings.Contains(got, "enter back") {
+		t.Errorf("success footer = %q, want 'enter back'", got)
+	}
+}
