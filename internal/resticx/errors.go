@@ -51,7 +51,7 @@ func (e *Error) Error() string {
 	case KindCanceled:
 		return fmt.Sprintf("restic %s: canceled", e.Op)
 	case KindPartial:
-		return fmt.Sprintf("restic %s: completed with errors (partial restore)", e.Op)
+		return fmt.Sprintf("restic %s: completed with errors", e.Op)
 	default:
 		if e.Stderr != "" {
 			return fmt.Sprintf("restic %s failed: %v (stderr: %s)", e.Op, e.wrapped, e.Stderr)

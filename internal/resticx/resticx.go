@@ -116,11 +116,7 @@ func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, ar
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
-	full := make([]string, 0, len(args)+2)
-	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
-		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
-	}
-	full = append(full, args...)
+	full := prependBackendOpts(t, args...)
 
 	env := c.buildEnv(t, creds)
 	stdout, stderr, err := c.Runner.Run(ctx, env, creds.ResticPassword, full...)
@@ -128,6 +124,18 @@ func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, ar
 		return nil, c.classify(ctx, op, err, stderr)
 	}
 	return stdout, nil
+}
+
+// prependBackendOpts returns args with the target's backend -o options
+// prepended — currently just s3.bucket-lookup when configured. The single
+// assembly point for every driver (runOp and the browse/diff/restore streams),
+// so a new backend option means one edit, not four.
+func prependBackendOpts(t Target, args ...string) []string {
+	full := make([]string, 0, len(args)+2)
+	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
+		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
+	}
+	return append(full, args...)
 }
 
 func (c *Client) timeout() time.Duration {

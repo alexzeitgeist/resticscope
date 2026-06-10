@@ -223,11 +223,7 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	full := make([]string, 0, len(args)+2)
-	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
-		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
-	}
-	full = append(full, args...)
+	full := prependBackendOpts(t, args...)
 
 	env := c.buildEnv(t, creds)
 	st := &extractTreeStream{onEvent: onEvent, cancel: cancel}

@@ -117,13 +117,18 @@ func defaultKeys() keyMap {
 // there. While the user is typing a filter (filtering), it shows the apply/clear
 // bindings instead. Enter does something different in each view (open detail in
 // the list, browse the selected snapshot in detail, open directory in browse),
-// so its footer label is overridden per view via enterAs below.
+// so its footer label is overridden per view via helpAs below.
 type viewHelp struct {
 	keys           keyMap
 	view           view
 	filtering      bool
 	searching      bool // browse global filename search input is open
 	infoScrollable bool // info modal body overflows; advertise up/down in the footer
+
+	// extractBindings are the extract modal's per-state footer bindings,
+	// supplied by extractModel.shortHelp (the sub-model owns its state machine,
+	// so footerView fills this in when the extract view is active).
+	extractBindings []key.Binding
 }
 
 func (h viewHelp) ShortHelp() []key.Binding {
@@ -138,7 +143,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "browse"), k.Mark, k.Diff, k.Info, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
 	case browseView:
 		// The compact footer is width-bound, and browse already fills it. Collapse
 		// the two cursor-movement bindings into one "↑/↓ move" entry so the extract
@@ -146,15 +151,17 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		// shell/back on an ~100-col terminal. j/k still move (the ? overlay lists
 		// them); only the footer hint is condensed.
 		move := key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
-		return []key.Binding{move, enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
+		return []key.Binding{move, helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
 		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Back}
 	case snapshotDiffView:
-		return []key.Binding{k.Up, k.Down, enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
+		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
 	case extractView:
-		// Extract renders its own per-state footer via extract.helpLine in
-		// footerView, bypassing this bubble-help path entirely. This branch is a
-		// fallback only; it advertises the always-present back affordance.
+		// Per-state bindings from the extract sub-model; fall back to the
+		// always-present back affordance if a caller forgot to supply them.
+		if len(h.extractBindings) > 0 {
+			return h.extractBindings
+		}
 		return []key.Binding{k.Back}
 	case helpView:
 		return []key.Binding{k.Back}
@@ -167,16 +174,16 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		}
 		return []key.Binding{k.Back}
 	default: // listView
-		return []key.Binding{k.Up, k.Down, enterAs(k, "detail"), k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "detail"), k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
 	}
 }
 
-// enterAs returns the Enter binding with a view-specific footer label. The
-// underlying keys are unchanged so key.Matches against the canonical k.Enter
-// still works; only the help text differs.
-func enterAs(k keyMap, desc string) key.Binding {
-	b := k.Enter
-	b.SetHelp("enter", desc)
+// helpAs returns b with a view-specific footer description. The underlying keys
+// are unchanged so key.Matches against the canonical binding still works; only
+// the help text differs (e.g. Enter advertises "open"/"browse"/"extract" per
+// view, Back advertises "cancel" while an extract runs).
+func helpAs(b key.Binding, desc string) key.Binding {
+	b.SetHelp(b.Help().Key, desc)
 	return b
 }
 
@@ -197,7 +204,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case detailView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "browse"), k.Shell, k.Browse},
+			{helpAs(k.Enter, "browse"), k.Shell, k.Browse},
 			{k.Mark, k.Diff, k.Info},
 			{k.Group, k.Collapse},
 			{k.Refresh, k.Back},
@@ -205,7 +212,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case browseView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell},
+			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell},
 			{k.Back},
 		}
 	case findVersionsView:
@@ -216,7 +223,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "open"), k.Parent, k.Search, k.DiffSwap},
+			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}
@@ -241,7 +248,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	default: // listView
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{enterAs(k, "detail"), k.Shell},
+			{helpAs(k.Enter, "detail"), k.Shell},
 			{k.Refresh, k.RefreshAll},
 			{k.Filter, k.Sort, k.Group},
 			{k.Help, k.Quit},

@@ -58,6 +58,17 @@ const (
 	unsafeSymlinkPlaceholder unsafeSymlinkPolicy = "placeholder" // replace with an inert text file recording the target
 )
 
+// extractMetaCounts tallies what the post-restore normalizer saw. It is
+// count-only — it holds no paths — so it is safe to log. Like
+// unsafeSymlinkPolicy above, it is defined here (not in extract_metadata.go) so
+// the linux/darwin normalizer and the other-platform stub share one definition.
+type extractMetaCounts struct {
+	Files          int // regular files (metadata preserved as restic restored it)
+	Dirs           int // directories (excludes the staging root)
+	UnsafeSymlinks int // symlinks whose target is absolute or escapes the tree
+	Other          int // device/fifo/socket/other special nodes, left in place
+}
+
 // ExtractRequest is the explicit contract between the TUI / future CLI and the
 // app layer. Every field is provided by the caller; App.Extract inspects no
 // BrowseEntry. The app layer re-asserts the slug rule and file-type gate before
@@ -100,14 +111,14 @@ type ExtractRequest struct {
 }
 
 // ExtractProgress is the flattened progress the orchestrator hands to the TUI.
-// resticx events never reach the TUI directly.
+// resticx events never reach the TUI directly. There is no ETA field: restic
+// restore's JSON schema carries no seconds_remaining.
 type ExtractProgress struct {
-	BytesDone        int64
-	BytesTotal       int64 // 0 until restic reports it
-	FilesDone        int
-	FilesTotal       int
-	SecondsElapsed   float64
-	SecondsRemaining float64
+	BytesDone      int64
+	BytesTotal     int64 // 0 until restic reports it
+	FilesDone      int
+	FilesTotal     int
+	SecondsElapsed float64
 }
 
 // ExtractResult is returned from App.Extract. FinalDir / FinalPath are set only
@@ -122,12 +133,11 @@ type ExtractResult struct {
 
 	// UnsafeSymlinks counts symlinks whose target is absolute or escapes the
 	// extracted tree; Other counts device/fifo/socket nodes left in place. Both
-	// come from the normalizer walk (live tree extract only). UnsafeSymlinkPolicy
-	// records which [extract] unsafe_symlinks policy applied, so the TUI can phrase
-	// the warning correctly (kept / removed / replaced).
-	UnsafeSymlinks      int
-	Other               int
-	UnsafeSymlinkPolicy string
+	// come from the normalizer walk (live tree extract only). The policy that
+	// applied is the caller's own validated [extract] unsafe_symlinks config —
+	// it is config-only, never per-request, so the result does not echo it.
+	UnsafeSymlinks int
+	Other          int
 
 	// FinalDir is a directory the shell-here action can cd into; FinalPath is the
 	// exact published node. For a directory extract the two coincide (the mirrored
@@ -374,7 +384,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	}
 
 	// 4. Fresh-target check.
-	if err := freshTargetCheck(staging, final); err != nil {
+	if err := FreshTargetCheck(staging, final); err != nil {
 		return result, err
 	}
 
@@ -401,8 +411,11 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	runCtx, cancel := context.WithTimeout(ctx, a.Cfg.Extract.ExtractTimeout.Std())
 	defer cancel()
 
-	// 7. Mode dispatch.
-	if dispErr := a.dispatchExtract(runCtx, r, material, req, staging, &result, onProgress); dispErr != nil {
+	// 7. Run the restore. Both file and directory extracts are `restic restore`
+	// with the same params shape (rebase parent + --include the leaf, built by
+	// extractTreeParams); the file/directory difference is only in
+	// publishExtract's primitive (link vs rename).
+	if dispErr := a.extractTree(runCtx, r, material, req, staging, &result, onProgress); dispErr != nil {
 		// Prefer the local timeout/cancel verdict so the app boundary surfaces a
 		// context error regardless of how resticx classified the interruption.
 		if ce := runCtx.Err(); ce != nil {
@@ -425,7 +438,6 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	result.Dirs = counts.Dirs
 	result.UnsafeSymlinks = counts.UnsafeSymlinks
 	result.Other = counts.Other
-	result.UnsafeSymlinkPolicy = a.Cfg.Extract.UnsafeSymlinks
 
 	// 9. Publish on clean completion: build the deep mirror ancestor chain, then
 	// move staging into its true mirror path (rename for a directory, no-replace
@@ -519,14 +531,6 @@ func publishExtract(mode ExtractMode, source, staging, final string) error {
 	return nil
 }
 
-// dispatchExtract routes every mode through the single restore driver. Both file
-// and directory extracts are `restic restore` with the same params shape (rebase
-// parent + --include the leaf, built by extractTreeParams); the file/directory
-// difference is only in publishExtract's primitive (link vs rename).
-func (a *App) dispatchExtract(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	return a.extractTree(ctx, r, material, req, staging, result, onProgress)
-}
-
 // extractTreeParams builds the resticx restore params from the request and
 // staging dir, setting the RAW Source / IncludePath (resticx escapes the include
 // to a literal pattern). File and directory share ONE shape — rebase the parent,
@@ -584,12 +588,14 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 	return a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent)
 }
 
-// freshTargetCheck refuses an extract whose staging or final dir already exists,
+// FreshTargetCheck refuses an extract whose staging or final dir already exists,
 // so a conflict surfaces before any staging side effect. The rule is path
 // occupancy, so it Lstats (never Stat): a dangling
 // symlink at either path is an occupant and must fail here, not later as a rename
 // error. The sentinels are path-free; a non-ENOENT failure is wrapped path-free.
-func freshTargetCheck(staging, final string) error {
+// Exported so the TUI's target-override picker can re-plan and refuse with the
+// same rule and sentinels App.Extract enforces.
+func FreshTargetCheck(staging, final string) error {
 	if _, err := os.Lstat(staging); err == nil {
 		return ErrExtractStagingExists
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -599,6 +605,17 @@ func freshTargetCheck(staging, final string) error {
 		return ErrExtractFinalExists
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return pathFreeExtractErr("stat target", err)
+	}
+	return nil
+}
+
+// DeleteExtractStaging removes a staging directory after the user confirms the
+// delete from the keep-or-delete prompt. It lives here so the staging lifecycle
+// and the path-free error discipline stay in the layer that created the dir —
+// a raw os.RemoveAll error embeds the staging path.
+func DeleteExtractStaging(staging string) error {
+	if err := os.RemoveAll(staging); err != nil {
+		return pathFreeExtractErr("delete staging", err)
 	}
 	return nil
 }

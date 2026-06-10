@@ -49,7 +49,7 @@ func (m Model) pathLine(label, value string, width int) string {
 func (m Model) browseSummaryLine() string {
 	if m.browseLoading && !m.browseIndexed {
 		parts := []string{fmt.Sprintf("indexing… %d entries", m.browseIndexN)}
-		if rate := browseIndexRateLabel(m.browseIndexRate); rate != "" {
+		if rate := browseIndexRateLabel(m.browseRate.rate); rate != "" {
 			parts = append(parts, rate)
 		}
 		parts = append(parts, "esc/back cancels")

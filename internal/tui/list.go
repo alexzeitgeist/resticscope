@@ -437,9 +437,10 @@ func (m Model) footerView() string {
 	w, _ := m.effSize()
 	if m.view == extractView {
 		// Extract owns a per-state footer driven by its sub-model state machine
-		// (review/running/terminal each advertise different keys), so it
-		// renders directly here instead of through the bubble-help binding list.
-		return clip(m.extract.helpLine(m.keys, m.styles), w)
+		// (review/running/terminal each advertise different keys); the sub-model
+		// supplies the bindings, the shared help model renders them. No status /
+		// input line: the modal surfaces its outcomes in its own body.
+		return clip(m.help.View(viewHelp{keys: m.keys, view: m.view, extractBindings: m.extract.shortHelp(m.keys)}), w)
 	}
 	searching := m.browseSearching || m.diffSearching
 	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching, infoScrollable: m.infoScrollable()}), w)

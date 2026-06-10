@@ -6,7 +6,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/filepicker"
@@ -24,9 +23,10 @@ import (
 // token and cancel context (mirroring browse.go), the embedded bubbles/filepicker
 // for target-root override, the sampled-rate progress line, and the keep-or-delete
 // overlay. The sub-model holds source / staging / final paths only for the
-// lifetime of the modal — clearExtract zeros every transient field on every exit
-// path so no path data lingers in the model (non-negotiable #1, same discipline
-// as browse / find-versions / snapshot-diff).
+// lifetime of the modal — every exit path funnels through extractBackToBrowseMsg,
+// where the root model replaces the whole sub-model with its zero value, so no
+// path data lingers in the model (non-negotiable #1, same discipline as browse /
+// find-versions / snapshot-diff).
 //
 // Browse wires the `e` key to construct this sub-model from the selected
 // BrowseEntry via extractRequestFromBrowseEntry. The success-view `s` action
@@ -50,11 +50,6 @@ const (
 // the producer (the resticx restore event callback) never stalls behind a full
 // UI channel. Mirrors browseProgressBuffer / diffProgressBuffer.
 const extractProgressBuffer = 64
-
-// extractRateWindow is the minimum sample span for the displayed recent
-// extract throughput rate, matching the browse indexer's window so both feel
-// the same to the user.
-const extractRateWindow = 2 * time.Second
 
 // extractDriver is the small consumer-side interface the sub-model needs from
 // the app layer (engineering rule 3: tiny, defined where it is used). Satisfied
@@ -86,8 +81,8 @@ type extractModel struct {
 
 	// srcSize is the source node's size from the originating BrowseEntry (a
 	// directory's recursive subtree size, a file's byte length). Display-only:
-	// shown on the review "Type" line. Zeroed by clearTransient with everything
-	// else so no size derived from a path lingers after leaving the modal.
+	// shown on the review "Type" line; dropped with the rest of the sub-model on
+	// exit so no size derived from a path lingers after leaving the modal.
 	srcSize int64
 
 	// staging / final are derived from req via PlanExtractPaths and updated
@@ -113,14 +108,17 @@ type extractModel struct {
 	result app.ExtractResult
 	err    error
 
-	// progress is the latest sampled snapshot during running. rateBaseN /
-	// rateBaseAt / rate compute the sampled MiB/s for the running view, using
-	// the same window-sampled approach as the browse indexer (copy of the
-	// pattern per the step-05 plan; TODO: consolidate when both views need it).
-	progress   app.ExtractProgress
-	rateBaseN  int64
-	rateBaseAt time.Time
-	rate       float64
+	// stagingExists caches stagingPending() — whether this run's staging dir is
+	// still on disk. Set when a run lands on a terminal state and re-probed per
+	// terminal-state keypress, so the render path (shortHelp /
+	// extractTerminalBody) never touches the filesystem: an Lstat against an
+	// automounted target root can block, and View runs on every message.
+	stagingExists bool
+
+	// progress is the latest sampled snapshot during running; rate computes the
+	// sampled bytes/sec for the running view (shared sampler with browse).
+	progress app.ExtractProgress
+	rate     rateSampler
 
 	// filepicker is constructed lazily on first entry to extractStateFilePicker
 	// so the embedded model only reads disk when the user opens it.
@@ -179,29 +177,6 @@ func (m *extractModel) supersede() {
 	}
 }
 
-// clearTransient zeros every path-bearing / per-op field so the sub-model can
-// be safely dropped on leaving the modal. Called on every back-to-browse exit
-// regardless of state (non-negotiable #1: no filenames linger).
-func (m *extractModel) clearTransient() {
-	m.supersede()
-	m.state = extractStateReview
-	m.req = app.ExtractRequest{}
-	m.srcSize = 0
-	m.staging = ""
-	m.final = ""
-	m.result = app.ExtractResult{}
-	m.err = nil
-	m.progress = app.ExtractProgress{}
-	m.progressCh = nil
-	m.rateBaseN = 0
-	m.rateBaseAt = time.Time{}
-	m.rate = 0
-	m.filepicker = filepicker.Model{}
-	m.filepickerInit = false
-	m.filepickerErr = ""
-	m.noticeAfterClose = ""
-}
-
 // extractRunDoneMsg carries the result of a live run.
 type extractRunDoneMsg struct {
 	gen    int
@@ -223,9 +198,9 @@ type extractDeleteStagingDoneMsg struct {
 }
 
 // extractBackToBrowseMsg is dispatched by the sub-model when it wants the root
-// model to leave extractView. The root model handles the view switch and the
-// clearTransient call. We use a message rather than a direct mutation so the
-// sub-model stays self-contained.
+// model to leave extractView. The root model handles the view switch and drops
+// the whole sub-model (zeroing every transient path field). We use a message
+// rather than a direct mutation so the sub-model stays self-contained.
 type extractBackToBrowseMsg struct {
 	notice string
 }
@@ -242,9 +217,7 @@ func (m *extractModel) startRun() tea.Cmd {
 
 	progress := make(chan app.ExtractProgress, extractProgressBuffer)
 	m.progressCh = progress
-	m.rateBaseN = 0
-	m.rateBaseAt = time.Time{}
-	m.rate = 0
+	m.rate = rateSampler{}
 	m.progress = app.ExtractProgress{}
 
 	runCmd := func() tea.Msg {
@@ -316,6 +289,18 @@ func extractFilePickerHeight(termHeight int) int {
 	return 10
 }
 
+// setHeight syncs the terminal height into the sub-model — and, when the
+// filepicker has been built, resizes its viewport (AutoHeight is off, so we own
+// its sizing). The single place size propagation lives: the root calls it on
+// every WindowSizeMsg and before key dispatch, so a lazily-built picker sizes
+// from the live terminal.
+func (m *extractModel) setHeight(h int) {
+	m.height = h
+	if m.filepickerInit {
+		m.filepicker.SetHeight(extractFilePickerHeight(h))
+	}
+}
+
 // updateFilePicker forwards a non-key message to the embedded filepicker. The
 // bubbles filepicker is fully async: Init and every navigation return a command
 // that produces an (unexported) readDirMsg, and that message is the only thing
@@ -341,6 +326,9 @@ func (m *extractModel) applyRunDone(msg extractRunDoneMsg) {
 		} else {
 			m.state = extractStateError
 		}
+		// Probe staging fate once at the transition so the terminal renders read
+		// the cached value; handleTerminalKey re-probes per keypress.
+		m.stagingExists = m.stagingPending()
 		return
 	}
 	m.err = nil
@@ -359,7 +347,7 @@ func (m *extractModel) applyProgress(msg extractProgressMsg) tea.Cmd {
 	p := msg.progress
 	if p.BytesDone > m.progress.BytesDone {
 		m.progress.BytesDone = p.BytesDone
-		m.updateRate(p.BytesDone, time.Now())
+		m.rate.update(p.BytesDone, time.Now())
 	}
 	if p.BytesTotal > m.progress.BytesTotal {
 		m.progress.BytesTotal = p.BytesTotal
@@ -373,50 +361,34 @@ func (m *extractModel) applyProgress(msg extractProgressMsg) tea.Cmd {
 	if p.SecondsElapsed > m.progress.SecondsElapsed {
 		m.progress.SecondsElapsed = p.SecondsElapsed
 	}
-	// seconds_remaining is an ETA that legitimately counts down, so accept the
-	// latest non-zero value rather than the max.
-	if p.SecondsRemaining > 0 {
-		m.progress.SecondsRemaining = p.SecondsRemaining
-	}
 	return waitForExtractProgress(msg.gen, m.progressCh)
 }
 
-func (m *extractModel) updateRate(n int64, now time.Time) {
-	if m.rateBaseAt.IsZero() {
-		m.rateBaseN = n
-		m.rateBaseAt = now
-		return
-	}
-	elapsed := now.Sub(m.rateBaseAt)
-	if elapsed < extractRateWindow || n <= m.rateBaseN {
-		return
-	}
-	m.rate = float64(n-m.rateBaseN) / elapsed.Seconds()
-	m.rateBaseN = n
-	m.rateBaseAt = now
-}
-
-// applyDeleteStagingDone closes the keep-delete overlay regardless of err; on
-// failure we attach a notice surfaced on return to browse.
-func (m *extractModel) applyDeleteStagingDone(msg extractDeleteStagingDoneMsg) {
+// applyDeleteStagingDone closes the modal regardless of err (the close itself is
+// the returned back-to-browse Cmd, so every exit funnels through the single
+// extractBackToBrowseMsg path in the root model); on failure the error — already
+// path-free, app.DeleteExtractStaging owns that contract — rides along as the
+// notice surfaced on return to browse.
+func (m *extractModel) applyDeleteStagingDone(msg extractDeleteStagingDoneMsg) tea.Cmd {
 	if msg.gen != m.gen {
-		return
+		return nil
 	}
 	if msg.err != nil {
-		// Path-free per the privacy contract: os.RemoveAll's error embeds the
-		// staging path, which would otherwise land in the persistent status line
-		// on return to browse. Surface only that it failed.
-		m.noticeAfterClose = "extract: could not delete staging directory"
+		m.noticeAfterClose = firstLine(msg.err.Error())
 	}
+	return returnExtract(m.noticeAfterClose)
 }
 
-// back is the routing entry-point for `q` from the root. It mirrors the same
-// per-state behavior the in-modal esc binding triggers (cancel running, close
-// the filepicker, accept defaults on terminal states, etc.) without having to
-// synthesize a KeyPressMsg.
-func (m extractModel) back(keys keyMap) (extractModel, tea.Cmd, bool) {
+// back is the single per-state step-back implementation: cancel when running,
+// close the filepicker, leave the modal from every other state. The root routes
+// `q` here directly and every handler's esc (keys.Back) arm delegates here, so
+// the two paths can never drift.
+func (m extractModel) back() (extractModel, tea.Cmd, bool) {
 	switch m.state {
 	case extractStateRunning:
+		// Cancel the in-flight extract via the per-op cancel; the worker
+		// goroutine will deliver extractRunDoneMsg with context.Canceled and
+		// applyRunDone moves us to extractStateCanceled.
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -434,7 +406,7 @@ func (m extractModel) back(keys keyMap) (extractModel, tea.Cmd, bool) {
 
 // handleKey routes a single key press. Returns the new model, an optional Cmd,
 // and a bool indicating whether the sub-model wants to leave the modal entirely
-// (in which case the root handles the view switch + clearTransient).
+// (in which case the root handles the view switch and drops the sub-model).
 func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	switch m.state {
 	case extractStateReview:
@@ -455,8 +427,8 @@ func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel,
 
 func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	switch {
-	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit):
-		return m, returnExtract(""), true
+	case key.Matches(msg, keys.Back):
+		return m.back()
 	case key.Matches(msg, keys.Target):
 		m.state = extractStateFilePicker
 		m.filepickerErr = ""
@@ -473,22 +445,16 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 }
 
 func (m extractModel) handleRunningKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
-	if key.Matches(msg, keys.Back) || key.Matches(msg, keys.Quit) {
-		// Cancel the in-flight extract via the per-op cancel; the worker
-		// goroutine will deliver extractRunDoneMsg with context.Canceled and
-		// applyRunDone moves us to extractStateCanceled.
-		if m.cancel != nil {
-			m.cancel()
-		}
-		return m, nil, false
+	if key.Matches(msg, keys.Back) {
+		return m.back()
 	}
 	return m, nil, false
 }
 
 func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	switch {
-	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit), key.Matches(msg, keys.Enter):
-		return m, returnExtract(""), true
+	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Enter):
+		return m.back()
 	case key.Matches(msg, keys.Shell):
 		// Drop the user into a credential-free shell rooted at the extracted
 		// directory. The session-prep error path mirrors openShellCmd: surface it
@@ -506,18 +472,20 @@ func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 // handleTerminalKey routes the canceled / error screens. When the result
 // reports StagingCreated=true and the staging dir still exists on disk, the
 // user is given the keep-or-delete prompt. Otherwise enter/esc returns to
-// browse directly.
+// browse directly. The staging probe is re-run per keypress (a dir the user
+// deleted out-of-band must stop offering the prompt) and cached on
+// stagingExists for the render path.
 func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
-	if m.result.StagingCreated && m.result.StagingDir != "" && stagingDirExists(m.result.StagingDir) {
+	m.stagingExists = m.stagingPending()
+	if m.stagingExists {
 		switch {
 		case key.Matches(msg, keys.Delete):
 			m.state = extractStateKeepDelete
 			return m, m.deleteStagingCmd(), false
 		case key.Matches(msg, keys.Keep),
 			key.Matches(msg, keys.Enter),
-			key.Matches(msg, keys.Back),
-			key.Matches(msg, keys.Quit):
-			return m, returnExtract(""), true
+			key.Matches(msg, keys.Back):
+			return m.back()
 		}
 		return m, nil, false
 	}
@@ -534,21 +502,21 @@ func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extra
 		m.filepickerErr = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
-	case key.Matches(msg, keys.Enter), key.Matches(msg, keys.Back), key.Matches(msg, keys.Quit):
-		return m, returnExtract(""), true
+	case key.Matches(msg, keys.Enter), key.Matches(msg, keys.Back):
+		return m.back()
 	}
 	return m, nil, false
 }
 
 // handleKeepDeleteKey covers the brief window between dispatching the staging
-// delete and its done message. esc/enter take the user back; the actual close
+// delete and its done message. esc takes the user back; the actual close
 // happens on extractDeleteStagingDoneMsg.
 func (m extractModel) handleKeepDeleteKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
-	if key.Matches(msg, keys.Back) || key.Matches(msg, keys.Quit) {
+	if key.Matches(msg, keys.Back) {
 		// Abort waiting and just return; the in-flight delete still completes
 		// in its goroutine but its done-msg is discarded by the gen check
 		// after we supersede on the way out.
-		return m, returnExtract(m.noticeAfterClose), true
+		return m.back()
 	}
 	return m, nil, false
 }
@@ -562,9 +530,7 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 		// The picker's own Back binding also matches esc, so we'd otherwise
 		// ascend a directory level before the overlay closes; catch esc here
 		// first.
-		m.state = extractStateReview
-		m.filepickerErr = ""
-		return m, nil, false
+		return m.back()
 	}
 	var cmd tea.Cmd
 	m.filepicker, cmd = m.filepicker.Update(msg)
@@ -585,8 +551,10 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 }
 
 // planExtractOverride re-plans staging / final under a chosen target root and
-// rejects if either child already exists. Returns the mutated request alongside
-// the new paths.
+// rejects if either child already exists — the same occupancy rule and path-free
+// sentinels App.Extract enforces, via app.FreshTargetCheck, so the picker's
+// refusal can never drift from the run-time one (and isExtractRefusal matches
+// it). Returns the mutated request alongside the new paths.
 func planExtractOverride(cfg config.Extract, base app.ExtractRequest, root string) (app.ExtractRequest, string, string, error) {
 	req := base
 	req.TargetRoot = root
@@ -594,18 +562,16 @@ func planExtractOverride(cfg config.Extract, base app.ExtractRequest, root strin
 	if err != nil {
 		return base, "", "", err
 	}
-	if _, lerr := os.Lstat(staging); lerr == nil {
-		return base, "", "", errors.New("staging directory already exists")
-	}
-	if _, lerr := os.Lstat(final); lerr == nil {
-		return base, "", "", errors.New("target already exists")
+	if err := app.FreshTargetCheck(staging, final); err != nil {
+		return base, "", "", err
 	}
 	return req, staging, final, nil
 }
 
-// deleteStagingCmd schedules the user-confirmed RemoveAll of the staging dir.
-// The path is the exact one App.Extract reported as created by this run; we
-// re-verify it equals m.staging (defense in depth) before removing.
+// deleteStagingCmd schedules the user-confirmed delete of the staging dir via
+// app.DeleteExtractStaging (which owns the path-free error contract). The path
+// is the exact one App.Extract reported as created by this run; we re-verify it
+// equals m.staging (defense in depth) before removing.
 func (m extractModel) deleteStagingCmd() tea.Cmd {
 	gen := m.gen
 	staging := m.result.StagingDir
@@ -614,13 +580,20 @@ func (m extractModel) deleteStagingCmd() tea.Cmd {
 		if staging == "" || staging != expected {
 			return extractDeleteStagingDoneMsg{gen: gen, err: errors.New("staging path mismatch; refusing delete")}
 		}
-		return extractDeleteStagingDoneMsg{gen: gen, err: os.RemoveAll(staging)}
+		return extractDeleteStagingDoneMsg{gen: gen, err: app.DeleteExtractStaging(staging)}
 	}
 }
 
-// stagingDirExists is a path-presence check used by the terminal-state handler
-// to decide whether to offer the keep-or-delete prompt at all (a staging dir
-// the user deleted out-of-band must not show the prompt).
+// stagingPending reports whether this run created a staging dir that is still
+// on disk — the condition for offering the keep-or-delete prompt. Probed at
+// state transitions and terminal-state keypresses, never from the render path
+// (which reads the cached stagingExists field instead).
+func (m extractModel) stagingPending() bool {
+	return m.result.StagingCreated && stagingDirExists(m.result.StagingDir)
+}
+
+// stagingDirExists is a path-presence check (false for the empty path, so an
+// unset StagingDir never reads the filesystem).
 func stagingDirExists(p string) bool {
 	if p == "" {
 		return false
@@ -693,57 +666,34 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 	}, nil
 }
 
-// extractFootRender produces the modal's footer help line for the current
-// state. Kept here next to handleKey so the two stay in sync.
-func (m extractModel) helpLine(keys keyMap, st styles) string {
+// shortHelp produces the modal's per-state footer bindings, rendered by
+// footerView through the same bubbles help model as every other view (so the
+// styling and separator can never drift). Kept here next to handleKey so the
+// advertised keys and the handled keys stay in sync.
+func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 	switch m.state {
 	case extractStateReview:
 		// Mirroring is inherently nested — one review footer for both file and
 		// directory sources, no layout toggle.
-		return joinHelp(st,
-			keyHelp(st, keys.Enter, "extract"),
-			keyHelp(st, keys.Target, "target"),
-			keyHelp(st, keys.Back, "back"),
-		)
+		return []key.Binding{helpAs(keys.Enter, "extract"), keys.Target, keys.Back}
 	case extractStateRunning:
-		return joinHelp(st, keyHelp(st, keys.Back, "cancel"))
+		return []key.Binding{helpAs(keys.Back, "cancel")}
 	case extractStateSuccess:
-		return joinHelp(st,
-			keyHelp(st, keys.Shell, "shell here"),
-			keyHelp(st, keys.Enter, "back to browse"),
-		)
+		return []key.Binding{helpAs(keys.Shell, "shell here"), helpAs(keys.Enter, "back to browse")}
 	case extractStateCanceled, extractStateError:
-		if m.result.StagingCreated && stagingDirExists(m.result.StagingDir) {
-			return joinHelp(st,
-				keyHelp(st, keys.Keep, "keep"),
-				keyHelp(st, keys.Delete, "delete"),
-			)
+		if m.stagingExists {
+			return []key.Binding{keys.Keep, keys.Delete}
 		}
 		if isExtractRefusal(m.err) {
 			// Advertise the retarget affordance the hint points to (handleTerminalKey
 			// honors t in this branch).
-			return joinHelp(st,
-				keyHelp(st, keys.Target, "target"),
-				keyHelp(st, keys.Enter, "back to browse"),
-			)
+			return []key.Binding{keys.Target, helpAs(keys.Enter, "back to browse")}
 		}
-		return joinHelp(st, keyHelp(st, keys.Enter, "back to browse"))
+		return []key.Binding{helpAs(keys.Enter, "back to browse")}
 	case extractStateFilePicker:
-		return joinHelp(st, keyHelp(st, keys.Back, "back"))
+		return []key.Binding{keys.Back}
 	case extractStateKeepDelete:
-		return joinHelp(st, keyHelp(st, keys.Back, "back to browse"))
+		return []key.Binding{helpAs(keys.Back, "back to browse")}
 	}
-	return ""
-}
-
-// keyHelp renders one "<key> <desc>" hint with the key colored like every other
-// view's footer. It uses the binding's help label (b.Help().Key), not its raw
-// bound keys: Back is bound to esc but advertises "q" (see keys.go), so this is
-// what shows the canonical "q back" the rest of the app already uses.
-func keyHelp(st styles, b key.Binding, desc string) string {
-	return st.key.Render(b.Help().Key) + " " + st.meta.Render(desc)
-}
-
-func joinHelp(st styles, parts ...string) string {
-	return strings.Join(parts, st.dim.Render(" · "))
+	return nil
 }

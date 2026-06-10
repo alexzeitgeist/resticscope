@@ -80,11 +80,7 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 	bctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	full := make([]string, 0, 8)
-	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
-		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
-	}
-	full = append(full, "--no-lock", "ls", "--json", "--recursive", snapshotID, "/")
+	full := prependBackendOpts(t, "--no-lock", "ls", "--json", "--recursive", snapshotID, "/")
 
 	env := c.buildEnv(t, creds)
 	st := &browseStream{onNode: onNode, cancel: cancel}

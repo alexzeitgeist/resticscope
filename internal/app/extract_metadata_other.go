@@ -10,8 +10,8 @@ package app
 // any non-(linux|darwin) platform a live tree extract refuses rather than
 // publishing restore metadata that has not been verified to round-trip.
 //
-// unsafeSymlinkPolicy lives in extract.go so this stub and the unix
-// implementation share one definition.
+// unsafeSymlinkPolicy and extractMetaCounts live in extract.go so this stub and
+// the unix implementation share one definition.
 
 import (
 	"context"
@@ -23,14 +23,6 @@ import (
 // because the post-restore normalizer is untested and the single-file --include
 // escaping is not Windows-safe. Its sibling in extract_metadata.go is true.
 var liveExtractSupported = false
-
-// extractMetaCounts mirrors the unix struct's shape used by the orchestrator.
-type extractMetaCounts struct {
-	Files          int
-	Dirs           int
-	UnsafeSymlinks int
-	Other          int
-}
 
 func normalizeExtractTreeMetadata(_ context.Context, _ string, _ unsafeSymlinkPolicy) (extractMetaCounts, error) {
 	return extractMetaCounts{}, fmt.Errorf("%w: not supported on this platform", ErrExtractMetadataNormalization)

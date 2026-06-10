@@ -219,6 +219,17 @@ func dispatchKey(em extractModel, keys keyMap, k string) (extractModel, tea.Cmd,
 	return em.handleKey(keys, press(k))
 }
 
+// footHelp flattens the modal's per-state footer bindings into one plain "key
+// desc" line so tests can assert on advertised affordances without rendering
+// the styled bubbles help view.
+func footHelp(em extractModel, keys keyMap) string {
+	var parts []string
+	for _, b := range em.shortHelp(keys) {
+		parts = append(parts, b.Help().Key+" "+b.Help().Desc)
+	}
+	return strings.Join(parts, " · ")
+}
+
 // --- tests ---
 
 // Directory source happy path: review → running → success. enter commits the
@@ -446,7 +457,7 @@ func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 	em.state = extractStateRunning
 
 	// Press esc → handleRunningKey calls cancel(); the worker observes ctx.Done.
-	em, _, _ = em.back(keys)
+	em, _, _ = em.back()
 	// Drain the worker leaf (it returns context.Canceled now that ctx fired).
 	for _, msg := range runBatchLeaves(t, cmd) {
 		if done, ok := msg.(extractRunDoneMsg); ok {
@@ -539,15 +550,14 @@ func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 // the footer advertises the same affordance, and a non-refusal error does neither.
 func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
 	keys := defaultKeys()
-	st := newStyles()
 
-	// Refusal, no staging created (a freshTargetCheck refusal).
+	// Refusal, no staging created (a FreshTargetCheck refusal).
 	em, _ := newExtractFixture(t, dirReq())
 	em.state = extractStateError
 	em.err = app.ErrExtractFinalExists
 	em.result = app.ExtractResult{FinalPath: em.final}
 
-	if foot := em.helpLine(keys, st); !strings.Contains(foot, "target") {
+	if foot := footHelp(em, keys); !strings.Contains(foot, "target") {
 		t.Errorf("terminal refusal footer missing the target affordance: %q", foot)
 	}
 	next, _, leave := dispatchKey(em, keys, "t")
@@ -567,7 +577,7 @@ func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
 	em2, _ := newExtractFixture(t, dirReq())
 	em2.state = extractStateError
 	em2.err = errors.New("extract: staging metadata normalization failed")
-	if foot := em2.helpLine(keys, st); strings.Contains(foot, "target") {
+	if foot := footHelp(em2, keys); strings.Contains(foot, "target") {
 		t.Errorf("non-refusal footer should not advertise target: %q", foot)
 	}
 	next2, _, leave2 := dispatchKey(em2, keys, "t")
@@ -596,31 +606,6 @@ func TestExtractStaleRunDoneDropped(t *testing.T) {
 	em.applyRunDone(extractRunDoneMsg{gen: 5, result: app.ExtractResult{FinalDir: "/ok", FinalPath: "/ok/file"}})
 	if em.state != extractStateSuccess {
 		t.Errorf("current-gen msg did not advance state; state = %v", em.state)
-	}
-}
-
-// clearTransient zeros every path-bearing field. Built directly because Model
-// owns the call site and tests can hit the helper without a full route.
-func TestExtractClearTransientZerosPaths(t *testing.T) {
-	em, _ := newExtractFixture(t, dirReq())
-	em.result = app.ExtractResult{FinalDir: "/some/where", FinalPath: "/some/where/file", StagingDir: "/staging"}
-	em.err = errors.New("boom")
-
-	em.clearTransient()
-
-	if em.req.Source != "" || em.req.SourceName != "" || em.req.SnapshotID != "" {
-		t.Errorf("clearTransient left req populated: %+v", em.req)
-	}
-	if em.staging != "" || em.final != "" {
-		t.Errorf("clearTransient left paths: staging=%q final=%q", em.staging, em.final)
-	}
-	// FinalPath embeds the source path (the mirror layout), so the whole-struct
-	// reset must zero it alongside FinalDir/StagingDir.
-	if em.result.FinalDir != "" || em.result.FinalPath != "" || em.result.StagingDir != "" {
-		t.Errorf("clearTransient left result paths: %+v", em.result)
-	}
-	if em.err != nil {
-		t.Errorf("clearTransient left err = %v", em.err)
 	}
 }
 
@@ -707,11 +692,10 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	em.drv = &fakeExtractDriver{}
 	em.state = extractStateSuccess
 	em.result = app.ExtractResult{
-		Files:               2,
-		FinalDir:            "/extracted/here",
-		FinalPath:           "/extracted/here", // success view renders FinalPath
-		UnsafeSymlinks:      3,
-		UnsafeSymlinkPolicy: "keep",
+		Files:          2,
+		FinalDir:       "/extracted/here",
+		FinalPath:      "/extracted/here", // success view renders FinalPath
+		UnsafeSymlinks: 3,
 	}
 
 	m := newTestModel(t, a)
@@ -863,10 +847,13 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	}
 
 	// Canceled with a staging dir this run created → prompt + staging path shown,
-	// source path / mirror final never shown.
-	em.state = extractStateCanceled
-	em.err = context.Canceled
-	em.result = app.ExtractResult{StagingDir: staging, StagingCreated: true, FinalPath: mirror}
+	// source path / mirror final never shown. Routed through applyRunDone (the
+	// real transition) so the cached staging probe is computed as in production.
+	em.applyRunDone(extractRunDoneMsg{
+		gen:    em.gen,
+		result: app.ExtractResult{StagingDir: staging, StagingCreated: true, FinalPath: mirror},
+		err:    context.Canceled,
+	})
 	em.progress = app.ExtractProgress{FilesDone: 3, FilesTotal: 10, BytesDone: 1024}
 
 	m := newTestModel(t, a)
@@ -888,9 +875,11 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 
 	// Error without staging → no keep/delete prompt, no staging path, no source,
 	// no mirror final. The refusal hint (path-free) may appear.
-	em.state = extractStateError
-	em.err = app.ErrExtractFinalExists
-	em.result = app.ExtractResult{FinalPath: mirror}
+	em.applyRunDone(extractRunDoneMsg{
+		gen:    em.gen,
+		result: app.ExtractResult{FinalPath: mirror},
+		err:    app.ErrExtractFinalExists,
+	})
 	m.extract = em
 	body = m.extractBody()
 	if strings.Contains(body, dirReq().Source) {
@@ -932,9 +921,8 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	if em.state != extractStateError {
 		t.Fatalf("state = %v, want error", em.state)
 	}
-	st := newStyles()
-	if strings.Contains(em.helpLine(keys, st), "delete") {
-		t.Errorf("help line offered delete for a non-owned staging dir: %q", em.helpLine(keys, st))
+	if strings.Contains(footHelp(em, keys), "delete") {
+		t.Errorf("help line offered delete for a non-owned staging dir: %q", footHelp(em, keys))
 	}
 	em2, _, _ := dispatchKey(em, keys, "d")
 	if em2.state == extractStateKeepDelete {

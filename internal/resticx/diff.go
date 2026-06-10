@@ -36,11 +36,7 @@ func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID,
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	full := make([]string, 0, 8)
-	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
-		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
-	}
-	full = append(full, "--no-lock", "diff", "--json", olderID, newerID)
+	full := prependBackendOpts(t, "--no-lock", "diff", "--json", olderID, newerID)
 
 	env := c.buildEnv(t, creds)
 	st := &diffStream{ctx: dctx, onEntry: onEntry, onProgress: onProgress}

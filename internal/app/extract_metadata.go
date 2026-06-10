@@ -48,41 +48,42 @@ import (
 // sibling in extract_metadata_other.go is false.
 var liveExtractSupported = true
 
-// extractMetaCounts tallies what the normalizer saw. It is count-only — it holds
-// no paths — so it is safe to log.
-type extractMetaCounts struct {
-	Files          int // regular files (metadata preserved as restic restored it)
-	Dirs           int // directories (excludes the staging root)
-	UnsafeSymlinks int // symlinks whose target is absolute or escapes the tree
-	Other          int // device/fifo/socket/other special nodes, left in place
-}
-
 // normalizeExtractTreeMetadata walks root (the staging dir) and reproduces
 // restic's restored metadata for every intrinsic file attribute, deviating only
 // on unsafe symlinks per policy. It follows no symlinks, never aborts on node
 // classification, and returns a path-free error only on a genuine IO failure.
+// The root is the staging dir App.Extract just created, so it is always a
+// directory; its Lstat here is the only full stat the walk needs for free —
+// children are dispatched on the ReadDir entry type (no per-node re-stat).
 func normalizeExtractTreeMetadata(ctx context.Context, root string, policy unsafeSymlinkPolicy) (extractMetaCounts, error) {
 	var counts extractMetaCounts
-	err := normalizeExtractNode(ctx, root, root, policy, true, &counts)
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return counts, metaErr(err)
+	}
+	err = normalizeExtractDir(ctx, root, root, fi.Mode(), policy, true, &counts)
 	return counts, err
 }
 
-// normalizeExtractNode handles one entry, recursing into directories. isRoot
-// suppresses counting the staging dir itself as a directory. A ctx error is
-// propagated verbatim so a timeout/cancel during the walk is not misreported as a
-// metadata failure.
-func normalizeExtractNode(ctx context.Context, root, p string, policy unsafeSymlinkPolicy, isRoot bool, counts *extractMetaCounts) error {
+// normalizeExtractChild handles one directory entry, recursing into
+// subdirectories. It dispatches on the ReadDir-provided entry type, so only
+// directories — which need the full mode for the temp-chmod check — pay an extra
+// stat; symlink/regular/other nodes cost no syscall beyond the parent's ReadDir.
+// Trusting e.Type() is safe even on filesystems whose readdir reports
+// DT_UNKNOWN (NFS/FUSE): os.ReadDir resolves that sentinel itself with an
+// internal lstat before the DirEntry reaches the caller (os/file_unix.go,
+// newUnixDirent), so the type seen here is never ambiguous. A ctx error is
+// propagated verbatim so a timeout/cancel during the walk is not misreported as
+// a metadata failure.
+func normalizeExtractChild(ctx context.Context, root, dir string, e fs.DirEntry, policy unsafeSymlinkPolicy, counts *extractMetaCounts) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return metaErr(err)
-	}
-	mode := fi.Mode()
+	p := filepath.Join(dir, e.Name())
+	typ := e.Type()
 
 	switch {
-	case mode&fs.ModeSymlink != 0:
+	case typ&fs.ModeSymlink != 0:
 		// Ordered before IsDir(): a symlink is never followed or recursed.
 		unsafe, target, err := classifyExtractSymlink(root, p)
 		if err != nil {
@@ -94,10 +95,14 @@ func normalizeExtractNode(ctx context.Context, root, p string, policy unsafeSyml
 		counts.UnsafeSymlinks++
 		return applyUnsafeSymlinkPolicy(p, target, policy)
 
-	case mode.IsDir():
-		return normalizeExtractDir(ctx, root, p, mode, policy, isRoot, counts)
+	case typ.IsDir():
+		fi, err := e.Info()
+		if err != nil {
+			return metaErr(err)
+		}
+		return normalizeExtractDir(ctx, root, p, fi.Mode(), policy, false, counts)
 
-	case mode.IsRegular():
+	case typ.IsRegular():
 		// Mode, mtime, xattrs, and ownership are kept exactly as restic restored
 		// them — nothing to do but count.
 		counts.Files++
@@ -149,7 +154,7 @@ func normalizeExtractDir(ctx context.Context, root, p string, origMode fs.FileMo
 	// The child loop runs between the temp-chmod and the deferred restore, so
 	// unsafe-link mutations always see a writable parent.
 	for _, e := range entries {
-		if cerr := normalizeExtractNode(ctx, root, filepath.Join(p, e.Name()), policy, false, counts); cerr != nil {
+		if cerr := normalizeExtractChild(ctx, root, p, e, policy, counts); cerr != nil {
 			return cerr
 		}
 	}

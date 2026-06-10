@@ -70,7 +70,7 @@ func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 	case extractView:
 		// q routes through the sub-model's per-state Back so cancel-running,
 		// close-filepicker, and back-to-browse all stay in one place.
-		next, cmd, _ := m.extract.back(m.keys)
+		next, cmd, _ := m.extract.back()
 		m.extract = next
 		return m, cmd
 	case browseView:
@@ -136,7 +136,7 @@ func (m Model) handleViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// list/detail bindings), so it must run before the shared refresh/shell
 		// handlers would steal them. Sync the current height first so a target key
 		// that lazily builds the filepicker sizes from the live terminal.
-		m.extract.height = m.height
+		m.extract.setHeight(m.height)
 		next, cmd, _ := m.extract.handleKey(m.keys, msg)
 		m.extract = next
 		return m, cmd

@@ -27,11 +27,6 @@ import (
 // summary).
 const browseMetaRows = 2
 
-// browseRateWindow is the minimum sample span for the displayed recent indexing
-// rate. It avoids the misleading startup-amortized cumulative average while
-// keeping the number stable enough to read.
-const browseRateWindow = 2 * time.Second
-
 // browseProgressBuffer bounds the index-progress channel. Progress sends are
 // non-blocking, so the restic stdout consumer never stalls behind a full UI
 // channel: a dropped tick is harmless because a later tick (or the final count)
@@ -74,9 +69,7 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 	m.browseLoading = true
 	m.browseIndexed = false
 	m.browseIndexN = 0
-	m.browseIndexRate = 0
-	m.browseRateBaseN = 0
-	m.browseRateBaseAt = time.Time{}
+	m.browseRate = rateSampler{}
 
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
 	progress := make(chan int, browseProgressBuffer)
@@ -118,27 +111,10 @@ func (m Model) applyBrowseIndexProgress(msg browseIndexProgressMsg) (Model, tea.
 		return m, nil
 	}
 	if msg.n > m.browseIndexN {
-		now := time.Now()
 		m.browseIndexN = msg.n
-		m = m.updateBrowseIndexRate(msg.n, now)
+		m.browseRate.update(int64(msg.n), time.Now())
 	}
 	return m, waitForIndexProgress(msg.gen, m.browseProgress)
-}
-
-func (m Model) updateBrowseIndexRate(n int, now time.Time) Model {
-	if m.browseRateBaseAt.IsZero() {
-		m.browseRateBaseN = n
-		m.browseRateBaseAt = now
-		return m
-	}
-	elapsed := now.Sub(m.browseRateBaseAt)
-	if elapsed < browseRateWindow || n <= m.browseRateBaseN {
-		return m
-	}
-	m.browseIndexRate = float64(n-m.browseRateBaseN) / elapsed.Seconds()
-	m.browseRateBaseN = n
-	m.browseRateBaseAt = now
-	return m
 }
 
 // applyBrowseIndexed handles a finished one-time index. A result whose generation
@@ -273,9 +249,7 @@ func (m Model) clearBrowse() Model {
 	m.browseSortMode = browseSortName // no sort state survives leaving browse
 	m.browseIndexed = false
 	m.browseIndexN = 0
-	m.browseIndexRate = 0
-	m.browseRateBaseN = 0
-	m.browseRateBaseAt = time.Time{}
+	m.browseRate = rateSampler{}
 	m.browseLoading = false
 	m.browseNotice = ""
 	m.browseCancel = nil
@@ -401,8 +375,8 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 // path-planning or setup error likewise stays in browse. Only a clean
 // construction switches to extractView. The sub-model's parentCtx is m.ctx — the
 // program-scoped op context — so quitting cascades the cancel into any in-flight
-// extract, while leaving just the modal cancels only the extract (clearTransient
-// supersedes its per-op context on the way out).
+// extract, while leaving just the modal cancels only the extract (the root's
+// close path supersedes its per-op context on the way out).
 func (m Model) openExtract() (Model, tea.Cmd) {
 	e := m.selectedBrowseEntry()
 	if e == nil {

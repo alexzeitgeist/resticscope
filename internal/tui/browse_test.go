@@ -547,16 +547,16 @@ func TestBrowseProgressCoalescesMonotonically(t *testing.T) {
 	if m.browseIndexN != 2000 {
 		t.Errorf("browseIndexN = %d, want 2000", m.browseIndexN)
 	}
-	if m.browseIndexRate != 0 {
-		t.Errorf("first progress tick should seed the rate window, got rate %.2f", m.browseIndexRate)
+	if m.browseRate.rate != 0 {
+		t.Errorf("first progress tick should seed the rate window, got rate %.2f", m.browseRate.rate)
 	}
 	if cmd == nil {
 		t.Error("a live progress tick should re-arm the wait command")
 	}
 
-	m.browseRateBaseAt = time.Now().Add(-10 * time.Second)
+	m.browseRate.baseAt = time.Now().Add(-10 * time.Second)
 	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 722000})
-	if got := browseIndexRateLabel(m.browseIndexRate); got != "72k/s" {
+	if got := browseIndexRateLabel(m.browseRate.rate); got != "72k/s" {
 		t.Errorf("recent progress rate = %q, want 72k/s", got)
 	}
 
@@ -583,7 +583,7 @@ func TestBrowseIndexingSummaryShowsRate(t *testing.T) {
 	gen := m.browseGen
 
 	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 720000})
-	m.browseIndexRate = 72000
+	m.browseRate.rate = 72000
 
 	line := m.browseSummaryLine()
 	for _, want := range []string{"indexing", "720000 entries", "72k/s", "esc/back cancels"} {

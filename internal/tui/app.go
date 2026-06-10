@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
@@ -61,22 +60,20 @@ type Model struct {
 	// underlying filenames live only in the session-scoped encrypted store
 	// (app.Browse), which survives until the app exits so returning to an
 	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
-	browseRows       []model.BrowseEntry // the current directory's children, or nil
-	browseRepo       string              // repo being browsed (pins the action target)
-	browseSnapshot   string              // snapshot id being browsed
-	browseDir        string              // path of the directory currently listed
-	browseCursor     int                 // selected entry within the current directory
-	browseSortMode   browseSortMode      // display order for the current dir listing; resets on leaving browse
-	browseIndexed    bool                // the snapshot's one-time index has committed
-	browseIndexN     int                 // running node count shown while indexing
-	browseIndexRate  float64             // recent indexed-entry rate, in entries/sec
-	browseRateBaseN  int                 // count at the start of the current rate window
-	browseRateBaseAt time.Time           // timestamp at the start of the current rate window
-	browseLoading    bool                // an index or directory load is in flight (navigation paused)
-	browseNotice     string              // browse-local one-action hint rendered in the fixed summary line
-	browseCancel     context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
-	browseGen        int                 // generation token; stale browse msgs are discarded
-	browseProgress   chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
+	browseRows     []model.BrowseEntry // the current directory's children, or nil
+	browseRepo     string              // repo being browsed (pins the action target)
+	browseSnapshot string              // snapshot id being browsed
+	browseDir      string              // path of the directory currently listed
+	browseCursor   int                 // selected entry within the current directory
+	browseSortMode browseSortMode      // display order for the current dir listing; resets on leaving browse
+	browseIndexed  bool                // the snapshot's one-time index has committed
+	browseIndexN   int                 // running node count shown while indexing
+	browseRate     rateSampler         // recent indexed-entry rate, in entries/sec
+	browseLoading  bool                // an index or directory load is in flight (navigation paused)
+	browseNotice   string              // browse-local one-action hint rendered in the fixed summary line
+	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
+	browseGen      int                 // generation token; stale browse msgs are discarded
+	browseProgress chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
 
 	// browseCache memoizes visited directories' listings for the current browse so
 	// back/parent navigation is served synchronously (no async query, no loading
@@ -282,12 +279,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
 		// Keep the extract sub-model sized too: it owns an embedded filepicker
-		// whose viewport we size ourselves (AutoHeight is off), so a live resize
-		// while it is open must reflow.
-		m.extract.height = msg.Height
-		if m.extract.filepickerInit {
-			m.extract.filepicker.SetHeight(extractFilePickerHeight(msg.Height))
-		}
+		// whose viewport must reflow on a live resize while it is open.
+		m.extract.setHeight(msg.Height)
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -330,21 +323,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.extractActive() {
 			return m, nil
 		}
-		m.extract.applyDeleteStagingDone(msg)
-		// Closing the modal lives here so the sub-model stays self-contained.
-		notice := m.extract.noticeAfterClose
-		m.extract.clearTransient()
-		m.extract = extractModel{}
-		m.view = browseView
-		if notice != "" {
-			m.statusMsg = notice
-		}
-		return m, nil
+		// The returned Cmd is the back-to-browse message, so the actual close runs
+		// through the single extractBackToBrowseMsg path below.
+		cmd := m.extract.applyDeleteStagingDone(msg)
+		return m, cmd
 	case extractBackToBrowseMsg:
 		if !m.extractActive() {
 			return m, nil
 		}
-		m.extract.clearTransient()
+		// supersede cancels any in-flight per-op work; replacing the sub-model
+		// with its zero value drops every transient path field (non-negotiable
+		// #1: no filenames linger after leaving the modal).
+		m.extract.supersede()
 		m.extract = extractModel{}
 		m.view = browseView
 		if msg.notice != "" {
@@ -378,7 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // either showing directly, or temporarily behind the help overlay (which was
 // opened over it and returns to it via prevView). Extract async messages and the
 // filepicker's async reads must be honored in both — help is an overlay, not a
-// real extract exit, and clearTransient is not called when it opens — otherwise a
+// real extract exit, and the sub-model is not dropped when it opens — otherwise a
 // run completion, progress tick, or staging delete that lands while help is up
 // would be silently dropped and strand the modal.
 func (m Model) extractActive() bool {

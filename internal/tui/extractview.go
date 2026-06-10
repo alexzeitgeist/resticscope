@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"resticscope/internal/app"
 	"resticscope/internal/humanize"
@@ -16,8 +15,9 @@ import (
 //
 // Privacy: the only path values rendered here are the ones the sub-model
 // already holds for the lifetime of the modal — req.Source, m.staging, m.final,
-// and (after a clean publish) m.result.FinalDir / FinalPath / StagingDir.
-// extract.go's clearTransient zeroes all of those on every back-to-browse exit.
+// and (after a clean publish) m.result.FinalDir / FinalPath / StagingDir. The
+// root model drops the whole sub-model on every back-to-browse exit, so all of
+// those are zeroed.
 //
 // Note m.final / FinalPath now EMBED the source path (the mirror layout puts the
 // source's true path under the snapshot dir), so they appear only in the review
@@ -114,13 +114,13 @@ func (m Model) extractReviewBody(w int) string {
 		{}, // spacer
 		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
 	}
-	return renderExtractRows(m, rows, w)
+	return renderExtractRows(m.styles, rows, w)
 }
 
 // extractRunningBody renders the live-progress screen.
 func (m Model) extractRunningBody(w int) string {
 	em := m.extract
-	body := renderExtractRows(m, []extractRow{
+	body := renderExtractRows(m.styles, []extractRow{
 		{label: "Source", value: em.req.Source},
 		{label: "Staging", value: collapsePath(em.staging)},
 	}, w)
@@ -201,12 +201,10 @@ func extractRunningStatus(em extractModel) string {
 	} else if p.FilesDone > 0 {
 		parts = append(parts, fmt.Sprintf("%d files", p.FilesDone))
 	}
-	if em.rate > 0 {
-		parts = append(parts, fmt.Sprintf("%s/s", humanize.Bytes(int64(em.rate))))
+	if em.rate.rate > 0 {
+		parts = append(parts, fmt.Sprintf("%s/s", humanize.Bytes(int64(em.rate.rate))))
 	}
-	if p.SecondsRemaining > 0 {
-		parts = append(parts, "eta "+humanize.Duration(time.Duration(p.SecondsRemaining)*time.Second))
-	}
+	// No ETA segment: restic restore's JSON reports no seconds_remaining.
 	return strings.Join(parts, " · ")
 }
 
@@ -229,7 +227,7 @@ func (m Model) extractSuccessBody(w int) string {
 	if em.result.UnsafeSymlinks > 0 {
 		body = append(body,
 			"",
-			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(em.result)),
+			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(em.result.UnsafeSymlinks, em.cfg.UnsafeSymlinks)),
 		)
 	}
 	body = append(body,
@@ -241,11 +239,11 @@ func (m Model) extractSuccessBody(w int) string {
 }
 
 // extractUnsafeSymlinkWarning composes the success-screen warning for unsafe
-// symlinks, phrased for the policy that applied. It carries only the count, never
-// a path or a link name.
-func extractUnsafeSymlinkWarning(r app.ExtractResult) string {
-	n := r.UnsafeSymlinks
-	switch r.UnsafeSymlinkPolicy {
+// symlinks, phrased for the [extract] unsafe_symlinks policy that applied (the
+// sub-model's own validated config — policy is config-only, never per-request).
+// It carries only the count, never a path or a link name.
+func extractUnsafeSymlinkWarning(n int, policy string) string {
+	switch policy {
 	case "skip":
 		return fmt.Sprintf("%d unsafe symlinks removed from the output.", n)
 	case "placeholder":
@@ -267,7 +265,7 @@ func (m Model) extractTerminalBody(w int) string {
 		headline = m.styles.errText.Render("✕ ") + extractErrorHeadline(em)
 	}
 	lines := []string{"  " + headline}
-	if em.result.StagingCreated && em.result.StagingDir != "" && stagingDirExists(em.result.StagingDir) {
+	if em.stagingExists {
 		// Staging keep-or-delete is the action here; the refusal hint (which points
 		// at the `t` retarget key) is deliberately omitted — the user must resolve
 		// the staging dir first, and handleTerminalKey does not honor `t` in this
@@ -374,14 +372,14 @@ type extractRow struct {
 
 // renderExtractRows produces the labeled-field block used by review and running
 // screens. A row with an empty label and empty value becomes a blank line.
-func renderExtractRows(m Model, rows []extractRow, w int) string {
+func renderExtractRows(st styles, rows []extractRow, w int) string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {
 		if r.label == "" && r.value == "" {
 			out = append(out, "")
 			continue
 		}
-		labelCell := m.styles.extractLabel.Render(r.label)
+		labelCell := st.extractLabel.Render(r.label)
 		vlines := strings.Split(r.value, "\n")
 		// Values render in the terminal's default foreground (unstyled), matching the
 		// browse list's entry names (browseRow) and the detail view's field values —
