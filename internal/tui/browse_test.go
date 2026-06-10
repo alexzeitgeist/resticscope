@@ -23,7 +23,13 @@ import (
 // --- browse test fakes ---
 
 func bnode(p, name string, isDir bool, size int64) model.BrowseNode {
-	return model.BrowseNode{Path: p, Name: name, IsDir: isDir, Size: size}
+	// Real restic ls always reports a node type; fixtures mirror that so
+	// type-gated paths (e.g. openBrowseVersions) behave as in production.
+	t := "file"
+	if isDir {
+		t = "dir"
+	}
+	return model.BrowseNode{Path: p, Name: name, Type: t, IsDir: isDir, Size: size}
 }
 
 // fakeBrowseStore is an in-memory app.BrowseStore for TUI state tests. It records

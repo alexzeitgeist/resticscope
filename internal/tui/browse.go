@@ -421,17 +421,20 @@ func (m Model) openBrowseSearchInput() Model {
 	return m
 }
 
-// openBrowseVersions opens the find-versions view for the selected entry. A
-// directory has no version concept (the find query is for one file path), so it
-// stays in browse and explains the blocked action. Browse state is intentionally
+// openBrowseVersions opens the find-versions view for the selected entry,
+// regular files only: a directory has no version concept (the find query is
+// for one file path), and a symlink / device / fifo / socket row must not
+// enter a view whose `e` extract attests a regular file. Browse rows always
+// carry restic's node type, so the gate is strict. The blocked action stays in
+// browse and is explained on the notice line; browse state is intentionally
 // kept intact so q from find-versions can pop back to it.
 func (m Model) openBrowseVersions() (Model, tea.Cmd) {
 	e := m.selectedBrowseEntry()
 	if e == nil {
 		return m, nil
 	}
-	if e.IsDir {
-		m.browseNotice = "versions: select a file"
+	if e.Type != "file" {
+		m.browseNotice = "versions: select a regular file"
 		return m, nil
 	}
 	m.browseNotice = ""

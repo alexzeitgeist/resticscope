@@ -156,7 +156,7 @@ func TestFindVersionsKeyOnDirectoryShowsMessage(t *testing.T) {
 	if m.statusMsg != "" {
 		t.Errorf("statusMsg = %q, want no global footer notice", m.statusMsg)
 	}
-	if got := m.browseSummaryLine(); got != "versions: select a file" {
+	if got := m.browseSummaryLine(); got != "versions: select a regular file" {
 		t.Errorf("browseSummaryLine() = %q, want directory guidance", got)
 	}
 }
@@ -166,7 +166,7 @@ func TestFindVersionsDirectoryNoticeClearsOnBrowseNavigation(t *testing.T) {
 	m := newTestModel(t, a)
 	m = openBrowse(t, m)
 	m = update(t, m, press("v"))
-	if got := m.browseSummaryLine(); got != "versions: select a file" {
+	if got := m.browseSummaryLine(); got != "versions: select a regular file" {
 		t.Fatalf("precondition: browseSummaryLine() = %q, want directory guidance", got)
 	}
 
@@ -174,7 +174,7 @@ func TestFindVersionsDirectoryNoticeClearsOnBrowseNavigation(t *testing.T) {
 	if m.browseDir != "/run" {
 		t.Fatalf("browseDir = %q, want /run", m.browseDir)
 	}
-	if got := m.browseSummaryLine(); got == "versions: select a file" {
+	if got := m.browseSummaryLine(); got == "versions: select a regular file" {
 		t.Fatalf("directory guidance should clear after navigation, got %q", got)
 	}
 }
@@ -457,5 +457,29 @@ func TestPathLineDoesNotExpandSpacesInsidePath(t *testing.T) {
 	line := stripANSI(m.pathLine("Path", p, 160))
 	if !strings.Contains(line, "Eigene Aufnahmen") {
 		t.Fatalf("path line should preserve the literal single space inside the path, got %q", line)
+	}
+}
+
+// v on a symlink / special-node row stays in browse with the regular-file
+// notice: find-versions admits only regular files, because its `e` extract
+// attests a regular-file source.
+func TestFindVersionsKeyOnNonFileShowsMessage(t *testing.T) {
+	for _, typ := range []string{"symlink", "socket", "fifo", "dev"} {
+		t.Run(typ, func(t *testing.T) {
+			a, _ := findApp(t, nil, model.BrowseNode{Path: "/thing", Name: "thing", Type: typ})
+			m := newTestModel(t, a)
+			m = openBrowse(t, m)
+			next, cmd := m.Update(press("v"))
+			m = next.(Model)
+			if cmd != nil {
+				t.Errorf("v on a %s should emit no command", typ)
+			}
+			if m.view != browseView {
+				t.Errorf("v on a %s should stay in browse, got %d", typ, m.view)
+			}
+			if got := m.browseSummaryLine(); got != "versions: select a regular file" {
+				t.Errorf("browseSummaryLine() = %q, want regular-file guidance", got)
+			}
+		})
 	}
 }

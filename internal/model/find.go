@@ -93,6 +93,15 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 			if m.Path != literalPath {
 				continue
 			}
+			// Versions are of the regular FILE at this path: drop any match
+			// restic affirmatively reports as another type (the path may have
+			// been a symlink or special node in older snapshots). An empty
+			// Type (not emitted) is kept so a type-less restic cannot blank
+			// the view. Load-bearing for find-versions' `e`: every surviving
+			// occurrence backs the regular-file attestation its extract makes.
+			if m.Type != "" && m.Type != "file" {
+				continue
+			}
 			key := fileVersionKey{size: m.Size, mtime: m.ModTime.UnixNano()}
 			occ := FileVersionOccurrence{SnapshotID: r.SnapshotID}
 			if snapKnown {

@@ -284,3 +284,30 @@ func TestGroupFileVersionsShape(t *testing.T) {
 		t.Errorf("shape mismatch\ngot:  %+v\nwant: %+v", got, want)
 	}
 }
+
+// Matches restic affirmatively reports as non-file are dropped — the path may
+// have been a symlink or special node in older snapshots, and find-versions'
+// `e` extract attests a regular-file source for every surviving occurrence.
+// An empty Type (not emitted) is kept so a type-less restic cannot blank the
+// view.
+func TestGroupFileVersionsSkipsNonFileMatches(t *testing.T) {
+	mt := mustTime("2026-05-01T10:00:00Z")
+	results := []FindSnapshotResult{
+		{SnapshotID: "s1", Matches: []FindMatch{{Path: "/f", Type: "file", Size: 5, ModTime: mt}}},
+		{SnapshotID: "s2", Matches: []FindMatch{{Path: "/f", Type: "symlink", Size: 9, ModTime: mt}}},
+		{SnapshotID: "s3", Matches: []FindMatch{{Path: "/f", Type: "socket", Size: 5, ModTime: mt}}},
+		{SnapshotID: "s4", Matches: []FindMatch{{Path: "/f", Size: 5, ModTime: mt}}}, // type-less: kept
+	}
+	got := GroupFileVersions(results, "/f", nil)
+	if len(got) != 1 {
+		t.Fatalf("groups = %d, want 1 (non-file matches must not form versions)", len(got))
+	}
+	if len(got[0].Occurrences) != 2 {
+		t.Fatalf("occurrences = %d, want 2 (typed file s1 + type-less s4)", len(got[0].Occurrences))
+	}
+	for _, o := range got[0].Occurrences {
+		if o.SnapshotID == "s2" || o.SnapshotID == "s3" {
+			t.Errorf("non-file occurrence %s survived grouping", o.SnapshotID)
+		}
+	}
+}

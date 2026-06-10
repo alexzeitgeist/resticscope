@@ -794,11 +794,13 @@ func extractRequestFromBrowseEntry(repo, snapID string, entry model.BrowseEntry)
 }
 
 // extractRequestFromFindVersion translates a find-versions row into a file
-// ExtractRequest against one of the version's occurrence snapshots. The find
-// table lists versions of the regular file browse launched `v` from, so the
-// request is the same file shape browse's `e` builds — routed through
-// extractRequestFromBrowseEntry with a synthetic file entry so the path and
-// slug rules can never drift between the two entry points.
+// ExtractRequest against one of the version's occurrence snapshots. The
+// synthetic file entry's regular-file attestation is backed twice over:
+// openBrowseVersions admits only Type == "file" rows into the view, and
+// GroupFileVersions drops any match restic reports as another type (the path
+// may have changed type across history) — so every extractable occurrence was
+// reported as a regular file. Routing through extractRequestFromBrowseEntry
+// keeps the path and slug rules from drifting between the two entry points.
 func extractRequestFromFindVersion(repo, snapID, p string) (app.ExtractRequest, error) {
 	return extractRequestFromBrowseEntry(repo, snapID, model.BrowseEntry{Path: p, Type: "file"})
 }
