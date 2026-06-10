@@ -319,6 +319,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.extract.applyProgress(msg)
 		return m, cmd
+	case extractSudoProbeMsg:
+		if !m.extractActive() {
+			return m, nil
+		}
+		cmd := m.extract.applySudoProbe(msg)
+		return m, cmd
+	case extractSudoAuthMsg:
+		if !m.extractActive() {
+			return m, nil
+		}
+		cmd := m.extract.applySudoAuth(msg)
+		return m, cmd
 	case extractDeleteStagingDoneMsg:
 		if !m.extractActive() {
 			return m, nil

@@ -242,6 +242,15 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
+	// Privileged (sudo) extract support: re-execs this binary as root via the
+	// extract-helper subcommand. Wired only for the TUI; failure to resolve the
+	// running binary just leaves the feature unavailable.
+	if pr, err := app.NewSudoPrivilegedRunner(); err == nil {
+		a.Priv = pr
+	} else {
+		logger.Warn("privileged extract unavailable", "err", err)
+	}
+
 	var resticVer string
 	if v, err := (&resticx.Client{Runner: resticx.ExecRunner{}}).Version(ctx); err == nil {
 		resticVer = v

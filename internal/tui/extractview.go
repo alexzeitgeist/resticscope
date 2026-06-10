@@ -110,11 +110,16 @@ func (m Model) extractReviewBody(w int) string {
 	// fully visible.
 	rows := []extractRow{
 		{label: "Source", value: extractSourceValue(em)},
-		{label: "Output", value: extractOutputLine(em.req.Mode)},
+		{label: "Output", value: extractOutputValue(em)},
 		{}, // spacer
 		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
 	}
-	return renderExtractRows(m.styles, rows, w)
+	body := renderExtractRows(m.styles, rows, w)
+	// Path-free sudo notice (auth failed / privileged unavailable) under the rows.
+	if em.reviewNotice != "" {
+		body += "\n\n" + clip("  "+m.styles.errText.Render(em.reviewNotice), w)
+	}
+	return body
 }
 
 // extractRunningBody renders the live-progress screen.
@@ -221,6 +226,12 @@ func (m Model) extractSuccessBody(w int) string {
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
 		"    " + m.styles.meta.Render(em.result.FinalPath),
+	}
+	if em.req.Privileged {
+		body = append(body,
+			"",
+			"  "+m.styles.dim.Render("extracted as root — snapshot file ownership preserved"),
+		)
 	}
 	// Count-only warning when the tree carried unsafe symlinks. No names — only the
 	// count — so the line stays path-free even though FinalPath is shown above.
@@ -421,6 +432,17 @@ func extractOutputLine(mode app.ExtractMode) string {
 		return "file"
 	}
 	return "directory tree"
+}
+
+// extractOutputValue is the Output row: the shape plus the privileged marker
+// when the `p` toggle is on (the restore then runs as root via sudo so the
+// snapshot's file ownership is applied).
+func extractOutputValue(em extractModel) string {
+	out := extractOutputLine(em.req.Mode)
+	if em.req.Privileged {
+		out += " · as root (ownership preserved)"
+	}
+	return out
 }
 
 // extractValueWidth is the cell budget for a labeled row's value: the full width

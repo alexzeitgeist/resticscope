@@ -112,6 +112,12 @@ type ExtractTreeParams struct {
 	// build. Must be "" or a cleaned non-root rooted path (assertCleanIncludePath);
 	// this layer validates the raw value and never validates the escaped pattern.
 	IncludePath string
+
+	// NoCache adds --no-cache, bypassing restic's local metadata cache entirely.
+	// The privileged (sudo) extract helper sets it so a root-run restic neither
+	// duplicates the user's multi-GB cache under /root nor poisons the user's
+	// cache dir with root-owned files.
+	NoCache bool
 }
 
 // ExtractTreeEventKind tags which ExtractTreeEvent fields are populated.
@@ -261,9 +267,9 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 
 // buildExtractTreeArgs assembles the restore argv and is the single assertion
 // surface for the safety invariants (00-framework.md §5). It emits, in order:
-// --no-lock (a lock would be a write), restore, the bare snapshot or
-// <snap>:<source>, --target <abs>, --overwrite never (never clobber existing
-// files), --json, and an optional --include <pattern>. It never emits --path,
+// --no-lock (a lock would be a write), --no-cache when NoCache is set, restore,
+// the bare snapshot or <snap>:<source>, --target <abs>, --overwrite never
+// (never clobber existing files), --json, and an optional --include <pattern>. It never emits --path,
 // --delete, or "latest". The include value is the
 // RAW IncludePath run through literalIncludePattern so restic matches it as a
 // literal, not a glob — the raw path is what gets validated. The bucket-lookup -o
@@ -290,14 +296,17 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		snapArg = p.SnapshotID + ":" + p.Source
 	}
 
-	args := []string{
-		"--no-lock",
+	args := []string{"--no-lock"}
+	if p.NoCache {
+		args = append(args, "--no-cache")
+	}
+	args = append(args,
 		"restore",
 		snapArg,
 		"--target", p.Target,
 		"--overwrite", "never",
 		"--json",
-	}
+	)
 	if p.IncludePath != "" {
 		// Escape the raw literal path into a filepath.Match literal so restic
 		// restores exactly that one node, not a glob expansion of it.

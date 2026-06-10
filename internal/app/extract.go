@@ -108,6 +108,12 @@ type ExtractRequest struct {
 	// TargetRoot optionally overrides cfg.Extract.TargetRoot for this one call.
 	// Empty means use the configured root; non-empty must be absolute.
 	TargetRoot string
+
+	// Privileged requests the restore run as root (via the sudo extract helper)
+	// so restic applies the snapshot's file ownership, which it skips as
+	// non-root. The pipeline is otherwise identical; App.Extract routes a
+	// privileged request to the helper re-exec instead of an in-process restic.
+	Privileged bool
 }
 
 // ExtractProgress is the flattened progress the orchestrator hands to the TUI.
@@ -350,6 +356,15 @@ func checkExtractModeGate(req ExtractRequest) error {
 func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(ExtractProgress)) (ExtractResult, error) {
 	var result ExtractResult
 
+	// 0. A privileged request runs the whole restore→normalize→publish pipeline
+	// in a root helper process (sudo + self re-exec): elevating only the restic
+	// child is not enough, because the normalizer walk and the hardlink publish
+	// both fail as non-root against a root-owned tree. Validation, credential
+	// resolution, and the fresh-target check still run here first, in-process.
+	if req.Privileged {
+		return a.extractPrivileged(ctx, req, onProgress)
+	}
+
 	// 1. Validate request (also derives the paths).
 	staging, final, err := PlanExtractPaths(a.Cfg.Extract, req)
 	if err != nil {
@@ -560,11 +575,27 @@ func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreePa
 	return p
 }
 
+// extractTreeDriver is the one restic operation the restore pipeline needs.
+// Declared consumer-side (rule 3) so the privileged helper can drive a bare
+// resticx.Client through the same event flattening App.Extract uses, without
+// constructing a full App.
+type extractTreeDriver interface {
+	ExtractTree(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error
+}
+
 // extractTree drives resticx.ExtractTree and flattens its events into result /
 // onProgress. The summary's file count is recorded here but, for a live run, is
 // later overwritten by the metadata normalizer's authoritative split.
 func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.Material, req ExtractRequest, staging string, result *ExtractResult, onProgress func(ExtractProgress)) error {
-	params := extractTreeParams(req, staging)
+	return driveExtractTree(ctx, a.Restic, targetOf(r), resticCreds(material), extractTreeParams(req, staging), result, onProgress)
+}
+
+// driveExtractTree runs one restic restore via drv and flattens its events into
+// result / onProgress. Shared verbatim by the in-process extract and the
+// privileged helper so the two event paths can never drift. result.Elapsed is
+// the caller's job (wall-clock from its injected clock); restic's self-reported
+// seconds feed only the live progress line.
+func driveExtractTree(ctx context.Context, drv extractTreeDriver, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, result *ExtractResult, onProgress func(ExtractProgress)) error {
 	onEvent := func(ev resticx.ExtractTreeEvent) error {
 		switch ev.Kind {
 		case resticx.ExtractTreeStatus:
@@ -583,9 +614,7 @@ func (a *App) extractTree(ctx context.Context, r config.Repo, material secrets.M
 		}
 		return nil
 	}
-	// result.Elapsed is set by Extract from the injected clock (wall-clock for the
-	// whole op); restic's self-reported seconds feed only the live progress line.
-	return a.Restic.ExtractTree(ctx, targetOf(r), resticCreds(material), params, onEvent)
+	return drv.ExtractTree(ctx, t, creds, params, onEvent)
 }
 
 // FreshTargetCheck refuses an extract whose staging or final dir already exists,
@@ -632,6 +661,7 @@ func (a *App) logExtractSuccess(req ExtractRequest, result ExtractResult) {
 		"repo", req.Repo,
 		"snapshot", req.SnapshotShort,
 		"phase", "finish",
+		"privileged", req.Privileged,
 		"files", result.Files,
 		"dirs", result.Dirs,
 		"bytes", result.Bytes,

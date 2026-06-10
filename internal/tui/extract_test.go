@@ -30,6 +30,7 @@ import (
 type extractCall struct {
 	targetRoot string
 	source     string
+	privileged bool
 }
 
 // fakeExtractDriver is the test double for extractDriver. result/err/onResult/
@@ -48,6 +49,11 @@ type fakeExtractDriver struct {
 	// shellErr (when set) is what that call returns instead of a session.
 	shellDir string
 	shellErr error
+
+	// probeErr is returned by PrivilegedExtractProbe; probeCalls counts the
+	// sudo readiness probes a privileged commit triggers.
+	probeErr   error
+	probeCalls int
 }
 
 type extractResp struct {
@@ -65,7 +71,7 @@ func (f *fakeExtractDriver) push(r extractResp) {
 
 func (f *fakeExtractDriver) Extract(ctx context.Context, req app.ExtractRequest, onProgress func(app.ExtractProgress)) (app.ExtractResult, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, extractCall{targetRoot: req.TargetRoot, source: req.Source})
+	f.calls = append(f.calls, extractCall{targetRoot: req.TargetRoot, source: req.Source, privileged: req.Privileged})
 	var resp extractResp
 	if len(f.queue) > 0 {
 		resp = f.queue[0]
@@ -99,6 +105,13 @@ func (f *fakeExtractDriver) LocalShellSession(dir string) (*app.ShellSession, er
 		return nil, f.shellErr
 	}
 	return &app.ShellSession{Shell: "/bin/sh", Dir: dir, Cleanup: func() error { return nil }}, nil
+}
+
+func (f *fakeExtractDriver) PrivilegedExtractProbe(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeCalls++
+	return f.probeErr
 }
 
 func (f *fakeExtractDriver) callsSnapshot() []extractCall {
@@ -1011,5 +1024,140 @@ func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 		if _, _, err := app.PlanExtractPaths(cfg, req); err != nil {
 			t.Errorf("app layer rejected TUI slug for base %q (slug rules drifted?): %v", base, err)
 		}
+	}
+}
+
+// --- privileged (sudo) flow ---
+
+// Toggling p and committing must first dispatch the sudo readiness probe —
+// never the run — and a clean probe then starts the run with Privileged set on
+// the request.
+func TestPrivilegedCommitProbeOKStartsRun(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	keys := defaultKeys()
+
+	em, _, _ = dispatchKey(em, keys, "p")
+	if !em.req.Privileged {
+		t.Fatal("p did not toggle Privileged on")
+	}
+
+	em, cmd, _ := dispatchKey(em, keys, "enter")
+	if em.state != extractStateReview || !em.sudoBusy {
+		t.Fatalf("state=%v sudoBusy=%v, want review+busy while probing", em.state, em.sudoBusy)
+	}
+	if got := len(drv.callsSnapshot()); got != 0 {
+		t.Fatalf("Extract dispatched before the probe resolved: %d calls", got)
+	}
+	probe, ok := runCmd(t, cmd).(extractSudoProbeMsg)
+	if !ok {
+		t.Fatalf("commit cmd produced %T, want extractSudoProbeMsg", probe)
+	}
+	if drv.probeCalls != 1 {
+		t.Fatalf("probeCalls = %d, want 1", drv.probeCalls)
+	}
+
+	drv.push(extractResp{result: app.ExtractResult{Files: 1}})
+	runCmds := em.applySudoProbe(probe)
+	if em.state != extractStateRunning || em.sudoBusy {
+		t.Fatalf("state=%v sudoBusy=%v, want running after clean probe", em.state, em.sudoBusy)
+	}
+	for _, msg := range runBatchLeaves(t, runCmds) {
+		if done, ok := msg.(extractRunDoneMsg); ok {
+			em.applyRunDone(done)
+		}
+	}
+	calls := drv.callsSnapshot()
+	if len(calls) != 1 || !calls[0].privileged {
+		t.Fatalf("calls = %+v, want one privileged Extract", calls)
+	}
+	if em.state != extractStateSuccess {
+		t.Fatalf("state = %v, want success", em.state)
+	}
+}
+
+// A failed probe routes through interactive sudo -v (an ExecProcess Cmd the
+// test must not run); auth failure lands back on review with a notice, auth
+// success starts the run.
+func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	drv.probeErr = errors.New("sudo: a password is required")
+	keys := defaultKeys()
+
+	em, _, _ = dispatchKey(em, keys, "p")
+	em, cmd, _ := dispatchKey(em, keys, "enter")
+	probe := runCmd(t, cmd).(extractSudoProbeMsg)
+	if authCmd := em.applySudoProbe(probe); authCmd == nil {
+		t.Fatal("failed probe must return the sudo -v ExecProcess Cmd")
+	}
+	if em.state != extractStateReview || !em.sudoBusy {
+		t.Fatalf("state=%v sudoBusy=%v, want review+busy during auth", em.state, em.sudoBusy)
+	}
+
+	// Auth failure: back to review, path-free notice, no run.
+	if c := em.applySudoAuth(extractSudoAuthMsg{gen: em.gen, err: errors.New("exit 1")}); c != nil {
+		t.Fatal("auth failure must not start the run")
+	}
+	if em.sudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
+		t.Fatalf("after auth failure: busy=%v notice=%q state=%v", em.sudoBusy, em.reviewNotice, em.state)
+	}
+	if len(drv.callsSnapshot()) != 0 {
+		t.Fatal("Extract dispatched despite failed auth")
+	}
+
+	// Retry: probe fails again, auth succeeds, run starts.
+	em, cmd, _ = dispatchKey(em, keys, "enter")
+	probe = runCmd(t, cmd).(extractSudoProbeMsg)
+	_ = em.applySudoProbe(probe)
+	drv.push(extractResp{result: app.ExtractResult{}})
+	if c := em.applySudoAuth(extractSudoAuthMsg{gen: em.gen, err: nil}); c == nil {
+		t.Fatal("auth success must start the run")
+	} else {
+		runBatchLeaves(t, c)
+	}
+	if em.state != extractStateRunning {
+		t.Fatalf("state = %v, want running after auth success", em.state)
+	}
+	calls := drv.callsSnapshot()
+	if len(calls) != 1 || !calls[0].privileged {
+		t.Fatalf("calls = %+v, want one privileged Extract", calls)
+	}
+}
+
+// ErrPrivilegedExtractUnavailable is terminal: no sudo -v round trip, just a
+// review notice.
+func TestPrivilegedCommitUnavailable(t *testing.T) {
+	em, drv := newExtractFixture(t, dirReq())
+	drv.probeErr = app.ErrPrivilegedExtractUnavailable
+	keys := defaultKeys()
+
+	em, _, _ = dispatchKey(em, keys, "p")
+	em, cmd, _ := dispatchKey(em, keys, "enter")
+	probe := runCmd(t, cmd).(extractSudoProbeMsg)
+	if c := em.applySudoProbe(probe); c != nil {
+		t.Fatal("unavailable runner must not return a follow-up Cmd")
+	}
+	if em.sudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
+		t.Fatalf("busy=%v notice=%q state=%v, want idle review with notice", em.sudoBusy, em.reviewNotice, em.state)
+	}
+	if len(drv.callsSnapshot()) != 0 {
+		t.Fatal("Extract dispatched despite unavailable runner")
+	}
+}
+
+// A stale probe/auth message (superseded gen or wrong state) is dropped.
+func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	keys := defaultKeys()
+	em, _, _ = dispatchKey(em, keys, "p")
+	em, _, _ = dispatchKey(em, keys, "enter")
+
+	if c := em.applySudoProbe(extractSudoProbeMsg{gen: em.gen + 1, err: nil}); c != nil {
+		t.Fatal("stale-gen probe msg must be dropped")
+	}
+	if em.state != extractStateReview {
+		t.Fatalf("state changed on stale msg: %v", em.state)
+	}
+	if c := em.applySudoAuth(extractSudoAuthMsg{gen: em.gen + 1, err: nil}); c != nil {
+		t.Fatal("stale-gen auth msg must be dropped")
 	}
 }

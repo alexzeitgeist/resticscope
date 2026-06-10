@@ -33,6 +33,7 @@ type keyMap struct {
 	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
 	Extract    key.Binding // browse: open the extract modal for the selected entry
 	Target     key.Binding // extract: open the target-root filepicker overlay from review
+	Priv       key.Binding // extract: toggle the privileged (sudo) restore on review
 	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
 	Delete     key.Binding // extract: delete the staging dir from the cancel/error prompt
 	Help       key.Binding
@@ -87,6 +88,7 @@ func defaultKeys() keyMap {
 		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
 		Extract:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
 		Target:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
+		Priv:       key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "as root")),
 		Keep:       key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "keep")),
 		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		Help:       key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
@@ -229,7 +231,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		}
 	case extractView:
 		return [][]key.Binding{
-			{k.Enter, k.Target},
+			{k.Enter, k.Target, k.Priv},
 			{k.Shell, k.Keep, k.Delete, k.Back},
 		}
 	case helpView:

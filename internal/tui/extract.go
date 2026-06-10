@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"time"
@@ -55,10 +56,13 @@ const extractProgressBuffer = 64
 // the app layer (engineering rule 3: tiny, defined where it is used). Satisfied
 // by *app.App; the test double in extract_test.go implements it directly.
 // LocalShellSession backs the success-view `s` action: a credential-free shell
-// rooted at the extracted directory.
+// rooted at the extracted directory. PrivilegedExtractProbe backs the review
+// `p` toggle's commit path: nil means a sudo helper launch will not prompt, an
+// error sends the user through interactive `sudo -v` first.
 type extractDriver interface {
 	Extract(ctx context.Context, req app.ExtractRequest, onProgress func(app.ExtractProgress)) (app.ExtractResult, error)
 	LocalShellSession(dir string) (*app.ShellSession, error)
+	PrivilegedExtractProbe(ctx context.Context) error
 }
 
 // extractModel is the self-contained sub-model. Browse wiring constructs one per
@@ -125,6 +129,16 @@ type extractModel struct {
 	filepicker     filepicker.Model
 	filepickerInit bool
 	filepickerErr  string
+
+	// sudoBusy is true between committing a privileged extract and the sudo
+	// probe / interactive auth resolving. It debounces enter on review and
+	// gen-gates the probe/auth messages alongside gen itself.
+	sudoBusy bool
+
+	// reviewNotice is a one-line, path-free notice rendered on the review
+	// screen (e.g. "sudo authentication failed"). Cleared on the next review
+	// keypress that changes state.
+	reviewNotice string
 
 	// noticeAfterClose, when non-empty, is surfaced as the root model's status
 	// line on the next return to browse (used by errors that survive the modal).
@@ -193,6 +207,20 @@ type extractProgressMsg struct {
 // extractDeleteStagingDoneMsg carries the result of a user-confirmed staging
 // delete from the keep-or-delete prompt.
 type extractDeleteStagingDoneMsg struct {
+	gen int
+	err error
+}
+
+// extractSudoProbeMsg carries the sudo readiness probe result for a privileged
+// commit from review.
+type extractSudoProbeMsg struct {
+	gen int
+	err error
+}
+
+// extractSudoAuthMsg carries the outcome of the interactive `sudo -v` run via
+// tea.ExecProcess (the TUI suspends, sudo prompts on the real TTY, resumes).
+type extractSudoAuthMsg struct {
 	gen int
 	err error
 }
@@ -430,11 +458,35 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 	case key.Matches(msg, keys.Back):
 		return m.back()
 	case key.Matches(msg, keys.Target):
+		if m.sudoBusy {
+			return m, nil, false
+		}
 		m.state = extractStateFilePicker
 		m.filepickerErr = ""
+		m.reviewNotice = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
+	case key.Matches(msg, keys.Priv):
+		if m.sudoBusy {
+			return m, nil, false
+		}
+		// Toggle the privileged (sudo) restore: restic only applies snapshot
+		// ownership when it runs as root. Whether sudo is actually ready is
+		// checked on commit, not here.
+		m.req.Privileged = !m.req.Privileged
+		m.reviewNotice = ""
+		return m, nil, false
 	case key.Matches(msg, keys.Enter):
+		if m.sudoBusy {
+			return m, nil, false
+		}
+		m.reviewNotice = ""
+		if m.req.Privileged {
+			// Privileged commit: confirm passwordless sudo before dispatching; the
+			// run starts on the probe (or interactive-auth) message.
+			m.sudoBusy = true
+			return m, m.sudoProbeCmd(), false
+		}
 		// Commit straight to the live extract — a single Extract for both file and
 		// directory sources. There is no dry-run preview step.
 		cmd := m.startRun()
@@ -442,6 +494,58 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 		return m, cmd, false
 	}
 	return m, nil, false
+}
+
+// sudoProbeCmd asks the app layer whether a privileged helper launch would
+// prompt. Gen-tagged like every other async extract step.
+func (m *extractModel) sudoProbeCmd() tea.Cmd {
+	gen := m.gen
+	drv := m.drv
+	ctx := m.parentCtx
+	return func() tea.Msg {
+		return extractSudoProbeMsg{gen: gen, err: drv.PrivilegedExtractProbe(ctx)}
+	}
+}
+
+// applySudoProbe resolves the probe: ready → start the run; unavailable →
+// surface a review notice; needs auth → suspend the TUI for an interactive
+// `sudo -v` (the helper itself always runs with -n against the then-warm
+// credential cache, so it can never hang on a hidden prompt).
+func (m *extractModel) applySudoProbe(msg extractSudoProbeMsg) tea.Cmd {
+	if msg.gen != m.gen || m.state != extractStateReview || !m.sudoBusy {
+		return nil
+	}
+	if msg.err == nil {
+		m.sudoBusy = false
+		cmd := m.startRun()
+		m.state = extractStateRunning
+		return cmd
+	}
+	if errors.Is(msg.err, app.ErrPrivilegedExtractUnavailable) {
+		m.sudoBusy = false
+		m.reviewNotice = "privileged extract not available"
+		return nil
+	}
+	gen := m.gen
+	return tea.ExecProcess(exec.Command("sudo", "-v"), func(err error) tea.Msg {
+		return extractSudoAuthMsg{gen: gen, err: err}
+	})
+}
+
+// applySudoAuth resumes after the interactive sudo -v: success starts the run,
+// failure lands back on review with a path-free notice.
+func (m *extractModel) applySudoAuth(msg extractSudoAuthMsg) tea.Cmd {
+	if msg.gen != m.gen || m.state != extractStateReview || !m.sudoBusy {
+		return nil
+	}
+	m.sudoBusy = false
+	if msg.err != nil {
+		m.reviewNotice = "sudo authentication failed — cannot extract as root"
+		return nil
+	}
+	cmd := m.startRun()
+	m.state = extractStateRunning
+	return cmd
 }
 
 func (m extractModel) handleRunningKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
@@ -675,7 +779,7 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 	case extractStateReview:
 		// Mirroring is inherently nested — one review footer for both file and
 		// directory sources, no layout toggle.
-		return []key.Binding{helpAs(keys.Enter, "extract"), keys.Target, keys.Back}
+		return []key.Binding{helpAs(keys.Enter, "extract"), keys.Target, keys.Priv, keys.Back}
 	case extractStateRunning:
 		return []key.Binding{helpAs(keys.Back, "cancel")}
 	case extractStateSuccess:

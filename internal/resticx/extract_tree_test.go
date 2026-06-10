@@ -80,6 +80,14 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", IncludePath: "/vzdump.conf", Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID + ":/etc", "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/vzdump.conf"},
 		},
+		{
+			// Privileged (sudo) extract: --no-cache keeps a root-run restic out of
+			// any on-disk cache (no /root duplicate, no root-owned files in the
+			// user's cache).
+			name: "no-cache (privileged extract)",
+			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging", NoCache: true},
+			want: []string{"--no-lock", "--no-cache", "restore", testSnapID + ":/etc/nginx", "--target", "/abs/staging", "--overwrite", "never", "--json"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
