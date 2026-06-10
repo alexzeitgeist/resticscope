@@ -1213,6 +1213,57 @@ func TestExtractReviewBodySudoSlot(t *testing.T) {
 	}
 }
 
+// The review screen marks directory sources with the browse-style "▸ " on both
+// Source and Target; file sources carry no marker. The Output row is gone — the
+// privileged toggle's feedback is a dim line under the rows instead.
+func TestExtractReviewBodyDirMarkers(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	m := Model{styles: newStyles(), extract: em}
+	got := stripANSI(m.extractReviewBody(100))
+	if !strings.Contains(got, "▸ "+dirReq().Source) {
+		t.Errorf("dir review missing source marker\n---\n%s", got)
+	}
+	if strings.Count(got, "▸ ") != 2 {
+		t.Errorf("dir review wants markers on Source and Target\n---\n%s", got)
+	}
+	if strings.Contains(got, "Output") {
+		t.Errorf("review still renders the Output row\n---\n%s", got)
+	}
+	if strings.Contains(got, "ownership preserved") {
+		t.Errorf("unprivileged review shows the as-root line\n---\n%s", got)
+	}
+
+	m.extract.req.Privileged = true
+	if got := stripANSI(m.extractReviewBody(100)); !strings.Contains(got, "as root — snapshot file ownership preserved") {
+		t.Errorf("privileged review missing the as-root line\n---\n%s", got)
+	}
+
+	fm, _ := newExtractFixture(t, fileReq())
+	m = Model{styles: newStyles(), extract: fm}
+	if got := stripANSI(m.extractReviewBody(100)); strings.Contains(got, "▸") {
+		t.Errorf("file review must not carry dir markers\n---\n%s", got)
+	}
+}
+
+// extractTargetValue: a target that fits in avail renders on one line; one that
+// doesn't wraps across continuation lines like any other long path. The dir
+// marker's 2 cells count against the fit budget.
+func TestExtractTargetValueWrapsOnlyWhenNeeded(t *testing.T) {
+	const final = "/tmp/repo/a1b2c3d4/etc/nginx"
+	if got := extractTargetValue(final, len(final), false); got != final {
+		t.Errorf("fitting target wrapped: %q", got)
+	}
+	if got := extractTargetValue(final, len(final)+2, true); got != "▸ "+final {
+		t.Errorf("fitting dir target wrapped: %q", got)
+	}
+	if got := extractTargetValue(final, len(final), true); got != "▸ /tmp/repo/a1b2c3d4/etc/ngi\nnx" {
+		t.Errorf("marker must count against the fit budget, got %q", got)
+	}
+	if got := extractTargetValue(final, len(final)-1, false); got != "/tmp/repo/a1b2c3d4/etc/ngin\nx" {
+		t.Errorf("overlong target must wrap, got %q", got)
+	}
+}
+
 // A stale probe/auth message (superseded gen or wrong state) is dropped.
 func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())

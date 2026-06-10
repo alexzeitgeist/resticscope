@@ -101,20 +101,26 @@ func (m Model) extractBody() string {
 // file and directory sources. enter commits straight to the live extract (there
 // is no dry-run preview step). Both modes mirror the source to its true path under
 // the per-snapshot directory, so one Target row (em.final, the exact mirror path)
-// serves both. Matches §14 review mockups.
+// serves both. (The §14 mockups predate this shape — the code is canonical.)
 func (m Model) extractReviewBody(w int) string {
 	em := m.extract
 	// Repo + short snapshot id live in the header title; the source size is folded
-	// into the Source row, so Type is gone. The key hints live in the footer only.
+	// into the Source row, so Type is gone, and the browse-style "▸ " dir marker
+	// on Source / Target replaces the Output row. The key hints live in the footer
+	// only.
 	// Target wraps rather than elides (framework §8) so a long mirror path is
 	// fully visible.
 	rows := []extractRow{
 		{label: "Source", value: extractSourceValue(em)},
-		{label: "Output", value: extractOutputValue(em)},
 		{}, // spacer
-		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w))},
+		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w), extractIsDir(em))},
 	}
 	body := renderExtractRows(m.styles, rows, w)
+	// The privileged toggle's visible feedback (the Output row that used to carry
+	// it is gone — the source/target dir markers convey the shape instead).
+	if em.req.Privileged {
+		body += "\n\n" + clip("  "+m.styles.dim.Render("as root — snapshot file ownership preserved"), w)
+	}
 	// One slot under the rows: while the sudo probe is in flight, a neutral hint
 	// that the terminal may be handed over to sudo; otherwise the path-free red
 	// notice (auth failed / privileged unavailable). Never both — every transition
@@ -423,26 +429,25 @@ func extractShortSnap(req app.ExtractRequest) string {
 // extractSourceValue renders the Source row: the snapshot source path with the
 // originating entry's size in parentheses when known (a directory's recursive
 // subtree size). The size is what the dropped Type row used to carry; it is shown
-// only when known since the request doesn't carry per-entry counts.
+// only when known since the request doesn't carry per-entry counts. A directory
+// source gets the same "▸ " marker the browse list uses for dir rows — that
+// marker is the only file-vs-directory signal on the screen now that the Output
+// row is gone.
 func extractSourceValue(em extractModel) string {
+	v := em.req.Source
 	if em.srcSize > 0 {
-		return em.req.Source + " (" + humanize.Bytes(em.srcSize) + ")"
+		v += " (" + humanize.Bytes(em.srcSize) + ")"
 	}
-	return em.req.Source
+	if extractIsDir(em) {
+		v = "▸ " + v
+	}
+	return v
 }
 
-// extractOutputValue is the Output row: the shape, plus the privileged marker
-// when the `p` toggle is on (the restore then runs as root via sudo so the
-// snapshot's file ownership is applied).
-func extractOutputValue(em extractModel) string {
-	out := "directory tree"
-	if em.req.Mode == app.ExtractFile {
-		out = "file"
-	}
-	if em.req.Privileged {
-		out += " · as root (ownership preserved)"
-	}
-	return out
+// extractIsDir reports whether the active request extracts a directory tree —
+// the condition for the browse-style "▸ " dir marker on the review rows.
+func extractIsDir(em extractModel) bool {
+	return em.req.Mode == app.ExtractDirectoryTree
 }
 
 // extractValueWidth is the cell budget for a labeled row's value: the full width
@@ -453,18 +458,19 @@ func extractValueWidth(w int) int {
 	return w - 2 - labelWidth - 2
 }
 
-// extractTargetValue renders the final dir for the review screen: split at the
-// last "/" into the parent root and the per-op subdir (the mockup's two-line
-// shape), then wrap either segment that still exceeds avail so a long target is
-// laid out across indented lines rather than elided (framework §8).
-func extractTargetValue(final string, avail int) string {
-	idx := strings.LastIndex(final, "/")
-	if idx <= 0 {
-		return wrapPathValue(final, avail)
+// extractTargetValue renders the final dir for the review screen: one line when
+// it fits in avail, otherwise wrapped across continuation lines so a long
+// mirror path is fully visible rather than elided (framework §8) — the same
+// treatment the staging path gets on the terminal screens. A directory
+// extraction gets the browse-style "▸ " marker, mirroring the Source row; its
+// 2 cells count against the fit budget.
+func extractTargetValue(final string, avail int, dir bool) string {
+	var prefix string
+	if dir {
+		prefix = "▸ "
+		avail -= 2
 	}
-	head := wrapPathValue(final[:idx+1], avail)
-	tail := wrapPathValue(final[idx+1:], avail-2)
-	return head + "\n  " + tail
+	return prefix + wrapPathValue(final, avail)
 }
 
 // wrapPathValue splits p into consecutive runs of at most avail cells so a long
