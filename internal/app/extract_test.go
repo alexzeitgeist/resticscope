@@ -1199,3 +1199,100 @@ func TestExtractDiffSingleFileRefusesOccupiedFinal(t *testing.T) {
 		t.Errorf("occupant must survive untouched, got %q (err %v)", got, readErr)
 	}
 }
+
+// symlinkStagingSetup materializes a symlink node at staging/<leaf>, the way
+// restic restores a changed symlink selected as a diff row. The relative,
+// non-escaping target keeps the unsafe-symlink normalizer out of the picture.
+func symlinkStagingSetup(leaf, target string) func(staging string) error {
+	return func(staging string) error {
+		return os.Symlink(target, filepath.Join(staging, leaf))
+	}
+}
+
+// diffSymlinkReq is the diff shape for a selected symlink row: tree mode (diff
+// entries attest no node type) with the row itself as the only include.
+func diffSymlinkReq() ExtractRequest {
+	return ExtractRequest{
+		Repo:          "repo-a",
+		SnapshotID:    longSnapID,
+		SnapshotShort: "abcd1234",
+		Source:        "/etc/cfglink",
+		SourceName:    "cfglink",
+		Mode:          ExtractDirectoryTree,
+		DiffContainer: "diff-abcd1234-00112233",
+		IncludePaths:  []string{"/etc/cfglink"},
+	}
+}
+
+// TestExtractDiffSymlinkLeafPublishes drives the pipeline for a diff extract
+// whose reconstructed leaf is a SYMLINK: the publish must keep it a symlink
+// (linkNoFollow links the node itself, never the target) with its target
+// intact, and FinalDir must be the containing dir.
+func TestExtractDiffSymlinkLeafPublishes(t *testing.T) {
+	root := t.TempDir()
+	a, _ := newExtractApp(fakeRestic{
+		extractTreeSetup: symlinkStagingSetup("cfglink", "actual-config"),
+	}, root)
+	req := diffSymlinkReq()
+	staging, final, perr := PlanExtractPaths(a.Cfg.Extract, req)
+	if perr != nil {
+		t.Fatalf("PlanExtractPaths: %v", perr)
+	}
+	result, err := a.Extract(context.Background(), req, nil)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	fi, statErr := os.Lstat(final)
+	if statErr != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("final %q: err=%v mode=%v, want a symlink", final, statErr, fi)
+	}
+	if tgt, _ := os.Readlink(final); tgt != "actual-config" {
+		t.Errorf("published symlink target = %q, want %q", tgt, "actual-config")
+	}
+	if _, err := os.Lstat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("staging %q should be removed after publish, lstat err = %v", staging, err)
+	}
+	if want := filepath.Dir(final); result.FinalDir != want {
+		t.Errorf("FinalDir = %q, want containing dir %q", result.FinalDir, want)
+	}
+}
+
+// TestExtractDiffSymlinkLeafRefusesOccupiedFinal is the no-clobber regression
+// for the non-regular leaf publish: an occupant created AFTER the fresh-target
+// check (mid-run) must be refused, never replaced — rename(2) of a symlink
+// over a file would silently replace it, which is exactly why every
+// non-directory leaf publishes via the EEXIST-failing link primitive.
+func TestExtractDiffSymlinkLeafRefusesOccupiedFinal(t *testing.T) {
+	root := t.TempDir()
+	var final string
+	a, _ := newExtractApp(fakeRestic{
+		extractTreeSetup: func(staging string) error {
+			if err := symlinkStagingSetup("cfglink", "actual-config")(staging); err != nil {
+				return err
+			}
+			// Occupy final between the fresh-target check and publish.
+			if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(final, []byte("occupant"), 0o644)
+		},
+	}, root)
+	req := diffSymlinkReq()
+	var perr error
+	_, final, perr = PlanExtractPaths(a.Cfg.Extract, req)
+	if perr != nil {
+		t.Fatalf("PlanExtractPaths: %v", perr)
+	}
+	_, err := a.Extract(context.Background(), req, nil)
+	if !errors.Is(err, ErrExtractFinalExists) {
+		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
+	}
+	fi, statErr := os.Lstat(final)
+	if statErr != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("occupant was replaced by the symlink: err=%v mode=%v", statErr, fi)
+	}
+	got, readErr := os.ReadFile(final)
+	if readErr != nil || string(got) != "occupant" {
+		t.Errorf("occupant must survive untouched, got %q (err %v)", got, readErr)
+	}
+}

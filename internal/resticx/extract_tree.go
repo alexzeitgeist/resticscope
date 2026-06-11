@@ -84,14 +84,22 @@ const snapshotIDHexLen = 64
 // reference can never shift.
 const extractPatternFilePath = "/dev/fd/4"
 
-// maxArgvIncludeBytes bounds the include patterns that end up on the command
-// line in the multi-include shape. Only paths a pattern file cannot carry
+// maxArgvIncludeBytes bounds the argv bytes the spillover includes may add in
+// the multi-include shape. Only paths a pattern file cannot carry
 // ($/newline/whitespace-edged names) land there, so hitting this means a
 // pathological tree where hundreds of thousands of bytes of such names
-// changed. Refusing up front beats execve's E2BIG after staging side effects;
-// 512 KiB stays well under the tightest supported ARG_MAX (darwin: 1 MiB
+// changed. The accounting is the full per-flag execve cost — the "--include"
+// flag string, the escaped pattern, and one NUL terminator each — not just
+// pattern bytes, so many SHORT spillover names cannot slip a half-megabyte of
+// flag overhead past the budget. Refusing up front beats execve's E2BIG after
+// staging side effects; 512 KiB of accounted spillover plus the base args and
+// environment stays well under the tightest supported ARG_MAX (darwin: 1 MiB
 // including the environment).
 const maxArgvIncludeBytes = 512 << 10
+
+// argvIncludeFlagOverhead is the per-spillover execve cost beyond the pattern
+// itself: the "--include" flag string and the two NUL terminators of the pair.
+const argvIncludeFlagOverhead = len("--include") + 2
 
 // Extract path-validation sentinels. They are path-free by construction (they
 // never echo the rejected value) so a rejection can be logged safely.
@@ -383,7 +391,7 @@ func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, 
 			file.WriteByte('\n')
 			continue
 		}
-		argvBytes += len(pat)
+		argvBytes += len(pat) + argvIncludeFlagOverhead
 		if argvBytes > maxArgvIncludeBytes {
 			return nil, nil, ErrExtractArgvIncludeOverflow
 		}

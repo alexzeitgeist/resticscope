@@ -652,10 +652,11 @@ func runExtractPipeline(ctx context.Context, req ExtractRequest, staging, final 
 //     no Lstat here — os.Link is the no-replace guard. final is valid the instant
 //     os.Link returns; the staging copy is then unlinked.
 //
-// A directory-mode publish whose reconstructed node turns out to be a regular
-// file (a diff extract of one changed file — diff entries attest no node type,
-// so those route through tree mode) uses the file primitive, keeping link(2)'s
-// no-replace guarantee for it.
+// A directory-mode publish whose reconstructed node turns out to be a
+// non-directory (a diff extract of one changed file, symlink, or special —
+// diff entries attest no node type, so those route through tree mode) uses the
+// link primitive, keeping its atomic no-replace guarantee for every leaf type;
+// linkNoFollow links the node itself, never a symlink's target.
 //
 // After publishing, the now-empty staging container is removed (best-effort).
 // Staging lives at repo level, so mkdir(filepath.Dir(final)) here is the only
@@ -679,11 +680,12 @@ func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(
 	case ExtractDirectoryTree:
 		// A diff extract of a single changed path reconstructs a non-directory
 		// node here (the tree mode is the diff shape regardless of leaf type, since
-		// diff entries carry no node-type attestation). A regular file routes
-		// through the link primitive so its no-replace guarantee holds; symlinks
-		// and specials fall through to rename — link(2) follows symlinks on darwin,
-		// so the advisory Lstat refuse is the no-clobber guard for those.
-		if fi, lerr := os.Lstat(node); lerr == nil && fi.Mode().IsRegular() {
+		// diff entries carry no node-type attestation). EVERY non-directory leaf —
+		// regular file, symlink, fifo, device — publishes through the no-replace
+		// link primitive: rename(2) would silently replace a non-directory
+		// occupant created after an advisory Lstat, so stat-then-rename is
+		// race-safe only for real directory nodes.
+		if fi, lerr := os.Lstat(node); lerr == nil && !fi.IsDir() {
 			if err := linkExtractNode(node, final); err != nil {
 				return err
 			}
@@ -711,12 +713,13 @@ func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(
 	return nil
 }
 
-// linkExtractNode publishes a regular-file node: hard-link into place — link(2)
-// fails EEXIST and never replaces, closing the TOCTOU race a stat-then-rename
-// cannot — then unlink the staging copy (best-effort; final already holds the
-// inode).
+// linkExtractNode publishes a non-directory node: hard-link into place —
+// linkat(2) without AT_SYMLINK_FOLLOW fails EEXIST and never replaces, closing
+// the TOCTOU race a stat-then-rename cannot, and links a symlink node itself
+// rather than its target on every supported platform — then unlink the staging
+// copy (best-effort; final already holds the inode).
 func linkExtractNode(node, final string) error {
-	if err := os.Link(node, final); err != nil {
+	if err := linkNoFollow(node, final); err != nil {
 		if errors.Is(err, os.ErrExist) { // lost the race / occupied → refuse, never clobber
 			return ErrExtractFinalExists
 		}

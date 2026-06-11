@@ -3,6 +3,7 @@ package resticx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -668,6 +669,33 @@ func TestBuildExtractTreeArgsArgvIncludeOverflow(t *testing.T) {
 	}
 	if args != nil || patterns != nil {
 		t.Error("no argv or patterns may be produced on overflow")
+	}
+}
+
+// TestBuildExtractTreeArgsArgvOverflowCountsFlagOverhead pins the budget's
+// accounting unit: many SHORT spillover paths must trip the overflow through
+// the per-flag execve cost ("--include" plus NUL terminators), because their
+// pattern bytes alone stay under the cap — pattern-only accounting would let
+// half a megabyte of flag overhead through and hit E2BIG at exec time.
+func TestBuildExtractTreeArgsArgvOverflowCountsFlagOverhead(t *testing.T) {
+	// 9-byte patterns, '$'-forced onto argv: 30k × 9 = ~264 KiB of pattern
+	// bytes (inside the 512 KiB cap), but ~330 KiB of per-flag overhead on top
+	// pushes the accounted total past it.
+	incs := make([]string, 30_000)
+	for i := range incs {
+		incs[i] = fmt.Sprintf("/$%07d", i)
+	}
+	_, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
+		SnapshotID:   testSnapID,
+		Source:       "/",
+		Target:       "/abs/staging",
+		IncludePaths: incs,
+	})
+	if !errors.Is(err, ErrExtractArgvIncludeOverflow) {
+		t.Fatalf("err = %v, want ErrExtractArgvIncludeOverflow", err)
+	}
+	if patterns != nil {
+		t.Error("no patterns may be produced on overflow")
 	}
 }
 
