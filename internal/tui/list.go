@@ -236,11 +236,20 @@ func listCells(l listLayout, r listRow) []string {
 
 // listHeader is the dim column-label row, built from the same listCells layout
 // as the data rows plus the 5-cell prefix the rows get from gutter+status+gap,
-// so labels line up over their values at every width.
-func listHeader(l listLayout) string {
+// so labels line up over their values at every width. When the sort maps to a
+// labeled column (sortName → Name) the header flags it with the same arrow
+// browse uses (markSortColumn); sortConfig and sortUrgency order by things that
+// aren't labeled columns (config position, the status glyph), so they show no
+// arrow — the title's `sort:` part names them, mirroring browse's fallback for
+// a collapsed sort column.
+func listHeader(l listLayout, sort sortMode) string {
+	name := "Name"
+	if sort == sortName {
+		name = markSortColumn(name, false)
+	}
 	prefix := strings.Repeat(" ", listGutterWidth+listStatusWidth+listStatusNameGap)
 	return prefix + strings.Join(listCells(l, listRow{
-		name: "Name", last: "Last", snaps: "Snaps", took: "Took", labels: "Labels",
+		name: name, last: "Last", snaps: "Snaps", took: "Took", labels: "Labels",
 	}), "  ")
 }
 
@@ -298,7 +307,7 @@ func (m Model) listView() string {
 		return clip(m.styles.meta.Render("no repositories match "+strconv.Quote(strings.TrimSpace(m.filter))), w)
 	}
 	l := computeListLayout(w)
-	header := clip(m.styles.dim.Render(listHeader(l)), w)
+	header := clip(m.styles.dim.Render(listHeader(l, m.sortMode)), w)
 	if m.groupingActive() {
 		return header + "\n" + m.renderGroupedList(d, l, w)
 	}

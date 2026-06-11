@@ -1855,6 +1855,21 @@ func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
 	}
 }
 
+// The list header flags the sorted column with the same arrow browse uses:
+// sortName marks Name; sortConfig and sortUrgency order by things that aren't
+// labeled columns, so they show no arrow (the title's `sort:` part names them).
+func TestListHeaderSortIndicator(t *testing.T) {
+	l := computeListLayout(100)
+	if got := listHeader(l, sortName); !strings.Contains(got, "Name "+browseSortArrow) {
+		t.Errorf("name-sorted header should flag the Name column, got %q", got)
+	}
+	for _, mode := range []sortMode{sortConfig, sortUrgency} {
+		if got := listHeader(l, mode); strings.Contains(got, browseSortArrow) {
+			t.Errorf("%s-sorted header should carry no arrow, got %q", mode.label(), got)
+		}
+	}
+}
+
 // listHeader and listCells share the same listLayout, so Name starts at the same
 // display column in header/data rows, and metric columns share the same right
 // edge. The 5-cell prefix (gutter+status+gap) is present in both.
@@ -1871,7 +1886,7 @@ func TestListHeaderAlignsWithRows(t *testing.T) {
 		t.Fatalf("precondition: width %d should promote both Took and Labels", width)
 	}
 
-	header := stripANSI(listHeader(l))
+	header := stripANSI(listHeader(l, sortConfig))
 	row := stripANSI(m.renderRow(m.rows[0], l, false, width))
 
 	// visibleOffset returns the display-cell offset of substr in s. Bytes lie

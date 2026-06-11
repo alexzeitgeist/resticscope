@@ -174,9 +174,10 @@ func TestHelpChipSuppressedWhileTyping(t *testing.T) {
 func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m.view = findVersionsView
-	m.findRepo = "repo-a"
+	// The find title carries the repo name (the queried path lives in the
+	// body), so a long repo name is what stretches the title now.
+	m.findRepo = "repo-" + strings.Repeat("x", 150)
 	m.browseSnapshot = "id-newest"
-	m.findPath = "/very/long/path/" + strings.Repeat("x", 150)
 
 	m.width, m.height = 80, 30
 	row := stripANSI(m.titleRow(m.findTitle()))
@@ -334,9 +335,15 @@ func TestViewTitleConvention(t *testing.T) {
 
 	a, _ := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	fm := openFindVersions(t, newTestModel(t, a), "hostname")
-	want := "versions: repo-a · " + shortID(fm.browseSnapshot) + " · /hostname"
+	// The queried path is deliberately absent from the title (browse-title
+	// shape); it renders once, in the body's Path row.
+	want := "versions: repo-a · " + shortID(fm.browseSnapshot)
 	if got := stripANSI(fm.findTitle()); got != want {
 		t.Errorf("versions title = %q, want %q", got, want)
+	}
+	fm = update(t, fm, tea.WindowSizeMsg{Width: 120, Height: 40})
+	if body := stripANSI(fm.findBody()); !strings.Contains(body, "/hostname") {
+		t.Errorf("versions body must carry the queried path in its Path row\n---\n%s", body)
 	}
 
 	im := newTestModel(t, snapshotInfoApp(t))

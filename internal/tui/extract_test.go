@@ -786,6 +786,51 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	}
 }
 
+// The done screens carry no key hints in the body — the footer key bar is the
+// single source for affordances (`s shell here • q back`), so body and bar can
+// never drift apart. Regression for the duplicated "open a shell" / "q back"
+// body lines.
+func TestExtractDoneBodiesCarryNoKeyHints(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{Files: 2, Dirs: 1, FinalDir: "/extracted/here", FinalPath: "/extracted/here"}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width, m.height = 240, 50
+	m.extract = em
+
+	body := stripANSI(m.extractBody())
+	if strings.Contains(body, "open a shell") || strings.Contains(body, "q back") {
+		t.Errorf("success body must not embed key hints:\n%s", body)
+	}
+	footer := stripANSI(m.footerView())
+	for _, want := range []string{"s shell here", "q back"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("success footer missing %q\n---\n%s", want, footer)
+		}
+	}
+
+	// No-staging error screen: the body is the headline (plus an optional
+	// refusal hint); back lives only in the footer.
+	em.state = extractStateError
+	em.err = errors.New("boom")
+	em.result = app.ExtractResult{}
+	m.extract = em
+	body = stripANSI(m.extractBody())
+	if strings.Contains(body, "q back") {
+		t.Errorf("error body must not embed key hints:\n%s", body)
+	}
+	if foot := stripANSI(m.footerView()); !strings.Contains(foot, "q back") {
+		t.Errorf("error footer missing 'q back'\n---\n%s", foot)
+	}
+}
+
 // The success-view `s` action opens a credential-free shell rooted at the
 // extracted directory via the driver's LocalShellSession.
 func TestExtractSuccessShellHere(t *testing.T) {

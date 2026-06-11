@@ -26,7 +26,7 @@ const (
 	// both so the footer is never overlapped.
 	diffAuxRows = 2
 
-	diffMarkerWidth = 8  // change marker / rollup cell: enough for "+99 ~99" before truncation
+	diffMarkerWidth = 14 // change marker / rollup cell: enough for "+999 -999 M999" before truncation
 	diffNameMin     = 16 // minimum readable Name flex width
 )
 
@@ -277,7 +277,7 @@ func (m Model) diffSearchList(w int) string {
 }
 
 // diffRowView renders one row. The marker cell shows the row's primary glyph
-// (or, for dir rows, a compact `+a -r ~m` rollup) and is colored by the
+// (or, for dir rows, a compact `+a -r Mm` rollup) and is colored by the
 // primary change type. The name cell shows the last path component, prefixing
 // dirs with the same disclosure marker browse uses and keeping the trailing
 // slash. The whole line is clipped to width so a long name can't wrap and break
@@ -319,8 +319,11 @@ func diffRowMarker(r *model.DiffRow, st styles) (string, lipgloss.Style) {
 }
 
 // diffRollup is the compact rollup badge for a synthetic ancestor dir: a
-// sequence of `<glyph><count>` pairs in canonical order. Only non-zero kinds
-// appear; the result is truncated at the marker cell width by the caller.
+// sequence of `<glyph><count>` pairs in canonical order. The glyphs are the
+// same restic letters the summary line (diffStatsLabel), the filter mask
+// (diffFilterLabel), and the raw file-row modifiers use — one symbol set for
+// the whole view. Only non-zero kinds appear; the result is truncated at the
+// marker cell width by the caller.
 func diffRollup(s model.DiffStats) string {
 	pairs := []struct {
 		n     int
@@ -328,9 +331,9 @@ func diffRollup(s model.DiffStats) string {
 	}{
 		{s.Added, "+"},
 		{s.Removed, "-"},
-		{s.Modified, "~"},
-		{s.MetadataOnly, "u"},
-		{s.TypeChanged, "t"},
+		{s.Modified, "M"},
+		{s.MetadataOnly, "U"},
+		{s.TypeChanged, "T"},
 		{s.Bitrot, "?"},
 	}
 	parts := make([]string, 0, len(pairs))

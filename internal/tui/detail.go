@@ -293,7 +293,8 @@ func (m Model) field(label, value string, width int) string {
 func (m Model) snapshotsHeadingText() string {
 	head := "Snapshots"
 	if n := len(m.detailMarks); n > 0 {
-		head = fmt.Sprintf("Snapshots · marks: %d/2 · t toggle · d diff", n)
+		// State only — the t/d key hints live in the footer key bar, not here.
+		head = fmt.Sprintf("Snapshots · %d/2 marked", n)
 	}
 	if lbl := m.snapGroupMode.label(); lbl != "" {
 		head += " · group: " + lbl

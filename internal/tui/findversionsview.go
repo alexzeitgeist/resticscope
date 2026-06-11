@@ -8,9 +8,9 @@ import (
 	"resticscope/internal/model"
 )
 
-// findversionsview.go renders findVersionsView: a title naming the repo,
-// origin snapshot, and queried path, a fixed-shape table of distinct file
-// versions, and a status line carrying the host-filter label. The host label
+// findversionsview.go renders findVersionsView: a title naming the repo and
+// origin snapshot, a Path line carrying the queried path, a fixed-shape table
+// of distinct file versions, and a status line carrying the host-filter label. The host label
 // is driven by findResultHost/findResultAllHosts (the filter that produced the
 // rows on screen), never by the user-toggle findRequestAllHosts, so a
 // mid-toggle re-run can never relabel the visible rows until the new response
@@ -28,15 +28,17 @@ const (
 	findAuxRows    = 2  // column header + the "showing N–M of T" scroll note
 )
 
-// findTitle names the find context: the repo, the snapshot the search was
+// findTitle names the find context: the repo and the snapshot the search was
 // launched from (find is reached only from browse, so browseSnapshot is the
-// origin), and the queried path.
+// origin) — the same `view: repo · id` shape as browseTitle. The queried path
+// is NOT repeated here: it lives in the body's Path row, where it can render
+// unclipped.
 func (m Model) findTitle() string {
 	label := "versions: " + m.findRepo
 	if id := shortID(m.browseSnapshot); id != "" {
 		label += " · " + id
 	}
-	return m.styles.title.Render(label + " · " + m.findPath)
+	return m.styles.title.Render(label)
 }
 
 // findHostLabel renders the host-filter description from the result-of-record

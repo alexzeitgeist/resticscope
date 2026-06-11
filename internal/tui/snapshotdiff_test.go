@@ -1354,3 +1354,22 @@ func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
 		t.Fatal("diff stream did not unblock after ctrl+c cancelled the context")
 	}
 }
+
+// diffRollup speaks the same change vocabulary as the summary cells and the
+// filter mask: restic's letters (+ - M U T ?), not a private lowercase/tilde
+// dialect. Regression for the `M114` (summary) vs `~10` (rollup) symbol split.
+func TestDiffRollupUsesSummaryGlyphs(t *testing.T) {
+	got := diffRollup(model.DiffStats{Added: 2, Removed: 1, Modified: 3, MetadataOnly: 4, TypeChanged: 5, Bitrot: 6})
+	if want := "+2 -1 M3 U4 T5 ?6"; got != want {
+		t.Errorf("diffRollup = %q, want %q", got, want)
+	}
+	glyphs := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r == ' ' {
+			return -1
+		}
+		return r
+	}, got)
+	if mask := diffFilterLabel(model.AllDiffKinds); glyphs != mask {
+		t.Errorf("rollup glyphs %q diverge from the filter-mask vocabulary %q", glyphs, mask)
+	}
+}

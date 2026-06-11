@@ -610,6 +610,20 @@ func TestSnapshotsHeadingShowsGroupAndCollapseState(t *testing.T) {
 	}
 }
 
+// The marks suffix carries state only ("n/2 marked") — the t/d key hints live
+// in the footer key bar and must not be duplicated into the heading.
+func TestSnapshotsHeadingMarksStateWithoutKeyHints(t *testing.T) {
+	m := openDetailWith(t, snapGroupApp(t))
+	m = update(t, m, press("t"))
+	got := m.snapshotsHeadingText()
+	if !strings.Contains(got, "1/2 marked") {
+		t.Errorf("heading after one mark = %q, want '· 1/2 marked'", got)
+	}
+	if strings.Contains(got, "t toggle") || strings.Contains(got, "d diff") {
+		t.Errorf("heading must not embed key hints, got %q", got)
+	}
+}
+
 // --- key wiring (g/c on detail) ---
 
 func TestDetailGKeyCyclesSnapGroup(t *testing.T) {

@@ -208,7 +208,9 @@ func extractRunningStatus(em extractModel) string {
 	return strings.Join(parts, " · ")
 }
 
-// extractSuccessBody renders the post-rename congratulation page.
+// extractSuccessBody renders the post-rename congratulation page. The s/q
+// affordances live only in the footer key bar (shortHelp) — the body carries
+// no key hints, so the two can never drift apart.
 func (m Model) extractSuccessBody(w int) string {
 	em := m.extract
 	ok := m.styles.good.Render("✓ ")
@@ -236,11 +238,6 @@ func (m Model) extractSuccessBody(w int) string {
 			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(em.result.UnsafeSymlinks, em.cfg.UnsafeSymlinks)),
 		)
 	}
-	body = append(body,
-		"",
-		"    "+m.styles.dim.Render("s     open a shell in the target directory"),
-		"    "+m.styles.dim.Render("q back"),
-	)
 	return clipLines(body, w)
 }
 
@@ -293,15 +290,11 @@ func (m Model) extractTerminalBody(w int) string {
 		)
 	} else if em.err != nil {
 		// No staging to resolve: surface the actionable refusal hint (only for an
-		// occupied-target/staging refusal — handleTerminalKey honors `t` here), then
-		// the back affordance.
+		// occupied-target/staging refusal — handleTerminalKey honors `t` here).
+		// The back affordance lives in the footer key bar, not the body.
 		if hint := extractRefusalHint(em); hint != "" {
 			lines = append(lines, "", "  "+m.styles.dim.Render(hint))
 		}
-		lines = append(lines,
-			"",
-			"    "+m.styles.dim.Render("q back"),
-		)
 	}
 	return clipLines(lines, w)
 }
