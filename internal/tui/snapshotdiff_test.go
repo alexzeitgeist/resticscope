@@ -448,6 +448,68 @@ func TestSnapshotDiffSummaryShowsDirectionLegend(t *testing.T) {
 	}
 }
 
+// The summary line carries state only — the filter-toggle key hint lives in
+// the footer as one chip for the whole group (the old lone `+ added` implied
+// the other five toggles didn't exist). The active mask renders as the LAST
+// summary part, so toggling a filter appends it without shifting anything
+// already on the line.
+func TestSnapshotDiffFilterHintInFooterAndStableSummary(t *testing.T) {
+	a := detailApp(t)
+	a.Restic = stubRestic{
+		snaps: []model.Snapshot{{Hostname: "h"}},
+		diffEntries: []model.DiffEntry{
+			{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+			{Path: "/etc/new", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		},
+	}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = next.(Model)
+	m = drivePastDiff(t, m, cmd)
+
+	footer := stripANSI(m.footerView())
+	if !strings.Contains(footer, "+-MUTb filters") {
+		t.Errorf("diff footer should advertise the filter-toggle group\n---\n%s", footer)
+	}
+	if strings.Contains(footer, "+ added") {
+		t.Errorf("diff footer must not advertise a single toggle out of six\n---\n%s", footer)
+	}
+
+	// The grouped chip must not grow the bar past an 80-column terminal: the
+	// help model truncates trailing chips at width, and `q back` is last, so
+	// an oversized bar would hide the universal back affordance exactly where
+	// space is tightest.
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	narrow := stripANSI(m.footerView())
+	for _, want := range []string{"+-MUTb filters", "q back"} {
+		if !strings.Contains(narrow, want) {
+			t.Errorf("80-column diff footer missing %q\n---\n%s", want, narrow)
+		}
+	}
+	m = update(t, m, tea.WindowSizeMsg{Width: 192, Height: 51})
+
+	before := stripANSI(m.diffSummaryLine())
+	if strings.Contains(before, "toggle") {
+		t.Errorf("summary line should carry no key hint, got %q", before)
+	}
+	if strings.Contains(before, "filter:") {
+		t.Errorf("the all-on default mask should not render, got %q", before)
+	}
+
+	m = update(t, m, press("+")) // exclude added entries
+	after := stripANSI(m.diffSummaryLine())
+	if !strings.HasPrefix(after, before) {
+		t.Errorf("toggling a filter must append the mask, not shift the line\nbefore: %q\nafter:  %q", before, after)
+	}
+	if !strings.Contains(after, "filter: -MUT?") {
+		t.Errorf("summary should end with the active mask, got %q", after)
+	}
+}
+
 func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	a := detailApp(t)
 	cap := &stubDiffCapture{}

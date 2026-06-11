@@ -71,7 +71,7 @@ func defaultKeys() keyMap {
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("q", "back")),
 		Shell:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Browse:     key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "browse")),
-		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent dir")),
+		Parent:     key.NewBinding(key.WithKeys("backspace", "left", "h"), key.WithHelp("⌫", "parent")),
 		Open:       key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "open")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		RefreshAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh all")),
@@ -167,10 +167,10 @@ func (h viewHelp) ShortHelp() []key.Binding {
 			// After a search jump q mirrors esc and reverses the jump instead
 			// of leaving the view (routing.go), so the normal `q back` chip
 			// would lie; one combined chip replaces it until the jump is undone.
-			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded,
+			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, diffFiltersHelp(),
 				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous"))}
 		}
-		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, diffFiltersHelp(), k.Back}
 	case extractView:
 		// Per-state bindings from the extract sub-model; fall back to the
 		// always-present back affordance if a caller forgot to supply them.
@@ -226,6 +226,18 @@ func moveHelp() key.Binding {
 // overlay documents the ctrl variants.
 func searchMoveHelp() key.Binding {
 	return key.NewBinding(key.WithKeys("up", "ctrl+k", "down", "ctrl+j"), key.WithHelp("↑/↓", "move"))
+}
+
+// diffFiltersHelp condenses the six diff filter-toggle bindings into one
+// footer chip — advertising a single toggle (the old `+ added`) implied the
+// others didn't exist, and listing all six as chips would flood the bar. The
+// key display is the compact run the summary's `filter: +-MUT?` mask already
+// uses (not slash-joined: slashes mean alternates of one action, these are six
+// toggles), which also keeps the normal diff bar inside 80 columns with
+// `q back` visible. The per-key meanings live in the ? overlay; the active
+// mask is state and renders in the summary line, not here.
+func diffFiltersHelp() key.Binding {
+	return key.NewBinding(key.WithKeys("+", "-", "M", "U", "T", "b"), key.WithHelp("+-MUTb", "filters"))
 }
 
 func (h viewHelp) FullHelp() [][]key.Binding {

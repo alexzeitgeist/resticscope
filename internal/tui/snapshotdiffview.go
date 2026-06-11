@@ -99,12 +99,15 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 // diffSummaryLine is the status sub-line above the table. While loading it
 // shows the running entry count plus the cancel affordance; otherwise it
 // reports the top-level totals from diffStats, the directional +/− meaning,
-// and the current filter mask, plus a hint about the filter keys. When the
-// stream failed mid-way and only delivered partial entries, diffErr carries
-// a sticky "partial: …" warning that is *prepended* to the line (not
-// replacing the stats) so the user always sees both the data they have and
-// the fact that it is incomplete. diffSearchSummary, which replaces this
-// line while search is open, prefixes the same warning for the same reason.
+// and the current filter mask. It carries state only — the filter-toggle key
+// hint lives in the footer key bar (diffFiltersHelp). The filter mask is the
+// LAST part so toggling a filter appends it without shifting anything already
+// on the line. When the stream failed mid-way and only delivered partial
+// entries, diffErr carries a sticky "partial: …" warning that is *prepended*
+// to the line (not replacing the stats) so the user always sees both the data
+// they have and the fact that it is incomplete. diffSearchSummary, which
+// replaces this line while search is open, prefixes the same warning for the
+// same reason.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading {
 		return fmt.Sprintf("loading… %d changes seen · esc/back cancels", m.diffLoadCount)
@@ -121,7 +124,6 @@ func (m Model) diffSummaryLine() string {
 	if m.diffFilters != model.AllDiffKinds {
 		parts = append(parts, "filter: "+diffFilterLabel(m.diffFilters))
 	}
-	parts = append(parts, "+/-/M/U/T/b toggle")
 	return strings.Join(parts, " · ")
 }
 
