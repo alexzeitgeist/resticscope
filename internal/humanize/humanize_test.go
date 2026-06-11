@@ -1,6 +1,7 @@
 package humanize
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -42,6 +43,31 @@ func TestDuration(t *testing.T) {
 		if got := Duration(tt.d); got != tt.want {
 			t.Errorf("Duration(%v) = %q, want %q", tt.d, got, tt.want)
 		}
+	}
+}
+
+func TestCount(t *testing.T) {
+	tests := []struct {
+		n                int
+		singular, plural string
+		want             string
+	}{
+		{0, "file", "files", "0 files"},
+		{1, "file", "files", "1 file"},
+		{2, "file", "files", "2 files"},
+		{1, "entry", "entries", "1 entry"},
+		{3, "entry", "entries", "3 entries"},
+	}
+	for _, tt := range tests {
+		if got := Count(tt.n, tt.singular, tt.plural); got != tt.want {
+			t.Errorf("Count(%d, %q, %q) = %q, want %q", tt.n, tt.singular, tt.plural, got, tt.want)
+		}
+	}
+
+	// The generic signature carries uint64 counters at full precision — no
+	// narrowing through int on the way to the format verb.
+	if got, want := Count(uint64(math.MaxUint64), "file", "files"), "18446744073709551615 files"; got != want {
+		t.Errorf("Count(MaxUint64) = %q, want %q", got, want)
 	}
 }
 

@@ -51,6 +51,19 @@ func Duration(d time.Duration) string {
 	}
 }
 
+// Count renders a count with its noun, picking the singular form for exactly
+// one ("1 file", "3 files", "0 files"). Callers pass both forms because
+// English pluralization is irregular ("entry" / "entries"). The constraint
+// covers the integer types presentation code actually carries — len() results
+// and restic's uint64 summary counters — so no caller has to narrow; extend it
+// as needed.
+func Count[N ~int | ~int64 | ~uint64](n N, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
 // Bytes formats a byte count in IEC units (GiB, MiB, …), with one decimal place
 // below 10 of a unit.
 func Bytes(n int64) string {

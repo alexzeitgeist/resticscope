@@ -176,16 +176,31 @@ func TestShellBanner(t *testing.T) {
 	url := "s3:https://fsn1.your-objectstorage.com/homeserver-backups"
 
 	plain := shellBanner("homeserver-system", url, nil)
-	if !strings.Contains(plain, "homeserver-system") || !strings.Contains(plain, url) {
-		t.Errorf("banner missing repo/url:\n%s", plain)
+	if !strings.Contains(plain, "resticscope shell · homeserver-system") {
+		t.Errorf("banner title should use the app-wide · separator:\n%s", plain)
+	}
+	if !strings.Contains(plain, url) {
+		t.Errorf("banner missing repo url:\n%s", plain)
 	}
 	if strings.Contains(plain, "RESTICSCOPE_SNAPSHOT_ID") {
 		t.Error("banner mentions a snapshot id when none was selected")
 	}
 
+	// A short id (tests, prefixes) is echoed verbatim.
 	withSnap := shellBanner("homeserver-system", url, &model.Snapshot{ID: "deadbeef"})
 	if !strings.Contains(withSnap, "RESTICSCOPE_SNAPSHOT_ID=deadbeef") {
 		t.Errorf("banner missing snapshot id:\n%s", withSnap)
+	}
+
+	// A real 64-char id is shown as its 8-char prefix — the full value would
+	// run to the terminal edge; the environment variable still carries it.
+	longID := strings.Repeat("ab", 32)
+	withLong := shellBanner("homeserver-system", url, &model.Snapshot{ID: longID})
+	if strings.Contains(withLong, longID) {
+		t.Errorf("banner echoes the full 64-char id:\n%s", withLong)
+	}
+	if !strings.Contains(withLong, "RESTICSCOPE_SNAPSHOT_ID=abababab…") {
+		t.Errorf("banner missing the truncated id prefix:\n%s", withLong)
 	}
 }
 

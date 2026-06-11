@@ -336,10 +336,16 @@ func isCredEnvKey(k string) bool {
 // selected), and lists a few common restic commands.
 func shellBanner(repoName, repoURL string, snap *model.Snapshot) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "resticscope shell — %s\n", repoName)
+	fmt.Fprintf(&b, "resticscope shell · %s\n", repoName)
 	fmt.Fprintf(&b, "  RESTIC_REPOSITORY=%s\n", repoURL)
 	if snap != nil {
-		fmt.Fprintf(&b, "  RESTICSCOPE_SNAPSHOT_ID=%s\n", snap.ID)
+		// Show the 8-char prefix the rest of the UI uses — the full 64-char id
+		// would run to the terminal edge. The variable itself holds the full id.
+		id, note := snap.ID, ""
+		if len(id) > 8 {
+			id, note = id[:8]+"…", " (full id exported)"
+		}
+		fmt.Fprintf(&b, "  RESTICSCOPE_SNAPSHOT_ID=%s%s\n", id, note)
 	}
 	b.WriteString("\n  Common commands:\n")
 	b.WriteString("    restic snapshots\n")

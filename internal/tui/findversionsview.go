@@ -79,8 +79,10 @@ func (m Model) findSummaryLine() string {
 	for _, r := range m.findRows {
 		snaps += len(r.Occurrences)
 	}
-	return fmt.Sprintf("%d versions across %d snapshots · host: %s",
-		len(m.findRows), snaps, m.findHostLabel())
+	return fmt.Sprintf("%s across %s · host: %s",
+		humanize.Count(len(m.findRows), "version", "versions"),
+		humanize.Count(snaps, "snapshot", "snapshots"),
+		m.findHostLabel())
 }
 
 // findColLayout describes the find-versions table's columns for a given

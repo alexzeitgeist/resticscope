@@ -39,7 +39,7 @@ func (m Model) pathLine(label, value string, width int) string {
 // Otherwise it reports the current directory's entry count.
 func (m Model) browseSummaryLine() string {
 	if m.browseLoading && !m.browseIndexed {
-		parts := []string{fmt.Sprintf("indexing… %d entries", m.browseIndexN)}
+		parts := []string{"indexing… " + humanize.Count(m.browseIndexN, "entry", "entries")}
 		if rate := browseIndexRateLabel(m.browseRate.rate); rate != "" {
 			parts = append(parts, rate)
 		}
@@ -52,7 +52,7 @@ func (m Model) browseSummaryLine() string {
 	if m.browseNotice != "" {
 		return m.browseNotice
 	}
-	parts := []string{fmt.Sprintf("%d entries", len(m.browseRows))}
+	parts := []string{humanize.Count(len(m.browseRows), "entry", "entries")}
 	if m.browseSortMode != browseSortName {
 		parts = append(parts, "sort: "+m.browseSortMode.label())
 	}
@@ -74,9 +74,9 @@ func (m Model) browseSearchSummary() string {
 		return "(no matches)"
 	}
 	if shown := len(m.browseSearchRows); shown < m.browseSearchTotal {
-		return fmt.Sprintf("showing %d of %d matches", shown, m.browseSearchTotal)
+		return fmt.Sprintf("showing %d of %s", shown, humanize.Count(m.browseSearchTotal, "match", "matches"))
 	}
-	return fmt.Sprintf("%d matches", m.browseSearchTotal)
+	return humanize.Count(m.browseSearchTotal, "match", "matches")
 }
 
 func browseIndexRateLabel(rate float64) string {

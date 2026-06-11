@@ -261,7 +261,7 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 		parts = append(parts, fmt.Sprintf("%d changed", *sum.FilesChanged))
 	}
 	if sum.TotalFilesProcessed != nil {
-		parts = append(parts, fmt.Sprintf("%d files", *sum.TotalFilesProcessed))
+		parts = append(parts, humanize.Count(*sum.TotalFilesProcessed, "file", "files"))
 	}
 	if len(parts) == 0 {
 		if includeAdded {

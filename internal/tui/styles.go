@@ -108,6 +108,16 @@ const (
 	labelWidth = 10
 )
 
+// Glyph vocabulary — one glyph per role across every surface (UX plan phase 4):
+//
+//	·  separates inline values (titles, summaries, status lines, the shell banner)
+//	•  separates key chips in the footer bar (the bubbles/help default)
+//	—  "no value" in table cells; also the prose dash inside sentences
+//	✕  the failure cross (status glyph, extract error headline)
+//	…  truncation and "still loading"
+//
+// New text should pick from this table rather than introduce a lookalike.
+
 // statusWord maps a status to the semantic phrase the detail title shows next
 // to the glyph — what the status means, not the literal color name. The help
 // legend and list-row texts have their own phrasings and stay independent.

@@ -27,10 +27,10 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 		case model.StatusGrey:
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Status, "never refreshed")
 		default:
-			line := fmt.Sprintf("%s\t%s\t%s\t%d snaps\t%s",
+			line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
 				r.Name, r.Status,
 				humanize.Ago(now, r.State.LastSnapshot),
-				r.State.SnapshotCount,
+				humanize.Count(r.State.SnapshotCount, "snap", "snaps"),
 				lastBackupDuration(r.State.Snapshots),
 			)
 			if r.Stale {
@@ -101,10 +101,7 @@ func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
 
 // caches renders a count with the correctly pluralized noun ("1 cache", "3 caches").
 func caches(n int) string {
-	if n == 1 {
-		return "1 cache"
-	}
-	return fmt.Sprintf("%d caches", n)
+	return humanize.Count(n, "cache", "caches")
 }
 
 // checkLine writes one aligned stage line for `resticscope check`, e.g.

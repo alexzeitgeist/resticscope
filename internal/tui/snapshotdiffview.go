@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"resticscope/internal/humanize"
 	"resticscope/internal/model"
 )
 
@@ -91,9 +92,9 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 		return "(no matches)"
 	}
 	if shown < total {
-		return fmt.Sprintf("showing %d of %d matches", shown, total)
+		return fmt.Sprintf("showing %d of %s", shown, humanize.Count(total, "match", "matches"))
 	}
-	return fmt.Sprintf("%d matches", total)
+	return humanize.Count(total, "match", "matches")
 }
 
 // diffSummaryLine is the status sub-line above the table. While loading it
@@ -110,7 +111,7 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 // same reason.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading {
-		return fmt.Sprintf("loading… %d changes seen · esc/back cancels", m.diffLoadCount)
+		return fmt.Sprintf("loading… %s seen · esc/back cancels", humanize.Count(m.diffLoadCount, "change", "changes"))
 	}
 	parts := make([]string, 0, 6)
 	if m.diffErr != "" {
@@ -201,10 +202,7 @@ func diffFilterLabel(k model.ModifierKind) string {
 }
 
 func diffParseErrorLabel(n int) string {
-	if n == 1 {
-		return "1 malformed line ignored"
-	}
-	return fmt.Sprintf("%d malformed lines ignored", n)
+	return humanize.Count(n, "malformed line", "malformed lines") + " ignored"
 }
 
 // diffList renders the table window for the current directory: a dim column

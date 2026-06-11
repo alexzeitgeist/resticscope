@@ -197,9 +197,9 @@ func extractRunningStatus(em extractModel) string {
 		parts = append(parts, fmt.Sprintf("%s / —", humanize.Bytes(p.BytesDone)))
 	}
 	if p.FilesTotal > 0 {
-		parts = append(parts, fmt.Sprintf("%d / %d files", p.FilesDone, p.FilesTotal))
+		parts = append(parts, fmt.Sprintf("%d / %s", p.FilesDone, humanize.Count(p.FilesTotal, "file", "files")))
 	} else if p.FilesDone > 0 {
-		parts = append(parts, fmt.Sprintf("%d files", p.FilesDone))
+		parts = append(parts, humanize.Count(p.FilesDone, "file", "files"))
 	}
 	if em.rate.rate > 0 {
 		parts = append(parts, fmt.Sprintf("%s/s", humanize.Bytes(int64(em.rate.rate))))
@@ -214,8 +214,9 @@ func extractRunningStatus(em extractModel) string {
 func (m Model) extractSuccessBody(w int) string {
 	em := m.extract
 	ok := m.styles.good.Render("✓ ")
-	summary := ok + fmt.Sprintf("extracted %d files · %d dirs · %s · in %s",
-		em.result.Files, em.result.Dirs,
+	summary := ok + fmt.Sprintf("extracted %s · %s · %s · in %s",
+		humanize.Count(em.result.Files, "file", "files"),
+		humanize.Count(em.result.Dirs, "dir", "dirs"),
 		humanize.Bytes(em.result.Bytes),
 		humanize.Duration(em.result.Elapsed))
 	body := []string{
@@ -246,13 +247,20 @@ func (m Model) extractSuccessBody(w int) string {
 // sub-model's own validated config — policy is config-only, never per-request).
 // It carries only the count, never a path or a link name.
 func extractUnsafeSymlinkWarning(n int, policy string) string {
+	count := humanize.Count(n, "unsafe symlink", "unsafe symlinks")
 	switch policy {
 	case config.UnsafeSymlinksSkip:
-		return fmt.Sprintf("%d unsafe symlinks removed from the output.", n)
+		return count + " removed from the output."
 	case config.UnsafeSymlinksPlaceholder:
-		return fmt.Sprintf("%d unsafe symlinks replaced with inert text files recording their target.", n)
+		if n == 1 {
+			return count + " replaced with an inert text file recording its target."
+		}
+		return count + " replaced with inert text files recording their target."
 	default: // keep (and any unknown/empty policy)
-		return fmt.Sprintf("%d unsafe symlinks left in place — targets are absolute or outside the extracted tree and alias your live filesystem; inspect before use.", n)
+		if n == 1 {
+			return count + " left in place — its target is absolute or outside the extracted tree and aliases your live filesystem; inspect before use."
+		}
+		return count + " left in place — targets are absolute or outside the extracted tree and alias your live filesystem; inspect before use."
 	}
 }
 
@@ -304,9 +312,9 @@ func extractCancelHeadline(em extractModel) string {
 	p := em.progress
 	parts := []string{"canceled"}
 	if p.FilesTotal > 0 {
-		parts = append(parts, fmt.Sprintf("at %d / %d files", p.FilesDone, p.FilesTotal))
+		parts = append(parts, fmt.Sprintf("at %d / %s", p.FilesDone, humanize.Count(p.FilesTotal, "file", "files")))
 	} else if p.FilesDone > 0 {
-		parts = append(parts, fmt.Sprintf("at %d files", p.FilesDone))
+		parts = append(parts, "at "+humanize.Count(p.FilesDone, "file", "files"))
 	}
 	if p.BytesDone > 0 {
 		parts = append(parts, humanize.Bytes(p.BytesDone)+" written")

@@ -483,3 +483,18 @@ func TestFindVersionsKeyOnNonFileShowsMessage(t *testing.T) {
 		})
 	}
 }
+
+// A single version in a single snapshot reads "1 version across 1 snapshot",
+// not "1 versions across 1 snapshots". Regression for the phase-4
+// pluralization pass.
+func TestFindSummaryLineSingularCounts(t *testing.T) {
+	m := Model{
+		findRows: []model.FileVersion{{
+			Occurrences: []model.FileVersionOccurrence{{SnapshotID: "a", Hostname: "pve"}},
+		}},
+		findResultHost: "pve",
+	}
+	if got, want := m.findSummaryLine(), "1 version across 1 snapshot · host: pve"; got != want {
+		t.Errorf("findSummaryLine() = %q, want %q", got, want)
+	}
+}

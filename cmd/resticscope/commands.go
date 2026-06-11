@@ -14,6 +14,7 @@ import (
 	"resticscope/internal/browsedb"
 	"resticscope/internal/cache"
 	"resticscope/internal/config"
+	"resticscope/internal/humanize"
 	"resticscope/internal/resticx"
 	"resticscope/internal/secrets"
 	"resticscope/internal/tui"
@@ -286,7 +287,9 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		checkLine(stdout, "config", "FAILED", err.Error())
 		return 2
 	}
-	checkLine(stdout, "config", "ok", fmt.Sprintf("%d repos, %d credentials", len(cfg.Repos), len(cfg.Credentials)))
+	checkLine(stdout, "config", "ok", fmt.Sprintf("%s, %s",
+		humanize.Count(len(cfg.Repos), "repo", "repos"),
+		humanize.Count(len(cfg.Credentials), "credential", "credentials")))
 
 	logger := newLogger(cfg)
 	store, client, err := refreshDeps(ctx, cfg, logger)
@@ -370,7 +373,8 @@ func checkRestic(
 	tw.Flush()
 
 	if failures > 0 {
-		fmt.Fprintf(stderr, "\ncheck failed: %d of %d repositories unreachable\n", failures, len(checks))
+		fmt.Fprintf(stderr, "\ncheck failed: %d of %s unreachable\n",
+			failures, humanize.Count(len(checks), "repository", "repositories"))
 		return 1
 	}
 	fmt.Fprintln(stdout, "\nall checks passed")

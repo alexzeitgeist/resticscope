@@ -786,6 +786,50 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	}
 }
 
+// Counts of one read grammatically: "extracted 1 file · 1 dir", never
+// "1 files". Regression for the phase-4 pluralization pass.
+func TestExtractSuccessSummarySingularCounts(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{
+		Files:     1,
+		Dirs:      1,
+		FinalDir:  "/extracted/here",
+		FinalPath: "/extracted/here",
+	}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 240
+	m.extract = em
+	if body := m.extractBody(); !strings.Contains(body, "extracted 1 file · 1 dir ·") {
+		t.Errorf("success summary should use singular counts:\n%s", body)
+	}
+}
+
+// Every unsafe-symlink policy message agrees in number with a count of one —
+// noun and clause both ("its target is", not "targets are").
+func TestExtractUnsafeSymlinkWarningNumberAgreement(t *testing.T) {
+	for policy, want := range map[string]string{
+		config.UnsafeSymlinksSkip:        "1 unsafe symlink removed from the output.",
+		config.UnsafeSymlinksPlaceholder: "an inert text file recording its target",
+		config.UnsafeSymlinksKeep:        "its target is absolute",
+	} {
+		got := extractUnsafeSymlinkWarning(1, policy)
+		if !strings.Contains(got, want) {
+			t.Errorf("warning(1, %s) = %q, want it to contain %q", policy, got, want)
+		}
+		if strings.Contains(got, "symlinks") {
+			t.Errorf("warning(1, %s) still uses the plural noun: %q", policy, got)
+		}
+	}
+}
+
 // The done screens carry no key hints in the body — the footer key bar is the
 // single source for affordances (`s shell here • q back`), so body and bar can
 // never drift apart. Regression for the duplicated "open a shell" / "q back"

@@ -346,7 +346,7 @@ func (m Model) countLabel() string {
 			n++
 		}
 	}
-	return fmt.Sprintf("%d of %d repos", n, total)
+	return fmt.Sprintf("%d of %s", n, repoCount(total))
 }
 
 // renderRow renders one repo as a single-line table row. Healthy rows use the
@@ -488,10 +488,7 @@ func (m Model) footerView() string {
 }
 
 func repoCount(n int) string {
-	if n == 1 {
-		return "1 repo"
-	}
-	return fmt.Sprintf("%d repos", n)
+	return humanize.Count(n, "repo", "repos")
 }
 
 func firstLine(s string) string {
