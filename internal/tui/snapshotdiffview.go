@@ -30,23 +30,13 @@ const (
 	diffNameMin     = 16 // minimum readable Name flex width
 )
 
-// snapshotDiffHeaderView renders the title (the repo + directional snapshot pair)
-// and the q-back affordance. Both ids are restic short ids so the line stays
-// stable at narrow widths; the times use the same compact format browse and
-// detail use elsewhere.
-func (m Model) snapshotDiffHeaderView() string {
-	w, _ := m.effSize()
-	label := "diff: " + m.diffRepo + " · " +
-		diffSnapshotLabel(m.diffOlder) + " → " + diffSnapshotLabel(m.diffNewer)
-	left := m.styles.title.Render(label)
-	right := m.styles.dim.Render("q back")
-	switch {
-	case m.diffSearching:
-		right = m.styles.dim.Render("esc cancel")
-	case m.diffSearchJumped:
-		right = m.styles.dim.Render("esc previous · q back")
-	}
-	return clip(m.spread(left, right), w)
+// diffTitle renders the repo + directional snapshot pair. Both ids are restic
+// short ids so the line stays stable at narrow widths; the times use the same
+// compact format browse and detail use elsewhere. The search-state back hints
+// that used to sit top-right live in the footer key bar (viewHelp.ShortHelp).
+func (m Model) diffTitle() string {
+	return m.styles.title.Render("diff: " + m.diffRepo + " · " +
+		diffSnapshotLabel(m.diffOlder) + " → " + diffSnapshotLabel(m.diffNewer))
 }
 
 // diffSnapshotLabel renders one half of the directional pair: the snapshot's

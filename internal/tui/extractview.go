@@ -10,9 +10,10 @@ import (
 )
 
 // extractview.go renders extractView. Each state has its own body; the root
-// Model's View() composes them with the existing header + footer scaffolding
-// the same way browseHeaderView / browseBody do. Headings match the canonical
-// mockups in 00-framework.md §14 byte-for-byte where layout allows.
+// Model's View() frames extractTitle + extractBody with the shared title row
+// and pinned footer the same way browseTitle / browseBody are framed. Headings
+// match the canonical mockups in 00-framework.md §14 byte-for-byte where
+// layout allows.
 //
 // Privacy: the only path values rendered here are the ones the sub-model
 // already holds for the lifetime of the modal — req.Source, m.staging, m.final,
@@ -27,15 +28,9 @@ import (
 // staging path (which carries just the sanitized basename) plus a path-free hint.
 // (logExtractSuccess stays path-free — snapshot short + counts only.)
 
-// extractHeaderView is the top header line on the extract view.
-func (m Model) extractHeaderView() string {
-	w, _ := m.effSize()
-	left := m.styles.title.Render(extractTitle(m.extract))
-	right := m.styles.dim.Render(extractHeaderHint(m.extract))
-	return clip(m.spread(left, right), w)
-}
-
-// extractTitle picks the title label for the current sub-state.
+// extractTitle picks the title label for the current sub-state. The per-state
+// back/cancel affordances live in the footer key bar (extractModel.shortHelp),
+// not up here.
 func extractTitle(em extractModel) string {
 	switch em.state {
 	case extractStateRunning:
@@ -64,21 +59,9 @@ func extractTitle(em extractModel) string {
 	}
 }
 
-// extractHeaderHint is the right-hand dim helper line in the header.
-func extractHeaderHint(em extractModel) string {
-	switch em.state {
-	case extractStateRunning:
-		return "q cancel"
-	case extractStateSuccess, extractStateCanceled, extractStateError:
-		return "enter back"
-	default:
-		return "q back"
-	}
-}
-
 // extractBody returns the rendered body for the current sub-state. The root
-// Model's View() pastes this between the header and the footer the same way
-// browseBody does for browseView.
+// Model's View() frames this under the title row the same way browseBody is
+// framed for browseView.
 func (m Model) extractBody() string {
 	w, _ := m.effSize()
 	switch m.extract.state {

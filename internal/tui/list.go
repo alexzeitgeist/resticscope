@@ -82,67 +82,73 @@ func (m Model) View() tea.View {
 		return tea.NewView("")
 	}
 	_, hasDetail := m.detailRow()
-	var body string
+	var title, body string
 	switch {
 	case m.view == helpView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.helpHeaderView(),
-			"",
-			m.helpBody(),
-		)
+		title, body = m.helpTitle(), m.helpBody()
 	case m.view == infoView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.infoHeaderView(),
-			"",
-			m.infoBody(),
-		)
+		title, body = m.infoTitle(), m.infoBody()
 	case m.view == browseView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.browseHeaderView(),
-			"",
-			m.browseBody(),
-		)
+		title, body = m.browseTitle(), m.browseBody()
 	case m.view == findVersionsView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.findHeaderView(),
-			"",
-			m.findBody(),
-		)
+		title, body = m.findTitle(), m.findBody()
 	case m.view == snapshotDiffView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.snapshotDiffHeaderView(),
-			"",
-			m.snapshotDiffBody(),
-		)
+		title, body = m.diffTitle(), m.snapshotDiffBody()
 	case m.view == extractView:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.extractHeaderView(),
-			"",
-			m.extractBody(),
-		)
+		title, body = m.styles.title.Render(extractTitle(m.extract)), m.extractBody()
 	case m.view == detailView && hasDetail:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.detailHeaderView(),
-			"",
-			m.detailBody(),
-		)
+		title, body = m.detailTitle(), m.detailBody()
 	default:
-		body = lipgloss.JoinVertical(lipgloss.Left,
-			m.headerView(),
-			"",
-			m.listView(),
-		)
+		title, body = m.listTitle(), m.listView()
 	}
-	content := lipgloss.JoinVertical(lipgloss.Left, body, "", m.footerView())
-	v := tea.NewView(content)
+	v := tea.NewView(m.frame(title, body))
 	v.AltScreen = true
 	return v
 }
 
-// headerView is the top line: the app name, the repo count, the restic version,
-// and (when active) the sort and group indicators. Status stays row-local so the
-// header remains readable without relying on color-coded aggregate badges.
-func (m Model) headerView() string {
+// titleRow is the shared top line of every view: the view title left, the
+// persistent `? help` affordance right. The chip is suppressed while a text
+// input owns the keyboard (handleInputKey gives inputs first claim, so `?`
+// would be literal query text and the chip a false affordance). The left title
+// is clipped into the remaining width so the chip survives long find/diff
+// titles — a plain clip of the spread would cut the chip first.
+func (m Model) titleRow(left string) string {
+	w, _ := m.effSize()
+	if m.filtering || m.browseSearching || m.diffSearching {
+		return clip(left, w)
+	}
+	right := m.styles.dim.Render("? help")
+	gap := 2
+	if w <= lipgloss.Width(right)+gap {
+		return clip(left, w) // too narrow for the chip: title wins
+	}
+	left = clip(left, w-lipgloss.Width(right)-gap)
+	return clip(m.spread(left, right), w)
+}
+
+// frame composes the full screen for a view: title row, gap, body, then blank
+// padding so the footer sits on the bottom terminal row regardless of how
+// short the body is. Padding uses bare newlines, not lipgloss.Place, so the
+// body's lines stay byte-identical (Place pads every line to full width). A
+// body that overflows its budget keeps the minimum 1-line gap and the total
+// exceeds the terminal height — the terminal clips, same as the pre-pinning
+// join did on undersized terminals.
+func (m Model) frame(titleLeft, body string) string {
+	_, h := m.effSize()
+	footer := m.footerView()
+	content := lipgloss.JoinVertical(lipgloss.Left, m.titleRow(titleLeft), "", body)
+	blanks := h - lipgloss.Height(content) - lipgloss.Height(footer)
+	if blanks < gapRows {
+		blanks = gapRows
+	}
+	return content + strings.Repeat("\n", blanks+1) + footer
+}
+
+// listTitle is the list view's title content: the app name, the repo count,
+// the restic version, and (when active) the sort and group indicators. Status
+// stays row-local so the title remains readable without relying on color-coded
+// aggregate badges.
+func (m Model) listTitle() string {
 	parts := []string{m.styles.title.Render("resticscope")}
 	parts = append(parts, m.countLabel())
 	if m.resticVer != "" {
@@ -154,14 +160,13 @@ func (m Model) headerView() string {
 	if m.groupingActive() {
 		parts = append(parts, "group: "+m.activeGroupKey())
 	}
-	w, _ := m.effSize()
-	return clip(strings.Join(parts, " · "), w)
+	return strings.Join(parts, " · ")
 }
 
 // spread lays left and right on one line, padding the gap so right sits flush
 // against the right edge once the width is known. It expects already styled
-// strings: lipgloss.Width discounts the styling escapes. Shared by every view's
-// header.
+// strings: lipgloss.Width discounts the styling escapes. titleRow uses it to
+// push the help chip flush right on every view's title row.
 func (m Model) spread(left, right string) string {
 	w, _ := m.effSize()
 	gap := "  "
@@ -443,7 +448,15 @@ func (m Model) footerView() string {
 		return clip(m.help.View(viewHelp{keys: m.keys, view: m.view, extractBindings: m.extract.shortHelp(m.keys)}), w)
 	}
 	searching := m.browseSearching || m.diffSearching
-	help := clip(m.help.View(viewHelp{keys: m.keys, view: m.view, filtering: m.filtering, searching: searching, infoScrollable: m.infoScrollable()}), w)
+	help := clip(m.help.View(viewHelp{
+		keys:            m.keys,
+		view:            m.view,
+		filtering:       m.filtering,
+		searching:       searching,
+		infoScrollable:  m.infoScrollable(),
+		searchSuspended: m.browseSearchSuspended,
+		diffJumped:      m.diffSearchJumped,
+	}), w)
 	switch {
 	case m.filtering:
 		// Show the live query (vim-style) with a block cursor so the input mode

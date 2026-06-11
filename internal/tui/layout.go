@@ -3,18 +3,19 @@ package tui
 import "charm.land/lipgloss/v2"
 
 // layout.go derives the list view's vertical budget from the captured terminal
-// size. The screen, top to bottom, is a one-row header, a blank gap, the repo
-// list, a blank gap, and the footer; the list scrolls a window (scrollWindow) so a
-// long repo set never pushes the footer off-screen. Everything here is a pure
-// function of the size — nothing reaches into app/model state.
+// size. The screen, top to bottom, is a one-row title, a blank gap, the repo
+// list, blank padding, and the footer pinned to the bottom row (frame); the
+// list scrolls a window (scrollWindow) so a long repo set never pushes the
+// footer off-screen. Everything here is a pure function of the size — nothing
+// reaches into app/model state.
 
 const (
 	// defaultWidth/Height stand in before the first WindowSizeMsg (e.g. in
 	// tests): wide and tall enough that nothing truncates or scrolls.
 	defaultWidth, defaultHeight = 100, 30
 
-	headerRows         = 1 // the header line
-	gapRows            = 1 // the blank line above and below the list
+	headerRows         = 1 // the title row
+	gapRows            = 1 // the blank line below the title; the MINIMUM gap above the pinned footer
 	listHeaderRows     = 1 // the dim "Name Last Snaps Took Labels" header above the table rows
 	listScrollNoteRows = 1 // the "showing N–M of T" note reserved at the bottom
 )

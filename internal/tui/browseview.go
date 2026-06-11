@@ -8,21 +8,12 @@ import (
 	"resticscope/internal/model"
 )
 
-func (m Model) browseHeaderView() string {
-	w, _ := m.effSize()
+func (m Model) browseTitle() string {
 	label := "browse: " + m.browseRepo
 	if id := shortID(m.browseSnapshot); id != "" {
 		label += " · " + id
 	}
-	left := m.styles.title.Render(label)
-	right := m.styles.dim.Render("q back")
-	switch {
-	case m.browseSearching:
-		right = m.styles.dim.Render("esc cancel")
-	case m.browseSearchSuspended:
-		right = m.styles.dim.Render("esc results · q back")
-	}
-	return clip(m.spread(left, right), w)
+	return m.styles.title.Render(label)
 }
 
 func (m Model) browseBody() string {

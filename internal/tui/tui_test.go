@@ -606,7 +606,7 @@ func TestHelpOverlayToggle(t *testing.T) {
 func TestHelpHeaderClipsNarrowTerminal(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	m.width = 12
-	header := m.helpHeaderView()
+	header := m.titleRow(m.helpTitle())
 	if got := lipgloss.Width(header); got > m.width {
 		t.Fatalf("help header width = %d, want <= %d: %q", got, m.width, header)
 	}
@@ -668,9 +668,10 @@ func TestKeyLabel(t *testing.T) {
 	}
 }
 
-// The footers and detail header must advertise the new back/quit scheme: the
-// list still shows `q quit`, the detail header and both nested footers show
-// `q back`, and the removed `b back` hint appears nowhere. The footer's help
+// The footers must advertise the back/quit scheme: the list still shows
+// `q quit`, the nested footers show `q back`, and the removed `b back` hint
+// appears nowhere. Back lives only in the key bar — the title row instead
+// carries the view prefix and the persistent `? help` chip. The footer's help
 // styles each key and label as separate ANSI spans, so we strip color before
 // matching the "key label" pairs.
 func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
@@ -686,8 +687,12 @@ func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
 	}
 
 	m = update(t, m, press("enter"))
-	if header := stripANSI(m.detailHeaderView()); !strings.Contains(header, "q back") {
-		t.Errorf("detail header should show 'q back'\n---\n%s", header)
+	header := stripANSI(m.titleRow(m.detailTitle()))
+	if !strings.Contains(header, "detail: ") {
+		t.Errorf("detail title should carry the 'detail: ' prefix\n---\n%s", header)
+	}
+	if !strings.Contains(header, "? help") {
+		t.Errorf("detail title row should carry the persistent '? help' chip\n---\n%s", header)
 	}
 	if detailFooter := stripANSI(m.footerView()); !strings.Contains(detailFooter, "q back") {
 		t.Errorf("detail footer should advertise 'q back'\n---\n%s", detailFooter)
@@ -1470,7 +1475,7 @@ func TestDetailViewShowsResponsiveColumns(t *testing.T) {
 	m = update(t, m, press("enter"))
 	m.width, m.height = 120, 40
 
-	wide := m.detailHeaderView() + "\n" + m.detailBody()
+	wide := m.titleRow(m.detailTitle()) + "\n" + m.detailBody()
 	for _, want := range []string{"Time", "Hostname", "Size"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("snapshot table missing column header %q\n---\n%s", want, wide)
@@ -1551,7 +1556,7 @@ func TestDetailViewProgressiveColumnsAndSlimPanel(t *testing.T) {
 			m = update(t, m, press("enter"))
 			m.width, m.height = tc.width, 40
 
-			view := m.detailHeaderView() + "\n" + m.detailBody()
+			view := m.titleRow(m.detailTitle()) + "\n" + m.detailBody()
 			for _, want := range append(tc.wantColHeaders, tc.wantText...) {
 				if !strings.Contains(view, want) {
 					t.Errorf("detail view missing %q\n---\n%s", want, view)
@@ -1589,7 +1594,7 @@ func TestDetailViewTruncatesLongTookColumn(t *testing.T) {
 	m = update(t, m, press("enter"))
 	m.width, m.height = 110, 40 // wide enough for the Took column
 
-	view := m.detailHeaderView() + "\n" + m.detailBody()
+	view := m.titleRow(m.detailTitle()) + "\n" + m.detailBody()
 	if !strings.Contains(view, "1000h…") {
 		t.Errorf("Took column did not truncate the long duration\n---\n%s", view)
 	}
@@ -1623,7 +1628,7 @@ func TestDetailViewClipsNarrowTerminal(t *testing.T) {
 			m = update(t, m, press("enter"))
 			m.width, m.height = tc.width, 40
 
-			assertLinesFit(t, m.detailHeaderView()+"\n"+m.detailBody(), tc.width)
+			assertLinesFit(t, m.titleRow(m.detailTitle())+"\n"+m.detailBody(), tc.width)
 		})
 	}
 }
@@ -2507,7 +2512,7 @@ func TestCycleGroupingHidesActiveKeyFromLabelsColumn(t *testing.T) {
 	}
 }
 
-// headerView must show the active group key when grouping is active and omit
+// listTitle must show the active group key when grouping is active and omit
 // the group indicator while in flat view, across the full cycle.
 func TestCycleGroupingHeaderIndicator(t *testing.T) {
 	a := testApp(nil)
@@ -2525,7 +2530,7 @@ func TestCycleGroupingHeaderIndicator(t *testing.T) {
 		{contains: "", omits: "group:"},
 		{contains: "group: env", omits: ""},
 	} {
-		header := stripANSI(m.headerView())
+		header := stripANSI(m.listTitle())
 		if want.contains != "" && !strings.Contains(header, want.contains) {
 			t.Errorf("step %d: header %q missing %q", i, header, want.contains)
 		}
@@ -2677,8 +2682,8 @@ func TestInfoModalRendersAllSectionsForFullSnapshot(t *testing.T) {
 	m := enterInfoOnFullSnapshot(t, newTestModel(t, snapshotInfoApp(t)))
 	view := m.View().Content
 	for _, want := range []string{
-		"resticscope · snapshot info",
-		"i close",
+		"info: repo-a · sf", // title: view prefix + repo + snapshot short id
+		"? help",
 		// Identity
 		"Identity", "ID", "id-full", "Short ID", "sf",
 		"Parent", "parent-id-deadbeef",
@@ -2798,12 +2803,12 @@ func TestInfoFooterStaysMinimalWhenBodyFits(t *testing.T) {
 	if !strings.Contains(view, "back") {
 		t.Fatalf("info footer missing back key\n---\n%s", view)
 	}
-	// The footer is the last non-empty line; an "up"/"down" chip there means
-	// the conditional regressed. Body content includes "Backup window" so a raw
-	// substring search would false-positive — scan the footer line only.
+	// The footer is the last non-empty line; a "scroll" chip there means the
+	// conditional regressed. Scan the footer line only so body content can
+	// never false-positive a raw substring search.
 	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	footer := lines[len(lines)-1]
-	if strings.Contains(footer, "up") || strings.Contains(footer, "down") {
+	if strings.Contains(footer, "scroll") {
 		t.Errorf("info footer should not advertise scroll keys when body fits\nfooter: %q", footer)
 	}
 }
@@ -2829,10 +2834,10 @@ func TestInfoModalScrolls(t *testing.T) {
 	if !strings.Contains(initial, "showing lines") {
 		t.Fatalf("initial view missing position indicator, modal must report overflow\n---\n%s", initial)
 	}
-	// Scrollability advertised in the footer (mirroring detail's up/down chip),
+	// Scrollability advertised in the footer (the condensed "↑/↓ scroll" chip),
 	// not inline with the body anymore.
-	if !strings.Contains(initial, "up") || !strings.Contains(initial, "down") {
-		t.Errorf("info footer missing up/down keys while scrolling is needed\n---\n%s", initial)
+	if !strings.Contains(initial, "scroll") {
+		t.Errorf("info footer missing the scroll chip while scrolling is needed\n---\n%s", initial)
 	}
 	if strings.Contains(initial, "Churn") {
 		t.Fatalf("precondition: with a short window the Churn section must start off-screen\n---\n%s", initial)
@@ -2888,8 +2893,8 @@ func TestInfoFooterScrollabilityAccountsForStatusRow(t *testing.T) {
 	plain := stripANSI(view)
 	rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
 	footer := rows[len(rows)-1]
-	if !strings.Contains(footer, "up") || !strings.Contains(footer, "down") {
-		t.Errorf("info footer missing up/down keys with status row\nfooter: %q\n---\n%s", footer, plain)
+	if !strings.Contains(footer, "scroll") {
+		t.Errorf("info footer missing the scroll chip with status row\nfooter: %q\n---\n%s", footer, plain)
 	}
 }
 

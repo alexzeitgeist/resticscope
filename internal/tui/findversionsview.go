@@ -8,12 +8,13 @@ import (
 	"resticscope/internal/model"
 )
 
-// findversionsview.go renders findVersionsView: a header with the queried path
-// and the host-filter label, a fixed-shape table of distinct file versions, and
-// a status line. The host label is driven by findResultHost/findResultAllHosts
-// (the filter that produced the rows on screen), never by the user-toggle
-// findRequestAllHosts, so a mid-toggle re-run can never relabel the visible
-// rows until the new response actually lands.
+// findversionsview.go renders findVersionsView: a title naming the repo,
+// origin snapshot, and queried path, a fixed-shape table of distinct file
+// versions, and a status line carrying the host-filter label. The host label
+// is driven by findResultHost/findResultAllHosts (the filter that produced the
+// rows on screen), never by the user-toggle findRequestAllHosts, so a
+// mid-toggle re-run can never relabel the visible rows until the new response
+// actually lands.
 
 const (
 	findModWidth   = 16 // "2006-01-02 15:04" — file mtime, the dedup key
@@ -27,12 +28,15 @@ const (
 	findAuxRows    = 2  // column header + the "showing N–M of T" scroll note
 )
 
-func (m Model) findHeaderView() string {
-	w, _ := m.effSize()
-	label := "find: " + m.findPath
-	left := m.styles.title.Render(label)
-	right := m.styles.dim.Render("q back · a all hosts | host: " + m.findHostLabel())
-	return clip(m.spread(left, right), w)
+// findTitle names the find context: the repo, the snapshot the search was
+// launched from (find is reached only from browse, so browseSnapshot is the
+// origin), and the queried path.
+func (m Model) findTitle() string {
+	label := "find: " + m.findRepo
+	if id := shortID(m.browseSnapshot); id != "" {
+		label += " · " + id
+	}
+	return m.styles.title.Render(label + " · " + m.findPath)
 }
 
 // findHostLabel renders the host-filter description from the result-of-record
@@ -65,7 +69,9 @@ func (m Model) findSummaryLine() string {
 		return "loading…"
 	}
 	if len(m.findRows) == 0 {
-		return "(no matches)"
+		// The host filter explains an empty result, so it must stay visible
+		// here even though the populated branch below also carries it.
+		return "(no matches) · host: " + m.findHostLabel()
 	}
 	snaps := 0
 	for _, r := range m.findRows {

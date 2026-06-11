@@ -360,7 +360,8 @@ func TestBrowseSearchSuspendedQuitLeavesBrowse(t *testing.T) {
 	}
 }
 
-// While a search is parked the header advertises esc → results (and still q → back),
+// While a search is parked the footer key bar advertises esc → results (and
+// still q → back, which leaves browse outright — the deliberate asymmetry),
 // not the open-input "esc cancel" — the back affordance tracks the modal state.
 func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -382,15 +383,15 @@ func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 		t.Fatal("precondition: search should be suspended")
 	}
 
-	h := stripANSI(m.browseHeaderView())
+	h := stripANSI(m.footerView())
 	if !strings.Contains(h, "esc results") {
-		t.Errorf("a parked search header should advertise esc → results\n---\n%s", h)
+		t.Errorf("a parked search footer should advertise esc → results\n---\n%s", h)
 	}
 	if !strings.Contains(h, "q back") {
-		t.Errorf("a parked search header should still advertise q → back\n---\n%s", h)
+		t.Errorf("a parked search footer should still advertise q → back\n---\n%s", h)
 	}
 	if strings.Contains(h, "esc cancel") {
-		t.Errorf("a parked search header is not the open-input state\n---\n%s", h)
+		t.Errorf("a parked search footer is not the open-input state\n---\n%s", h)
 	}
 }
 
@@ -915,24 +916,24 @@ func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 	}
 }
 
-// The browse header advertises "q back" normally, but while the search input is
-// open q is literal text and esc cancels — so the header must switch to "esc
-// cancel" rather than keep a contradictory affordance.
+// The browse footer key bar advertises "q back" normally, but while the search
+// input is open q is literal text and esc cancels — so the bar must switch to
+// "esc cancel" rather than keep a contradictory affordance.
 func TestBrowseSearchHeaderShowsCancelLabel(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	if h := stripANSI(m.browseHeaderView()); !strings.Contains(h, "q back") {
-		t.Errorf("browse header should advertise 'q back' when not searching\n---\n%s", h)
+	if h := stripANSI(m.footerView()); !strings.Contains(h, "q back") {
+		t.Errorf("browse footer should advertise 'q back' when not searching\n---\n%s", h)
 	}
 
 	m = openSearch(t, m)
-	h := stripANSI(m.browseHeaderView())
+	h := stripANSI(m.footerView())
 	if strings.Contains(h, "q back") {
-		t.Errorf("while searching the header must not say 'q back' (q is literal)\n---\n%s", h)
+		t.Errorf("while searching the footer must not say 'q back' (q is literal)\n---\n%s", h)
 	}
 	if !strings.Contains(h, "esc cancel") {
-		t.Errorf("while searching the header should say 'esc cancel'\n---\n%s", h)
+		t.Errorf("while searching the footer should say 'esc cancel'\n---\n%s", h)
 	}
 }
 

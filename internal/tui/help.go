@@ -12,7 +12,9 @@ import (
 // help.go renders the full-screen help overlay (key `?`): a complete keybinding
 // reference grouped by the context each key acts in, plus a legend for the list
 // status glyphs. It is reached via the helpView value and closed with `?`, `q`,
-// or `esc`; the View() switch and handleKey route to it.
+// or `esc`; the View() switch and handleKey route to it. The title row keeps
+// the shared `? help` chip even here — `?` is a toggle, so the affordance stays
+// truthful, and dismissal is also advertised in the key bar.
 
 // helpEntry is one row of the reference: a key label and what it does.
 type helpEntry struct {
@@ -77,11 +79,11 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{move, "move repo cursor"},
 			{page, "page up/down"},
 			{keyLabel(k.Enter), "open repo detail"},
-			{keyLabel(k.Shell), "shell with repo env"},
-			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Filter), "filter by name/label"},
 			{keyLabel(k.Sort), "cycle sort order"},
 			{keyLabel(k.Group), "cycle group key"},
+			{keyLabel(k.Shell), "shell with repo env"},
+			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Quit), "quit"},
 		}},
 		{"Extract", []helpEntry{
@@ -91,6 +93,12 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Shell), "shell at extracted dir"},
 			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back"},
+		}},
+		{"Filter & search input", []helpEntry{
+			{keyLabel(k.FilterAccept), "apply filter / open match"},
+			{keyLabel(k.FilterCancel), "clear filter / cancel search"},
+			{keyLabel(k.SearchUp) + " " + keyLabel(k.SearchDown), "move through matches"},
+			{keyLabel(k.FilterDelete), "delete a character"},
 		}},
 	}
 	right = []helpSection{
@@ -137,21 +145,12 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{diffFilters, "toggle change filters"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},
-		{"Filter", []helpEntry{
-			{keyLabel(k.FilterAccept), "apply filter"},
-			{keyLabel(k.FilterCancel), "clear filter"},
-			{keyLabel(k.FilterDelete), "delete a character"},
-		}},
 	}
 	return left, right
 }
 
-func (m Model) helpHeaderView() string {
-	w, _ := m.effSize()
-	return clip(m.spread(
-		m.styles.title.Render("resticscope · keybindings"),
-		m.styles.dim.Render("? close"),
-	), w)
+func (m Model) helpTitle() string {
+	return m.styles.title.Render("help: keybindings")
 }
 
 func (m Model) helpBody() string {

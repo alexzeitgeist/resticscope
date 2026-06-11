@@ -115,13 +115,10 @@ func (m Model) openExtractSnapshot() Model {
 	return m
 }
 
-func (m Model) detailHeaderView() string {
+func (m Model) detailTitle() string {
 	row, _ := m.detailRow()
-	left := m.styles.title.Render(row.Name) + "  " +
-		m.styles.glyph[row.Status].Render(statusGlyph(row.Status)+" "+string(row.Status))
-	right := m.styles.dim.Render("q back")
-	w, _ := m.effSize()
-	return clip(m.spread(left, right), w)
+	return m.styles.title.Render("detail: "+row.Name) + " · " +
+		m.styles.glyph[row.Status].Render(statusGlyph(row.Status)+" "+statusWord(row.Status))
 }
 
 func (m Model) detailBody() string {

@@ -108,6 +108,24 @@ const (
 	labelWidth = 10
 )
 
+// statusWord maps a status to the semantic phrase the detail title shows next
+// to the glyph — what the status means, not the literal color name. The help
+// legend and list-row texts have their own phrasings and stay independent.
+func statusWord(s model.Status) string {
+	switch s {
+	case model.StatusGreen:
+		return "on schedule"
+	case model.StatusAmber:
+		return "grace period"
+	case model.StatusRed:
+		return "overdue"
+	case model.StatusError:
+		return "failed"
+	default: // grey
+		return "never refreshed"
+	}
+}
+
 // statusGlyph maps a status to its one-cell list glyph (plan §5).
 func statusGlyph(s model.Status) string {
 	switch s {

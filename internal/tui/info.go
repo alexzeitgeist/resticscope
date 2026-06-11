@@ -12,8 +12,8 @@ import (
 // info.go renders the full-screen snapshot-info modal (key `i` from detail): a
 // labeled dump of as much of the selected snapshot record as restic's
 // `snapshots --json` makes available. It mirrors help.go's modal pattern —
-// header, body, closed via `i`, `q`, or `esc` — and reuses the same heading /
-// label / meta styles. The bound is intentionally split off m.field's
+// title row, body, closed via `i`, `q`, or `esc` — and reuses the same heading
+// / label / meta styles. The bound is intentionally split off m.field's
 // labelWidth: rows like "Files unmodified" or "Data added packed" exceed the
 // detail panel's 10-cell label column, so the renderer computes its own column
 // width.
@@ -39,12 +39,26 @@ type infoSection struct {
 	rows  []infoRow
 }
 
-func (m Model) infoHeaderView() string {
-	w, _ := m.effSize()
-	return clip(m.spread(
-		m.styles.title.Render("resticscope · snapshot info"),
-		m.styles.dim.Render("i close"),
-	), w)
+// infoTitle names the info context: the detail repo and the inspected
+// snapshot's short id. detailName is used directly (it is what detailRow()
+// searches by and survives a refresh that drops the row); the snapshot part is
+// omitted when no snapshot is selected, and the bare "info" fallback covers an
+// empty detailName so the title can never be blank.
+func (m Model) infoTitle() string {
+	if m.detailName == "" {
+		return m.styles.title.Render("info")
+	}
+	label := "info: " + m.detailName
+	if s := m.selectedSnapshot(); s != nil {
+		id := s.ShortID
+		if id == "" {
+			id = shortID(s.ID)
+		}
+		if id != "" {
+			label += " · " + id
+		}
+	}
+	return m.styles.title.Render(label)
 }
 
 func (m Model) infoBody() string {

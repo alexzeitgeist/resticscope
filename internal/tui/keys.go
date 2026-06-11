@@ -112,20 +112,26 @@ func defaultKeys() keyMap {
 }
 
 // viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
-// navigation, filter/sort, refresh-all, help, and quit; the detail view swaps in
-// the snapshot-scoped keys and back (advertised as q, with esc still bound),
+// navigation, filter/sort/group, shell/refresh, and quit; the detail view swaps
+// in the snapshot-scoped keys and back (advertised as q, with esc still bound),
 // where q steps back rather than quits; the help overlay shows only back (the
 // overlay itself is the full reference). The list keeps Quit because q only exits
 // there. While the user is typing a filter (filtering), it shows the apply/clear
 // bindings instead. Enter does something different in each view (open detail in
 // the list, browse the selected snapshot in detail, open directory in browse),
 // so its footer label is overridden per view via helpAs below.
+//
+// Every ShortHelp keeps one chip order so reused keys sit in the same relative
+// place across views: move → enter → ⌫ → / → view actions → sort/group/
+// collapse → shell/refresh → back/quit.
 type viewHelp struct {
-	keys           keyMap
-	view           view
-	filtering      bool
-	searching      bool // browse global filename search input is open
-	infoScrollable bool // info modal body overflows; advertise up/down in the footer
+	keys            keyMap
+	view            view
+	filtering       bool
+	searching       bool // browse global filename search input is open
+	infoScrollable  bool // info modal body overflows; advertise up/down in the footer
+	searchSuspended bool // browse: a search result set is parked; esc restores it
+	diffJumped      bool // diff: a search jump is armed; esc (and q) reverse it
 
 	// extractBindings are the extract modal's per-state footer bindings,
 	// supplied by extractModel.shortHelp (the sub-model owns its state machine,
@@ -141,17 +147,30 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	// While the global filename search is open the cursor keys move through the
 	// matches and enter/esc open/cancel; the regular browse keys are suspended.
 	if h.searching {
-		return []key.Binding{k.SearchUp, k.SearchDown, k.SearchAccept, k.SearchCancel}
+		return []key.Binding{searchMoveHelp(), k.SearchAccept, k.SearchCancel}
 	}
 	switch h.view {
 	case detailView:
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Extract, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
 	case browseView:
+		if h.searchSuspended {
+			// esc restores the parked search while q leaves browse outright
+			// (browse.go's deliberate asymmetry), so both chips are correct
+			// side by side.
+			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, escHelp("results"), k.Back}
+		}
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
-		return []key.Binding{k.Up, k.Down, k.HostToggle, k.Extract, k.Back}
+		return []key.Binding{moveHelp(), k.HostToggle, k.Extract, k.Back}
 	case snapshotDiffView:
-		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
+		if h.diffJumped {
+			// After a search jump q mirrors esc and reverses the jump instead
+			// of leaving the view (routing.go), so the normal `q back` chip
+			// would lie; one combined chip replaces it until the jump is undone.
+			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded,
+				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous"))}
+		}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, k.DiffFilterAdded, k.Back}
 	case extractView:
 		// Per-state bindings from the extract sub-model; fall back to the
 		// always-present back affordance if a caller forgot to supply them.
@@ -162,15 +181,18 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case helpView:
 		return []key.Binding{k.Back}
 	case infoView:
-		// `i` already advertised itself in the modal header (the "i close"
-		// hint), so the footer carries only the canonical back key — plus the
-		// scroll keys when the body overflows.
+		// The footer carries only the canonical back key (i and esc also close
+		// the modal) — plus a scroll chip when the body overflows. "scroll",
+		// not "move": the keys move a document viewport, not a cursor.
 		if h.infoScrollable {
-			return []key.Binding{k.Up, k.Down, k.Back}
+			return []key.Binding{helpAs(moveHelp(), "scroll"), k.Back}
 		}
 		return []key.Binding{k.Back}
 	default: // listView
-		return []key.Binding{k.Up, k.Down, helpAs(k.Enter, "detail"), k.Shell, k.Refresh, k.Filter, k.Sort, k.Group, k.Help, k.Quit}
+		// No ? help chip here: the title row carries the persistent help
+		// affordance in every view, so the footer advertising it too would be
+		// the one view that duplicates it.
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "detail"), k.Filter, k.Sort, k.Group, k.Shell, k.Refresh, k.Quit}
 	}
 }
 
@@ -183,13 +205,27 @@ func helpAs(b key.Binding, desc string) key.Binding {
 	return b
 }
 
-// moveHelp is the condensed "↑/↓ move" footer entry the width-bound browse and
-// detail footers share: the two cursor-movement bindings collapse into one so
-// the extract action fits alongside the existing keys without clipping
-// shell/back on an ~100-col terminal. j/k still move (the ? overlay lists
-// them); only the footer hint is condensed.
+// escHelp is a footer-only chip for the states where esc does something q does
+// not (restore a parked browse search). helpAs(k.Back, …) would be wrong here:
+// Back's displayed key is deliberately "q", so the chip would read "q results".
+func escHelp(desc string) key.Binding {
+	return key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", desc))
+}
+
+// moveHelp is the condensed "↑/↓ move" footer entry every view's key bar uses:
+// the two cursor-movement bindings collapse into one chip so the bar stays
+// short on an ~100-col terminal and reads identically everywhere. j/k still
+// move (the ? overlay lists them); only the footer hint is condensed.
 func moveHelp() key.Binding {
 	return key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
+}
+
+// searchMoveHelp is moveHelp's twin for the search-input footers, where plain
+// j/k are literal query text and the real bindings are the arrows plus
+// ctrl+j/k (SearchUp/SearchDown). The chip shows only the arrow form; the ?
+// overlay documents the ctrl variants.
+func searchMoveHelp() key.Binding {
+	return key.NewBinding(key.WithKeys("up", "ctrl+k", "down", "ctrl+j"), key.WithHelp("↑/↓", "move"))
 }
 
 func (h viewHelp) FullHelp() [][]key.Binding {
@@ -253,9 +289,8 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	default: // listView
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{helpAs(k.Enter, "detail"), k.Shell},
-			{k.Refresh, k.RefreshAll},
-			{k.Filter, k.Sort, k.Group},
+			{helpAs(k.Enter, "detail"), k.Filter, k.Sort, k.Group},
+			{k.Shell, k.Refresh, k.RefreshAll},
 			{k.Help, k.Quit},
 		}
 	}
