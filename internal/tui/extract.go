@@ -574,7 +574,7 @@ func (m extractModel) handleRunningKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 
 func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	switch {
-	case key.Matches(msg, keys.Back), key.Matches(msg, keys.Enter):
+	case key.Matches(msg, keys.Back):
 		return m.back()
 	case key.Matches(msg, keys.Shell):
 		// Drop the user into a credential-free shell rooted at the extracted
@@ -592,14 +592,14 @@ func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 
 // handleTerminalKey routes the canceled / error screens. When the result
 // reports StagingCreated=true and the staging dir still exists on disk, the
-// user is given the keep-or-delete prompt. Otherwise enter/esc returns to
+// user is given the keep-or-delete prompt. Otherwise esc returns to
 // browse directly. The staging probe is re-run before any key this state acts
 // on (a dir the user deleted out-of-band must stop offering the prompt) and
 // cached on stagingExists for the render path; ignored keys skip it, since the
 // underlying Lstat can block against an automounted target root.
 func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	if !key.Matches(msg, keys.Delete) && !key.Matches(msg, keys.Keep) &&
-		!key.Matches(msg, keys.Enter) && !key.Matches(msg, keys.Back) &&
+		!key.Matches(msg, keys.Back) &&
 		!key.Matches(msg, keys.Target) {
 		return m, nil, false
 	}
@@ -610,7 +610,6 @@ func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extra
 			m.state = extractStateKeepDelete
 			return m, m.deleteStagingCmd(), false
 		case key.Matches(msg, keys.Keep),
-			key.Matches(msg, keys.Enter),
 			key.Matches(msg, keys.Back):
 			return m.back()
 		}
@@ -629,7 +628,7 @@ func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extra
 		m.filepickerErr = ""
 		cmd := m.ensureFilepicker()
 		return m, cmd, false
-	case key.Matches(msg, keys.Enter), key.Matches(msg, keys.Back):
+	case key.Matches(msg, keys.Back):
 		return m.back()
 	}
 	return m, nil, false
@@ -841,7 +840,7 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 	case extractStateSuccess:
 		// "back" rather than "back to browse": the modal launches from browse
 		// and detail alike, and the sub-model doesn't know its origin.
-		return []key.Binding{helpAs(keys.Shell, "shell here"), helpAs(keys.Enter, "back")}
+		return []key.Binding{helpAs(keys.Shell, "shell here"), keys.Back}
 	case extractStateCanceled, extractStateError:
 		if m.stagingExists {
 			return []key.Binding{keys.Keep, keys.Delete}
@@ -849,9 +848,9 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 		if isExtractRefusal(m.err) {
 			// Advertise the retarget affordance the hint points to (handleTerminalKey
 			// honors t in this branch).
-			return []key.Binding{keys.Target, helpAs(keys.Enter, "back")}
+			return []key.Binding{keys.Target, keys.Back}
 		}
-		return []key.Binding{helpAs(keys.Enter, "back")}
+		return []key.Binding{keys.Back}
 	case extractStateFilePicker:
 		return []key.Binding{keys.Back}
 	case extractStateKeepDelete:

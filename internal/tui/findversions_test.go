@@ -385,8 +385,8 @@ func TestFindVersionsResticErrorSurfaces(t *testing.T) {
 		findErr:     errors.New("repository is locked\nextra"),
 	}
 	m = openFindVersions(t, m, "hostname")
-	if m.findErr == "" || !strings.HasPrefix(m.findErr, "find: ") {
-		t.Errorf("findErr should be prefixed 'find: ', got %q", m.findErr)
+	if m.findErr == "" || !strings.HasPrefix(m.findErr, "versions: ") {
+		t.Errorf("findErr should be prefixed 'versions: ', got %q", m.findErr)
 	}
 	if strings.Contains(m.findErr, "\n") {
 		t.Errorf("findErr must be a single line, got %q", m.findErr)

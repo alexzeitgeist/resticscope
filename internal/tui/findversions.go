@@ -82,10 +82,10 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 		m.findResultHost = ""
 		m.findResultAllHosts = false
 		if errors.Is(msg.err, app.ErrFindUnknownHost) {
-			m.findErr = "find: snapshot host unknown · press a to search all hosts"
+			m.findErr = "versions: snapshot host unknown · press a to search all hosts"
 			return m
 		}
-		m.findErr = "find: " + firstLine(msg.err.Error())
+		m.findErr = "versions: " + firstLine(msg.err.Error())
 		return m
 	}
 	m.findErr = ""
@@ -127,10 +127,11 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.findCursor = clampCursor(m.findCursor-m.findVisible(), len(m.findRows))
 	case key.Matches(msg, m.keys.PageDown):
 		m.findCursor = clampCursor(m.findCursor+m.findVisible(), len(m.findRows))
-	case key.Matches(msg, m.keys.Extract):
-		// e extracts the queried file from the selected version's newest
-		// occurrence snapshot, through the shared extract modal. Sits below the
-		// findLoading guard so it can't fire against a row set being replaced.
+	case key.Matches(msg, m.keys.Extract), key.Matches(msg, m.keys.Enter):
+		// enter (the primary action; e stays as an alias) extracts the queried
+		// file from the selected version's newest occurrence snapshot, through
+		// the shared extract modal. Sits below the findLoading guard so it
+		// can't fire against a row set being replaced.
 		m = m.openExtractVersion()
 	}
 	return m, nil

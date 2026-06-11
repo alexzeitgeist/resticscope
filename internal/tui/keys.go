@@ -78,11 +78,11 @@ func defaultKeys() keyMap {
 		Filter:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		Search:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Sort:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "sort")),
-		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "cycle group")),
+		Group:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "group")),
 		Collapse:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "collapse")),
 		Versions:   key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "versions")),
 		HostToggle: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all hosts")),
-		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "toggle mark")),
+		Mark:       key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "mark")),
 		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 		Info:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
 		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
@@ -122,8 +122,8 @@ func defaultKeys() keyMap {
 // so its footer label is overridden per view via helpAs below.
 //
 // Every ShortHelp keeps one chip order so reused keys sit in the same relative
-// place across views: move → enter → ⌫ → / → view actions → sort/group/
-// collapse → shell/refresh → back/quit.
+// place across views: move → enter → ⌫ → / → view actions → sort/group →
+// shell/refresh → back/quit.
 type viewHelp struct {
 	keys            keyMap
 	view            view
@@ -151,7 +151,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	}
 	switch h.view {
 	case detailView:
-		return []key.Binding{moveHelp(), helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Extract, k.Group, k.Collapse, k.Shell, k.Refresh, k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Extract, k.Group, k.Shell, k.Back}
 	case browseView:
 		if h.searchSuspended {
 			// esc restores the parked search while q leaves browse outright
@@ -161,7 +161,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		}
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
 	case findVersionsView:
-		return []key.Binding{moveHelp(), k.HostToggle, k.Extract, k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "extract"), k.HostToggle, k.Back}
 	case snapshotDiffView:
 		if h.diffJumped {
 			// After a search jump q mirrors esc and reverses the jump instead
@@ -271,7 +271,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case findVersionsView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{k.HostToggle, k.Extract, k.Back},
+			{helpAs(k.Enter, "extract"), k.HostToggle, k.Extract, k.Back},
 		}
 	case snapshotDiffView:
 		return [][]key.Binding{

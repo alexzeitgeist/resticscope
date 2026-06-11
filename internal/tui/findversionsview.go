@@ -32,7 +32,7 @@ const (
 // launched from (find is reached only from browse, so browseSnapshot is the
 // origin), and the queried path.
 func (m Model) findTitle() string {
-	label := "find: " + m.findRepo
+	label := "versions: " + m.findRepo
 	if id := shortID(m.browseSnapshot); id != "" {
 		label += " · " + id
 	}

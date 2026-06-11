@@ -534,7 +534,7 @@ func TestExtractKeepLeavesStagingOnDisk(t *testing.T) {
 }
 
 // Error path with StagingCreated=false must not show the keep-or-delete prompt;
-// enter/esc returns to browse.
+// esc returns to browse.
 func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -556,12 +556,63 @@ func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 		t.Error("an extract that returned ErrExtractFinalExists must not have StagingCreated")
 	}
 
-	em, cmd, leave := dispatchKey(em, keys, "enter")
+	em, cmd, leave := dispatchKey(em, keys, "esc")
 	if !leave {
-		t.Error("enter on no-staging error must leave the modal")
+		t.Error("esc on no-staging error must leave the modal")
 	}
 	if _, ok := cmd().(extractBackToBrowseMsg); !ok {
-		t.Errorf("enter cmd returned %T, want extractBackToBrowseMsg", cmd())
+		t.Errorf("esc cmd returned %T, want extractBackToBrowseMsg", cmd())
+	}
+}
+
+// Enter is a no-op on the extract done/terminal screens: review's
+// `enter extract` muscle memory must not double-fire into a dismissal, so
+// leaving the success and no-staging error screens is q/esc only.
+func TestExtractTerminalScreensIgnoreEnter(t *testing.T) {
+	keys := defaultKeys()
+
+	// Success screen.
+	em, _ := newExtractFixture(t, dirReq())
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, FinalDir: em.final}
+	em, cmd, leave := dispatchKey(em, keys, "enter")
+	if leave || cmd != nil {
+		t.Errorf("enter on success: leave=%v cmd=%v, want a no-op", leave, cmd != nil)
+	}
+	if em.state != extractStateSuccess {
+		t.Errorf("enter on success: state = %v, want unchanged success", em.state)
+	}
+	if foot := footHelp(em, keys); !strings.Contains(foot, "q back") || strings.Contains(foot, "enter") {
+		t.Errorf("success footer = %q, want 'q back' and no enter chip", foot)
+	}
+	em, cmd, leave = dispatchKey(em, keys, "esc")
+	if !leave || cmd == nil {
+		t.Fatalf("esc on success: leave=%v cmd-nil=%v, want to leave the modal", leave, cmd == nil)
+	}
+	if _, ok := cmd().(extractBackToBrowseMsg); !ok {
+		t.Errorf("esc cmd returned %T, want extractBackToBrowseMsg", cmd())
+	}
+
+	// No-staging error screen (non-refusal, so the footer is just `q back`).
+	em, _ = newExtractFixture(t, dirReq())
+	em.state = extractStateError
+	em.err = errors.New("boom")
+	em, cmd, leave = dispatchKey(em, keys, "enter")
+	if leave || cmd != nil {
+		t.Errorf("enter on no-staging error: leave=%v cmd=%v, want a no-op", leave, cmd != nil)
+	}
+	if em.state != extractStateError {
+		t.Errorf("enter on error: state = %v, want unchanged error", em.state)
+	}
+	if foot := footHelp(em, keys); !strings.Contains(foot, "q back") || strings.Contains(foot, "enter") {
+		t.Errorf("error footer = %q, want 'q back' and no enter chip", foot)
+	}
+	em, cmd, leave = dispatchKey(em, keys, "esc")
+	if !leave || cmd == nil {
+		t.Fatalf("esc on error: leave=%v cmd-nil=%v, want to leave the modal", leave, cmd == nil)
+	}
+	if _, ok := cmd().(extractBackToBrowseMsg); !ok {
+		t.Errorf("esc cmd returned %T, want extractBackToBrowseMsg", cmd())
 	}
 }
 
@@ -1539,8 +1590,8 @@ func TestExtractFooterBackLabelOriginNeutral(t *testing.T) {
 		}
 	}
 	em.state = extractStateSuccess
-	if got := footHelp(em, keys); !strings.Contains(got, "enter back") {
-		t.Errorf("success footer = %q, want 'enter back'", got)
+	if got := footHelp(em, keys); !strings.Contains(got, "q back") {
+		t.Errorf("success footer = %q, want 'q back'", got)
 	}
 }
 
@@ -1603,6 +1654,39 @@ func TestFindVersionsExtractKeyOpensSubModel(t *testing.T) {
 	}
 	if m.extract.srcSize != 5 {
 		t.Errorf("srcSize = %d, want 5 (the version row's size)", m.extract.srcSize)
+	}
+}
+
+// enter mirrors e in find-versions: extracting the selected version is the
+// row's primary action, so the view's enter does the same dispatch.
+func TestFindVersionsEnterOpensSubModel(t *testing.T) {
+	m := extractFindVersionsModel(t)
+
+	m = update(t, m, press("enter"))
+
+	if m.view != extractView {
+		t.Fatalf("enter on a version row should open extractView, view = %d", m.view)
+	}
+	if m.extract.req.SnapshotID != extractTestSnapID {
+		t.Errorf("SnapshotID = %q, want the newest occurrence %q", m.extract.req.SnapshotID, extractTestSnapID)
+	}
+	if m.extractReturn != findVersionsView {
+		t.Errorf("extractReturn = %d, want findVersionsView", m.extractReturn)
+	}
+}
+
+// enter while a find is loading is swallowed by the loading guard, same as e.
+func TestFindVersionsEnterPausedWhileLoading(t *testing.T) {
+	m := extractFindVersionsModel(t)
+	m.findLoading = true
+
+	m = update(t, m, press("enter"))
+
+	if m.view != findVersionsView {
+		t.Errorf("enter while loading should stay in find-versions, view = %d", m.view)
+	}
+	if m.extract.req.Source != "" {
+		t.Errorf("no sub-model should be built while loading; req = %+v", m.extract.req)
 	}
 }
 
@@ -1687,13 +1771,13 @@ func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
 	}
 }
 
-// The find-versions footer advertises the extract action so it is
-// discoverable in context.
+// The find-versions footer advertises extract on its primary key (enter) so
+// the action is discoverable in context; e stays bound as an alias.
 func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
 	footer := stripANSI(m.footerView())
-	if !strings.Contains(footer, "e extract") {
-		t.Errorf("find-versions footer should advertise 'e extract'\n---\n%s", footer)
+	if !strings.Contains(footer, "enter extract") {
+		t.Errorf("find-versions footer should advertise 'enter extract'\n---\n%s", footer)
 	}
 }

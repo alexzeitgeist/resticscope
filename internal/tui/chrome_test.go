@@ -183,7 +183,7 @@ func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 	if !strings.Contains(row, "? help") {
 		t.Errorf("chip should survive a long find title at width 80, got %q", row)
 	}
-	if !strings.Contains(row, "find: ") {
+	if !strings.Contains(row, "versions: ") {
 		t.Errorf("title prefix lost at width 80, got %q", row)
 	}
 	if got := lipgloss.Width(row); got > 80 {
@@ -195,7 +195,7 @@ func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 	if strings.Contains(row, "? help") {
 		t.Errorf("chip should be dropped at width 8, got %q", row)
 	}
-	if !strings.Contains(row, "find") {
+	if !strings.Contains(row, "versions") {
 		t.Errorf("title should survive at width 8, got %q", row)
 	}
 	if got := lipgloss.Width(row); got > 8 {
@@ -263,7 +263,7 @@ func TestFooterMovementChipAndOrderUnified(t *testing.T) {
 	footer := stripANSI(m.footerView())
 	pos := -1
 	for _, chip := range []string{
-		"↑/↓ move", "enter detail", "/ filter", "o sort", "g cycle group",
+		"↑/↓ move", "enter detail", "/ filter", "o sort", "g group",
 		"s shell", "r refresh", "q quit",
 	} {
 		i := strings.Index(footer, chip)
@@ -277,6 +277,26 @@ func TestFooterMovementChipAndOrderUnified(t *testing.T) {
 	}
 	if strings.Contains(footer, "? help") {
 		t.Errorf("list footer should not duplicate the title row's ? help chip\n---\n%s", footer)
+	}
+}
+
+// Every view's key bar fits the ~100-column budget moveHelp documents
+// (keys.go): at an effectively unlimited terminal width the bubbles help model
+// renders the bar unclipped and footerView's clip is a no-op, so the assertion
+// measures the chips themselves rather than a truncation. Known outlier left
+// alone: the browse search-suspended bar (110 cells, transient state, not a
+// chromeViews fixture) — if it gets added here, it needs an exception or a trim.
+func TestFooterBarsFitWidthBudget(t *testing.T) {
+	for _, tc := range chromeViews() {
+		t.Run(tc.name, func(t *testing.T) {
+			m := update(t, tc.setup(t), tea.WindowSizeMsg{Width: 4000, Height: 51})
+			footer := stripANSI(m.footerView())
+			lines := strings.Split(footer, "\n")
+			bar := lines[len(lines)-1]
+			if got := lipgloss.Width(bar); got > 100 {
+				t.Errorf("key bar width = %d, want <= 100\n---\n%s", got, bar)
+			}
+		})
 	}
 }
 
@@ -314,9 +334,9 @@ func TestViewTitleConvention(t *testing.T) {
 
 	a, _ := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	fm := openFindVersions(t, newTestModel(t, a), "hostname")
-	want := "find: repo-a · " + shortID(fm.browseSnapshot) + " · /hostname"
+	want := "versions: repo-a · " + shortID(fm.browseSnapshot) + " · /hostname"
 	if got := stripANSI(fm.findTitle()); got != want {
-		t.Errorf("find title = %q, want %q", got, want)
+		t.Errorf("versions title = %q, want %q", got, want)
 	}
 
 	im := newTestModel(t, snapshotInfoApp(t))

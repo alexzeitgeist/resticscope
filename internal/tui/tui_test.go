@@ -871,7 +871,7 @@ func TestEnterOpensDetailView(t *testing.T) {
 	for _, want := range []string{
 		"repo-a",           // detail header
 		"Endpoint",         // metadata block
-		"Versions",         // meta rollup of observed restic versions
+		"Program",          // meta rollup of observed restic versions
 		"restic 0.18.1",    // the observed version value
 		"Snapshots",        // snapshot table heading
 		"2026-05-23 13:00", // newest snapshot (testNow - 1h)
@@ -896,6 +896,11 @@ func TestEnterOpensDetailView(t *testing.T) {
 		if strings.Contains(view, dup) {
 			t.Errorf("detail view duplicates columnar field %q in the panel\n---\n%s", dup, view)
 		}
+	}
+	// "Versions" is the file-versions feature's word; restic's ProgramVersion
+	// rollup is labeled "Program" (matching the info view).
+	if strings.Contains(view, "Versions") {
+		t.Errorf("detail view must not label the restic-version rollup 'Versions'\n---\n%s", view)
 	}
 }
 
@@ -2956,7 +2961,7 @@ func TestInfoViewHelpHasExplicitCase(t *testing.T) {
 	// scope actions like Mark or Diff.
 	for _, b := range short {
 		desc := b.Help().Desc
-		if desc == "toggle mark" || desc == "diff" {
+		if desc == "mark" || desc == "diff" {
 			t.Errorf("info ShortHelp includes detail action %q", desc)
 		}
 	}

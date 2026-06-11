@@ -132,7 +132,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{move, "move cursor"},
 			{page, "page up/down"},
 			{keyLabel(k.HostToggle), "toggle host filter"},
-			{keyLabel(k.Extract), "extract this version"},
+			{keyLabel(k.Enter) + "/" + keyLabel(k.Extract), "extract this version"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to browse"},
 		}},
 		{"Diff", []helpEntry{

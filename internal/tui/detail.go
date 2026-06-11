@@ -11,7 +11,7 @@ import (
 )
 
 // detailMetaRows is the number of fixed meta lines the detail body renders
-// (Endpoint/Bucket/Snapshots/Hosts/Versions/Tags/Last); detailSnapVisible
+// (Endpoint/Bucket/Snapshots/Hosts/Program/Tags/Last); detailSnapVisible
 // subtracts it from the height to size the scrolling snapshot window.
 const detailMetaRows = 7
 
@@ -154,7 +154,7 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 		m.field("Bucket", bucketLabel(repo), width),
 		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount), width),
 		m.field("Hosts", joinOrDash(st.Hosts), width),
-		m.field("Versions", joinOrDash(model.ObservedVersions(st.Snapshots)), width),
+		m.field("Program", joinOrDash(model.ObservedVersions(st.Snapshots)), width),
 		m.field("Tags", joinOrDash(st.Tags), width),
 		m.field("Last", last, width),
 	}
