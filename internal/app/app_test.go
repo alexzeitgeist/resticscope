@@ -290,6 +290,9 @@ type fakeStore struct {
 	searchQuery  string // last query Search was asked for
 	searchLimit  int    // last limit Search was asked for
 
+	subFiles, subDirs int  // canned SubtreeCounts result
+	subKnown          bool // whether SubtreeCounts reports a committed index
+
 	addErrAt  int   // if >0, the writer's Add fails on this call number
 	addErr    error // error Add returns at addErrAt
 	commitErr error
@@ -346,6 +349,13 @@ func (s *fakeStore) ListDir(ctx context.Context, repo, snap, dir string) ([]mode
 		return nil, s.listErr
 	}
 	return s.entries[storeKey(repo, snap)+"\x00"+dir], nil
+}
+
+func (s *fakeStore) SubtreeCounts(ctx context.Context, repo, snap, dir string) (files, dirs int, known bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = append(s.repos, repo)
+	return s.subFiles, s.subDirs, s.subKnown, nil
 }
 
 func (s *fakeStore) Search(ctx context.Context, repo, snap, query string, limit int) (model.BrowseSearchResult, error) {
@@ -1109,6 +1119,30 @@ func TestListDirUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
 	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); err == nil {
 		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestSubtreeCountsDelegates(t *testing.T) {
+	store := newFakeStore()
+	store.subFiles, store.subDirs, store.subKnown = 12, 3, true
+	a := browseApp(store, fakeRestic{})
+
+	files, dirs, known, err := a.SubtreeCounts(context.Background(), "repo-a", "snap123", "/home")
+	if err != nil {
+		t.Fatalf("SubtreeCounts: %v", err)
+	}
+	if files != 12 || dirs != 3 || !known {
+		t.Errorf("SubtreeCounts = %d files, %d dirs, known=%v; want 12, 3, true", files, dirs, known)
+	}
+}
+
+// A nil Browse session degrades to known=false rather than erroring (unlike
+// ListDir's ErrBrowseNotEnabled): the counts are advisory review detail, and a
+// detail-view extract can legitimately run with browse disabled.
+func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	if _, _, known, err := a.SubtreeCounts(context.Background(), "repo-a", "s1", "/"); err != nil || known {
+		t.Errorf("known=%v err=%v, want false, nil", known, err)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
@@ -80,20 +82,20 @@ func (m Model) selectedSnapshot() *model.Snapshot {
 // line and stays in detail; only a clean construction switches to extractView.
 // On a grouped or collapsed row the head snapshot is extracted, matching what
 // enter/browse, `s`, and `i` act on.
-func (m Model) openExtractSnapshot() Model {
+func (m Model) openExtractSnapshot() (Model, tea.Cmd) {
 	snap := m.selectedSnapshot()
 	if snap == nil {
 		m.statusMsg = "no snapshot selected"
-		return m
+		return m, nil
 	}
 	name, ok := m.actionRepo()
 	if !ok {
-		return m
+		return m, nil
 	}
 	req, err := extractRequestFromSnapshot(name, snap)
 	if err != nil {
 		m.statusMsg = "extract: " + firstLine(err.Error())
-		return m
+		return m, nil
 	}
 	// Display-only size for the review screen's Type line. Nil for pre-0.17
 	// snapshots, where 0 renders without a size suffix.
@@ -106,13 +108,15 @@ func (m Model) openExtractSnapshot() Model {
 		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
 		// offending field, so the notice carries no path either.
 		m.statusMsg = "extract: " + firstLine(err.Error())
-		return m
+		return m, nil
 	}
 	m.statusMsg = ""
 	m.extract = sub
 	m.extractReturn = detailView
 	m.view = extractView
-	return m
+	// The whole-snapshot Contains lookup answers only when this snapshot was
+	// browsed (and so indexed) this session; otherwise the row stays absent.
+	return m, m.extract.countsCmd()
 }
 
 func (m Model) detailTitle() string {

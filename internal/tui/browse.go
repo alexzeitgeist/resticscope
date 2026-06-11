@@ -406,7 +406,8 @@ func (m Model) openExtract() (Model, tea.Cmd) {
 	m.extract = sub
 	m.extractReturn = browseView
 	m.view = extractView
-	return m, nil
+	// Directory sources kick off the async Contains-row lookup (nil for files).
+	return m, m.extract.countsCmd()
 }
 
 func (m Model) openBrowseSearchInput() Model {

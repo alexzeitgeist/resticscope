@@ -40,6 +40,10 @@ func (s *browseStore) ListDir(ctx context.Context, repo, snapshot, dir string) (
 	return s.db.ListDir(ctx, repo, snapshot, dir)
 }
 
+func (s *browseStore) SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error) {
+	return s.db.SubtreeCounts(ctx, repo, snapshot, dir)
+}
+
 func (s *browseStore) Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error) {
 	return s.db.Search(ctx, repo, snapshot, query, limit)
 }

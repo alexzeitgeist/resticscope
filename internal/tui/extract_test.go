@@ -55,6 +55,12 @@ type fakeExtractDriver struct {
 	// sudo readiness probes a privileged commit triggers.
 	probeErr   error
 	probeCalls int
+
+	// subFiles/subDirs/subKnown program SubtreeCounts (the review Contains
+	// row); subErr (when set) is returned instead.
+	subFiles, subDirs int
+	subKnown          bool
+	subErr            error
 }
 
 type extractResp struct {
@@ -119,6 +125,15 @@ func (f *fakeExtractDriver) PrivilegedAuthCommand() *exec.Cmd {
 	// Never run by the tests (it rides inside a tea.ExecProcess Cmd the tests
 	// must not execute); non-nil so applySudoProbe takes the interactive path.
 	return exec.Command("true")
+}
+
+func (f *fakeExtractDriver) SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.subErr != nil {
+		return 0, 0, false, f.subErr
+	}
+	return f.subFiles, f.subDirs, f.subKnown, nil
 }
 
 func (f *fakeExtractDriver) callsSnapshot() []extractCall {
@@ -1868,5 +1883,160 @@ func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
 	footer := stripANSI(m.footerView())
 	if !strings.Contains(footer, "enter extract") {
 		t.Errorf("find-versions footer should advertise 'enter extract'\n---\n%s", footer)
+	}
+}
+
+// The review screen's Contains row reports a directory source's contained
+// file/dir counts from the browse index — and stays absent for unknown
+// lookups rather than showing a misleading zero.
+func TestExtractReviewContainsRow(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{subFiles: 12, subDirs: 3, subKnown: true}
+
+	cmd := em.countsCmd()
+	if cmd == nil {
+		t.Fatal("countsCmd returned nil for a directory source")
+	}
+	msg, ok := cmd().(extractCountsMsg)
+	if !ok {
+		t.Fatalf("countsCmd message = %T, want extractCountsMsg", cmd())
+	}
+	em.applyCounts(msg)
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 240
+	m.extract = em
+	body := stripANSI(m.extractBody())
+	if !strings.Contains(body, "Contains") || !strings.Contains(body, "12 files · 3 dirs") {
+		t.Errorf("review body missing the Contains row:\n%s", body)
+	}
+}
+
+// File sources skip the lookup entirely (the count is trivially one); a late
+// message from a superseded generation and a known=false lookup are both
+// dropped without filling the row.
+func TestExtractReviewContainsRowGuards(t *testing.T) {
+	a := extractApp(t)
+	fm, err := newExtractModel(a, context.Background(), fileReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	fm.drv = &fakeExtractDriver{subKnown: true}
+	if cmd := fm.countsCmd(); cmd != nil {
+		t.Error("countsCmd should be nil for a file source")
+	}
+
+	dm, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	dm.applyCounts(extractCountsMsg{gen: dm.gen + 1, files: 9, dirs: 9, known: true})
+	if dm.srcCountsKnown {
+		t.Error("stale-generation counts must be dropped")
+	}
+	dm.applyCounts(extractCountsMsg{gen: dm.gen, known: false})
+	if dm.srcCountsKnown {
+		t.Error("known=false counts must be dropped")
+	}
+}
+
+// The review screen surfaces an occupied target up front — the same
+// FreshTargetCheck enter will enforce — instead of leaving the collision to
+// the run-time refusal screen. State only: the retarget key lives in the
+// footer bar.
+func TestExtractReviewTargetExistsNote(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	if em.targetBusy {
+		t.Fatal("fresh target plan must not start busy")
+	}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 240
+	m.extract = em
+	if body := stripANSI(m.extractBody()); strings.Contains(body, "target already exists") {
+		t.Errorf("fresh-target review body carries the occupancy note:\n%s", body)
+	}
+
+	if err := os.MkdirAll(em.final, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	em2, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	if !em2.targetBusy {
+		t.Fatal("occupied final must set targetBusy")
+	}
+	m.extract = em2
+	if body := stripANSI(m.extractBody()); !strings.Contains(body, "target already exists — choose another target or remove the existing output") {
+		t.Errorf("review body missing the occupancy note:\n%s", body)
+	}
+}
+
+// Pressing e on the detail view returns the Contains-row lookup command for
+// the whole-snapshot directory source — the opener wires countsCmd through.
+func TestDetailExtractFiresCountsLookup(t *testing.T) {
+	m := extractDetailModel(t)
+	next, cmd := m.Update(press("e"))
+	m = next.(Model)
+	if m.view != extractView {
+		t.Fatalf("e on detail should open extractView, view = %d", m.view)
+	}
+	if cmd == nil {
+		t.Fatal("opening a directory extract should fire the counts lookup")
+	}
+	if _, ok := cmd().(extractCountsMsg); !ok {
+		t.Fatalf("opener cmd message = %T, want extractCountsMsg", cmd())
+	}
+}
+
+// The review screen warns when the source's known size exceeds the target
+// filesystem's free space — and stays silent when the size is unknown
+// (srcSize 0) or the probe had no answer. Advisory: enter stays live, the run
+// fails with restic's own error if space truly runs out.
+func TestExtractReviewSpaceWarning(t *testing.T) {
+	a := extractApp(t)
+	// An impossibly large source: no real test filesystem holds 2^62 bytes,
+	// so the natural probe result trips the warning.
+	em, err := newExtractModel(a, context.Background(), dirReq(), 1<<62)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	if !em.targetFreeKnown {
+		t.Fatal("space probe must answer on a real filesystem")
+	}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 240
+	m.extract = em
+	body := stripANSI(m.extractBody())
+	if !strings.Contains(body, "source may not fit the target filesystem") || !strings.Contains(body, "needed") {
+		t.Errorf("review body missing the space warning:\n%s", body)
+	}
+
+	// Unknown source size: never warn (a pre-0.17 snapshot without a summary).
+	em.srcSize = 0
+	m.extract = em
+	if body := stripANSI(m.extractBody()); strings.Contains(body, "may not fit") {
+		t.Errorf("size-unknown review body carries the space warning:\n%s", body)
+	}
+
+	// Unanswered probe: stay silent rather than guess.
+	em.srcSize = 1 << 62
+	em.targetFreeKnown = false
+	m.extract = em
+	if body := stripANSI(m.extractBody()); strings.Contains(body, "may not fit") {
+		t.Errorf("probe-less review body carries the space warning:\n%s", body)
 	}
 }

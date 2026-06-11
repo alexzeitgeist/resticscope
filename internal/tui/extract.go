@@ -69,6 +69,10 @@ type extractDriver interface {
 	LocalShellSession(dir string) (*app.ShellSession, error)
 	PrivilegedExtractProbe(ctx context.Context) error
 	PrivilegedAuthCommand() *exec.Cmd
+	// SubtreeCounts backs the review screen's Contains row for directory
+	// sources: contained file/dir counts from the browse index, known=false
+	// when the snapshot has no committed index.
+	SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error)
 }
 
 // extractModel is the self-contained sub-model. Browse wiring constructs one per
@@ -94,6 +98,29 @@ type extractModel struct {
 	// shown on the review "Type" line; dropped with the rest of the sub-model on
 	// exit so no size derived from a path lingers after leaving the modal.
 	srcSize int64
+
+	// srcFiles / srcDirs are a directory source's contained file/dir counts,
+	// loaded async from the browse index after the review opens; srcCountsKnown
+	// gates the review Contains row (file sources, unindexed snapshots, and
+	// failed lookups leave it false). Display-only like srcSize, and dropped
+	// with the sub-model on exit.
+	srcFiles, srcDirs int
+	srcCountsKnown    bool
+
+	// targetBusy notes that staging or final was already occupied when the
+	// review opened — the same FreshTargetCheck enter will enforce, surfaced
+	// early as an advisory note so the collision isn't a surprise refusal
+	// screen. Advisory only: the run-time check stays authoritative, and a
+	// successful retarget through the filepicker clears it (planExtractOverride
+	// refuses occupied roots).
+	targetBusy bool
+
+	// targetFree / targetFreeKnown carry the review-time free-space probe of
+	// the target filesystem (ExtractFreeSpace at the planned staging path); the
+	// review warns when the source's known size exceeds it. Advisory like
+	// targetBusy — never blocks enter — and re-probed on retarget.
+	targetFree      int64
+	targetFreeKnown bool
 
 	// staging / final are derived from req via PlanExtractPaths and updated
 	// alongside req when the filepicker overlay changes TargetRoot.
@@ -174,6 +201,7 @@ func newExtractModel(a *app.App, parentCtx context.Context, req app.ExtractReque
 	if err != nil {
 		return extractModel{}, err
 	}
+	free, freeKnown := app.ExtractFreeSpace(staging)
 	return extractModel{
 		drv:       a,
 		cfg:       a.Cfg.Extract,
@@ -183,6 +211,11 @@ func newExtractModel(a *app.App, parentCtx context.Context, req app.ExtractReque
 		srcSize:   srcSize,
 		staging:   staging,
 		final:     final,
+		// A few stats, same order of cost as a filepicker selection pays in
+		// planExtractOverride.
+		targetBusy:      isExtractRefusal(app.FreshTargetCheck(staging, final)),
+		targetFree:      free,
+		targetFreeKnown: freeKnown,
 	}, nil
 }
 
@@ -195,6 +228,43 @@ func (m *extractModel) supersede() {
 		m.cancel()
 		m.cancel = nil
 	}
+}
+
+// extractCountsMsg delivers the review screen's directory-contents counts. A
+// lookup that failed or found no committed index arrives with known=false and
+// is dropped — the counts are advisory display detail, never a gate.
+type extractCountsMsg struct {
+	gen         int
+	files, dirs int
+	known       bool
+}
+
+// countsCmd queries the browse index for a directory source's contained
+// file/dir counts. nil for file sources (the count is trivially one) and for a
+// zero sub-model (a failed open leaves m.extract empty, with a nil drv).
+func (m *extractModel) countsCmd() tea.Cmd {
+	if m.drv == nil || m.req.Mode != app.ExtractDirectoryTree {
+		return nil
+	}
+	gen, drv, ctx := m.gen, m.drv, m.parentCtx
+	repo, snap, src := m.req.Repo, m.req.SnapshotID, m.req.Source
+	return func() tea.Msg {
+		files, dirs, known, err := drv.SubtreeCounts(ctx, repo, snap, src)
+		if err != nil {
+			known = false
+		}
+		return extractCountsMsg{gen: gen, files: files, dirs: dirs, known: known}
+	}
+}
+
+// applyCounts fills the review Contains row from a counts lookup. Late
+// messages from a superseded generation are dropped like every other extract
+// message.
+func (m *extractModel) applyCounts(msg extractCountsMsg) {
+	if msg.gen != m.gen || !msg.known {
+		return
+	}
+	m.srcFiles, m.srcDirs, m.srcCountsKnown = msg.files, msg.dirs, true
 }
 
 // extractRunDoneMsg carries the result of a live run.
@@ -667,6 +737,11 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 			m.final = final
 			m.state = extractStateReview
 			m.filepickerErr = ""
+			// planExtractOverride refuses occupied roots, so the new paths are
+			// fresh by construction; the space probe answers for the new
+			// filesystem.
+			m.targetBusy = false
+			m.targetFree, m.targetFreeKnown = app.ExtractFreeSpace(staging)
 		} else {
 			m.filepickerErr = firstLine(perr.Error())
 		}

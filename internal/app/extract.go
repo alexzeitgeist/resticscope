@@ -690,6 +690,29 @@ func FreshTargetCheck(staging, final string) error {
 	return nil
 }
 
+// ExtractFreeSpace reports the free bytes on the filesystem that will hold an
+// extraction planned at staging. Neither staging nor final exists at review
+// time, so the probe walks up to the nearest existing ancestor; final is a
+// sibling of staging under the same root, so one filesystem answers for both
+// (the post-extract rename never crosses filesystems). known is false when no
+// ancestor can be statted or the platform offers no statfs binding. Exported
+// for the TUI's review-screen space preflight, and advisory only — a run that
+// outgrows the filesystem still fails with restic's own error.
+func ExtractFreeSpace(staging string) (free int64, known bool) {
+	dir := staging
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return 0, false
+		}
+		dir = parent
+	}
+	return freeBytesAt(dir)
+}
+
 // DeleteExtractStaging removes a staging directory after the user confirms the
 // delete from the keep-or-delete prompt. It lives here so the staging lifecycle
 // and the path-free error discipline stay in the layer that created the dir —

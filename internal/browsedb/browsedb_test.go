@@ -1145,3 +1145,54 @@ func mkSession(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 }
+
+// SubtreeCounts walks by parent-directory path prefix: recursive totals under
+// the requested dir with the dir itself excluded, symlinks in neither bucket,
+// byte-exact prefix matching (a "_" sibling must not bleed in as a single-char
+// wildcard, and case-variant siblings like /A must not match /a — SQLite LIKE
+// would do both), and known=false for a never-indexed snapshot.
+func TestSubtreeCounts(t *testing.T) {
+	db, _, _ := newTestDB(t, 0)
+	mustIndex(t, db, "repo-a", "snap1", []model.BrowseNode{
+		{Path: "/A", Name: "A", Type: "dir", IsDir: true},
+		{Path: "/A/q", Name: "q", Type: "file"},
+		{Path: "/A/sub", Name: "sub", Type: "dir", IsDir: true},
+		{Path: "/A/sub/x", Name: "x", Type: "file"},
+		{Path: "/a", Name: "a", Type: "dir", IsDir: true},
+		{Path: "/a/f1", Name: "f1", Type: "file"},
+		{Path: "/a/f2", Name: "f2", Type: "file"},
+		{Path: "/a/link", Name: "link", Type: "symlink"},
+		{Path: "/a/sub", Name: "sub", Type: "dir", IsDir: true},
+		{Path: "/a/sub/f3", Name: "f3", Type: "file"},
+		{Path: "/a_b", Name: "a_b", Type: "dir", IsDir: true},
+		{Path: "/a_b/g", Name: "g", Type: "file"},
+		{Path: "/axb", Name: "axb", Type: "dir", IsDir: true},
+		{Path: "/axb/h", Name: "h", Type: "file"},
+	})
+	ctx := context.Background()
+
+	cases := []struct {
+		dir         string
+		files, dirs int
+	}{
+		{"/", 7, 6},
+		{"/a", 3, 1}, // must not absorb /A/sub/x (LIKE's ASCII case folding)
+		{"/A", 2, 1}, // and the reverse direction
+		{"/a/sub", 1, 0},
+		{"/a_b", 1, 0}, // a "_" wildcard would also match /axb/h
+	}
+	for _, tc := range cases {
+		files, dirs, known, err := db.SubtreeCounts(ctx, "repo-a", "snap1", tc.dir)
+		if err != nil {
+			t.Fatalf("SubtreeCounts(%q): %v", tc.dir, err)
+		}
+		if !known || files != tc.files || dirs != tc.dirs {
+			t.Errorf("SubtreeCounts(%q) = %d files, %d dirs, known=%v; want %d, %d, true",
+				tc.dir, files, dirs, known, tc.files, tc.dirs)
+		}
+	}
+
+	if _, _, known, err := db.SubtreeCounts(ctx, "repo-a", "never-indexed", "/"); err != nil || known {
+		t.Errorf("never-indexed snapshot: known=%v err=%v, want false, nil", known, err)
+	}
+}

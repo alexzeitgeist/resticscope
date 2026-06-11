@@ -54,6 +54,7 @@ type BrowseStore interface {
 	IsIndexed(ctx context.Context, repo, snapshot string) (bool, error)
 	BeginIndex(ctx context.Context, repo, snapshot string) (IndexWriter, error)
 	ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.BrowseEntry, error)
+	SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error)
 	Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error)
 	Close() error
 }
@@ -303,6 +304,29 @@ func (a *App) ListDir(ctx context.Context, repoName, snapshotID, dir string) ([]
 	}
 	defer release()
 	return store.ListDir(ctx, r.Name, snapshotID, dir)
+}
+
+// SubtreeCounts reports how many files and directories dir contains within the
+// indexed snapshot — display-only preflight detail for the extract review
+// screen. Like ListDir it performs no restic call and resolves no secrets. It
+// degrades rather than fails where it can: a nil Browse session reports
+// known=false (a detail-view extract may run with browse disabled), and a
+// never-indexed snapshot does the same via the store, so callers simply render
+// no counts instead of an error.
+func (a *App) SubtreeCounts(ctx context.Context, repoName, snapshotID, dir string) (files, dirs int, known bool, err error) {
+	if a.Browse == nil {
+		return 0, 0, false, nil
+	}
+	r, ok := a.repo(repoName)
+	if !ok {
+		return 0, 0, false, fmt.Errorf("unknown repo %q", repoName)
+	}
+	ctx, store, release, err := a.Browse.beginOp(ctx)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer release()
+	return store.SubtreeCounts(ctx, r.Name, snapshotID, dir)
 }
 
 // SearchSnapshot returns the best fuzzy filename matches for query anywhere in the

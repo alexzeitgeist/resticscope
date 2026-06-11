@@ -69,6 +69,36 @@ func (s *fakeBrowseStore) BeginIndex(_ context.Context, repo, snap string) (app.
 	return &fakeBrowseWriter{store: s, key: browseKey(repo, snap)}, nil
 }
 
+// SubtreeCounts mirrors the real store's semantics over the in-memory node
+// list: recursive counts under dir (excluding dir itself), files = regular
+// files only, known=false for an uncommitted snapshot.
+func (s *fakeBrowseStore) SubtreeCounts(_ context.Context, repo, snap, dir string) (files, dirs int, known bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := browseKey(repo, snap)
+	if !s.indexed[key] {
+		return 0, 0, false, nil
+	}
+	root := model.CleanBrowsePath(dir)
+	prefix := root
+	if prefix != "/" {
+		prefix += "/"
+	}
+	for _, n := range s.nodes[key] {
+		p := model.CleanBrowsePath(n.Path)
+		if p == root || !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		switch {
+		case n.IsDir:
+			dirs++
+		case n.Type == "file":
+			files++
+		}
+	}
+	return files, dirs, true, nil
+}
+
 func (s *fakeBrowseStore) ListDir(_ context.Context, repo, snap, dir string) ([]model.BrowseEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

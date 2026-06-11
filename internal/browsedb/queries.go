@@ -58,6 +58,50 @@ func (db *DB) IsIndexed(ctx context.Context, repo, snapshot string) (bool, error
 	return true, nil
 }
 
+// subtreeSIDQuery resolves (repo, snapshot) to its committed sid; sql.ErrNoRows
+// means the snapshot has no committed index.
+const subtreeSIDQuery = `SELECT sid FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`
+
+// subtreeCountsQuery counts the file and directory nodes hanging off dir or any
+// directory below it. Containment is by parent-directory path under the BINARY
+// collation: every path strictly inside dir sorts in [dir+"/", dir+"0") because
+// '0' is the byte after '/'. A LIKE prefix would be wrong here — SQLite LIKE is
+// ASCII case-insensitive by default, so '/A/sub' LIKE '/a/%' matches — and the
+// byte range needs no wildcard escaping and fits the UNIQUE(sid,path) index.
+const subtreeCountsQuery = `SELECT ` +
+	`COALESCE(SUM(CASE WHEN n.type='file' THEN 1 ELSE 0 END),0),` +
+	`COALESCE(SUM(CASE WHEN n.is_dir THEN 1 ELSE 0 END),0) ` +
+	`FROM nodes n JOIN dirs d ON d.did=n.parent_did ` +
+	`WHERE n.sid=? AND d.sid=? AND (d.path=? OR (d.path>=? AND d.path<?))`
+
+// SubtreeCounts reports how many file and directory nodes dir contains within
+// (repo, snapshot), recursively, excluding dir itself. The split mirrors
+// ExtractResult's: files counts regular files only, dirs counts directories;
+// symlinks and specials are in neither. known is false when the snapshot has no
+// committed index, so callers can render nothing instead of a misleading zero.
+func (db *DB) SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error) {
+	root := model.CleanBrowsePath(dir)
+	var sid int64
+	err = db.pool.QueryRowContext(ctx, subtreeSIDQuery, repo, snapshot).Scan(&sid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("browsedb subtree-counts: %w", err)
+	}
+	prefix := root
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	// "starts with prefix" as a half-open byte range; '0' is the byte after '/'.
+	upper := prefix[:len(prefix)-1] + "0"
+	if err := db.pool.QueryRowContext(ctx, subtreeCountsQuery,
+		sid, sid, root, prefix, upper).Scan(&files, &dirs); err != nil {
+		return 0, 0, false, fmt.Errorf("browsedb subtree-counts: %w", err)
+	}
+	return files, dirs, true, nil
+}
+
 // ListDir returns the immediate children of dir within (repo, snapshot),
 // directories first then case-insensitively by name with deterministic
 // tie-breakers. A never-indexed (repo, snapshot) yields an empty slice and nil

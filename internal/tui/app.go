@@ -321,6 +321,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.extract.applyRunDone(msg)
 		}
 		return m, nil
+	case extractCountsMsg:
+		if m.extractActive() {
+			m.extract.applyCounts(msg)
+		}
+		return m, nil
 	case extractProgressMsg:
 		if !m.extractActive() {
 			return m, nil

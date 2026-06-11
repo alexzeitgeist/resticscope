@@ -96,10 +96,37 @@ func (m Model) extractReviewBody(w int) string {
 	// fully visible.
 	rows := []extractRow{
 		{label: "Source", value: extractSourceValue(em)},
-		{}, // spacer
-		{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w), extractIsDir(em))},
 	}
+	if em.srcCountsKnown {
+		// Contained counts from the browse index — the "what will happen"
+		// detail the Source row's recursive size alone doesn't carry for a
+		// directory tree. Absent until the async lookup lands (and absent for
+		// file sources, where the count is trivially one). Interior counts
+		// only: the done screen's dir total also includes the restored source
+		// dir itself, so it reads one higher by design.
+		rows = append(rows, extractRow{label: "Contains", value: fmt.Sprintf("%s · %s",
+			humanize.Count(em.srcFiles, "file", "files"),
+			humanize.Count(em.srcDirs, "dir", "dirs"))})
+	}
+	rows = append(rows,
+		extractRow{}, // spacer
+		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w), extractIsDir(em))},
+	)
 	body := renderExtractRows(m.styles, rows, w)
+	// Preflight occupancy note — the same FreshTargetCheck enter will enforce,
+	// surfaced before the run so the collision isn't a surprise refusal screen.
+	// State only: the retarget affordance lives in the footer key bar (t target).
+	if em.targetBusy {
+		body += "\n\n" + clip("  "+m.styles.errText.Render("target already exists — choose another target or remove the existing output"), w)
+	}
+	// Space preflight — advisory like the occupancy note: a run that outgrows
+	// the filesystem still fails with restic's own error, but a hopeless
+	// extraction is called out before the user commits to it.
+	if extractSpaceShort(em) {
+		body += "\n\n" + clip("  "+m.styles.errText.Render(fmt.Sprintf(
+			"source may not fit the target filesystem — %s needed, %s free",
+			humanize.Bytes(em.srcSize), humanize.Bytes(em.targetFree))), w)
+	}
 	// The privileged toggle's visible feedback (the Output row that used to carry
 	// it is gone — the source/target dir markers convey the shape instead).
 	if em.req.Privileged {
@@ -433,6 +460,14 @@ func extractSourceValue(em extractModel) string {
 // the condition for the browse-style "▸ " dir marker on the review rows.
 func extractIsDir(em extractModel) bool {
 	return em.req.Mode == app.ExtractDirectoryTree
+}
+
+// extractSpaceShort reports whether the review's space preflight should warn:
+// both sides must be known — srcSize 0 means "size unknown" (a pre-0.17
+// snapshot without a summary) and never warns, and an unanswered probe stays
+// silent rather than guessing.
+func extractSpaceShort(em extractModel) bool {
+	return em.targetFreeKnown && em.srcSize > 0 && em.srcSize > em.targetFree
 }
 
 // extractValueWidth is the cell budget for a labeled row's value: the full width

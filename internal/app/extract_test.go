@@ -932,3 +932,17 @@ func modeOf(t *testing.T, p string) os.FileMode {
 	}
 	return fi.Mode().Perm()
 }
+
+// ExtractFreeSpace probes the filesystem through the planned staging path even
+// though nothing along it exists yet — it walks up to the nearest existing
+// ancestor and answers from there.
+func TestExtractFreeSpaceWalksUp(t *testing.T) {
+	staging := filepath.Join(t.TempDir(), "no", "such", "dirs", ".resticscope-staging-x")
+	free, known := ExtractFreeSpace(staging)
+	if !known {
+		t.Fatal("ExtractFreeSpace: known = false on a real filesystem")
+	}
+	if free <= 0 {
+		t.Errorf("free = %d, want > 0 for a writable temp dir", free)
+	}
+}
