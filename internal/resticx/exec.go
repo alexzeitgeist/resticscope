@@ -55,10 +55,30 @@ func (ExecRunner) Run(ctx context.Context, env []string, password string, args .
 // onStdout error takes precedence over the wait error: a deliberate cap-cancel
 // surfaces through onStdout, and the caller classifies the wait error itself.
 func (ExecRunner) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
+	return runStreamFDs(ctx, env, password, nil, onStdout, args...)
+}
+
+// RunStreamPatterns is RunStream with one more out-of-band payload: patterns is
+// delivered to the child on fd 4 — the argv references it as /dev/fd/4 — via
+// the same pipe mechanism the password uses on fd 3. Restore include patterns
+// ride here so they touch neither argv (visible in /proc/<pid>/cmdline) nor
+// the filesystem.
+func (ExecRunner) RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
+	return runStreamFDs(ctx, env, password, patterns, onStdout, args...)
+}
+
+// runStreamFDs is the shared core of RunStream / RunStreamPatterns. The
+// password pipe always occupies the fd-3 slot whenever any extra fd is wired
+// (even for an empty password) so the /dev/fd/4 reference in argv can never
+// shift. Both payloads are written from goroutines: a patterns payload larger
+// than the kernel pipe buffer would otherwise deadlock the spawn, and if the
+// child exits without reading, the deferred close of the parent's read end
+// EPIPEs the writer so the goroutine always terminates.
+func runStreamFDs(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, "restic", args...)
 	cmd.Env = env
 
-	if password != "" {
+	if password != "" || patterns != nil {
 		pr, pw, pipeErr := os.Pipe()
 		if pipeErr != nil {
 			return nil, pipeErr
@@ -66,9 +86,23 @@ func (ExecRunner) RunStream(ctx context.Context, env []string, password string, 
 		defer pr.Close()
 		cmd.ExtraFiles = []*os.File{pr} // pr becomes fd 3 in the child
 		go func() {
-			_, _ = pw.WriteString(password)
+			if password != "" {
+				_, _ = pw.WriteString(password)
+			}
 			_ = pw.Close()
 		}()
+		if patterns != nil {
+			pr4, pw4, pipeErr := os.Pipe()
+			if pipeErr != nil {
+				return nil, pipeErr
+			}
+			defer pr4.Close()
+			cmd.ExtraFiles = append(cmd.ExtraFiles, pr4) // pr4 becomes fd 4
+			go func() {
+				_, _ = pw4.Write(patterns)
+				_ = pw4.Close()
+			}()
+		}
 	}
 
 	stdout, pipeErr := cmd.StdoutPipe()

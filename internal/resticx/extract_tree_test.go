@@ -24,6 +24,18 @@ type extractTreeStreamFake struct {
 	block   bool
 	gotArgs []string
 	gotEnv  []string
+
+	// gotPatterns records the fd-4 payload of the most recent
+	// RunStreamPatterns call; nil when the plain RunStream path was used.
+	gotPatterns []byte
+}
+
+// RunStreamPatterns makes the fake a PatternStreamRunner: it records the fd-4
+// payload and otherwise behaves exactly like RunStream, so the multi-include
+// tests exercise the same canned-stream plumbing.
+func (f *extractTreeStreamFake) RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) ([]byte, error) {
+	f.gotPatterns = patterns
+	return f.RunStream(ctx, env, password, onStdout, args...)
 }
 
 func (f *extractTreeStreamFake) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) ([]byte, error) {
@@ -91,7 +103,7 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := buildExtractTreeArgs(tt.p)
+			got, gotPatterns, err := buildExtractTreeArgs(tt.p)
 			if err != nil {
 				t.Fatalf("buildExtractTreeArgs: %v", err)
 			}
@@ -109,6 +121,10 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			}
 			if i := slices.Index(got, "--target"); i < 0 || i+1 >= len(got) || got[i+1] != tt.p.Target {
 				t.Error("argv must carry --target <Target>")
+			}
+			// Zero or one include never produces an fd-4 pattern payload.
+			if gotPatterns != nil {
+				t.Errorf("patterns = %q, want nil for the single/zero-include shape", gotPatterns)
 			}
 		})
 	}
@@ -142,7 +158,7 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := buildExtractTreeArgs(tt.p)
+			got, _, err := buildExtractTreeArgs(tt.p)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
@@ -162,7 +178,7 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
 	// Reference argv length for a plain (non-metachar) source — the metachar
 	// cases must introduce no extra tokens.
-	base, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/plain", Target: "/abs"})
+	base, _, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/plain", Target: "/abs"})
 	if err != nil {
 		t.Fatalf("baseline buildExtractTreeArgs: %v", err)
 	}
@@ -174,7 +190,7 @@ func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
 			if src != model.CleanBrowsePath(src) {
 				t.Fatalf("test input %q is not already clean (CleanBrowsePath = %q)", src, model.CleanBrowsePath(src))
 			}
-			got, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, Source: src, Target: "/abs"})
+			got, _, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, Source: src, Target: "/abs"})
 			if err != nil {
 				t.Fatalf("buildExtractTreeArgs: %v", err)
 			}
@@ -210,7 +226,7 @@ func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.include, func(t *testing.T) {
-			got, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{c.include}, Target: "/abs"})
+			got, _, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{c.include}, Target: "/abs"})
 			if err != nil {
 				t.Fatalf("buildExtractTreeArgs: %v", err)
 			}
@@ -575,34 +591,49 @@ func TestExtractTreePasswordOutOfBandAndBucketLookup(t *testing.T) {
 	assertNoForbiddenArgs(t, fs.gotArgs)
 }
 
-// TestBuildExtractTreeArgsMultipleIncludes covers the diff-extract shape: one
-// --include per path, in caller order, each literal-escaped independently, and
-// per-path validation (one bad entry rejects the whole argv).
-func TestBuildExtractTreeArgsMultipleIncludes(t *testing.T) {
-	got, err := buildExtractTreeArgs(ExtractTreeParams{
-		SnapshotID:   testSnapID,
-		Source:       "/home/alex",
-		Target:       "/abs/staging",
-		IncludePaths: []string{"/.config/a.txt", "/.config/glob*name", "/.local/x"},
+// TestBuildExtractTreeArgsMultiIncludeSplit covers the diff-extract shape:
+// file-safe patterns become the fd-4 payload (newline-joined, literal-escaped,
+// caller order) behind a single `--include-file /dev/fd/4`, while paths a
+// line-based pattern file cannot carry — '$' (env-expanded by restic), a
+// newline (line structure), edge whitespace (trimmed) — stay on argv as exact
+// elements; per-path validation still rejects the whole build.
+func TestBuildExtractTreeArgsMultiIncludeSplit(t *testing.T) {
+	got, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
+		SnapshotID: testSnapID,
+		Source:     "/home/alex",
+		Target:     "/abs/staging",
+		IncludePaths: []string{
+			"/.config/a.txt",
+			"/.config/glob*name",
+			"/.cache/weird$NAME file",
+			"/.local/x",
+			"/notes/line\nbreak",
+			"/notes/trailing ",
+		},
 	})
 	if err != nil {
 		t.Fatalf("buildExtractTreeArgs: %v", err)
 	}
-	want := []string{
+	wantArgs := []string{
 		"--no-lock", "restore", testSnapID + ":/home/alex",
 		"--target", "/abs/staging", "--overwrite", "never", "--json",
-		"--include", "/.config/a.txt",
-		"--include", `/.config/glob\*name`,
-		"--include", "/.local/x",
+		"--include", "/.cache/weird$NAME file",
+		"--include", "/notes/line\nbreak",
+		"--include", "/notes/trailing ",
+		"--include-file", "/dev/fd/4",
 	}
-	if !slices.Equal(got, want) {
-		t.Errorf("args =\n  %q\nwant\n  %q", got, want)
+	if !slices.Equal(got, wantArgs) {
+		t.Errorf("args =\n  %q\nwant\n  %q", got, wantArgs)
+	}
+	wantPatterns := "/.config/a.txt\n" + `/.config/glob\*name` + "\n/.local/x\n"
+	if string(patterns) != wantPatterns {
+		t.Errorf("patterns =\n  %q\nwant\n  %q", patterns, wantPatterns)
 	}
 	assertNoForbiddenArgs(t, got)
 
-	// One invalid entry anywhere in the list rejects the whole argv.
+	// One invalid entry anywhere in the list rejects the whole build.
 	for _, bad := range []string{"", "/", "rel/x", "/a/../b"} {
-		_, err := buildExtractTreeArgs(ExtractTreeParams{
+		_, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
 			SnapshotID:   testSnapID,
 			Target:       "/abs/staging",
 			IncludePaths: []string{"/fine", bad},
@@ -610,7 +641,98 @@ func TestBuildExtractTreeArgsMultipleIncludes(t *testing.T) {
 		if !errors.Is(err, ErrExtractInvalidInclude) {
 			t.Errorf("include %q: err = %v, want ErrExtractInvalidInclude", bad, err)
 		}
+		if patterns != nil {
+			t.Errorf("include %q: patterns must not be produced on rejection", bad)
+		}
 	}
+}
+
+// TestBuildExtractTreeArgsArgvIncludeOverflow pins the only remaining argv
+// ceiling: a multi-include run whose argv-routed (non-file-safe) patterns
+// exceed the byte budget is refused with a path-free sentinel before any argv
+// is produced.
+func TestBuildExtractTreeArgsArgvIncludeOverflow(t *testing.T) {
+	// Each path carries a '$' so it is forced onto argv; ~1 KiB × 600 > 512 KiB.
+	incs := make([]string, 600)
+	for i := range incs {
+		incs[i] = "/big/" + strings.Repeat("x", 1015) + "$v"
+	}
+	args, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
+		SnapshotID:   testSnapID,
+		Source:       "/big",
+		Target:       "/abs/staging",
+		IncludePaths: incs,
+	})
+	if !errors.Is(err, ErrExtractArgvIncludeOverflow) {
+		t.Fatalf("err = %v, want ErrExtractArgvIncludeOverflow", err)
+	}
+	if args != nil || patterns != nil {
+		t.Error("no argv or patterns may be produced on overflow")
+	}
+}
+
+// TestFileSafePattern pins the split rule directly.
+func TestFileSafePattern(t *testing.T) {
+	for _, p := range []string{"/a/b", "/a/glob*", "/a/sp ace/in middle", `/a/back\slash`} {
+		if !fileSafePattern(p) {
+			t.Errorf("fileSafePattern(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/a/$HOME", "/a/li\nne", "/a/cr\rend", "/a/trailing ", " /a/leading"} {
+		if fileSafePattern(p) {
+			t.Errorf("fileSafePattern(%q) = true, want false", p)
+		}
+	}
+}
+
+// TestExtractTreeDeliversPatternsToRunner proves the dispatch: a multi-include
+// run routes through the PatternStreamRunner capability with the exact fd-4
+// payload, and the password still rides the normal out-of-band slot.
+func TestExtractTreeDeliversPatternsToRunner(t *testing.T) {
+	fs := &extractTreeStreamFake{data: `{"message_type":"summary","files_restored":2}` + "\n"}
+	cl := &Client{Stream: fs}
+	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+		ExtractTreeParams{
+			SnapshotID:   testSnapID,
+			Source:       "/home/alex",
+			Target:       "/abs/staging",
+			IncludePaths: []string{"/.config/a", "/.config/b"},
+		}, nil)
+	if err != nil {
+		t.Fatalf("ExtractTree: %v", err)
+	}
+	if want := "/.config/a\n/.config/b\n"; string(fs.gotPatterns) != want {
+		t.Errorf("fd-4 payload = %q, want %q", fs.gotPatterns, want)
+	}
+	if i := slices.Index(fs.gotArgs, "--include-file"); i < 0 || i+1 >= len(fs.gotArgs) || fs.gotArgs[i+1] != "/dev/fd/4" {
+		t.Errorf("argv missing --include-file /dev/fd/4: %q", fs.gotArgs)
+	}
+	if slices.Contains(fs.gotArgs, "--include") {
+		t.Errorf("file-safe patterns must not also ride argv: %q", fs.gotArgs)
+	}
+}
+
+// TestExtractTreePatternsRequireCapableRunner: a runner without the fd-4
+// capability cannot silently drop the include selection — the run is refused.
+func TestExtractTreePatternsRequireCapableRunner(t *testing.T) {
+	cl := &Client{Stream: plainStreamFake{}}
+	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+		ExtractTreeParams{
+			SnapshotID:   testSnapID,
+			Source:       "/home/alex",
+			Target:       "/abs/staging",
+			IncludePaths: []string{"/.config/a", "/.config/b"},
+		}, nil)
+	if !errors.Is(err, ErrExtractPatternsUnsupported) {
+		t.Fatalf("err = %v, want ErrExtractPatternsUnsupported", err)
+	}
+}
+
+// plainStreamFake is a StreamRunner WITHOUT the PatternStreamRunner capability.
+type plainStreamFake struct{}
+
+func (plainStreamFake) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) ([]byte, error) {
+	return nil, onStdout(strings.NewReader(""))
 }
 
 // TestExtractTreeScrubsEveryIncludePath extends the stderr privacy contract to

@@ -206,14 +206,18 @@ func invalidExtractRequest(field string) error {
 }
 
 // MaxDiffExtractIncludes / MaxDiffExtractIncludeBytes bound one request's
-// include list. Each include becomes a --include argv pair, and darwin's
-// ARG_MAX is 1 MiB including the environment, so the caps keep the assembled
-// argv comfortably inside the tightest supported platform. The TUI pre-checks
-// the same caps to surface a friendly "narrow the filter" hint before a
-// request is even built; PlanExtractPaths re-asserts them at the boundary.
+// include list. A multi-include restore delivers its patterns on an fd-4
+// pattern file (resticx), so ARG_MAX no longer binds; these are runaway
+// guards — restic matches every restored node against every pattern, so a
+// six-figure list degrades the restore itself, and a selection that large is
+// better served by a plain subtree extract. (Patterns a line-based file
+// cannot carry — $/newline-bearing names — spill to argv under resticx's own
+// separate byte budget.) The TUI pre-checks the same caps to surface a
+// friendly "narrow the filter" hint before a request is even built;
+// PlanExtractPaths re-asserts them at the boundary.
 const (
-	MaxDiffExtractIncludes     = 4096
-	MaxDiffExtractIncludeBytes = 512 << 10
+	MaxDiffExtractIncludes     = 50_000
+	MaxDiffExtractIncludeBytes = 8 << 20
 )
 
 // extractSnapshotShortRe is restic's short-ID shape: exactly 8 lowercase hex.

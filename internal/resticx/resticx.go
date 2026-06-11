@@ -58,6 +58,17 @@ type StreamRunner interface {
 	RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error)
 }
 
+// PatternStreamRunner is the optional streaming capability for invocations
+// that also deliver a pattern-file payload out-of-band on fd 4 (the argv
+// references it as /dev/fd/4) — the multi-include restore shape. The
+// production ExecRunner implements it; ExtractTree type-asserts for it only
+// when a run actually carries a pattern file, so fakes and runners for the
+// other streams can stay plain StreamRunners.
+type PatternStreamRunner interface {
+	StreamRunner
+	RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error)
+}
+
 // Client runs restic commands against a Runner.
 type Client struct {
 	Runner   Runner

@@ -28,9 +28,19 @@ import (
 // filename like a*.conf or backup[1].txt would over-match siblings or match the
 // wrong node. The IncludePaths field on ExtractTreeParams therefore carries
 // *literal* paths; literalIncludePattern backslash-escapes the metacharacter set
-// at argv build so restic matches exactly those paths. The raw paths are what
-// get validated and scrubbed from stderr; the escaped patterns are argv-only
-// values.
+// so restic matches exactly those paths. The raw paths are what get validated
+// and scrubbed from stderr; the escaped patterns never outlive the invocation.
+//
+// Delivery splits by shape. A single include (the canonical file / subtree
+// extract) keeps its historical argv form. A multi-include run (the diff
+// extract's changed-paths restore) delivers its patterns as a pattern file on
+// fd 4 (`--include-file /dev/fd/4`, restic >= 0.17), so the argv can never
+// outgrow ARG_MAX and the paths stay out of /proc/<pid>/cmdline — EXCEPT
+// paths a line-based pattern file cannot carry faithfully: restic
+// env-expands every line (verified live: a file named 'weird$NAME file' is
+// unmatchable through a pattern file) and treats newlines / surrounding
+// whitespace as structure, so those few stay on argv under a strict byte
+// budget (fileSafePattern is the split rule).
 //
 // This file is the ONLY place that knows restic's restore --json schema; if
 // restic 0.19 renames a field, only this file and its testdata fixtures change.
@@ -67,6 +77,22 @@ const extractPathMask = "[path]"
 // never reach restic, which would otherwise resolve it as an ambiguous prefix.
 const snapshotIDHexLen = 64
 
+// extractPatternFilePath is how the restore argv references the fd-4 pattern
+// payload the runner wires up. /dev/fd/4 resolves to the pipe on both linux
+// (procfs) and darwin (fd dup), and the number is fixed: runStreamFDs always
+// fills the fd-3 password slot first, even for an empty password, so the
+// reference can never shift.
+const extractPatternFilePath = "/dev/fd/4"
+
+// maxArgvIncludeBytes bounds the include patterns that end up on the command
+// line in the multi-include shape. Only paths a pattern file cannot carry
+// ($/newline/whitespace-edged names) land there, so hitting this means a
+// pathological tree where hundreds of thousands of bytes of such names
+// changed. Refusing up front beats execve's E2BIG after staging side effects;
+// 512 KiB stays well under the tightest supported ARG_MAX (darwin: 1 MiB
+// including the environment).
+const maxArgvIncludeBytes = 512 << 10
+
 // Extract path-validation sentinels. They are path-free by construction (they
 // never echo the rejected value) so a rejection can be logged safely.
 var (
@@ -85,6 +111,15 @@ var (
 	// "/" is both too broad and contradicts the changed-paths-only invariant the
 	// include filter exists to enforce.
 	ErrExtractInvalidInclude = errors.New("resticx: extract include path is not a cleaned non-root absolute path")
+	// ErrExtractArgvIncludeOverflow rejects a multi-include run whose
+	// argv-routed patterns (the few a pattern file cannot carry) exceed
+	// maxArgvIncludeBytes. Path-free like every validation sentinel.
+	ErrExtractArgvIncludeOverflow = errors.New("resticx: too many include paths require command-line delivery; the argv would exceed the platform limit")
+	// ErrExtractPatternsUnsupported is returned when a run carries an fd-4
+	// pattern file but the wired stream runner is not a PatternStreamRunner.
+	// Production wiring (ExecRunner) always supports it; this guards a test or
+	// future wiring that forgot the capability.
+	ErrExtractPatternsUnsupported = errors.New("resticx: stream runner cannot deliver the fd-4 include pattern file")
 )
 
 // ExtractTreeParams are the inputs to a single restic restore invocation. The
@@ -211,20 +246,21 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 }
 
 // ExtractTree streams `restic restore <snap>[:<source>] --target <dir>
-// --overwrite never --json [--include <pattern> ...]` and hands each parsed
-// progress message to onEvent. With params.IncludePaths set, restic restores
-// only the matching nodes (and their reconstructed parent dirs)
-// metadata-faithfully — the single-file path and the diff extract's
-// changed-paths-only restore. onEvent returning a non-nil error cancels the run
-// via the child context and that error is surfaced verbatim (mirrors
-// StreamSnapshotTree / StreamDiff).
+// --overwrite never --json` plus the include selection (a single argv
+// `--include`, or for the multi-include diff shape an fd-4 pattern file with
+// argv spillover — see buildExtractTreeArgs) and hands each parsed progress
+// message to onEvent. With params.IncludePaths set, restic restores only the
+// matching nodes (and their reconstructed parent dirs) metadata-faithfully —
+// the single-file path and the diff extract's changed-paths-only restore.
+// onEvent returning a non-nil error cancels the run via the child context and
+// that error is surfaced verbatim (mirrors StreamSnapshotTree / StreamDiff).
 //
 // This layer does NOT impose a timeout: a real extract can run far longer than
 // resticx's 2-minute default, so the deadline is the caller's responsibility
 // (app.Extract bounds ctx with the configured extract_timeout). The child
 // context here exists only so an onEvent error can stop restic.
 func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params ExtractTreeParams, onEvent func(ExtractTreeEvent) error) error {
-	args, err := buildExtractTreeArgs(params)
+	args, patterns, err := buildExtractTreeArgs(params)
 	if err != nil {
 		return err // path-free validation sentinel; no argv was produced
 	}
@@ -236,7 +272,20 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 
 	env := c.buildEnv(t, creds)
 	st := &extractTreeStream{onEvent: onEvent, cancel: cancel}
-	stderr, runErr := c.streamRunner().RunStream(runCtx, env, creds.ResticPassword, st.consume, full...)
+	runner := c.streamRunner()
+	var stderr []byte
+	var runErr error
+	if len(patterns) > 0 {
+		// The multi-include shape: the pattern payload rides fd 4, referenced in
+		// the argv as /dev/fd/4.
+		pat, ok := runner.(PatternStreamRunner)
+		if !ok {
+			return ErrExtractPatternsUnsupported
+		}
+		stderr, runErr = pat.RunStreamPatterns(runCtx, env, creds.ResticPassword, patterns, st.consume, full...)
+	} else {
+		stderr, runErr = runner.RunStream(runCtx, env, creds.ResticPassword, st.consume, full...)
+	}
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -272,29 +321,35 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 // surface for the safety invariants (00-framework.md §5). It emits, in order:
 // --no-lock (a lock would be a write), --no-cache when NoCache is set, restore,
 // the bare snapshot or <snap>:<source>, --target <abs>, --overwrite never
-// (never clobber existing files), --json, and one optional --include <pattern>
-// per IncludePaths entry, in caller order. It never emits --path, --delete, or
-// "latest". Each include value is the RAW path run through
-// literalIncludePattern so restic matches it as a literal, not a glob — the raw
-// paths are what get validated. The bucket-lookup -o option is prepended by
-// ExtractTree, not here, so these argv tests stay free of S3 noise.
-func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
+// (never clobber existing files), --json, and the include selection. It never
+// emits --path, --delete, or "latest". Each include value is the RAW path run
+// through literalIncludePattern so restic matches it as a literal, not a glob —
+// the raw paths are what get validated.
+//
+// Include delivery: a single include keeps the historical `--include <pattern>`
+// argv form. A multi-include run splits per fileSafePattern — file-safe
+// patterns become the returned newline-joined pattern payload (delivered on
+// fd 4; the argv carries `--include-file /dev/fd/4`), the rest stay as argv
+// `--include` flags in caller order under the maxArgvIncludeBytes budget. The
+// bucket-lookup -o option is prepended by ExtractTree, not here, so these argv
+// tests stay free of S3 noise.
+func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, err error) {
 	if err := assertCleanSnapshotID(p.SnapshotID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := assertCleanSource(p.Source); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, inc := range p.IncludePaths {
 		if inc == "" { // a present entry must be a real path; "" is only valid as "no list"
-			return nil, ErrExtractInvalidInclude
+			return nil, nil, ErrExtractInvalidInclude
 		}
 		if err := assertCleanIncludePath(inc); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if p.Target == "" || !filepath.IsAbs(p.Target) {
-		return nil, ErrExtractInvalidTarget
+		return nil, nil, ErrExtractInvalidTarget
 	}
 
 	snapArg := p.SnapshotID
@@ -304,7 +359,7 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		snapArg = p.SnapshotID + ":" + p.Source
 	}
 
-	args := []string{"--no-lock"}
+	args = []string{"--no-lock"}
 	if p.NoCache {
 		args = append(args, "--no-cache")
 	}
@@ -315,12 +370,43 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		"--overwrite", "never",
 		"--json",
 	)
-	for _, inc := range p.IncludePaths {
-		// Escape each raw literal path into a filepath.Match literal so restic
-		// restores exactly those nodes, not a glob expansion of them.
-		args = append(args, "--include", literalIncludePattern(inc))
+	if len(p.IncludePaths) == 1 {
+		// The canonical single-node extract: one literal-escaped argv include.
+		return append(args, "--include", literalIncludePattern(p.IncludePaths[0])), nil, nil
 	}
-	return args, nil
+	var file strings.Builder
+	argvBytes := 0
+	for _, inc := range p.IncludePaths {
+		pat := literalIncludePattern(inc)
+		if fileSafePattern(inc) {
+			file.WriteString(pat)
+			file.WriteByte('\n')
+			continue
+		}
+		argvBytes += len(pat)
+		if argvBytes > maxArgvIncludeBytes {
+			return nil, nil, ErrExtractArgvIncludeOverflow
+		}
+		args = append(args, "--include", pat)
+	}
+	if file.Len() > 0 {
+		args = append(args, "--include-file", extractPatternFilePath)
+		patterns = []byte(file.String())
+	}
+	return args, patterns, nil
+}
+
+// fileSafePattern reports whether a raw literal include path can ride the fd-4
+// pattern file. restic parses pattern files line-by-line, skips blank and
+// #-comment lines, trims surrounding whitespace, and expands environment
+// variables in every line (same rules as backup exclude files) — so
+// structure-bearing bytes must stay on argv, where the pattern is one exact
+// element: '$' (env-expanded; verified live — a file named 'weird$NAME file'
+// is unmatchable through a pattern file), newline / CR (line structure), and
+// leading/trailing whitespace (trimmed away). A leading '#' cannot occur:
+// validated include paths are rooted at '/'.
+func fileSafePattern(p string) bool {
+	return !strings.ContainsAny(p, "$\n\r") && p == strings.TrimSpace(p)
 }
 
 // literalIncludePattern backslash-escapes restic's filepath.Match metacharacter
