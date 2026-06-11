@@ -93,6 +93,23 @@ type extractModel struct {
 	// file and directory sources. TargetRoot is updated by the filepicker overlay.
 	req app.ExtractRequest
 
+	// queue holds the not-yet-run sides of a multi-request (diff) extract, in
+	// run order. applyRunDone advances through it: each clean completion either
+	// starts the next side or lands on success once the queue drains. Empty for
+	// a plain extract.
+	queue []app.ExtractRequest
+
+	// published accumulates the cleanly published sides of a diff extract: the
+	// done screen reports each side, and the terminal screens note what already
+	// landed before a failure or cancel. Always empty for a plain extract,
+	// which reads m.result directly.
+	published []extractSideResult
+
+	// diff carries the diff-extract flavor: the directional pair, per-side
+	// change counts, and the container display path. nil for a plain extract.
+	// Held only for the modal's lifetime like every other path-bearing field.
+	diff *extractDiffMeta
+
 	// srcSize is the source node's size from the originating BrowseEntry (a
 	// directory's recursive subtree size, a file's byte length). Display-only:
 	// shown on the review "Type" line; dropped with the rest of the sub-model on
@@ -219,6 +236,74 @@ func newExtractModel(a *app.App, parentCtx context.Context, req app.ExtractReque
 	}, nil
 }
 
+// extractDiffMeta is the diff-extract flavor of the modal. firstShort /
+// secondShort are the pair in display order (left / right of the diff view's
+// arrow); firstCount / secondCount are the post-filter changed-path counts per
+// side (0 marks a side with nothing to extract, which is skipped — no request
+// is queued for it); containerDir is the published pair container the review /
+// done screens show and shell-here lands in.
+type extractDiffMeta struct {
+	firstShort, secondShort string
+	filters                 model.ModifierKind
+	sourceIsDir             bool
+	firstCount, secondCount int
+	containerDir            string
+}
+
+// extractSideResult pairs one published side's result with its snapshot short
+// id for the per-side lines on the done / terminal screens.
+type extractSideResult struct {
+	short  string
+	result app.ExtractResult
+}
+
+// newExtractDiffModel constructs the sub-model for a diff extract: one request
+// per side with content (in display order), sharing one pair container. Every
+// side is planned up front so an invalid request refuses the open instead of
+// surfacing mid-run, and the review preflights both sides' targets — the busy
+// note shows when either side's staging or final is occupied.
+func newExtractDiffModel(a *app.App, parentCtx context.Context, reqs []app.ExtractRequest, meta extractDiffMeta) (extractModel, error) {
+	if len(reqs) == 0 {
+		return extractModel{}, errors.New("nothing to extract")
+	}
+	var staging0, final0 string
+	busy := false
+	for i, r := range reqs {
+		staging, final, err := app.PlanExtractPaths(a.Cfg.Extract, r)
+		if err != nil {
+			return extractModel{}, err
+		}
+		if i == 0 {
+			staging0, final0 = staging, final
+		}
+		if isExtractRefusal(app.FreshTargetCheck(staging, final)) {
+			busy = true
+		}
+	}
+	containerDir, err := app.ExtractDiffTargetDir(a.Cfg.Extract, reqs[0])
+	if err != nil {
+		return extractModel{}, err
+	}
+	meta.containerDir = containerDir
+	// Both sides publish under one container, so the first side's staging
+	// answers for the shared filesystem (same root as a plain extract's probe).
+	free, freeKnown := app.ExtractFreeSpace(staging0)
+	return extractModel{
+		drv:             a,
+		cfg:             a.Cfg.Extract,
+		parentCtx:       parentCtx,
+		state:           extractStateReview,
+		req:             reqs[0],
+		queue:           reqs[1:],
+		diff:            &meta,
+		staging:         staging0,
+		final:           final0,
+		targetBusy:      busy,
+		targetFree:      free,
+		targetFreeKnown: freeKnown,
+	}, nil
+}
+
 // supersede bumps gen and cancels any in-flight per-op context. Called from
 // every transition that starts a new restic call and from the back-to-browse
 // path so a late message from the canceled run is dropped by gen check.
@@ -240,10 +325,12 @@ type extractCountsMsg struct {
 }
 
 // countsCmd queries the browse index for a directory source's contained
-// file/dir counts. nil for file sources (the count is trivially one) and for a
-// zero sub-model (a failed open leaves m.extract empty, with a nil drv).
+// file/dir counts. nil for file sources (the count is trivially one), for a
+// zero sub-model (a failed open leaves m.extract empty, with a nil drv), and
+// for a diff extract (its review reports per-side changed-path counts from the
+// diff data instead — the index's whole-subtree counts would be wrong there).
 func (m *extractModel) countsCmd() tea.Cmd {
-	if m.drv == nil || m.req.Mode != app.ExtractDirectoryTree {
+	if m.drv == nil || m.diff != nil || m.req.Mode != app.ExtractDirectoryTree {
 		return nil
 	}
 	gen, drv, ctx := m.gen, m.drv, m.parentCtx
@@ -418,10 +505,12 @@ func (m extractModel) updateFilePicker(msg tea.Msg) (extractModel, tea.Cmd) {
 	return m, cmd
 }
 
-// applyRunDone installs the result of a live run.
-func (m *extractModel) applyRunDone(msg extractRunDoneMsg) {
+// applyRunDone installs the result of a live run. On a clean completion with
+// queued sides remaining (a diff extract), the returned Cmd starts the next
+// side instead of landing on success.
+func (m *extractModel) applyRunDone(msg extractRunDoneMsg) tea.Cmd {
 	if msg.gen != m.gen {
-		return
+		return nil
 	}
 	m.result = msg.result
 	if msg.err != nil {
@@ -434,10 +523,42 @@ func (m *extractModel) applyRunDone(msg extractRunDoneMsg) {
 		// Probe staging fate once at the transition so the terminal renders read
 		// the cached value; handleTerminalKey re-probes per keypress.
 		m.stagingExists = m.stagingPending()
-		return
+		return nil
 	}
 	m.err = nil
+	if m.diff != nil {
+		m.published = append(m.published, extractSideResult{short: m.req.SnapshotShort, result: msg.result})
+		if len(m.queue) > 0 {
+			return m.advanceQueue()
+		}
+	}
 	m.state = extractStateSuccess
+	return nil
+}
+
+// advanceQueue starts the next queued side of a diff extract. The side's
+// request inherits the review-time toggles from the side that just ran (the
+// privileged flag and any filepicker retarget apply to the operation as a
+// whole), and its staging / final re-derive from the inherited root. A plan
+// failure here is unreachable after the constructor planned every side, but
+// degrades to the normal error screen rather than a panic.
+func (m *extractModel) advanceQueue() tea.Cmd {
+	next := m.queue[0]
+	m.queue = m.queue[1:]
+	next.Privileged = m.req.Privileged
+	next.TargetRoot = m.req.TargetRoot
+	staging, final, err := app.PlanExtractPaths(m.cfg, next)
+	if err != nil {
+		m.err = err
+		m.state = extractStateError
+		m.stagingExists = false
+		return nil
+	}
+	m.req = next
+	m.staging, m.final = staging, final
+	cmd := m.startRun()
+	m.state = extractStateRunning
+	return cmd
 }
 
 // applyProgress records a progress sample and re-arms the wait pump. Each field
@@ -648,10 +769,16 @@ func (m extractModel) handleSuccessKey(keys keyMap, msg tea.KeyPressMsg) (extrac
 		return m.back()
 	case key.Matches(msg, keys.Shell):
 		// Drop the user into a credential-free shell rooted at the extracted
-		// directory. The session-prep error path mirrors openShellCmd: surface it
-		// via shellExitedMsg (path-free by construction) rather than swallowing it.
-		// The success screen stays up; tea.ExecProcess returns to it on shell exit.
-		sess, err := m.drv.LocalShellSession(m.result.FinalDir)
+		// directory — for a diff extract that is the pair container, where both
+		// snapshot roots are visible (and diff -r away). The session-prep error
+		// path mirrors openShellCmd: surface it via shellExitedMsg (path-free by
+		// construction) rather than swallowing it. The success screen stays up;
+		// tea.ExecProcess returns to it on shell exit.
+		dir := m.result.FinalDir
+		if m.diff != nil {
+			dir = m.diff.containerDir
+		}
+		sess, err := m.drv.LocalShellSession(dir)
 		if err != nil {
 			return m, func() tea.Msg { return shellExitedMsg{err: err} }, false
 		}
@@ -686,12 +813,14 @@ func (m extractModel) handleTerminalKey(keys keyMap, msg tea.KeyPressMsg) (extra
 		return m, nil, false
 	}
 	switch {
-	case isExtractRefusal(m.err) && key.Matches(msg, keys.Target):
+	case isExtractRefusal(m.err) && key.Matches(msg, keys.Target) && len(m.published) == 0:
 		// The refusal hint tells the user to press t to choose another target; honor
 		// it here so the key is not a no-op. There is no staging to orphan in this
 		// branch (the staging-exists case is handled above with keep/delete), so the
 		// failed run's transient outcome is cleared and we reopen the picker — a
-		// selection re-plans and lands back on review, ready to retry.
+		// selection re-plans and lands back on review, ready to retry. Once a diff
+		// side has published, retargeting is off the table: the remaining side would
+		// land in a second half-container under a different root.
 		m.err = nil
 		m.result = app.ExtractResult{}
 		m.state = extractStateFilePicker
@@ -731,7 +860,7 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 	var cmd tea.Cmd
 	m.filepicker, cmd = m.filepicker.Update(msg)
 	if didSelect, fppath := m.filepicker.DidSelectFile(msg); didSelect {
-		if newReq, staging, final, perr := planExtractOverride(m.cfg, m.req, fppath); perr == nil {
+		if newReq, staging, final, perr := m.planOverrideAllSides(fppath); perr == nil {
 			m.req = newReq
 			m.staging = staging
 			m.final = final
@@ -749,6 +878,36 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 		m.filepickerErr = "select a directory"
 	}
 	return m, cmd, false
+}
+
+// planOverrideAllSides retargets the whole operation to root: the active
+// request plus every queued diff side, refusing if ANY side's staging or final
+// under the new root is occupied — a partially-retargetable pair would
+// otherwise surface as a mid-run refusal after the first side published. On
+// success the queued requests carry the new root and the diff meta's container
+// display path tracks it.
+func (m *extractModel) planOverrideAllSides(root string) (app.ExtractRequest, string, string, error) {
+	newReq, staging, final, err := planExtractOverride(m.cfg, m.req, root)
+	if err != nil {
+		return app.ExtractRequest{}, "", "", err
+	}
+	newQueue := make([]app.ExtractRequest, len(m.queue))
+	for i, q := range m.queue {
+		nq, _, _, qerr := planExtractOverride(m.cfg, q, root)
+		if qerr != nil {
+			return app.ExtractRequest{}, "", "", qerr
+		}
+		newQueue[i] = nq
+	}
+	if m.diff != nil {
+		dir, derr := app.ExtractDiffTargetDir(m.cfg, newReq)
+		if derr != nil {
+			return app.ExtractRequest{}, "", "", derr
+		}
+		m.diff.containerDir = dir
+	}
+	m.queue = newQueue
+	return newReq, staging, final, nil
 }
 
 // planExtractOverride re-plans staging / final under a chosen target root and
@@ -920,9 +1079,10 @@ func (m extractModel) shortHelp(keys keyMap) []key.Binding {
 		if m.stagingExists {
 			return []key.Binding{keys.Keep, keys.Delete}
 		}
-		if isExtractRefusal(m.err) {
+		if isExtractRefusal(m.err) && len(m.published) == 0 {
 			// Advertise the retarget affordance the hint points to (handleTerminalKey
-			// honors t in this branch).
+			// honors t in this branch and, like here, withholds it once a diff side
+			// has already published).
 			return []key.Binding{keys.Target, keys.Back}
 		}
 		return []key.Binding{keys.Back}

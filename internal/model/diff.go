@@ -474,6 +474,117 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 	return out
 }
 
+// DiffExtractSet is the outcome of selecting a diff subtree for extraction:
+// the per-side restic include lists plus the per-side selected-path counts the
+// extract review screen reports. First is the snapshot left of the directional
+// arrow (where `-` content lives), Second the right (where `+` content lives);
+// the both-sides kinds (M, U, T, ?) put a path on both. A side with no content
+// under the filter has a nil list and a zero count — the caller skips it.
+type DiffExtractSet struct {
+	First, Second           []string
+	FirstCount, SecondCount int
+}
+
+// diffFirstSideKinds / diffSecondSideKinds map modifier bits to the snapshot
+// side(s) holding the content: a removed path exists only in the first
+// snapshot, an added one only in the second, and every other kind describes a
+// path present (in some form) on both sides.
+const (
+	diffFirstSideKinds  = KindRemoved | KindModified | KindMetadata | KindTypeChanged | KindBitrot
+	diffSecondSideKinds = KindAdded | KindModified | KindMetadata | KindTypeChanged | KindBitrot
+)
+
+// DiffExtractIncludes selects the changed paths at or under root that pass the
+// filter mask — the same any-enabled-bit predicate the diff view's row
+// visibility uses, so what extracts is exactly what the user sees — and splits
+// them onto the snapshot sides that hold their content. Counts are the raw
+// per-side selections; the include lists are then collapsed: a path under a
+// selected pure-added (resp. pure-removed) directory is dropped on that side,
+// because restic restores an included directory recursively and everything
+// under a pure-added dir is itself added, so the ancestor include covers the
+// whole subtree without ever pulling an unchanged sibling. Directory entries
+// carrying any other kind are never included themselves — a recursive include
+// would drag their unchanged contents along — so only their changed children
+// (which carry their own entries) extract; the dir node still materializes on
+// each side as the children's restored ancestor. Duplicate-path records are
+// OR-merged first, mirroring BuildDiffTree, so an `M`+`U` pair selects once.
+func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) DiffExtractSet {
+	if root == "" {
+		root = DiffRoot
+	}
+	prefix := root
+	if prefix != DiffRoot {
+		prefix += "/"
+	}
+	under := func(p string) bool { return p == root || strings.HasPrefix(p, prefix) }
+
+	merged := make(map[string]ModifierKind)
+	isDir := make(map[string]bool)
+	order := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !under(e.Path) {
+			continue
+		}
+		if _, seen := merged[e.Path]; !seen {
+			order = append(order, e.Path)
+		}
+		merged[e.Path] |= e.Kinds
+		if e.IsDir {
+			isDir[e.Path] = true
+		}
+	}
+
+	// Only a filter-passing pure dir collapses its descendants: a filtered-out
+	// dir is not in the include list, so it covers nothing.
+	pureFirst := make(map[string]bool)
+	pureSecond := make(map[string]bool)
+	for p, k := range merged {
+		if !isDir[p] || k&filter == 0 {
+			continue
+		}
+		if k == KindRemoved {
+			pureFirst[p] = true
+		}
+		if k == KindAdded {
+			pureSecond[p] = true
+		}
+	}
+	covered := func(p string, pure map[string]bool) bool {
+		for anc := DiffParentOf(p); anc != "" && under(anc); anc = DiffParentOf(anc) {
+			if pure[anc] {
+				return true
+			}
+		}
+		return false
+	}
+
+	var out DiffExtractSet
+	for _, p := range order {
+		eff := merged[p] & filter
+		if eff == 0 {
+			continue
+		}
+		// A directory that is not purely one-sided never becomes an include
+		// itself; see the doc comment.
+		dirNonPure := isDir[p] && merged[p] != KindAdded && merged[p] != KindRemoved
+		if eff&diffFirstSideKinds != 0 {
+			out.FirstCount++
+			if !dirNonPure && !covered(p, pureFirst) {
+				out.First = append(out.First, p)
+			}
+		}
+		if eff&diffSecondSideKinds != 0 {
+			out.SecondCount++
+			if !dirNonPure && !covered(p, pureSecond) {
+				out.Second = append(out.Second, p)
+			}
+		}
+	}
+	sort.Strings(out.First)
+	sort.Strings(out.Second)
+	return out
+}
+
 // DiffParentOf returns the parent directory path of p. It returns "" when p is
 // already the diff root, signaling "stop walking ancestors". An invalid path
 // (empty, no leading slash) also returns "" so a bad entry can't loop. Exported

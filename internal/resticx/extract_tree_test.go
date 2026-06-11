@@ -70,14 +70,14 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			// Nested single-file extract: no source rebase, the full path is the
 			// include. --include is appended after --json.
 			name: "nested file include (no source rebase)",
-			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "", IncludePath: "/etc/vzdump.conf", Target: "/abs/staging"},
+			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "", IncludePaths: []string{"/etc/vzdump.conf"}, Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/etc/vzdump.conf"},
 		},
 		{
 			// Flattened single-file extract: <snap>:<parent> rebase plus a
 			// rebase-relative include, so the file lands directly under --target.
 			name: "flattened file include (source rebase)",
-			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", IncludePath: "/vzdump.conf", Target: "/abs/staging"},
+			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", IncludePaths: []string{"/vzdump.conf"}, Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID + ":/etc", "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/vzdump.conf"},
 		},
 		{
@@ -133,12 +133,12 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 		{"over-length hex ID", ExtractTreeParams{SnapshotID: testSnapID + "ab", Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
 		{"empty target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: ""}, ErrExtractInvalidTarget},
 		{"relative target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "relative/dir"}, ErrExtractInvalidTarget},
-		// IncludePath is validated by the same argv builder; "/" and an unclean
+		// Include paths are validated by the same argv builder; "/" and an unclean
 		// path are rejected before any argv is produced.
-		{"root include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/", Target: "/abs"}, ErrExtractInvalidInclude},
-		{"unclean include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/etc/../secret", Target: "/abs"}, ErrExtractInvalidInclude},
-		{"non-rooted include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "etc/x", Target: "/abs"}, ErrExtractInvalidInclude},
-		{"NUL in include", ExtractTreeParams{SnapshotID: testSnapID, IncludePath: "/etc/\x00x", Target: "/abs"}, ErrExtractInvalidInclude},
+		{"root include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"/"}, Target: "/abs"}, ErrExtractInvalidInclude},
+		{"unclean include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"/etc/../secret"}, Target: "/abs"}, ErrExtractInvalidInclude},
+		{"non-rooted include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"etc/x"}, Target: "/abs"}, ErrExtractInvalidInclude},
+		{"NUL in include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"/etc/\x00x"}, Target: "/abs"}, ErrExtractInvalidInclude},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,7 +210,7 @@ func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.include, func(t *testing.T) {
-			got, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, IncludePath: c.include, Target: "/abs"})
+			got, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{c.include}, Target: "/abs"})
 			if err != nil {
 				t.Fatalf("buildExtractTreeArgs: %v", err)
 			}
@@ -225,7 +225,7 @@ func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 	}
 }
 
-// TestAssertCleanIncludePath pins the IncludePath contract: "" is allowed (no
+// TestAssertCleanIncludePath pins the include-path contract: "" is allowed (no
 // filter), "/" is rejected (too broad, contradicts the one-file invariant), and
 // only a cleaned rooted non-root path is accepted.
 func TestAssertCleanIncludePath(t *testing.T) {
@@ -478,7 +478,7 @@ func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 // TestExtractTreeScrubsFilePathAndBasename covers the single-file mapping's
 // privacy contract: restic echoes the real selected path AND its bare basename
 // (never the escaped pattern), and under nested mode the file's name lives only
-// in IncludePath (Source is empty). Both the full include path and the bare
+// in the include (Source is empty). Both the full include path and the bare
 // basename must be masked so the residual-'/' guard can't be defeated by a
 // bare-basename mention.
 func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
@@ -501,7 +501,7 @@ func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 				Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAK-123", "[REDACTED]") },
 			}
 			err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
-				ExtractTreeParams{SnapshotID: testSnapID, Source: c.source, IncludePath: c.includePath, Target: target}, nil)
+				ExtractTreeParams{SnapshotID: testSnapID, Source: c.source, IncludePaths: []string{c.includePath}, Target: target}, nil)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -573,4 +573,64 @@ func TestExtractTreePasswordOutOfBandAndBucketLookup(t *testing.T) {
 		t.Errorf("argv must prepend the bucket-lookup option, got %q", fs.gotArgs)
 	}
 	assertNoForbiddenArgs(t, fs.gotArgs)
+}
+
+// TestBuildExtractTreeArgsMultipleIncludes covers the diff-extract shape: one
+// --include per path, in caller order, each literal-escaped independently, and
+// per-path validation (one bad entry rejects the whole argv).
+func TestBuildExtractTreeArgsMultipleIncludes(t *testing.T) {
+	got, err := buildExtractTreeArgs(ExtractTreeParams{
+		SnapshotID:   testSnapID,
+		Source:       "/home/alex",
+		Target:       "/abs/staging",
+		IncludePaths: []string{"/.config/a.txt", "/.config/glob*name", "/.local/x"},
+	})
+	if err != nil {
+		t.Fatalf("buildExtractTreeArgs: %v", err)
+	}
+	want := []string{
+		"--no-lock", "restore", testSnapID + ":/home/alex",
+		"--target", "/abs/staging", "--overwrite", "never", "--json",
+		"--include", "/.config/a.txt",
+		"--include", `/.config/glob\*name`,
+		"--include", "/.local/x",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("args =\n  %q\nwant\n  %q", got, want)
+	}
+	assertNoForbiddenArgs(t, got)
+
+	// One invalid entry anywhere in the list rejects the whole argv.
+	for _, bad := range []string{"", "/", "rel/x", "/a/../b"} {
+		_, err := buildExtractTreeArgs(ExtractTreeParams{
+			SnapshotID:   testSnapID,
+			Target:       "/abs/staging",
+			IncludePaths: []string{"/fine", bad},
+		})
+		if !errors.Is(err, ErrExtractInvalidInclude) {
+			t.Errorf("include %q: err = %v, want ErrExtractInvalidInclude", bad, err)
+		}
+	}
+}
+
+// TestExtractTreeScrubsEveryIncludePath extends the stderr privacy contract to
+// the multi-include shape: every include path and basename is masked, not just
+// the first.
+func TestExtractTreeScrubsEveryIncludePath(t *testing.T) {
+	const target = "/abs/staging/extract-7f3a"
+	incs := []string{"/.config/secret-one.txt", "/.local/secret-two.dat"}
+	stderr := "Fatal: restoring " + incs[0] + " and " + incs[1] + " (item secret-two.dat) failed"
+	fs := &extractTreeStreamFake{err: fakeExit(1), stderr: []byte(stderr)}
+	cl := &Client{Stream: fs}
+	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+		ExtractTreeParams{SnapshotID: testSnapID, Source: "/home/alex", IncludePaths: incs, Target: target}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, leak := range []string{incs[0], incs[1], "secret-one.txt", "secret-two.dat", target} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("error leaked %q: %q", leak, msg)
+		}
+	}
 }

@@ -316,9 +316,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// must not be applied (or worse, switch the view) once the user has left.
 		// "Active" includes the help overlay opened over extract — otherwise a
 		// completion that lands while help is open would be dropped and strand the
-		// modal (it returns to extract via prevView, not a real exit).
+		// modal (it returns to extract via prevView, not a real exit). The returned
+		// Cmd starts the next side of a multi-side (diff) extract, if one is queued.
 		if m.extractActive() {
-			m.extract.applyRunDone(msg)
+			return m, m.extract.applyRunDone(msg)
 		}
 		return m, nil
 	case extractCountsMsg:
@@ -364,7 +365,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Land on the originating view; anything unset or stale falls back to
 		// browse, the historical default.
 		switch m.extractReturn {
-		case detailView, findVersionsView:
+		case detailView, findVersionsView, snapshotDiffView:
 			m.view = m.extractReturn
 		default:
 			m.view = browseView

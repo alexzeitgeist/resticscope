@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -444,8 +445,8 @@ func TestExtractFileFlattened(t *testing.T) {
 			if tp.Source != path.Dir(tc.source) {
 				t.Errorf("treeParams.Source = %q, want %q (parent rebase)", tp.Source, path.Dir(tc.source))
 			}
-			if want := "/" + leaf; tp.IncludePath != want {
-				t.Errorf("treeParams.IncludePath = %q, want %q", tp.IncludePath, want)
+			if want := []string{"/" + leaf}; !slices.Equal(tp.IncludePaths, want) {
+				t.Errorf("treeParams.IncludePaths = %q, want %q", tp.IncludePaths, want)
 			}
 			if tp.Target != staging {
 				t.Errorf("treeParams.Target = %q, want %q", tp.Target, staging)
@@ -944,5 +945,257 @@ func TestExtractFreeSpaceWalksUp(t *testing.T) {
 	}
 	if free <= 0 {
 		t.Errorf("free = %d, want > 0 for a writable temp dir", free)
+	}
+}
+
+// --- diff extract: container layout, include validation, params, publish ----
+
+// diffTreeReq is treeReq as one side of a diff pair, with a changed-paths list.
+func diffTreeReq() ExtractRequest {
+	r := treeReq()
+	r.DiffContainer = "diff-abcd1234-00112233"
+	r.IncludePaths = []string{"/etc/nginx/conf.d/a.conf", "/etc/nginx/nginx.conf"}
+	return r
+}
+
+func TestPlanExtractPathsDiffContainer(t *testing.T) {
+	cfg := config.Extract{TargetRoot: "/srv/restore"}
+	staging, final, err := PlanExtractPaths(cfg, diffTreeReq())
+	if err != nil {
+		t.Fatalf("PlanExtractPaths: %v", err)
+	}
+	// The pair container sits between the repo dir and the per-snapshot root, so
+	// the two sides publish as sibling snapshot-id roots inside it.
+	if want := "/srv/restore/repo-a/diff-abcd1234-00112233/abcd1234/etc/nginx"; final != want {
+		t.Errorf("final = %q, want %q", final, want)
+	}
+	// Staging stays repo-level, and its hash input folds the container in so a
+	// kept staging from a plain extract of the same (snapshot, source) never
+	// collides with the diff twin.
+	if dir := filepath.Dir(staging); dir != "/srv/restore/repo-a" {
+		t.Errorf("filepath.Dir(staging) = %q, want the repo dir", dir)
+	}
+	plainStaging, _, err := PlanExtractPaths(cfg, treeReq())
+	if err != nil {
+		t.Fatalf("PlanExtractPaths(plain): %v", err)
+	}
+	if staging == plainStaging {
+		t.Errorf("diff staging %q must differ from the plain extract's %q", staging, plainStaging)
+	}
+}
+
+func TestPlanExtractPathsDiffContainerInvalid(t *testing.T) {
+	cfg := config.Extract{TargetRoot: "/srv/restore"}
+	cases := map[string]string{
+		"wrong prefix":           "pair-abcd1234-00112233",
+		"equal shorts":           "diff-abcd1234-abcd1234",
+		"snapshot not in pair":   "diff-00112233-44556677",
+		"uppercase hex":          "diff-ABCD1234-00112233",
+		"short component":        "diff-abcd123-00112233",
+		"trailing garbage":       "diff-abcd1234-00112233-x",
+		"path separator smuggle": "diff-abcd1234-00112233/up",
+	}
+	for name, container := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := treeReq()
+			req.DiffContainer = container
+			if _, _, err := PlanExtractPaths(cfg, req); !errors.Is(err, ErrExtractInvalidRequest) {
+				t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
+			}
+		})
+	}
+}
+
+func TestPlanExtractPathsIncludeValidation(t *testing.T) {
+	cfg := config.Extract{TargetRoot: "/srv/restore"}
+
+	// A list inside Source — including Source itself — is accepted.
+	ok := diffTreeReq()
+	ok.IncludePaths = append(ok.IncludePaths, "/etc/nginx")
+	if _, _, err := PlanExtractPaths(cfg, ok); err != nil {
+		t.Fatalf("valid include list rejected: %v", err)
+	}
+
+	cases := map[string][]string{
+		"outside source":      {"/etc/passwd"},
+		"sibling name-prefix": {"/etc/nginx2/x"},
+		"unclean":             {"/etc/nginx/../nginx/x"},
+		"empty entry":         {""},
+		"bare root":           {"/"},
+		"nul":                 {"/etc/nginx/\x00x"},
+	}
+	for name, incs := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := diffTreeReq()
+			req.IncludePaths = incs
+			if _, _, err := PlanExtractPaths(cfg, req); !errors.Is(err, ErrExtractInvalidRequest) {
+				t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
+			}
+		})
+	}
+
+	t.Run("count cap", func(t *testing.T) {
+		req := diffTreeReq()
+		req.IncludePaths = make([]string, MaxDiffExtractIncludes+1)
+		for i := range req.IncludePaths {
+			req.IncludePaths[i] = "/etc/nginx/f"
+		}
+		if _, _, err := PlanExtractPaths(cfg, req); !errors.Is(err, ErrExtractInvalidRequest) {
+			t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
+		}
+	})
+	t.Run("byte cap", func(t *testing.T) {
+		req := diffTreeReq()
+		long := "/etc/nginx/" + strings.Repeat("n", 1024)
+		req.IncludePaths = make([]string, (MaxDiffExtractIncludeBytes/len(long))+1)
+		for i := range req.IncludePaths {
+			req.IncludePaths[i] = long
+		}
+		if _, _, err := PlanExtractPaths(cfg, req); !errors.Is(err, ErrExtractInvalidRequest) {
+			t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
+		}
+	})
+}
+
+// The file mode's contract is one regular file; a changed-paths list is the
+// directory-tree shape and must be refused at the gate.
+func TestExtractFileModeRejectsIncludePaths(t *testing.T) {
+	req := fileReq()
+	req.IncludePaths = []string{"/etc/hosts"}
+	if err := checkExtractModeGate(req); !errors.Is(err, ErrExtractInvalidRequest) {
+		t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
+	}
+}
+
+// TestExtractTreeParamsDiffIncludes pins the rebase: Source becomes the
+// parent, and each include re-roots from req.Source onto "/"+base — req.Source
+// itself maps to exactly "/"+base (the whole-leaf include).
+func TestExtractTreeParamsDiffIncludes(t *testing.T) {
+	req := diffTreeReq()
+	req.IncludePaths = []string{"/etc/nginx", "/etc/nginx/conf.d/a.conf"}
+	p := extractTreeParams(req, "/abs/staging")
+	if p.Source != "/etc" {
+		t.Errorf("Source = %q, want %q", p.Source, "/etc")
+	}
+	want := []string{"/nginx", "/nginx/conf.d/a.conf"}
+	if !slices.Equal(p.IncludePaths, want) {
+		t.Errorf("IncludePaths = %q, want %q", p.IncludePaths, want)
+	}
+
+	// Root source: bare restore, includes pass through verbatim.
+	rootReq := treeReq()
+	rootReq.Source = "/"
+	rootReq.SourceName = "abcd1234"
+	rootReq.IncludePaths = []string{"/etc/nginx/x"}
+	p = extractTreeParams(rootReq, "/abs/staging")
+	if p.Source != "" {
+		t.Errorf("root Source = %q, want \"\"", p.Source)
+	}
+	if want := []string{"/etc/nginx/x"}; !slices.Equal(p.IncludePaths, want) {
+		t.Errorf("root IncludePaths = %q, want %q", p.IncludePaths, want)
+	}
+}
+
+func TestExtractDiffTargetDir(t *testing.T) {
+	cfg := config.Extract{TargetRoot: "/srv/restore"}
+	dir, err := ExtractDiffTargetDir(cfg, diffTreeReq())
+	if err != nil {
+		t.Fatalf("ExtractDiffTargetDir: %v", err)
+	}
+	if want := "/srv/restore/repo-a/diff-abcd1234-00112233"; dir != want {
+		t.Errorf("dir = %q, want %q", dir, want)
+	}
+	over := diffTreeReq()
+	over.TargetRoot = "/mnt/usb"
+	if dir, err = ExtractDiffTargetDir(cfg, over); err != nil || !strings.HasPrefix(dir, "/mnt/usb/") {
+		t.Errorf("override dir = %q (err %v), want under /mnt/usb/", dir, err)
+	}
+	if _, err := ExtractDiffTargetDir(cfg, treeReq()); !errors.Is(err, ErrExtractInvalidRequest) {
+		t.Errorf("plain request: err = %v, want ErrExtractInvalidRequest", err)
+	}
+}
+
+// TestExtractDiffSingleFilePublishesViaLink drives the full pipeline for a diff
+// extract whose reconstructed node is a regular FILE (a single changed path):
+// the tree-mode publish must route through the link primitive — final holds the
+// file, staging is gone, and FinalDir is the containing dir, not the file.
+func TestExtractDiffSingleFilePublishesViaLink(t *testing.T) {
+	root := t.TempDir()
+	a, _ := newExtractApp(fakeRestic{
+		extractTreeSetup: fileStagingSetup("hosts"),
+	}, root)
+	req := ExtractRequest{
+		Repo:          "repo-a",
+		SnapshotID:    longSnapID,
+		SnapshotShort: "abcd1234",
+		Source:        "/etc/hosts",
+		SourceName:    "hosts",
+		Mode:          ExtractDirectoryTree, // the diff shape: no node-type attestation
+		DiffContainer: "diff-abcd1234-00112233",
+		IncludePaths:  []string{"/etc/hosts"},
+	}
+	staging, final, perr := PlanExtractPaths(a.Cfg.Extract, req)
+	if perr != nil {
+		t.Fatalf("PlanExtractPaths: %v", perr)
+	}
+	result, err := a.Extract(context.Background(), req, nil)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	fi, statErr := os.Lstat(final)
+	if statErr != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("final %q: err=%v mode=%v, want a regular file", final, statErr, fi)
+	}
+	if _, err := os.Lstat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("staging %q should be removed after publish, lstat err = %v", staging, err)
+	}
+	if result.FinalPath != final {
+		t.Errorf("FinalPath = %q, want %q", result.FinalPath, final)
+	}
+	if want := filepath.Dir(final); result.FinalDir != want {
+		t.Errorf("FinalDir = %q, want containing dir %q", result.FinalDir, want)
+	}
+}
+
+// TestExtractDiffSingleFileRefusesOccupiedFinal pins the no-clobber guarantee
+// for the file-through-tree-mode publish: an occupant at final (appearing after
+// the fresh-target check, i.e. mid-run) is refused, never overwritten.
+func TestExtractDiffSingleFileRefusesOccupiedFinal(t *testing.T) {
+	root := t.TempDir()
+	var final string
+	a, _ := newExtractApp(fakeRestic{
+		extractTreeSetup: func(target string) error {
+			if err := fileStagingSetup("hosts")(target); err != nil {
+				return err
+			}
+			// Occupy final between the fresh-target check and publish.
+			if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(final, []byte("occupant"), 0o644)
+		},
+	}, root)
+	req := ExtractRequest{
+		Repo:          "repo-a",
+		SnapshotID:    longSnapID,
+		SnapshotShort: "abcd1234",
+		Source:        "/etc/hosts",
+		SourceName:    "hosts",
+		Mode:          ExtractDirectoryTree,
+		DiffContainer: "diff-abcd1234-00112233",
+		IncludePaths:  []string{"/etc/hosts"},
+	}
+	var perr error
+	_, final, perr = PlanExtractPaths(a.Cfg.Extract, req)
+	if perr != nil {
+		t.Fatalf("PlanExtractPaths: %v", perr)
+	}
+	_, err := a.Extract(context.Background(), req, nil)
+	if !errors.Is(err, ErrExtractFinalExists) {
+		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
+	}
+	got, readErr := os.ReadFile(final)
+	if readErr != nil || string(got) != "occupant" {
+		t.Errorf("occupant must survive untouched, got %q (err %v)", got, readErr)
 	}
 }

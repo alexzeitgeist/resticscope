@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -316,13 +317,14 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	}
 
 	// Both modes now use the rebase-parent + --include shape so restic reconstructs
-	// the leaf node (and applies its metadata): Source is the parent, IncludePath
-	// the leaf.
+	// the leaf node (and applies its metadata): Source is the parent, the single
+	// include the leaf.
 	cap.mu.Lock()
 	tp := cap.treeParams
 	cap.mu.Unlock()
-	if tp.Target != staging || tp.Source != path.Dir(req.Source) || tp.IncludePath != "/"+path.Base(req.Source) {
-		t.Errorf("tree params = %+v, want Target=%q Source=%q IncludePath=%q", tp, staging, path.Dir(req.Source), "/"+path.Base(req.Source))
+	wantInc := []string{"/" + path.Base(req.Source)}
+	if tp.Target != staging || tp.Source != path.Dir(req.Source) || !slices.Equal(tp.IncludePaths, wantInc) {
+		t.Errorf("tree params = %+v, want Target=%q Source=%q IncludePaths=%q", tp, staging, path.Dir(req.Source), wantInc)
 	}
 
 	if result.FinalDir != final {

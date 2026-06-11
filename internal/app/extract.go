@@ -108,6 +108,24 @@ type ExtractRequest struct {
 	// Empty means use the configured root; non-empty must be absolute.
 	TargetRoot string
 
+	// DiffContainer, when non-empty, marks this as one side of a diff extract
+	// and names the pair container the side publishes under: final becomes
+	// <target_root>/<repo>/<DiffContainer>/<short>/<mirror>, so the two sides of
+	// a pair land as sibling snapshot-id roots inside one container. The shape
+	// is asserted as diff-<short>-<short> with distinct shorts, one of which is
+	// SnapshotShort — a container can never be named for a pair this snapshot
+	// is not part of. The canonical <repo>/<short>/ mirror trees stay reserved
+	// for full extracts; a sparse changed-paths tree never shadows them.
+	DiffContainer string
+
+	// IncludePaths optionally narrows an ExtractDirectoryTree restore to exactly
+	// these paths inside Source (each equal to Source or strictly under it) —
+	// the diff extract's changed-paths-only restore. Empty means the whole
+	// subtree. Every path must already be in model.CleanBrowsePath form; the
+	// list is bounded by MaxDiffExtractIncludes / MaxDiffExtractIncludeBytes so
+	// the assembled restic argv stays far below any platform ARG_MAX.
+	IncludePaths []string
+
 	// Privileged requests the restore run as root (via the sudo extract helper)
 	// so restic applies the snapshot's file ownership, which it skips as
 	// non-root. The pipeline is otherwise identical; App.Extract routes a
@@ -187,8 +205,23 @@ func invalidExtractRequest(field string) error {
 	return fmt.Errorf("%w: %s", ErrExtractInvalidRequest, field)
 }
 
+// MaxDiffExtractIncludes / MaxDiffExtractIncludeBytes bound one request's
+// include list. Each include becomes a --include argv pair, and darwin's
+// ARG_MAX is 1 MiB including the environment, so the caps keep the assembled
+// argv comfortably inside the tightest supported platform. The TUI pre-checks
+// the same caps to surface a friendly "narrow the filter" hint before a
+// request is even built; PlanExtractPaths re-asserts them at the boundary.
+const (
+	MaxDiffExtractIncludes     = 4096
+	MaxDiffExtractIncludeBytes = 512 << 10
+)
+
 // extractSnapshotShortRe is restic's short-ID shape: exactly 8 lowercase hex.
 var extractSnapshotShortRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
+// extractDiffContainerRe is the diff-pair container directory shape: the two
+// short ids in first → second display order.
+var extractDiffContainerRe = regexp.MustCompile(`^diff-([0-9a-f]{8})-([0-9a-f]{8})$`)
 
 // extractSnapshotIDRe is restic's full snapshot ID: a SHA-256 digest, exactly 64
 // lowercase hex. The app layer asserts this at the boundary (mirroring resticx's
@@ -251,6 +284,16 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 		return "", "", invalidExtractRequest("snapshot_short")
 	}
 
+	// A diff container must name a real pair this snapshot belongs to, so the
+	// published side can never land in a container named for other snapshots.
+	if req.DiffContainer != "" {
+		mm := extractDiffContainerRe.FindStringSubmatch(req.DiffContainer)
+		if mm == nil || mm[1] == mm[2] ||
+			(mm[1] != req.SnapshotShort && mm[2] != req.SnapshotShort) {
+			return "", "", invalidExtractRequest("diff_container")
+		}
+	}
+
 	if req.Source == "" {
 		return "", "", invalidExtractRequest("source")
 	}
@@ -260,6 +303,33 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 	// asserts the same model.CleanBrowsePath contract resticx checks at dispatch.
 	if strings.ContainsRune(req.Source, '\x00') || req.Source != model.CleanBrowsePath(req.Source) {
 		return "", "", invalidExtractRequest("source")
+	}
+
+	// Every include must be a clean rooted path at or inside Source, and the
+	// list must fit the argv budget. Asserted here — before any hash, staging
+	// dir, or restic spawn — like the Source contract above, so a malformed or
+	// oversized list can never leave staging behind or reach an exec boundary.
+	if len(req.IncludePaths) > MaxDiffExtractIncludes {
+		return "", "", invalidExtractRequest("include_paths")
+	}
+	if len(req.IncludePaths) > 0 {
+		srcPrefix := req.Source
+		if srcPrefix != "/" {
+			srcPrefix += "/"
+		}
+		total := 0
+		for _, p := range req.IncludePaths {
+			total += len(p)
+			if p == "" || p == "/" ||
+				strings.ContainsRune(p, '\x00') ||
+				p != model.CleanBrowsePath(p) ||
+				(p != req.Source && !strings.HasPrefix(p, srcPrefix)) {
+				return "", "", invalidExtractRequest("include_paths")
+			}
+		}
+		if total > MaxDiffExtractIncludeBytes {
+			return "", "", invalidExtractRequest("include_paths")
+		}
 	}
 
 	// The app layer must not merely trust a caller-supplied safe slug: it must
@@ -296,13 +366,24 @@ func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final st
 
 	// Pure mirror tree: file and directory both land at their true path under a
 	// per-snapshot directory. relpath is "" for the root source, so final collapses
-	// to the snapshot dir itself.
+	// to the snapshot dir itself. A diff extract inserts its pair container above
+	// the per-snapshot dir, so the two sides publish as sibling snapshot-id roots.
 	relpath := filepath.FromSlash(strings.TrimPrefix(req.Source, "/")) // "" when Source=="/"
 	repoDir := filepath.Join(targetRoot, repoSlug)
 	snapDir := filepath.Join(repoDir, req.SnapshotShort)
+	if req.DiffContainer != "" {
+		snapDir = filepath.Join(repoDir, req.DiffContainer, req.SnapshotShort)
+	}
 	final = filepath.Join(snapDir, relpath) // == snapDir when relpath==""
 
-	sum := sha256.Sum256([]byte(req.Source))
+	// The container joins the hash input so a kept-on-failure staging dir from a
+	// plain extract of the same (snapshot, source) never blocks its diff twin —
+	// the two runs are different operations and deserve distinct staging names.
+	hashInput := req.Source
+	if req.DiffContainer != "" {
+		hashInput = req.DiffContainer + "\x00" + req.Source
+	}
+	sum := sha256.Sum256([]byte(hashInput))
 	hash := hex.EncodeToString(sum[:])[:16]
 	// Staging is a hidden dir at the REPO level (a sibling of the <short>/ snapshot
 	// dirs), NOT inside the mirror subtree — so it can never collide with mirrored
@@ -328,6 +409,11 @@ func checkExtractModeGate(req ExtractRequest) error {
 		}
 		if req.Source == "" || req.Source == "/" {
 			return invalidExtractRequest("source")
+		}
+		if len(req.IncludePaths) > 0 {
+			// The file mode's whole contract is "exactly this one regular file";
+			// a changed-paths list belongs to the directory-tree shape.
+			return invalidExtractRequest("include_paths")
 		}
 		return nil
 	case ExtractDirectoryTree:
@@ -524,6 +610,10 @@ func runExtractPipeline(ctx context.Context, req ExtractRequest, staging, final 
 		// FinalDir must be a directory the shell-here action can cd into; for a file
 		// that is the containing mirror dir (a shared <short>/<dir>/ after a merge).
 		result.FinalDir = filepath.Dir(final)
+	} else if fi, statErr := os.Lstat(final); statErr == nil && !fi.IsDir() {
+		// A diff extract of a single changed path publishes a non-dir leaf through
+		// the tree mode; shell-here needs the containing dir all the same.
+		result.FinalDir = filepath.Dir(final)
 	} else {
 		result.FinalDir = final
 	}
@@ -558,6 +648,11 @@ func runExtractPipeline(ctx context.Context, req ExtractRequest, staging, final 
 //     no Lstat here — os.Link is the no-replace guard. final is valid the instant
 //     os.Link returns; the staging copy is then unlinked.
 //
+// A directory-mode publish whose reconstructed node turns out to be a regular
+// file (a diff extract of one changed file — diff entries attest no node type,
+// so those route through tree mode) uses the file primitive, keeping link(2)'s
+// no-replace guarantee for it.
+//
 // After publishing, the now-empty staging container is removed (best-effort).
 // Staging lives at repo level, so mkdir(filepath.Dir(final)) here is the only
 // place the leaf's parents are created — doing it lazily means an extract
@@ -578,24 +673,31 @@ func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(
 	}
 	switch mode {
 	case ExtractDirectoryTree:
+		// A diff extract of a single changed path reconstructs a non-directory
+		// node here (the tree mode is the diff shape regardless of leaf type, since
+		// diff entries carry no node-type attestation). A regular file routes
+		// through the link primitive so its no-replace guarantee holds; symlinks
+		// and specials fall through to rename — link(2) follows symlinks on darwin,
+		// so the advisory Lstat refuse is the no-clobber guard for those.
+		if fi, lerr := os.Lstat(node); lerr == nil && fi.Mode().IsRegular() {
+			if err := linkExtractNode(node, final); err != nil {
+				return err
+			}
+			break
+		}
 		if _, err := os.Lstat(final); err == nil { // advisory early refuse
 			return ErrExtractFinalExists
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return pathFreeExtractErr("stat target", err)
 		}
-		// rename cannot overwrite a file or a non-empty dir; safe.
+		// rename cannot overwrite a non-empty dir; for a directory node, safe.
 		if err := os.Rename(node, final); err != nil {
 			return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
 		}
 	case ExtractFile:
-		// Hard-link the node into place (no-replace), then unlink the staging copy.
-		if err := os.Link(node, final); err != nil {
-			if errors.Is(err, os.ErrExist) { // lost the race / occupied → refuse, never clobber
-				return ErrExtractFinalExists
-			}
-			return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+		if err := linkExtractNode(node, final); err != nil {
+			return err
 		}
-		_ = os.Remove(node) // best-effort; final already holds the inode
 	}
 	// Remove the now-empty staging container. Skipped for the whole-snapshot case,
 	// where staging was itself renamed into final above.
@@ -605,13 +707,31 @@ func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(
 	return nil
 }
 
+// linkExtractNode publishes a regular-file node: hard-link into place — link(2)
+// fails EEXIST and never replaces, closing the TOCTOU race a stat-then-rename
+// cannot — then unlink the staging copy (best-effort; final already holds the
+// inode).
+func linkExtractNode(node, final string) error {
+	if err := os.Link(node, final); err != nil {
+		if errors.Is(err, os.ErrExist) { // lost the race / occupied → refuse, never clobber
+			return ErrExtractFinalExists
+		}
+		return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+	}
+	_ = os.Remove(node)
+	return nil
+}
+
 // extractTreeParams builds the resticx restore params from the request and
-// staging dir, setting the RAW Source / IncludePath (resticx escapes the include
-// to a literal pattern). File and directory share ONE shape — rebase the parent,
-// reconstruct the leaf at staging/<base> via --include:
+// staging dir, setting the RAW Source / IncludePaths (resticx escapes each
+// include to a literal pattern). File and directory share ONE shape — rebase the
+// parent, reconstruct the leaf at staging/<base> via --include:
 //
-//   - File / directory → Source: path.Dir(req.Source), IncludePath: "/"+base
-//   - Whole snapshot "/" → bare restore (Source "", IncludePath ""): staging itself
+//   - File / directory → Source: path.Dir(req.Source), includes: ["/"+base]
+//   - Diff extract → same rebase, one include per changed path, each rebased
+//     from req.Source onto "/"+base (req.Source itself maps to exactly "/"+base)
+//   - Whole snapshot "/" → bare restore (Source "", request includes verbatim;
+//     none for a full extract): staging itself
 //
 // The shared shape is load-bearing for metadata fidelity: with --include, restic
 // CREATES the leaf node (file or directory) and applies its snapshot
@@ -626,12 +746,49 @@ func extractTreeParams(req ExtractRequest, staging string) resticx.ExtractTreePa
 	if req.Source == "/" {
 		// Whole-snapshot extract (future detail-view path): no parent to rebase and
 		// no single node to reconstruct, so restic restores into staging directly and
-		// staging itself becomes the published tree.
+		// staging itself becomes the published tree. A changed-paths list (already
+		// rooted at "/") selects within it verbatim.
+		p.IncludePaths = append([]string(nil), req.IncludePaths...)
 		return p
 	}
 	p.Source = path.Dir(req.Source)
-	p.IncludePath = "/" + path.Base(req.Source)
+	base := "/" + path.Base(req.Source)
+	if len(req.IncludePaths) == 0 {
+		p.IncludePaths = []string{base}
+		return p
+	}
+	incs := make([]string, len(req.IncludePaths))
+	for i, inc := range req.IncludePaths {
+		// PlanExtractPaths asserted inc == Source or Source+"/..."; rebasing onto
+		// the reconstructed leaf keeps every include inside staging/<base>.
+		incs[i] = base + strings.TrimPrefix(inc, req.Source)
+	}
+	p.IncludePaths = incs
 	return p
+}
+
+// ExtractDiffTargetDir returns the diff-pair container directory a diff-extract
+// request publishes its snapshot root under — the path the TUI's review and
+// done screens show instead of one side's leaf (and the shell-here landing
+// dir, where both roots are visible). Derivation only; it touches no
+// filesystem and asserts just the fields it consumes (PlanExtractPaths owns
+// full validation).
+func ExtractDiffTargetDir(cfg config.Extract, req ExtractRequest) (string, error) {
+	if req.DiffContainer == "" {
+		return "", invalidExtractRequest("diff_container")
+	}
+	repoSlug, err := SanitizeExtractSlug(req.Repo)
+	if err != nil {
+		return "", invalidExtractRequest("repo")
+	}
+	targetRoot := cfg.TargetRoot
+	if req.TargetRoot != "" {
+		targetRoot = req.TargetRoot
+	}
+	if targetRoot == "" || !filepath.IsAbs(targetRoot) {
+		return "", invalidExtractRequest("target_root")
+	}
+	return filepath.Join(targetRoot, repoSlug, req.DiffContainer), nil
 }
 
 // extractTreeDriver is the one restic operation the restore pipeline needs.

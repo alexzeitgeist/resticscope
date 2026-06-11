@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"path"
 	"sort"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"resticscope/internal/app"
 	"resticscope/internal/model"
 )
 
@@ -251,7 +253,8 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 // the contextual q routed by handleKey's Quit branch) returns to detail with
 // the in-flight stream cancelled. Swap (`x`) flips the directional snapshot
 // pair and reruns restic diff. Filter toggles (+, -, M, U, T, b) flip the
-// corresponding bit in diffFilters and rebuild the visible rows. Navigation is
+// corresponding bit in diffFilters and rebuild the visible rows. Extract (e)
+// opens the modal for the selected row's changed paths. Navigation is
 // paused while a stream is loading because the rows are about to be replaced.
 func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
@@ -288,6 +291,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.toggleDiffFilter(model.KindTypeChanged), nil
 	case key.Matches(msg, m.keys.DiffFilterBitrot):
 		return m.toggleDiffFilter(model.KindBitrot), nil
+	case key.Matches(msg, m.keys.Extract):
+		return m.openDiffExtract()
 	}
 
 	switch {
@@ -471,6 +476,94 @@ func (m Model) selectedDiffRow() *model.DiffRow {
 		return nil
 	}
 	return &m.diffRows[m.diffCursor]
+}
+
+// openDiffExtract launches the extract modal for the selected diff row: a
+// changed-paths-only restore of the row's subtree from each side of the pair
+// into one diff container — two snapshot-id roots, ready for a local diff -r.
+// The include sets honor the live filter mask, so what extracts is exactly
+// what the view shows; a side with nothing selected is skipped outright. The
+// row's IsDir has no bearing on the restic shape (diff entries attest no node
+// type, so every diff request is a directory-tree restore with includes); it
+// only drives the review screen's dir marker.
+func (m Model) openDiffExtract() (Model, tea.Cmd) {
+	r := m.selectedDiffRow()
+	if r == nil {
+		return m, nil
+	}
+	if len(m.diffOlder.ID) < 8 || len(m.diffNewer.ID) < 8 {
+		m.statusMsg = "extract: snapshot ids unavailable"
+		return m, nil
+	}
+	set := model.DiffExtractIncludes(m.diffEntries, r.Path, m.diffFilters)
+	if len(set.First) == 0 && len(set.Second) == 0 {
+		// Either nothing under the row passes the filter, or the only passing
+		// changes are non-pure directory entries (which never become includes).
+		m.statusMsg = "extract: no extractable changes under the active filter"
+		return m, nil
+	}
+	if diffIncludesOverBudget(set.First) || diffIncludesOverBudget(set.Second) {
+		m.statusMsg = "extract: too many changed paths — narrow the filter or pick a deeper directory"
+		return m, nil
+	}
+	name, err := app.SanitizeExtractSlug(path.Base(r.Path))
+	if err != nil {
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m, nil
+	}
+	firstShort, secondShort := m.diffOlder.ID[:8], m.diffNewer.ID[:8]
+	container := "diff-" + firstShort + "-" + secondShort
+	mk := func(snap model.Snapshot, incs []string) app.ExtractRequest {
+		return app.ExtractRequest{
+			Repo:          m.diffRepo,
+			SnapshotID:    snap.ID,
+			SnapshotShort: snap.ID[:8],
+			Source:        r.Path,
+			SourceName:    name,
+			Mode:          app.ExtractDirectoryTree,
+			DiffContainer: container,
+			IncludePaths:  incs,
+		}
+	}
+	var reqs []app.ExtractRequest
+	if len(set.First) > 0 {
+		reqs = append(reqs, mk(m.diffOlder, set.First))
+	}
+	if len(set.Second) > 0 {
+		reqs = append(reqs, mk(m.diffNewer, set.Second))
+	}
+	sub, err := newExtractDiffModel(m.app, m.ctx, reqs, extractDiffMeta{
+		firstShort:  firstShort,
+		secondShort: secondShort,
+		filters:     m.diffFilters,
+		sourceIsDir: r.IsDir,
+		firstCount:  set.FirstCount,
+		secondCount: set.SecondCount,
+	})
+	if err != nil {
+		// PlanExtractPaths-style errors are path-free by contract.
+		m.statusMsg = "extract: " + firstLine(err.Error())
+		return m, nil
+	}
+	m.statusMsg = ""
+	m.extract = sub
+	m.extractReturn = snapshotDiffView
+	m.view = extractView
+	return m, nil
+}
+
+// diffIncludesOverBudget pre-checks one side's include list against the same
+// caps PlanExtractPaths enforces, so an oversized selection is refused with a
+// friendly status-line hint instead of a request-validation error.
+func diffIncludesOverBudget(incs []string) bool {
+	if len(incs) > app.MaxDiffExtractIncludes {
+		return true
+	}
+	total := 0
+	for _, p := range incs {
+		total += len(p)
+	}
+	return total > app.MaxDiffExtractIncludeBytes
 }
 
 // snapshotDiffBack leaves the diff view, shared by q (routed in handleKey's

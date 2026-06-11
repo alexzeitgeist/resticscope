@@ -141,6 +141,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Enter) + "/" + keyLabel(k.Open), "open directory"},
 			{keyLabel(k.Parent), "parent directory"},
 			{keyLabel(k.Search), "search changed paths"},
+			{keyLabel(k.Extract), "extract changed paths"},
 			{keyLabel(k.DiffSwap), "swap snapshot direction"},
 			{diffFilters, "toggle change filters"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},

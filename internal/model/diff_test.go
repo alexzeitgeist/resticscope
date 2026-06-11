@@ -466,3 +466,185 @@ func TestParseModifierPrecedence(t *testing.T) {
 		}
 	}
 }
+
+// --- DiffExtractIncludes: side mapping, filter scope, pure-dir collapse ------
+
+// diffExtractFixture is a small two-sided tree:
+//
+//	/proj/readme       M    → both sides
+//	/proj/meta.txt     U    → both sides
+//	/proj/gone.txt     -    → first only
+//	/proj/fresh.txt    +    → second only
+//	/proj/new/         +    → pure-added dir (collapses its subtree on second)
+//	/proj/new/a.txt    +
+//	/proj/new/deep/    +
+//	/proj/new/deep/b   +
+//	/proj/old/         -    → pure-removed dir (collapses its subtree on first)
+//	/proj/old/x        -
+//	/proj/mixed/       M    → non-pure dir entry: never an include itself
+//	/proj/mixed/c.txt  M
+//	/other/skip.txt    M    → outside the /proj root
+func diffExtractFixture() []DiffEntry {
+	mk := func(p, mod string) DiffEntry {
+		e, _ := newDiffEntry(p, mod)
+		return e
+	}
+	return []DiffEntry{
+		mk("/proj/readme", "M"),
+		mk("/proj/meta.txt", "U"),
+		mk("/proj/gone.txt", "-"),
+		mk("/proj/fresh.txt", "+"),
+		mk("/proj/new/", "+"),
+		mk("/proj/new/a.txt", "+"),
+		mk("/proj/new/deep/", "+"),
+		mk("/proj/new/deep/b", "+"),
+		mk("/proj/old/", "-"),
+		mk("/proj/old/x", "-"),
+		mk("/proj/mixed/", "M"),
+		mk("/proj/mixed/c.txt", "M"),
+		mk("/other/skip.txt", "M"),
+	}
+}
+
+func TestDiffExtractIncludes(t *testing.T) {
+	cases := []struct {
+		name                    string
+		root                    string
+		filter                  ModifierKind
+		wantFirst, wantSecond   []string
+		firstCount, secondCount int
+	}{
+		{
+			name:   "all kinds under /proj",
+			root:   "/proj",
+			filter: AllDiffKinds,
+			// First side: removed + both-sides kinds. /proj/old collapses its
+			// subtree; /proj/mixed is a non-pure dir and never an include.
+			wantFirst: []string{"/proj/gone.txt", "/proj/meta.txt", "/proj/mixed/c.txt", "/proj/old", "/proj/readme"},
+			// Second side: added + both-sides kinds. /proj/new collapses
+			// /proj/new/a.txt, /proj/new/deep, and /proj/new/deep/b.
+			wantSecond: []string{"/proj/fresh.txt", "/proj/meta.txt", "/proj/mixed/c.txt", "/proj/new", "/proj/readme"},
+			// Counts are pre-collapse selections (dir entries included).
+			firstCount:  7, // readme meta gone old old/x mixed mixed/c
+			secondCount: 9, // readme meta fresh new new/a new/deep new/deep/b mixed mixed/c
+		},
+		{
+			name:        "added only",
+			root:        "/proj",
+			filter:      KindAdded,
+			wantFirst:   nil,
+			wantSecond:  []string{"/proj/fresh.txt", "/proj/new"},
+			firstCount:  0,
+			secondCount: 5,
+		},
+		{
+			name:        "removed only",
+			root:        "/proj",
+			filter:      KindRemoved,
+			wantFirst:   []string{"/proj/gone.txt", "/proj/old"},
+			wantSecond:  nil,
+			firstCount:  3,
+			secondCount: 0,
+		},
+		{
+			name:        "modified only excludes U-only paths",
+			root:        "/proj",
+			filter:      KindModified,
+			wantFirst:   []string{"/proj/mixed/c.txt", "/proj/readme"},
+			wantSecond:  []string{"/proj/mixed/c.txt", "/proj/readme"},
+			firstCount:  3, // readme mixed mixed/c (the dir is selected but never included)
+			secondCount: 3,
+		},
+		{
+			name:        "root is a single changed file",
+			root:        "/proj/readme",
+			filter:      AllDiffKinds,
+			wantFirst:   []string{"/proj/readme"},
+			wantSecond:  []string{"/proj/readme"},
+			firstCount:  1,
+			secondCount: 1,
+		},
+		{
+			name:        "root is the pure-added dir itself",
+			root:        "/proj/new",
+			filter:      AllDiffKinds,
+			wantFirst:   nil,
+			wantSecond:  []string{"/proj/new"},
+			firstCount:  0,
+			secondCount: 4,
+		},
+		{
+			name:        "descendants of a pure-added dir when the dir is the root's child",
+			root:        "/proj/new/deep",
+			filter:      AllDiffKinds,
+			wantFirst:   nil,
+			wantSecond:  []string{"/proj/new/deep"},
+			firstCount:  0,
+			secondCount: 2,
+		},
+		{
+			name:        "whole tree from the diff root",
+			root:        "/",
+			filter:      KindRemoved,
+			wantFirst:   []string{"/proj/gone.txt", "/proj/old"},
+			wantSecond:  nil,
+			firstCount:  3,
+			secondCount: 0,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := DiffExtractIncludes(diffExtractFixture(), c.root, c.filter)
+			if !slicesEqual(got.First, c.wantFirst) {
+				t.Errorf("First = %q, want %q", got.First, c.wantFirst)
+			}
+			if !slicesEqual(got.Second, c.wantSecond) {
+				t.Errorf("Second = %q, want %q", got.Second, c.wantSecond)
+			}
+			if got.FirstCount != c.firstCount || got.SecondCount != c.secondCount {
+				t.Errorf("counts = (%d,%d), want (%d,%d)", got.FirstCount, got.SecondCount, c.firstCount, c.secondCount)
+			}
+		})
+	}
+}
+
+// TestDiffExtractIncludesDuplicateMerge pins the OR-merge: a path reported
+// twice (M then U) selects once per side, and a dir reported as added twice
+// stays pure (still collapses).
+func TestDiffExtractIncludesDuplicateMerge(t *testing.T) {
+	mk := func(p, mod string) DiffEntry {
+		e, _ := newDiffEntry(p, mod)
+		return e
+	}
+	entries := []DiffEntry{
+		mk("/a/f", "M"),
+		mk("/a/f", "U"),
+		mk("/a/d/", "+"),
+		mk("/a/d/", "+"),
+		mk("/a/d/x", "+"),
+	}
+	got := DiffExtractIncludes(entries, "/a", AllDiffKinds)
+	if want := []string{"/a/f"}; !slicesEqual(got.First, want) {
+		t.Errorf("First = %q, want %q", got.First, want)
+	}
+	if want := []string{"/a/d", "/a/f"}; !slicesEqual(got.Second, want) {
+		t.Errorf("Second = %q, want %q", got.Second, want)
+	}
+	if got.FirstCount != 1 || got.SecondCount != 3 {
+		t.Errorf("counts = (%d,%d), want (1,3)", got.FirstCount, got.SecondCount)
+	}
+}
+
+// slicesEqual avoids importing slices into a file that predates it; nil and
+// empty compare equal, matching the want-nil convention above.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

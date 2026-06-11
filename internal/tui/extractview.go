@@ -3,10 +3,12 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
+	"resticscope/internal/model"
 )
 
 // extractview.go renders extractView. Each state has its own body; the root
@@ -47,11 +49,15 @@ func extractTitle(em extractModel) string {
 		return "extract: cleanup"
 	default:
 		// review — include the repo and short snapshot id for orientation,
-		// mirroring browse's "browse: <repo> · <shortid>" header.
+		// mirroring browse's "browse: <repo> · <shortid>" header. A diff extract
+		// names the directional pair instead of one side.
 		if em.req.Repo == "" {
 			return "extract"
 		}
 		title := "extract: " + em.req.Repo
+		if em.diff != nil {
+			return title + " · " + em.diff.firstShort + " → " + em.diff.secondShort
+		}
 		if short := extractShortSnap(em.req); short != "" {
 			title += " · " + short
 		}
@@ -97,6 +103,15 @@ func (m Model) extractReviewBody(w int) string {
 	rows := []extractRow{
 		{label: "Source", value: extractSourceValue(em)},
 	}
+	if em.diff != nil {
+		// The directional pair and the per-side changed-path tally — the diff
+		// twin of the Contains row, sourced from the diff data itself (the
+		// browse index's whole-subtree counts would be wrong here).
+		rows = append(rows,
+			extractRow{label: "Diff", value: extractDiffPairValue(em)},
+			extractRow{label: "Changes", value: extractDiffChangesValue(em)},
+		)
+	}
 	if em.srcCountsKnown {
 		// Contained counts from the browse index — the "what will happen"
 		// detail the Source row's recursive size alone doesn't carry for a
@@ -110,7 +125,7 @@ func (m Model) extractReviewBody(w int) string {
 	}
 	rows = append(rows,
 		extractRow{}, // spacer
-		extractRow{label: "Target", value: extractTargetValue(em.final, extractValueWidth(w), extractIsDir(em))},
+		extractRow{label: "Target", value: extractTargetValue(extractTargetPath(em), extractValueWidth(w), extractIsDir(em))},
 	)
 	body := renderExtractRows(m.styles, rows, w)
 	// Preflight occupancy note — the same FreshTargetCheck enter will enforce,
@@ -144,13 +159,18 @@ func (m Model) extractReviewBody(w int) string {
 	return body
 }
 
-// extractRunningBody renders the live-progress screen.
+// extractRunningBody renders the live-progress screen. A diff extract adds a
+// Snapshot row naming the side currently restoring and its run-order position.
 func (m Model) extractRunningBody(w int) string {
 	em := m.extract
-	body := renderExtractRows(m.styles, []extractRow{
+	rows := []extractRow{
 		{label: "Source", value: em.req.Source},
-		{label: "Staging", value: collapsePath(em.staging)},
-	}, w)
+	}
+	if em.diff != nil {
+		rows = append(rows, extractRow{label: "Snapshot", value: extractDiffRunSideValue(em)})
+	}
+	rows = append(rows, extractRow{label: "Staging", value: collapsePath(em.staging)})
+	body := renderExtractRows(m.styles, rows, w)
 	// Progress bar + status line.
 	pct, hasPct := extractPercent(em)
 	var pctLabel string
@@ -240,6 +260,9 @@ func extractRunningStatus(em extractModel) string {
 // no key hints, so the two can never drift apart.
 func (m Model) extractSuccessBody(w int) string {
 	em := m.extract
+	if em.diff != nil {
+		return m.extractDiffSuccessBody(w)
+	}
 	ok := m.styles.good.Render("✓ ")
 	summary := ok + fmt.Sprintf("extracted %s · %s · %s · in %s",
 		humanize.Count(em.result.Files, "file", "files"),
@@ -291,6 +314,150 @@ func extractUnsafeSymlinkWarning(n int, policy string) string {
 	}
 }
 
+// extractDiffSuccessBody is the diff flavor of the done screen: a combined
+// tally over the published sides, the pair container as the Target (the same
+// dir shell-here lands in — one side's leaf would hide the other), and a
+// per-side line under it, including a note for a side that had nothing to
+// extract. Elapsed is the sides' sum: they run sequentially, so it is the
+// operation's wall clock.
+func (m Model) extractDiffSuccessBody(w int) string {
+	em := m.extract
+	var files, dirs, unsafe int
+	var bytes int64
+	var elapsed time.Duration
+	for _, s := range em.published {
+		files += s.result.Files
+		dirs += s.result.Dirs
+		bytes += s.result.Bytes
+		unsafe += s.result.UnsafeSymlinks
+		elapsed += s.result.Elapsed
+	}
+	summary := m.styles.good.Render("✓ ") + fmt.Sprintf("extracted %s · %s · %s · in %s",
+		humanize.Count(files, "file", "files"),
+		humanize.Count(dirs, "dir", "dirs"),
+		humanize.Bytes(bytes),
+		humanize.Duration(elapsed))
+	body := []string{
+		"  " + summary,
+		"",
+		"  " + m.styles.label.UnsetWidth().Render("Target"),
+	}
+	for _, ln := range strings.Split(wrapPathValue(em.diff.containerDir, w-4), "\n") {
+		body = append(body, "    "+m.styles.meta.Render(ln))
+	}
+	body = append(body, "")
+	for _, s := range em.published {
+		body = append(body, "    "+m.styles.meta.Render(fmt.Sprintf("%s/  %s · %s · %s",
+			s.short,
+			humanize.Count(s.result.Files, "file", "files"),
+			humanize.Count(s.result.Dirs, "dir", "dirs"),
+			humanize.Bytes(s.result.Bytes))))
+	}
+	for _, short := range extractDiffSkippedSides(em) {
+		body = append(body, "    "+m.styles.dim.Render(short+"  — nothing to extract on this side"))
+	}
+	if em.req.Privileged {
+		body = append(body,
+			"",
+			"  "+m.styles.dim.Render("extracted as root — snapshot file ownership preserved"),
+		)
+	}
+	if unsafe > 0 {
+		body = append(body,
+			"",
+			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(unsafe, em.cfg.UnsafeSymlinks)),
+		)
+	}
+	return clipLines(body, w)
+}
+
+// extractDiffSkippedSides lists the pair sides that queued no request (nothing
+// passed the filter on them), in display order. On the success screen every
+// queued side is in published, so absence there is the skip signal.
+func extractDiffSkippedSides(em extractModel) []string {
+	ran := func(short string) bool {
+		for _, s := range em.published {
+			if s.short == short {
+				return true
+			}
+		}
+		return false
+	}
+	var out []string
+	if !ran(em.diff.firstShort) {
+		out = append(out, em.diff.firstShort)
+	}
+	if !ran(em.diff.secondShort) {
+		out = append(out, em.diff.secondShort)
+	}
+	return out
+}
+
+// extractDiffPairValue renders the review's Diff row: the directional pair in
+// display order plus, when not every change kind is enabled, the same filter
+// mask vocabulary the diff view's summary line uses.
+func extractDiffPairValue(em extractModel) string {
+	v := em.diff.firstShort + " → " + em.diff.secondShort
+	if em.diff.filters != model.AllDiffKinds {
+		v += " · filter: " + diffFilterLabel(em.diff.filters)
+	}
+	return v
+}
+
+// extractDiffChangesValue is the review's per-side changed-path tally — what
+// the diff data says will restore on each side. A side with no selection
+// reads "nothing" and is skipped at run time.
+func extractDiffChangesValue(em extractModel) string {
+	return extractDiffSideCount(em.diff.firstShort, em.diff.firstCount) + " · " +
+		extractDiffSideCount(em.diff.secondShort, em.diff.secondCount)
+}
+
+func extractDiffSideCount(short string, n int) string {
+	if n == 0 {
+		return short + ": nothing"
+	}
+	return short + ": " + humanize.Count(n, "changed path", "changed paths")
+}
+
+// extractDiffRunSideValue labels the side currently restoring with its
+// run-order position ("d27c2f56 (1 of 2)").
+func extractDiffRunSideValue(em extractModel) string {
+	total := len(em.published) + 1 + len(em.queue)
+	return fmt.Sprintf("%s (%d of %d)", em.req.SnapshotShort, len(em.published)+1, total)
+}
+
+// extractDiffTerminalNote summarizes pair state on a failed or canceled diff
+// side: which side stopped, what already published (and stays published), and
+// what never ran. Shorts only — path-free like the rest of the terminal body.
+func extractDiffTerminalNote(em extractModel) string {
+	parts := []string{em.req.SnapshotShort + " did not complete"}
+	if len(em.published) > 0 {
+		shorts := make([]string, len(em.published))
+		for i, s := range em.published {
+			shorts[i] = s.short
+		}
+		parts = append(parts, "already extracted: "+strings.Join(shorts, ", "))
+	}
+	if len(em.queue) > 0 {
+		shorts := make([]string, len(em.queue))
+		for i, q := range em.queue {
+			shorts[i] = q.SnapshotShort
+		}
+		parts = append(parts, "not extracted: "+strings.Join(shorts, ", "))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// extractTargetPath is the Target row's path: the pair container for a diff
+// extract (both snapshot roots land inside it), the exact mirror path
+// otherwise.
+func extractTargetPath(em extractModel) string {
+	if em.diff != nil {
+		return em.diff.containerDir
+	}
+	return em.final
+}
+
 // extractTerminalBody renders the canceled / error screen with the
 // keep-or-delete prompt when staging exists.
 func (m Model) extractTerminalBody(w int) string {
@@ -303,6 +470,11 @@ func (m Model) extractTerminalBody(w int) string {
 		headline = m.styles.errText.Render("✕ ") + extractErrorHeadline(em)
 	}
 	lines := []string{"  " + headline}
+	if em.diff != nil {
+		// Pair context under the headline: a diff side that broke must not leave
+		// the user guessing which sides landed (those stay published).
+		lines = append(lines, "", "  "+m.styles.meta.Render(extractDiffTerminalNote(em)))
+	}
 	if em.stagingExists {
 		// Staging keep-or-delete is the action here; the refusal hint (which points
 		// at the `t` retarget key) is deliberately omitted — the user must resolve
@@ -368,10 +540,15 @@ func extractErrorHeadline(em extractModel) string {
 // path-free too). Empty for any other outcome, so a cancel or a genuine IO error
 // shows no hint.
 func extractRefusalHint(em extractModel) string {
-	if isExtractRefusal(em.err) {
-		return "press t to choose another target, or remove the existing output"
+	if !isExtractRefusal(em.err) {
+		return ""
 	}
-	return ""
+	if len(em.published) > 0 {
+		// A diff side already landed under the current root; retargeting the rest
+		// would split the pair container, so handleTerminalKey withholds t here.
+		return "remove the existing output before retrying"
+	}
+	return "press t to choose another target, or remove the existing output"
 }
 
 // extractKeepDeleteBody mirrors extractTerminalBody during the brief window
@@ -450,15 +627,29 @@ func extractSourceValue(em extractModel) string {
 	if em.srcSize > 0 {
 		v += " (" + humanize.Bytes(em.srcSize) + ")"
 	}
-	if extractIsDir(em) {
+	if extractSourceIsDir(em) {
 		v = "▸ " + v
 	}
 	return v
 }
 
-// extractIsDir reports whether the active request extracts a directory tree —
-// the condition for the browse-style "▸ " dir marker on the review rows.
+// extractIsDir reports whether the published target node is a directory — the
+// condition for the browse-style "▸ " dir marker on the review's Target row.
+// Tree mode publishes a directory in every case but isn't consulted for a
+// diff extract, whose Target row is the pair container (always a directory).
 func extractIsDir(em extractModel) bool {
+	return em.diff != nil || em.req.Mode == app.ExtractDirectoryTree
+}
+
+// extractSourceIsDir reports whether the source node is a directory — the
+// marker condition for the review's Source row. A plain extract derives it
+// from the mode; a diff extract is always tree-mode regardless of leaf type
+// (diff entries attest no node type), so its meta carries the originating
+// row's shape instead.
+func extractSourceIsDir(em extractModel) bool {
+	if em.diff != nil {
+		return em.diff.sourceIsDir
+	}
 	return em.req.Mode == app.ExtractDirectoryTree
 }
 

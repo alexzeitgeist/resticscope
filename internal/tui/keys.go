@@ -167,10 +167,10 @@ func (h viewHelp) ShortHelp() []key.Binding {
 			// After a search jump q mirrors esc and reverses the jump instead
 			// of leaving the view (routing.go), so the normal `q back` chip
 			// would lie; one combined chip replaces it until the jump is undone.
-			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, diffFiltersHelp(),
+			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(),
 				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous"))}
 		}
-		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap, diffFiltersHelp(), k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(), k.Back}
 	case extractView:
 		// Per-state bindings from the extract sub-model; fall back to the
 		// always-present back affordance if a caller forgot to supply them.
@@ -276,7 +276,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.DiffSwap},
+			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}

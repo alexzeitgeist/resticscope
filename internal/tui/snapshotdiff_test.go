@@ -479,11 +479,12 @@ func TestSnapshotDiffFilterHintInFooterAndStableSummary(t *testing.T) {
 		t.Errorf("diff footer must not advertise a single toggle out of six\n---\n%s", footer)
 	}
 
-	// The grouped chip must not grow the bar past an 80-column terminal: the
-	// help model truncates trailing chips at width, and `q back` is last, so
-	// an oversized bar would hide the universal back affordance exactly where
-	// space is tightest.
-	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	// The grouped chip must not grow the bar past the 100-column footer budget
+	// (keys.go): the help model truncates trailing chips at width, and `q back`
+	// is last, so an oversized bar would hide the universal back affordance
+	// exactly where space is tightest. (The bar left 80 columns behind when the
+	// `e extract` action joined the view.)
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	narrow := stripANSI(m.footerView())
 	for _, want := range []string{"+-MUTb filters", "q back"} {
 		if !strings.Contains(narrow, want) {

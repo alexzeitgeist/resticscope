@@ -26,10 +26,11 @@ import (
 // component carrying any of \ [ ] * ? is matched with filepath.Match, not by
 // equality (verified in upstream/restic internal/filter/filter.go). So a real
 // filename like a*.conf or backup[1].txt would over-match siblings or match the
-// wrong node. The IncludePath field on ExtractTreeParams is therefore a *literal*
-// path; literalIncludePattern backslash-escapes the metacharacter set at argv
-// build so restic matches exactly that one path. The raw path is what gets
-// validated and scrubbed from stderr; the escaped pattern is an argv-only value.
+// wrong node. The IncludePaths field on ExtractTreeParams therefore carries
+// *literal* paths; literalIncludePattern backslash-escapes the metacharacter set
+// at argv build so restic matches exactly those paths. The raw paths are what
+// get validated and scrubbed from stderr; the escaped patterns are argv-only
+// values.
 //
 // This file is the ONLY place that knows restic's restore --json schema; if
 // restic 0.19 renames a field, only this file and its testdata fixtures change.
@@ -79,10 +80,10 @@ var (
 	ErrExtractInvalidSource = errors.New("resticx: extract source is not a cleaned absolute path")
 	// ErrExtractInvalidTarget rejects an empty or non-absolute --target.
 	ErrExtractInvalidTarget = errors.New("resticx: extract target is not an absolute path")
-	// ErrExtractInvalidInclude rejects an IncludePath that is not a cleaned,
+	// ErrExtractInvalidInclude rejects an include path that is not a cleaned,
 	// rooted, non-root file path. Unlike Source, "/" is rejected: an include of
-	// "/" is both too broad and contradicts the one-file invariant the include
-	// filter exists to enforce.
+	// "/" is both too broad and contradicts the changed-paths-only invariant the
+	// include filter exists to enforce.
 	ErrExtractInvalidInclude = errors.New("resticx: extract include path is not a cleaned non-root absolute path")
 )
 
@@ -103,15 +104,16 @@ type ExtractTreeParams struct {
 	// Target is the absolute staging dir handed to restic --target.
 	Target string
 
-	// IncludePath is the RAW (cleaned, rooted) snapshot path to select with restic
-	// --include, or "" for "no include filter" (a whole-subtree extract). For a
-	// flattened file it is rebased-relative to Source (e.g. "/vzdump.conf" under
-	// Source "/etc"); for a nested file it is the full path (e.g. "/etc/vzdump.conf"
-	// with Source ""). It is a LITERAL path, NOT a restic pattern: --include is a
-	// glob, so buildExtractTreeArgs escapes it via literalIncludePattern at argv
-	// build. Must be "" or a cleaned non-root rooted path (assertCleanIncludePath);
-	// this layer validates the raw value and never validates the escaped pattern.
-	IncludePath string
+	// IncludePaths are the RAW (cleaned, rooted) snapshot paths to select with
+	// restic --include (one flag per path), or empty for "no include filter" (a
+	// whole-subtree extract). Each is rebased-relative to Source (e.g.
+	// "/vzdump.conf" under Source "/etc", or "/nginx/sub/x.conf" for a diff
+	// extract under Source "/etc"). They are LITERAL paths, NOT restic patterns:
+	// --include is a glob, so buildExtractTreeArgs escapes each via
+	// literalIncludePattern at argv build. Each must be a cleaned non-root rooted
+	// path (assertCleanIncludePath); this layer validates the raw values and
+	// never validates the escaped patterns.
+	IncludePaths []string
 
 	// NoCache adds --no-cache, bypassing restic's local metadata cache entirely.
 	// The privileged (sudo) extract helper sets it so a root-run restic neither
@@ -209,12 +211,13 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 }
 
 // ExtractTree streams `restic restore <snap>[:<source>] --target <dir>
-// --overwrite never --json [--include <pattern>]` and hands each parsed progress
-// message to onEvent. With params.IncludePath set, restic restores only the
-// matching node (and its reconstructed parent dirs) metadata-faithfully — the
-// single-file path. onEvent returning a non-nil error cancels the run via the
-// child context and that error is surfaced verbatim (mirrors StreamSnapshotTree
-// / StreamDiff).
+// --overwrite never --json [--include <pattern> ...]` and hands each parsed
+// progress message to onEvent. With params.IncludePaths set, restic restores
+// only the matching nodes (and their reconstructed parent dirs)
+// metadata-faithfully — the single-file path and the diff extract's
+// changed-paths-only restore. onEvent returning a non-nil error cancels the run
+// via the child context and that error is surfaced verbatim (mirrors
+// StreamSnapshotTree / StreamDiff).
 //
 // This layer does NOT impose a timeout: a real extract can run far longer than
 // resticx's 2-minute default, so the deadline is the caller's responsibility
@@ -269,12 +272,12 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 // surface for the safety invariants (00-framework.md §5). It emits, in order:
 // --no-lock (a lock would be a write), --no-cache when NoCache is set, restore,
 // the bare snapshot or <snap>:<source>, --target <abs>, --overwrite never
-// (never clobber existing files), --json, and an optional --include <pattern>. It never emits --path,
-// --delete, or "latest". The include value is the
-// RAW IncludePath run through literalIncludePattern so restic matches it as a
-// literal, not a glob — the raw path is what gets validated. The bucket-lookup -o
-// option is prepended by ExtractTree, not here, so these argv tests stay free of
-// S3 noise.
+// (never clobber existing files), --json, and one optional --include <pattern>
+// per IncludePaths entry, in caller order. It never emits --path, --delete, or
+// "latest". Each include value is the RAW path run through
+// literalIncludePattern so restic matches it as a literal, not a glob — the raw
+// paths are what get validated. The bucket-lookup -o option is prepended by
+// ExtractTree, not here, so these argv tests stay free of S3 noise.
 func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 	if err := assertCleanSnapshotID(p.SnapshotID); err != nil {
 		return nil, err
@@ -282,8 +285,13 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 	if err := assertCleanSource(p.Source); err != nil {
 		return nil, err
 	}
-	if err := assertCleanIncludePath(p.IncludePath); err != nil {
-		return nil, err
+	for _, inc := range p.IncludePaths {
+		if inc == "" { // a present entry must be a real path; "" is only valid as "no list"
+			return nil, ErrExtractInvalidInclude
+		}
+		if err := assertCleanIncludePath(inc); err != nil {
+			return nil, err
+		}
 	}
 	if p.Target == "" || !filepath.IsAbs(p.Target) {
 		return nil, ErrExtractInvalidTarget
@@ -307,10 +315,10 @@ func buildExtractTreeArgs(p ExtractTreeParams) ([]string, error) {
 		"--overwrite", "never",
 		"--json",
 	)
-	if p.IncludePath != "" {
-		// Escape the raw literal path into a filepath.Match literal so restic
-		// restores exactly that one node, not a glob expansion of it.
-		args = append(args, "--include", literalIncludePattern(p.IncludePath))
+	for _, inc := range p.IncludePaths {
+		// Escape each raw literal path into a filepath.Match literal so restic
+		// restores exactly those nodes, not a glob expansion of them.
+		args = append(args, "--include", literalIncludePattern(inc))
 	}
 	return args, nil
 }
@@ -391,13 +399,13 @@ func assertCleanSource(src string) error {
 
 // sanitizeExtractStderr prepares restic restore stderr to be safe inside a
 // returned *Error by scrubbing the source/target/include fragments. The shared
-// scrubExtractStderr does the redact/mask/residual-path work. IncludePath is
-// scrubbed too because restic echoes the real selected path (never the escaped
-// pattern); under the file mapping the selected file's basename lives only in
-// IncludePath (Source is empty for nested), so without it a bare-basename mention
-// would slip past the residual-'/' guard.
+// scrubExtractStderr does the redact/mask/residual-path work. IncludePaths are
+// scrubbed too because restic echoes the real selected paths (never the escaped
+// patterns); under the file mapping the selected file's basename lives only in
+// the include (Source is empty for nested), so without it a bare-basename
+// mention would slip past the residual-'/' guard.
 func (c *Client) sanitizeExtractStderr(stderr []byte, p ExtractTreeParams) []byte {
-	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target, p.IncludePath))
+	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target, p.IncludePaths))
 }
 
 // scrubExtractStderr makes restic stderr safe to embed in a returned *Error. It
@@ -425,19 +433,21 @@ func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 }
 
 // extractPathFragments lists the path strings to scrub from stderr: the full
-// source, target, and include path plus their basenames (restic often reports
+// source, target, and include paths plus their basenames (restic often reports
 // just the leaf or the staging-dir name). The longer fragments are listed first
 // so a basename is only matched where the full path did not already cover it.
-func extractPathFragments(source, target, includePath string) []string {
-	frags := make([]string, 0, 6)
+func extractPathFragments(source, target string, includePaths []string) []string {
+	frags := make([]string, 0, 4+2*len(includePaths))
 	if target != "" {
 		frags = append(frags, target, filepath.Base(target))
 	}
 	if source != "" && source != "/" {
 		frags = append(frags, source, filepath.Base(source))
 	}
-	if includePath != "" && includePath != "/" {
-		frags = append(frags, includePath, filepath.Base(includePath))
+	for _, inc := range includePaths {
+		if inc != "" && inc != "/" {
+			frags = append(frags, inc, filepath.Base(inc))
+		}
 	}
 	return frags
 }
