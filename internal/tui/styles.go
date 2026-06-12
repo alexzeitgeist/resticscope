@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"strings"
 
 	"charm.land/bubbles/v2/filepicker"
 	helpbubble "charm.land/bubbles/v2/help"
@@ -141,13 +142,24 @@ func filepickerStyles(p theme.Palette) filepicker.Styles {
 // themeTerminalColors resolves the [theme] block to the terminal default
 // background/foreground View paints each frame (OSC 11/10). Both are nil —
 // paint nothing, keep the terminal's own scheme — when the user opted out via
-// `background = false`.
+// `background = false`. An ANSI-256 bg/fg also skips painting its channel:
+// OSC 10/11 take a concrete color, not a palette index, so Bubble Tea would
+// flatten the value to the fixed xterm RGB table instead of the terminal's
+// own slot — and for "the terminal's slot N" the terminal's existing default
+// already is that palette, so leaving it untouched is the faithful rendering.
+// Every built-in theme uses hex bg/fg and is unaffected.
 func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
 	if !t.Background {
 		return nil, nil
 	}
 	p := t.Palette()
-	return lipgloss.Color(p.Bg), lipgloss.Color(p.Fg)
+	if strings.HasPrefix(p.Bg, "#") {
+		bg = lipgloss.Color(p.Bg)
+	}
+	if strings.HasPrefix(p.Fg, "#") {
+		fg = lipgloss.Color(p.Fg)
+	}
+	return bg, fg
 }
 
 // nameWidth is the fixed column width for repo names in the list; labelWidth is

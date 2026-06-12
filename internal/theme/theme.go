@@ -60,6 +60,10 @@ var builtin = map[string]Palette{
 		Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c",
 		Blue: "#bd93f9", Aqua: "#8be9fd", Orange: "#ffb86c",
 	},
+	// monokai is the TextMate original, except Aqua: the .tmTheme has no second
+	// cyan, so #a1efe4 follows the common terminal ports (base16) to keep the
+	// blue and aqua roles distinguishable rather than collapsing both onto
+	// #66d9ef.
 	"monokai": {
 		Bg: "#272822",
 		Fg: "#f8f8f2", Grey: "#75715e", Dim: "#49483e",

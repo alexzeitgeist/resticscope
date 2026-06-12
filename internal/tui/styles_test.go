@@ -26,6 +26,34 @@ func TestThemeTerminalColors(t *testing.T) {
 	}
 }
 
+func TestThemeTerminalColorsSkipANSI(t *testing.T) {
+	// OSC 10/11 take a concrete color, not a palette index, so an ANSI-256
+	// bg/fg must not be painted (Bubble Tea would flatten it to the fixed
+	// xterm table instead of the terminal's own slot). Each channel skips
+	// independently; the hex one still paints.
+	th := config.Theme{
+		Name:       "gruvbox-dark",
+		Background: true,
+		Colors:     config.ThemeColors{Bg: "0", Fg: "#ebdbb2"},
+	}
+	bg, fg := themeTerminalColors(th)
+	if bg != nil {
+		t.Errorf("ANSI bg must not be painted, got %v", bg)
+	}
+	if fg != lipgloss.Color("#ebdbb2") {
+		t.Errorf("hex fg should still paint, got %v", fg)
+	}
+
+	th.Colors = config.ThemeColors{Bg: "#101010", Fg: "245"}
+	bg, fg = themeTerminalColors(th)
+	if bg != lipgloss.Color("#101010") {
+		t.Errorf("hex bg should still paint, got %v", bg)
+	}
+	if fg != nil {
+		t.Errorf("ANSI fg must not be painted, got %v", fg)
+	}
+}
+
 func TestViewPaintsThemeBackground(t *testing.T) {
 	a := testApp(nil)
 	a.Cfg.Theme = config.Theme{Name: "gruvbox-light", Background: true}

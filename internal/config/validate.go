@@ -110,7 +110,8 @@ func (c *Config) Validate() error {
 // is otherwise undiscoverable), and each non-empty [theme.colors] override
 // must be a color lipgloss can parse — rejected here by theme.ValidColor so a
 // typo fails at startup instead of silently rendering as black. Name is seeded
-// to the default in Normalize, so an empty value reaching here was explicit.
+// to the default in Decode, so an empty value reaching here was explicit and
+// is rejected like any other unknown name.
 func (c *Config) validateTheme() []error {
 	var errs []error
 	if _, ok := theme.Lookup(c.Theme.Name); !ok {

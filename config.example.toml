@@ -91,7 +91,8 @@ unsafe_symlinks = "keep"
 # Any role can be overridden on top of the chosen base theme — override all
 # ten and you have a fully custom theme. Values are "#rgb"/"#rrggbb" hex or an
 # ANSI-256 code "0"-"255" (which inherits your terminal's own palette for that
-# slot). The roles: bg (terminal background), fg (primary text), grey
+# slot; for bg/fg an ANSI code also leaves that terminal default unpainted —
+# only hex values repaint it). The roles: bg (terminal background), fg (primary text), grey
 # (metadata), dim (separators, disabled), red (errors/removed/overdue), green
 # (ok/added), yellow (titles/modified/grace), blue (headings/directories),
 # aqua (labels/symlinks/spinner), orange (the accent: cursor, key hints,

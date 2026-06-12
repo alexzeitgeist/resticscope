@@ -30,9 +30,10 @@ type Config struct {
 // Theme selects the TUI color theme: one of the built-in palettes compiled
 // into the binary (internal/theme — no theme files ship beside it), optionally
 // adjusted per role through [theme.colors]. Overriding every role on top of
-// any base yields a fully custom theme. Name defaults to theme.DefaultName in
-// Normalize; name and colors are checked in Validate so a typo'd theme or
-// color fails at startup instead of rendering black.
+// any base yields a fully custom theme. Name is seeded to theme.DefaultName in
+// Decode (so an explicit `name = ""` survives to be rejected); name and colors
+// are checked in Validate so a typo'd theme or color fails at startup instead
+// of rendering black.
 //
 // Background controls whether the TUI paints the terminal's default
 // background/foreground (OSC 11/10) with the theme's bg/fg while it runs —
@@ -50,8 +51,11 @@ type Theme struct {
 // ThemeColors holds optional per-role color overrides applied on top of the
 // named base palette. An empty field keeps the base color. Values are "#rgb" /
 // "#rrggbb" hex or an ANSI-256 code "0"–"255" (which inherits the terminal's
-// own palette for that slot). The role vocabulary is documented on
-// theme.Palette.
+// own palette for that slot). For Bg/Fg the ANSI form additionally skips the
+// terminal-default painting of that channel even when Background is true,
+// because OSC 10/11 take a concrete color, not a palette index — the
+// terminal's existing default already is that slot. The role vocabulary is
+// documented on theme.Palette.
 type ThemeColors struct {
 	Bg     string `toml:"bg"`
 	Fg     string `toml:"fg"`

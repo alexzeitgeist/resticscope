@@ -85,9 +85,13 @@ func Decode(data []byte) (*Config, error) {
 			ExtractTimeout: Duration(defaultExtractTimeout),
 			UnsafeSymlinks: defaultUnsafeSymlinks,
 		},
-		// Like refresh_on_open: a default-true bool must be seeded before the
-		// decode so an explicit `background = false` stays distinguishable.
-		Theme: Theme{Background: true},
+		// Background, like refresh_on_open, is a default-true bool and must be
+		// seeded before the decode so an explicit `background = false` stays
+		// distinguishable. Name is seeded here too (not in Normalize) so an
+		// explicit `name = ""` overwrites the default, survives to validation,
+		// and is rejected there with the list of themes, while an omitted key
+		// keeps the default — the browse index_timeout pattern.
+		Theme: Theme{Name: theme.DefaultName, Background: true},
 	}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
@@ -137,13 +141,9 @@ func (c *Config) Normalize(home string) {
 		g.GroupBy = []string{}
 	}
 
-	// Browse/diff stream settings are seeded with their defaults in Decode (not
-	// here) so an explicit timeout `0` is distinguishable from an omitted key
-	// and reaches validation.
-
-	if c.Theme.Name == "" {
-		c.Theme.Name = theme.DefaultName
-	}
+	// Browse/diff stream settings and the theme are seeded with their defaults
+	// in Decode (not here) so an explicit timeout `0` / `name = ""` is
+	// distinguishable from an omitted key and reaches validation.
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {

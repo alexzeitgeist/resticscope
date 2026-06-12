@@ -79,6 +79,19 @@ grey   = "245"
 	}
 }
 
+func TestThemeRejectsExplicitEmptyName(t *testing.T) {
+	// Omitted name keeps the default (seeded in Decode); an explicit empty
+	// string must overwrite the seed and fail validation like any unknown name
+	// rather than being silently corrected.
+	_, err := load(t, minimalTOML+`
+[theme]
+name = ""
+`)
+	if err == nil || !strings.Contains(err.Error(), `theme.name ""`) {
+		t.Fatalf("expected explicit empty theme.name to be rejected, got: %v", err)
+	}
+}
+
 func TestThemeBackgroundDefaultsTrue(t *testing.T) {
 	cfg, err := load(t, minimalTOML)
 	if err != nil {
