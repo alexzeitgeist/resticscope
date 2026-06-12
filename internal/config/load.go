@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"resticscope/internal/theme"
 )
 
 // Defaults applied when a setting is left at its zero value.
@@ -83,6 +85,9 @@ func Decode(data []byte) (*Config, error) {
 			ExtractTimeout: Duration(defaultExtractTimeout),
 			UnsafeSymlinks: defaultUnsafeSymlinks,
 		},
+		// Like refresh_on_open: a default-true bool must be seeded before the
+		// decode so an explicit `background = false` stays distinguishable.
+		Theme: Theme{Background: true},
 	}
 	md, err := toml.Decode(string(data), &cfg)
 	if err != nil {
@@ -135,6 +140,10 @@ func (c *Config) Normalize(home string) {
 	// Browse/diff stream settings are seeded with their defaults in Decode (not
 	// here) so an explicit timeout `0` is distinguishable from an omitted key
 	// and reaches validation.
+
+	if c.Theme.Name == "" {
+		c.Theme.Name = theme.DefaultName
+	}
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {

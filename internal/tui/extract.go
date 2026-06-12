@@ -176,9 +176,12 @@ type extractModel struct {
 
 	// filepicker is constructed lazily on first entry to extractStateFilePicker
 	// so the embedded model only reads disk when the user opens it.
+	// pickerStyles is resolved from the configured theme by the constructors
+	// (which hold the App; ensureFilepicker doesn't), ready for that first use.
 	filepicker     filepicker.Model
 	filepickerInit bool
 	filepickerErr  string
+	pickerStyles   filepicker.Styles
 
 	// sudoBusy is true between committing a privileged extract and the sudo
 	// probe / interactive auth resolving. It debounces enter on review and
@@ -220,14 +223,15 @@ func newExtractModel(a *app.App, parentCtx context.Context, req app.ExtractReque
 	}
 	free, freeKnown := app.ExtractFreeSpace(staging)
 	return extractModel{
-		drv:       a,
-		cfg:       a.Cfg.Extract,
-		parentCtx: parentCtx,
-		state:     extractStateReview,
-		req:       req,
-		srcSize:   srcSize,
-		staging:   staging,
-		final:     final,
+		drv:          a,
+		cfg:          a.Cfg.Extract,
+		pickerStyles: filepickerStyles(a.Cfg.Theme.Palette()),
+		parentCtx:    parentCtx,
+		state:        extractStateReview,
+		req:          req,
+		srcSize:      srcSize,
+		staging:      staging,
+		final:        final,
 		// A few stats, same order of cost as a filepicker selection pays in
 		// planExtractOverride.
 		targetBusy:      isExtractRefusal(app.FreshTargetCheck(staging, final)),
@@ -291,6 +295,7 @@ func newExtractDiffModel(a *app.App, parentCtx context.Context, reqs []app.Extra
 	return extractModel{
 		drv:             a,
 		cfg:             a.Cfg.Extract,
+		pickerStyles:    filepickerStyles(a.Cfg.Theme.Palette()),
 		parentCtx:       parentCtx,
 		state:           extractStateReview,
 		req:             reqs[0],
@@ -446,7 +451,7 @@ func (m *extractModel) ensureFilepicker() tea.Cmd {
 	}
 	m.filepickerInit = true
 	fp := filepicker.New()
-	fp.Styles = filepickerStyles()
+	fp.Styles = m.pickerStyles
 	// The same accent gutter glyph every list in the app marks its cursor row
 	// with (browse, detail, snapshot diff).
 	fp.Cursor = "▎"

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"resticscope/internal/theme"
 )
 
 // Config is the fully parsed, normalized, validated configuration.
@@ -22,6 +24,73 @@ type Config struct {
 	Browse      Browse       `toml:"browse"`
 	Diff        Diff         `toml:"diff"`
 	Extract     Extract      `toml:"extract"`
+	Theme       Theme        `toml:"theme"`
+}
+
+// Theme selects the TUI color theme: one of the built-in palettes compiled
+// into the binary (internal/theme — no theme files ship beside it), optionally
+// adjusted per role through [theme.colors]. Overriding every role on top of
+// any base yields a fully custom theme. Name defaults to theme.DefaultName in
+// Normalize; name and colors are checked in Validate so a typo'd theme or
+// color fails at startup instead of rendering black.
+//
+// Background controls whether the TUI paints the terminal's default
+// background/foreground (OSC 11/10) with the theme's bg/fg while it runs —
+// required for a theme to look right on a terminal with a different scheme
+// (e.g. a light theme on a dark terminal). Default true; set false to keep the
+// terminal's own background (transparency, a matching terminal theme) and use
+// only the foreground colors. Seeded true in Decode because a plain bool
+// cannot distinguish an absent key from an explicit `false` afterward.
+type Theme struct {
+	Name       string      `toml:"name"`
+	Background bool        `toml:"background"`
+	Colors     ThemeColors `toml:"colors"`
+}
+
+// ThemeColors holds optional per-role color overrides applied on top of the
+// named base palette. An empty field keeps the base color. Values are "#rgb" /
+// "#rrggbb" hex or an ANSI-256 code "0"–"255" (which inherits the terminal's
+// own palette for that slot). The role vocabulary is documented on
+// theme.Palette.
+type ThemeColors struct {
+	Bg     string `toml:"bg"`
+	Fg     string `toml:"fg"`
+	Grey   string `toml:"grey"`
+	Dim    string `toml:"dim"`
+	Red    string `toml:"red"`
+	Green  string `toml:"green"`
+	Yellow string `toml:"yellow"`
+	Blue   string `toml:"blue"`
+	Aqua   string `toml:"aqua"`
+	Orange string `toml:"orange"`
+}
+
+// Palette resolves the configured theme to the concrete palette the TUI
+// renders with: the named built-in base with every non-empty override applied
+// on top. An unknown name falls back to the default palette so a Config that
+// skipped Normalize/Validate (tests, zero values) still renders sanely.
+func (t Theme) Palette() theme.Palette {
+	p, ok := theme.Lookup(t.Name)
+	if !ok {
+		p = theme.Default()
+	}
+	o := t.Colors
+	apply := func(dst *string, v string) {
+		if v != "" {
+			*dst = v
+		}
+	}
+	apply(&p.Bg, o.Bg)
+	apply(&p.Fg, o.Fg)
+	apply(&p.Grey, o.Grey)
+	apply(&p.Dim, o.Dim)
+	apply(&p.Red, o.Red)
+	apply(&p.Green, o.Green)
+	apply(&p.Yellow, o.Yellow)
+	apply(&p.Blue, o.Blue)
+	apply(&p.Aqua, o.Aqua)
+	apply(&p.Orange, o.Orange)
+	return p
 }
 
 // Browse bounds the in-app snapshot file browser. The first time a snapshot is

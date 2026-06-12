@@ -16,6 +16,7 @@ import (
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
+	"resticscope/internal/theme"
 )
 
 // extract_test.go drives the extract sub-model through every state transition
@@ -1388,7 +1389,7 @@ func TestPrivilegedCommitUnavailable(t *testing.T) {
 // notice after a failure.
 func TestExtractReviewBodySudoSlot(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	m := Model{styles: newStyles(), extract: em}
+	m := Model{styles: newStyles(theme.Default()), extract: em}
 
 	if got := stripANSI(m.extractReviewBody(100)); strings.Contains(got, "checking sudo access") {
 		t.Errorf("idle review shows the sudo-busy hint\n---\n%s", got)
@@ -1411,7 +1412,7 @@ func TestExtractReviewBodySudoSlot(t *testing.T) {
 // privileged toggle's feedback is a dim line under the rows instead.
 func TestExtractReviewBodyDirMarkers(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	m := Model{styles: newStyles(), extract: em}
+	m := Model{styles: newStyles(theme.Default()), extract: em}
 	got := stripANSI(m.extractReviewBody(100))
 	if !strings.Contains(got, "▸ "+dirReq().Source) {
 		t.Errorf("dir review missing source marker\n---\n%s", got)
@@ -1432,7 +1433,7 @@ func TestExtractReviewBodyDirMarkers(t *testing.T) {
 	}
 
 	fm, _ := newExtractFixture(t, fileReq())
-	m = Model{styles: newStyles(), extract: fm}
+	m = Model{styles: newStyles(theme.Default()), extract: fm}
 	if got := stripANSI(m.extractReviewBody(100)); strings.Contains(got, "▸") {
 		t.Errorf("file review must not carry dir markers\n---\n%s", got)
 	}

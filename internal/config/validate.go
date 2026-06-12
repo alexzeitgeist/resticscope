@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"resticscope/internal/theme"
 )
 
 var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
@@ -98,8 +100,35 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateBrowse()...)
 	errs = append(errs, c.validateDiff()...)
 	errs = append(errs, c.validateExtract()...)
+	errs = append(errs, c.validateTheme()...)
 
 	return errors.Join(errs...)
+}
+
+// validateTheme checks the [theme] block: the name must be a built-in theme
+// (the message lists every valid choice, since the set lives in the binary and
+// is otherwise undiscoverable), and each non-empty [theme.colors] override
+// must be a color lipgloss can parse — rejected here by theme.ValidColor so a
+// typo fails at startup instead of silently rendering as black. Name is seeded
+// to the default in Normalize, so an empty value reaching here was explicit.
+func (c *Config) validateTheme() []error {
+	var errs []error
+	if _, ok := theme.Lookup(c.Theme.Name); !ok {
+		errs = append(errs, fmt.Errorf("theme.name %q is not a built-in theme (one of: %s)",
+			c.Theme.Name, strings.Join(theme.Names(), ", ")))
+	}
+	o := c.Theme.Colors
+	roles := []struct{ key, value string }{
+		{"bg", o.Bg}, {"fg", o.Fg}, {"grey", o.Grey}, {"dim", o.Dim},
+		{"red", o.Red}, {"green", o.Green}, {"yellow", o.Yellow},
+		{"blue", o.Blue}, {"aqua", o.Aqua}, {"orange", o.Orange},
+	}
+	for _, r := range roles {
+		if r.value != "" && !theme.ValidColor(r.value) {
+			errs = append(errs, fmt.Errorf("theme.colors.%s: %q is not a hex color (\"#rgb\" / \"#rrggbb\") or ANSI-256 code (\"0\"–\"255\")", r.key, r.value))
+		}
+	}
+	return errs
 }
 
 func (c *Config) validateDiff() []error {

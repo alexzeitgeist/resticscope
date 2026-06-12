@@ -104,6 +104,15 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.frame(title, body))
 	v.AltScreen = true
 	v.WindowTitle = m.windowTitle()
+	// Paint the terminal's default background/foreground with the theme's —
+	// without this only the styled foregrounds change and e.g. a light theme
+	// sits on the terminal's dark background. nil fields are a no-op, and the
+	// renderer resets both on quit (the quitting branch above returns a view
+	// with neither set) and re-asserts them when a shell-out resumes.
+	if m.colorOK {
+		v.BackgroundColor = m.termBg
+		v.ForegroundColor = m.termFg
+	}
 	return v
 }
 

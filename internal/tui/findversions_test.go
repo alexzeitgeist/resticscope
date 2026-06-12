@@ -12,6 +12,7 @@ import (
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
+	"resticscope/internal/theme"
 )
 
 // findversions_test.go drives the find-versions view through its state
@@ -451,7 +452,7 @@ func TestStartFindVersionsCancelsPriorFindBeforeClearing(t *testing.T) {
 }
 
 func TestPathLineDoesNotExpandSpacesInsidePath(t *testing.T) {
-	m := Model{styles: newStyles()}
+	m := Model{styles: newStyles(theme.Default())}
 	p := "/E/OneDrive/Bilder/Eigene Aufnahmen/2026/05/20260503_132847286_iOS.jpg"
 
 	line := stripANSI(m.pathLine("Path", p, 160))

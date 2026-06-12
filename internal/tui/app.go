@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"image/color"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
@@ -54,6 +56,16 @@ type Model struct {
 	height     int
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
+
+	// termBg/termFg are the theme's terminal default background/foreground,
+	// painted on every View (OSC 11/10) so the whole screen matches the theme
+	// rather than the terminal's own scheme; the renderer resets them on quit
+	// and re-asserts them after a shell-out resumes. nil (no painting) when
+	// [theme] background = false. colorOK gates the painting on the terminal
+	// actually supporting color — set by the startup tea.ColorProfileMsg, so a
+	// NO_COLOR / dumb-terminal session never has its background forced.
+	termBg, termFg color.Color
+	colorOK        bool
 
 	// Browse state, kept off disk by design. The on-screen rows are session-only — they are never persisted
 	// to the cache, RepoState, or any log, and leaving browse clears them. The
@@ -220,7 +232,7 @@ func runProgram(ctx context.Context, a *app.App, resticVer string, opts ...tea.P
 }
 
 func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows []app.RepoStatus, resticVer string) Model {
-	st := newStyles()
+	st := newStyles(a.Cfg.Theme.Palette())
 	helpModel := help.New()
 	helpModel.Styles = st.help
 
@@ -238,6 +250,7 @@ func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows [
 		sem:       make(chan struct{}, parallelism(a.Cfg)),
 		resticVer: resticVer,
 	}
+	m.termBg, m.termFg = themeTerminalColors(a.Cfg.Theme)
 	// Start grouped by the first configured key when any key is configured; the
 	// user cycles through the rest (and back to flat) with `g`. Transient, never
 	// persisted.
@@ -288,6 +301,14 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.ColorProfileMsg:
+		// Sent once at startup (and again if the profile is upgraded). ANSI and
+		// up means the terminal does color, so the theme background may be
+		// painted; Ascii/NoTTY (NO_COLOR sessions, dumb terminals) must keep
+		// their default background even though OSC 11 is technically separate
+		// from SGR color support.
+		m.colorOK = msg.Profile >= colorprofile.ANSI
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height

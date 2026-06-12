@@ -73,6 +73,33 @@ extract_timeout = "30m"
 # follows an unsafe link.
 unsafe_symlinks = "keep"
 
+# --- color theme ---------------------------------------------------------------
+# The TUI's colors. All themes are compiled into the binary — no theme files.
+# Built-in names: catppuccin-latte, catppuccin-mocha, dracula, gruvbox-dark
+# (the default), gruvbox-light, monokai, nord, one-dark, solarized-dark,
+# solarized-light, tokyo-night. This whole block is optional.
+#[theme]
+#name = "nord"
+
+# While the TUI runs it paints the terminal's default background/foreground
+# with the theme's bg/fg (restored on exit and during shell-outs), so a theme
+# looks right even on a terminal with a different scheme. Set false to keep
+# your terminal's own background (e.g. transparency, or a terminal already
+# themed to match) and apply only the foreground colors.
+#background = true
+
+# Any role can be overridden on top of the chosen base theme — override all
+# ten and you have a fully custom theme. Values are "#rgb"/"#rrggbb" hex or an
+# ANSI-256 code "0"-"255" (which inherits your terminal's own palette for that
+# slot). The roles: bg (terminal background), fg (primary text), grey
+# (metadata), dim (separators, disabled), red (errors/removed/overdue), green
+# (ok/added), yellow (titles/modified/grace), blue (headings/directories),
+# aqua (labels/symlinks/spinner), orange (the accent: cursor, key hints,
+# bitrot).
+#[theme.colors]
+#orange = "#d65d0e"
+#grey   = "245"
+
 # --- S3 credentials -----------------------------------------------------------
 # A credential is just a NAME for an access-key/secret-key pair; it carries no
 # location. On Hetzner one project key pair reaches every bucket in the project,

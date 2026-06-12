@@ -1,29 +1,20 @@
 package tui
 
 import (
+	"image/color"
+
 	"charm.land/bubbles/v2/filepicker"
 	helpbubble "charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 
+	"resticscope/internal/config"
 	"resticscope/internal/model"
+	"resticscope/internal/theme"
 )
 
-// Gruvbox dark palette — the single source for every color in the TUI, shared
-// by newStyles and filepickerStyles.
-var (
-	gruvFg     = lipgloss.Color("#ebdbb2")
-	gruvGrey   = lipgloss.Color("#928374")
-	gruvDim    = lipgloss.Color("#7c6f64")
-	gruvRed    = lipgloss.Color("#fb4934")
-	gruvGreen  = lipgloss.Color("#b8bb26")
-	gruvYellow = lipgloss.Color("#fabd2f")
-	gruvBlue   = lipgloss.Color("#83a598")
-	gruvAqua   = lipgloss.Color("#8ec07c")
-	gruvOrange = lipgloss.Color("#fe8019")
-)
-
-// styles holds the Lip Gloss styles for the TUI. Colors use the Gruvbox dark
-// palette; Lip Gloss degrades gracefully on limited terminals and honors
+// styles holds the Lip Gloss styles for the TUI. Colors come from the
+// configured theme.Palette (gruvbox dark by default; see the [theme] config
+// block); Lip Gloss degrades gracefully on limited terminals and honors
 // NO_COLOR for free.
 type styles struct {
 	title        lipgloss.Style
@@ -44,7 +35,7 @@ type styles struct {
 	help         helpbubble.Styles
 	glyph        map[model.Status]lipgloss.Style
 
-	// Snapshot-diff change-type styles. Each color is a documented Gruvbox hue:
+	// Snapshot-diff change-type styles. Each color is a documented palette role:
 	// green=added, red=removed, yellow=modified, blue/dim=metadata-only,
 	// aqua=type-changed, orange+bold=bitrot (loud — it is a corruption signal).
 	chgAdded       lipgloss.Style
@@ -55,17 +46,17 @@ type styles struct {
 	chgBitrot      lipgloss.Style
 }
 
-func newStyles() styles {
+func newStyles(p theme.Palette) styles {
 	var (
-		fg     = gruvFg
-		grey   = gruvGrey
-		dim    = gruvDim
-		red    = gruvRed
-		green  = gruvGreen
-		yellow = gruvYellow
-		blue   = gruvBlue
-		aqua   = gruvAqua
-		orange = gruvOrange
+		fg     = lipgloss.Color(p.Fg)
+		grey   = lipgloss.Color(p.Grey)
+		dim    = lipgloss.Color(p.Dim)
+		red    = lipgloss.Color(p.Red)
+		green  = lipgloss.Color(p.Green)
+		yellow = lipgloss.Color(p.Yellow)
+		blue   = lipgloss.Color(p.Blue)
+		aqua   = lipgloss.Color(p.Aqua)
+		orange = lipgloss.Color(p.Orange)
 	)
 	meta := lipgloss.NewStyle().Foreground(grey)
 	key := lipgloss.NewStyle().Foreground(orange)
@@ -117,27 +108,46 @@ func newStyles() styles {
 }
 
 // filepickerStyles maps the embedded bubbles filepicker (the extract
-// target-root overlay) onto the same Gruvbox roles the rest of the TUI uses:
+// target-root overlay) onto the same palette roles the rest of the TUI uses:
 // orange accent for the cursor row, grey for metadata (permissions, sizes),
 // dim for the disabled/empty cases. Directories are blue — the navigable,
 // selectable rows — while plain files are grey, since this picker only ever
 // selects directories. Starting from DefaultStyles keeps the layout-bearing
 // bits (the right-aligned size column width, which the picker's cursor-row
 // renderer reads back via GetWidth) intact.
-func filepickerStyles() filepicker.Styles {
+func filepickerStyles(p theme.Palette) filepicker.Styles {
+	var (
+		grey   = lipgloss.Color(p.Grey)
+		dim    = lipgloss.Color(p.Dim)
+		blue   = lipgloss.Color(p.Blue)
+		aqua   = lipgloss.Color(p.Aqua)
+		orange = lipgloss.Color(p.Orange)
+	)
 	s := filepicker.DefaultStyles()
-	s.Cursor = lipgloss.NewStyle().Foreground(gruvOrange)
-	s.Selected = lipgloss.NewStyle().Foreground(gruvOrange).Bold(true)
-	s.DisabledCursor = lipgloss.NewStyle().Foreground(gruvDim)
-	s.DisabledSelected = lipgloss.NewStyle().Foreground(gruvDim)
-	s.Directory = lipgloss.NewStyle().Foreground(gruvBlue)
-	s.File = lipgloss.NewStyle().Foreground(gruvGrey)
-	s.DisabledFile = lipgloss.NewStyle().Foreground(gruvDim)
-	s.Symlink = lipgloss.NewStyle().Foreground(gruvAqua)
-	s.Permission = lipgloss.NewStyle().Foreground(gruvGrey)
-	s.FileSize = s.FileSize.Foreground(gruvGrey)
-	s.EmptyDirectory = s.EmptyDirectory.Foreground(gruvDim).SetString("empty directory")
+	s.Cursor = lipgloss.NewStyle().Foreground(orange)
+	s.Selected = lipgloss.NewStyle().Foreground(orange).Bold(true)
+	s.DisabledCursor = lipgloss.NewStyle().Foreground(dim)
+	s.DisabledSelected = lipgloss.NewStyle().Foreground(dim)
+	s.Directory = lipgloss.NewStyle().Foreground(blue)
+	s.File = lipgloss.NewStyle().Foreground(grey)
+	s.DisabledFile = lipgloss.NewStyle().Foreground(dim)
+	s.Symlink = lipgloss.NewStyle().Foreground(aqua)
+	s.Permission = lipgloss.NewStyle().Foreground(grey)
+	s.FileSize = s.FileSize.Foreground(grey)
+	s.EmptyDirectory = s.EmptyDirectory.Foreground(dim).SetString("empty directory")
 	return s
+}
+
+// themeTerminalColors resolves the [theme] block to the terminal default
+// background/foreground View paints each frame (OSC 11/10). Both are nil —
+// paint nothing, keep the terminal's own scheme — when the user opted out via
+// `background = false`.
+func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
+	if !t.Background {
+		return nil, nil
+	}
+	p := t.Palette()
+	return lipgloss.Color(p.Bg), lipgloss.Color(p.Fg)
 }
 
 // nameWidth is the fixed column width for repo names in the list; labelWidth is
