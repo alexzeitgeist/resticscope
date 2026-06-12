@@ -3160,8 +3160,9 @@ func TestTruncate(t *testing.T) {
 }
 
 // truncateNameWidth keeps the extension (and a dir's trailing slash) visible
-// through the cut, so a column of truncated names still tells file types
-// apart; without a usable extension it degrades to plain end-truncation.
+// through the cut and elides the stem in the middle, so a column of truncated
+// names still tells file types apart and keeps the tail where generated and
+// versioned names actually differ.
 func TestTruncateNameWidth(t *testing.T) {
 	tests := []struct {
 		s    string
@@ -3169,15 +3170,16 @@ func TestTruncateNameWidth(t *testing.T) {
 		want string
 	}{
 		{"short.pdf", 20, "short.pdf"},                            // fits unchanged
-		{"a-very-long-document-name.pdf", 16, "a-very-long….pdf"}, // extension survives
-		{"VID-20200507-WA0012.mp4", 12, "VID-202….mp4"},           // ditto for media names
-		{"a-very-long-directory-name/", 12, "a-very-lon…/"},       // dirs keep the trailing slash
-		{"no-extension-at-all-here", 12, "no-extensio…"},          // no ext: plain cut
-		{".config-cache-2024-backup", 12, ".config-cac…"},         // dotfile: leading dot is no ext
-		{"name.with a space.suffix here", 12, "name.with a…"},     // spaced suffix is no ext
-		{"long-name.backupfile", 14, "long-name.bac…"},            // overlong suffix is no ext
+		{"a-very-long-document-name.pdf", 16, "a-very…-name.pdf"}, // extension and stem tail survive
+		{"VID-20200507-WA0012.mp4", 12, "VID-…012.mp4"},           // sequence tail beats the shared prefix
+		{"a-very-long-directory-name/", 12, "a-ver…-name/"},       // dirs keep the trailing slash
+		{"no-extension-at-all-here", 12, "no-ext…-here"},          // no ext: stem still middle-elided
+		{".config-cache-2024-backup", 12, ".confi…ackup"},         // dotfile: leading dot is no ext
+		{"name.with a space.suffix here", 12, "name.w… here"},     // spaced suffix is no ext
+		{"long-name.backupfile", 14, "long-na…upfile"},            // overlong suffix is no ext
 		{"x.pdf", 4, "x.p…"},                                      // too narrow for the suffix: plain cut
-		{"héllo-wörld.txt", 10, "héllo….txt"},                     // width-measured head
+		{"héllo-wörld.txt", 10, "hél…ld.txt"},                     // width-measured head and tail
+		{"中文文档备份记录.txt", 12, "中文…录.txt"},                          // double-cell runes: the tail drops one that won't fit its last cell
 	}
 	for _, tt := range tests {
 		got := truncateNameWidth(tt.s, tt.max)
@@ -3204,9 +3206,9 @@ func TestTruncatePathWidth(t *testing.T) {
 		{long, 60, long}, // fits unchanged
 		{long, 40, "/Android/media/…/IMG-1234.jpg"},        // middle elided at component boundaries
 		{long, 14, "…/IMG-1234.jpg"},                       // only the basename fits
-		{long, 10, "…/IMG….jpg"},                           // basename itself cut, extension kept
+		{long, 10, "…/I…34.jpg"},                           // basename itself cut, extension kept
 		{"/a/b/c/dir/", 8, "/…/dir/"},                      // dir paths keep the trailing slash
-		{"bare-name-no-slashes.txt", 12, "bare-na….txt"},   // no slash: name truncation
+		{"bare-name-no-slashes.txt", 12, "bare…hes.txt"},   // no slash: name truncation
 		{"  /home/deep/needle.txt", 18, "  /…/needle.txt"}, // icon prefix sticks to the head
 	}
 	for _, tt := range tests {

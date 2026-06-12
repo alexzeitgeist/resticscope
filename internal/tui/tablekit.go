@@ -62,6 +62,22 @@ func widthPrefix(s string, budget int) string {
 	return b.String()
 }
 
+// widthSuffix is widthPrefix's mirror: the longest suffix of s spanning at
+// most budget display cells.
+func widthSuffix(s string, budget int) string {
+	r := []rune(s)
+	w, i := 0, len(r)
+	for i > 0 {
+		rw := lipgloss.Width(string(r[i-1]))
+		if w+rw > budget {
+			break
+		}
+		i--
+		w += rw
+	}
+	return string(r[i:])
+}
+
 // truncExtMax bounds the suffix nameExt treats as a file extension: a dot plus
 // up to six characters covers real extensions (".pdf", ".jsonl", ".sqlite")
 // while rejecting dotted prose that happens to end a long filename.
@@ -83,11 +99,14 @@ func nameExt(name string) string {
 }
 
 // truncateNameWidth shortens a filename to at most max display cells like
-// truncateWidth, but keeps what identifies the entry through the cut: the
+// truncateWidth, but keeps what identifies the entry through the cut. The
 // extension and a directory's trailing slash survive at the end, so a column
-// of truncated names still tells "….pdf" from "….mp4" instead of cutting both
-// to the same opaque "Medi…". Falls back to plain truncateWidth when the
-// column is too narrow to fit even the suffix.
+// of truncated names still tells "….pdf" from "….mp4", and the stem is elided
+// in the middle — generated and versioned names differ at their tail
+// ("VID-…0012.mp4" beats "VID-202….mp4", which keeps only the shared prefix).
+// The remaining stem budget splits evenly between head and tail, head taking
+// the odd cell. Falls back to plain truncateWidth when the column is too
+// narrow to fit even the suffix.
 func truncateNameWidth(s string, max int) string {
 	if max <= 0 || lipgloss.Width(s) <= max {
 		return truncateWidth(s, max)
@@ -101,7 +120,10 @@ func truncateNameWidth(s string, max int) string {
 	if budget < 1 {
 		return truncateWidth(s, max)
 	}
-	return widthPrefix(core[:len(core)-len(ext)], budget) + "…" + ext + trail
+	stem := core[:len(core)-len(ext)]
+	head := widthPrefix(stem, (budget+1)/2)
+	tail := widthSuffix(stem, budget-lipgloss.Width(head))
+	return head + "…" + tail + ext + trail
 }
 
 // truncatePathWidth shortens a path to at most max display cells, keeping the
