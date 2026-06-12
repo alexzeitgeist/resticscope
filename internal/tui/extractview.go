@@ -274,23 +274,48 @@ func (m Model) extractSuccessBody(w int) string {
 		"  " + summary,
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
-		"    " + m.styles.meta.Render(em.result.FinalPath),
+	}
+	for _, ln := range strings.Split(wrapPathValue(em.result.FinalPath, w-4), "\n") {
+		body = append(body, "    "+m.styles.meta.Render(ln))
 	}
 	if em.req.Privileged {
-		body = append(body,
-			"",
-			"  "+m.styles.dim.Render("extracted as root — snapshot file ownership preserved"),
-		)
+		body = append(body, "")
+		body = append(body, m.extractDimNoteLines("extracted as root — snapshot file ownership preserved", w)...)
 	}
 	// Count-only warning when the tree carried unsafe symlinks. No names — only the
 	// count — so the line stays path-free even though FinalPath is shown above.
 	if em.result.UnsafeSymlinks > 0 {
-		body = append(body,
-			"",
-			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(em.result.UnsafeSymlinks, em.cfg.UnsafeSymlinks)),
-		)
+		body = append(body, "")
+		body = append(body, m.extractWarnLines(extractUnsafeSymlinkWarning(em.result.UnsafeSymlinks, em.cfg.UnsafeSymlinks), w)...)
 	}
 	return clipLines(body, w)
+}
+
+// extractWarnLines renders a "! "-prefixed warning word-wrapped to the body
+// width, so a narrow pane reflows the sentence instead of clipping it
+// mid-word; continuation lines indent under the text column (past the marker).
+func (m Model) extractWarnLines(text string, w int) []string {
+	lines := strings.Split(wrapWords(text, w-4), "\n")
+	out := make([]string, 0, len(lines))
+	for i, ln := range lines {
+		if i == 0 {
+			out = append(out, "  "+m.styles.bad.Render("! ")+m.styles.dim.Render(ln))
+		} else {
+			out = append(out, "    "+m.styles.dim.Render(ln))
+		}
+	}
+	return out
+}
+
+// extractDimNoteLines renders an unmarked dim note word-wrapped to the body
+// width, continuation lines sharing the two-cell gutter.
+func (m Model) extractDimNoteLines(text string, w int) []string {
+	lines := strings.Split(wrapWords(text, w-2), "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		out = append(out, "  "+m.styles.dim.Render(ln))
+	}
+	return out
 }
 
 // extractUnsafeSymlinkWarning composes the success-screen warning for unsafe
@@ -358,16 +383,12 @@ func (m Model) extractDiffSuccessBody(w int) string {
 		body = append(body, "    "+m.styles.dim.Render(short+"  — nothing to extract on this side"))
 	}
 	if em.req.Privileged {
-		body = append(body,
-			"",
-			"  "+m.styles.dim.Render("extracted as root — snapshot file ownership preserved"),
-		)
+		body = append(body, "")
+		body = append(body, m.extractDimNoteLines("extracted as root — snapshot file ownership preserved", w)...)
 	}
 	if unsafe > 0 {
-		body = append(body,
-			"",
-			"  "+m.styles.bad.Render("! ")+m.styles.dim.Render(extractUnsafeSymlinkWarning(unsafe, em.cfg.UnsafeSymlinks)),
-		)
+		body = append(body, "")
+		body = append(body, m.extractWarnLines(extractUnsafeSymlinkWarning(unsafe, em.cfg.UnsafeSymlinks), w)...)
 	}
 	return clipLines(body, w)
 }
@@ -788,6 +809,35 @@ func wrapPathValue(p string, avail int) string {
 		b.WriteString(string(r[i:end]))
 	}
 	return b.String()
+}
+
+// wrapWords word-wraps prose into "\n"-joined runs of at most avail cells,
+// breaking at spaces so a sentence reflows on a narrow pane instead of being
+// truncated mid-word. A single word longer than avail falls back to
+// wrapPathValue's hard rune split, so no resulting line can exceed the budget.
+// Same contract as wrapPathValue otherwise: text that already fits (or a
+// non-positive avail) is returned unchanged.
+func wrapWords(s string, avail int) string {
+	if avail <= 0 || len([]rune(s)) <= avail {
+		return s
+	}
+	var lines []string
+	var cur string
+	for _, word := range strings.Fields(s) {
+		switch {
+		case cur == "":
+			cur = word
+		case len([]rune(cur))+1+len([]rune(word)) <= avail:
+			cur += " " + word
+		default:
+			lines = append(lines, wrapPathValue(cur, avail))
+			cur = word
+		}
+	}
+	if cur != "" {
+		lines = append(lines, wrapPathValue(cur, avail))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // collapsePath shortens a long absolute path by leading "…/". Cheap and good

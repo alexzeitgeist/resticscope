@@ -905,6 +905,59 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	}
 }
 
+// On a narrow pane the unsafe-symlink warning reflows across indented lines
+// instead of being clipped mid-sentence — the keep-policy text is far longer
+// than a typical split pane, and the "inspect before use" tail is the part
+// the user must not lose. Regression for the truncated done screen.
+func TestExtractSuccessUnsafeSymlinkWarningReflowsWhenNarrow(t *testing.T) {
+	a := extractApp(t)
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.state = extractStateSuccess
+	em.result = app.ExtractResult{
+		Files:          2,
+		FinalDir:       "/extracted/here",
+		FinalPath:      "/extracted/here",
+		UnsafeSymlinks: 359,
+	}
+
+	m := newTestModel(t, a)
+	m.view = extractView
+	m.width = 60 // narrower than the keep-policy warning sentence
+	m.extract = em
+	body := m.extractBody()
+
+	// The sentence tail survives (on a continuation line), so nothing was clipped.
+	joined := strings.Join(strings.Fields(body), " ")
+	if !strings.Contains(joined, "inspect before use.") {
+		t.Errorf("narrow success view clipped the warning instead of wrapping it:\n%s", body)
+	}
+}
+
+// wrapWords reflows prose at spaces within the cell budget, hard-splits a
+// single over-long word, and leaves fitting (or unboundable) text untouched.
+func TestWrapWords(t *testing.T) {
+	for name, tc := range map[string]struct {
+		s     string
+		avail int
+		want  string
+	}{
+		"fits":          {"left in place", 20, "left in place"},
+		"no budget":     {"left in place", 0, "left in place"},
+		"breaks":        {"targets are absolute or outside", 12, "targets are\nabsolute or\noutside"},
+		"long word":     {"see /a/very/long/path now", 10, "see\n/a/very/lo\nng/path\nnow"},
+		"exact fit":     {"ab cd", 5, "ab cd"},
+		"boundary word": {"abcde fghij", 5, "abcde\nfghij"},
+	} {
+		if got := wrapWords(tc.s, tc.avail); got != tc.want {
+			t.Errorf("%s: wrapWords(%q, %d) = %q, want %q", name, tc.s, tc.avail, got, tc.want)
+		}
+	}
+}
+
 // Counts of one read grammatically: "extracted 1 file · 1 dir", never
 // "1 files". Regression for the phase-4 pluralization pass.
 func TestExtractSuccessSummarySingularCounts(t *testing.T) {
