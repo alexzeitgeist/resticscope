@@ -2687,6 +2687,35 @@ func TestCycleGroupingHeaderIndicator(t *testing.T) {
 	}
 }
 
+// listTitle must show the applied filter query once the filter input closes,
+// hide it while the input is open (the footer prompt shows it there), and drop
+// it when the filter is cleared.
+func TestListTitleFilterIndicator(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m.width, m.height = 200, 30
+
+	if header := stripANSI(m.listTitle()); strings.Contains(header, "filter:") {
+		t.Errorf("no filter: header %q should omit filter indicator", header)
+	}
+
+	m = update(t, m, press("/"))
+	m = update(t, m, press("a"))
+	if header := stripANSI(m.listTitle()); strings.Contains(header, "filter:") {
+		t.Errorf("while typing: header %q should omit filter indicator", header)
+	}
+
+	m = update(t, m, press("enter"))
+	if header := stripANSI(m.listTitle()); !strings.Contains(header, `filter: "a"`) {
+		t.Errorf("applied: header %q missing %q", header, `filter: "a"`)
+	}
+
+	m = update(t, m, press("/"))
+	m = update(t, m, press("esc"))
+	if header := stripANSI(m.listTitle()); strings.Contains(header, "filter:") {
+		t.Errorf("cleared: header %q should omit filter indicator", header)
+	}
+}
+
 // Pressing g when group_by is unset is a no-op that surfaces a footer notice
 // rather than silently changing nothing.
 func TestGroupKeyWithoutConfigShowsNotice(t *testing.T) {

@@ -145,12 +145,18 @@ func (m Model) frame(titleLeft, body string) string {
 }
 
 // listTitle is the list view's title content: the app name, the repo count,
-// the restic version, and (when active) the sort and group indicators. Status
-// stays row-local so the title remains readable without relying on color-coded
-// aggregate badges.
+// the restic version, and (when active) the filter, sort, and group
+// indicators. Status stays row-local so the title remains readable without
+// relying on color-coded aggregate badges. The filter indicator is suppressed
+// while the filter input is open — the footer's live "/<query>" prompt already
+// shows the query there, and an applied filter is the state that's easy to
+// forget once the prompt is gone.
 func (m Model) listTitle() string {
 	parts := []string{m.styles.title.Render("resticscope")}
 	parts = append(parts, m.countLabel())
+	if q := normalizedFilter(m.filter); q != "" && !m.filtering {
+		parts = append(parts, "filter: "+strconv.Quote(q))
+	}
 	if m.resticVer != "" {
 		parts = append(parts, "restic "+m.resticVer)
 	}
