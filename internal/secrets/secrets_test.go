@@ -26,7 +26,80 @@ func TestParseAndResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if m.AccessKey != "AK-AAAA" || m.SecretKey != "SK-BBBB" || m.ResticPassword != "hunter2-secret" {
+	if m.Env["AWS_ACCESS_KEY_ID"] != "AK-AAAA" || m.Env["AWS_SECRET_ACCESS_KEY"] != "SK-BBBB" || m.ResticPassword != "hunter2-secret" {
+		t.Errorf("unexpected material: %+v", m)
+	}
+}
+
+// TestParseAndResolveEnvCredential covers the generic credential shape: env
+// vars reach Material verbatim, so any restic backend's secrets can ride.
+func TestParseAndResolveEnvCredential(t *testing.T) {
+	json := `{
+	  "credentials": {
+	    "b2-home": { "env": { "B2_ACCOUNT_ID": "id-123", "B2_ACCOUNT_KEY": "key-456" } }
+	  },
+	  "repos": {
+	    "repo-a": { "restic_password": "hunter2-secret" }
+	  }
+	}`
+	store, err := Parse([]byte(json))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if _, err := store.Validate([]string{"b2-home"}, []string{"repo-a"}); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	m, err := store.Resolve("repo-a", "b2-home")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if m.Env["B2_ACCOUNT_ID"] != "id-123" || m.Env["B2_ACCOUNT_KEY"] != "key-456" || m.ResticPassword != "hunter2-secret" {
+		t.Errorf("unexpected material: %+v", m)
+	}
+}
+
+// TestRestBackendEnvAllowed pins the reserved-name boundary: only the env vars
+// resticscope itself owns (RESTIC_REPOSITORY, the RESTIC_PASSWORD* family,
+// RESTIC_CACHE_DIR, ...) are reserved — NOT the whole RESTIC_ prefix. The rest
+// backend's documented credential shape is RESTIC_REST_USERNAME /
+// RESTIC_REST_PASSWORD, and it must validate and resolve.
+func TestRestBackendEnvAllowed(t *testing.T) {
+	json := `{
+	  "credentials": {
+	    "rest-server": { "env": { "RESTIC_REST_USERNAME": "u", "RESTIC_REST_PASSWORD": "p" } }
+	  },
+	  "repos": {
+	    "repo-a": { "restic_password": "pw" }
+	  }
+	}`
+	store, err := Parse([]byte(json))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if _, err := store.Validate([]string{"rest-server"}, []string{"repo-a"}); err != nil {
+		t.Fatalf("RESTIC_REST_* must be allowed as credential env, got %v", err)
+	}
+	m, err := store.Resolve("repo-a", "rest-server")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if m.Env["RESTIC_REST_USERNAME"] != "u" || m.Env["RESTIC_REST_PASSWORD"] != "p" {
+		t.Errorf("unexpected material: %+v", m)
+	}
+}
+
+// TestResolveWithoutCredential covers credential-less repos (local/sftp
+// backends): the material is the password alone.
+func TestResolveWithoutCredential(t *testing.T) {
+	store, err := Parse([]byte(validJSON))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	m, err := store.Resolve("repo-a", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(m.Env) != 0 || m.ResticPassword != "hunter2-secret" {
 		t.Errorf("unexpected material: %+v", m)
 	}
 }
@@ -56,6 +129,36 @@ func TestValidateMissingFields(t *testing.T) {
 			name:    "repo absent entirely",
 			json:    `{"credentials":{"cred-a":{"access_key":"a","secret_key":"b"}},"repos":{}}`,
 			wantSub: `repo "repo-a" missing from repos map`,
+		},
+		{
+			name:    "credential with neither shape",
+			json:    `{"credentials":{"cred-a":{}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: "provides no secrets",
+		},
+		{
+			name:    "credential mixing shapes",
+			json:    `{"credentials":{"cred-a":{"access_key":"a","secret_key":"b","env":{"AWS_ACCESS_KEY_ID":"x"}}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: "mixes access_key/secret_key with env",
+		},
+		{
+			name:    "env var with empty value",
+			json:    `{"credentials":{"cred-a":{"env":{"B2_ACCOUNT_KEY":""}}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: `env "B2_ACCOUNT_KEY" must not be empty`,
+		},
+		{
+			name:    "invalid env var name",
+			json:    `{"credentials":{"cred-a":{"env":{"BAD-NAME":"v"}}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: "not a valid environment variable name",
+		},
+		{
+			name:    "reserved env var name",
+			json:    `{"credentials":{"cred-a":{"env":{"RESTIC_PASSWORD":"v"}}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: "reserved by resticscope",
+		},
+		{
+			name:    "linker injection env var name",
+			json:    `{"credentials":{"cred-a":{"env":{"LD_PRELOAD":"v"}}},"repos":{"repo-a":{"restic_password":"p"}}}`,
+			wantSub: "reserved by resticscope",
 		},
 	}
 	for _, tt := range tests {
@@ -201,7 +304,7 @@ func TestLoadSuccess(t *testing.T) {
 }
 
 func TestTemplate(t *testing.T) {
-	creds := []string{"hetzner-home", "hetzner-cold"}
+	creds := []TemplateCred{{Name: "hetzner-home", S3: true}, {Name: "nas-b2", S3: false}}
 	repos := []string{"homeserver-system", "laptop-photos"}
 
 	data, err := Template(creds, repos)
@@ -217,25 +320,26 @@ func TestTemplate(t *testing.T) {
 	}
 	for _, c := range creds {
 		for _, r := range repos {
-			m, err := store.Resolve(r, c)
+			m, err := store.Resolve(r, c.Name)
 			if err != nil {
-				t.Fatalf("Resolve(%q, %q): %v", r, c, err)
+				t.Fatalf("Resolve(%q, %q): %v", r, c.Name, err)
 			}
-			if m.AccessKey != "" || m.SecretKey != "" || m.ResticPassword != "" {
-				t.Errorf("template value not blank for %q/%q: %+v", r, c, m)
+			if len(m.Env) != 0 || m.ResticPassword != "" {
+				t.Errorf("template value not blank for %q/%q: %+v", r, c.Name, m)
 			}
 		}
 	}
 
-	// Shape check: every name present, and empty fields rendered as "" (the
-	// entry types carry no omitempty), so the user sees blanks to fill in.
+	// Shape check: every name present, blank shorthand fields rendered as ""
+	// for the s3 credential, and an empty env map for the generic one, so the
+	// user sees exactly the blanks their backends need filled in.
 	s := string(data)
-	for _, name := range append(append([]string{}, creds...), repos...) {
+	for _, name := range append([]string{"hetzner-home", "nas-b2"}, repos...) {
 		if !strings.Contains(s, name) {
 			t.Errorf("template missing name %q:\n%s", name, s)
 		}
 	}
-	for _, field := range []string{`"access_key": ""`, `"secret_key": ""`, `"restic_password": ""`} {
+	for _, field := range []string{`"access_key": ""`, `"secret_key": ""`, `"env": {}`, `"restic_password": ""`} {
 		if !strings.Contains(s, field) {
 			t.Errorf("template missing blank field %q:\n%s", field, s)
 		}
@@ -260,14 +364,23 @@ func TestTemplateEmptyConfig(t *testing.T) {
 }
 
 func TestRedactor(t *testing.T) {
-	store, err := Parse([]byte(validJSON))
+	json := `{
+	  "credentials": {
+	    "cred-a": { "access_key": "AK-AAAA", "secret_key": "SK-BBBB" },
+	    "cred-b": { "env": { "B2_ACCOUNT_KEY": "b2-key-secret" } }
+	  },
+	  "repos": {
+	    "repo-a": { "restic_password": "hunter2-secret" }
+	  }
+	}`
+	store, err := Parse([]byte(json))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	r := store.Redactor()
-	text := "restic error: AK-AAAA used with hunter2-secret and SK-BBBB"
+	text := "restic error: AK-AAAA used with hunter2-secret, SK-BBBB and b2-key-secret"
 	got := r.Redact(text)
-	for _, secret := range []string{"AK-AAAA", "SK-BBBB", "hunter2-secret"} {
+	for _, secret := range []string{"AK-AAAA", "SK-BBBB", "hunter2-secret", "b2-key-secret"} {
 		if strings.Contains(got, secret) {
 			t.Errorf("redacted text still contains %q: %q", secret, got)
 		}

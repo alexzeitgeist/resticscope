@@ -62,7 +62,9 @@ import (
 // helperPayloadVersion guards the stdin wire shape. The parent and helper are
 // the same binary in normal operation, but a stale installed binary under sudo
 // must fail loudly rather than misread the request.
-const helperPayloadVersion = 2
+// Version 3: Target/Creds went backend-agnostic (repository string + env maps
+// instead of S3 fields).
+const helperPayloadVersion = 3
 
 // helperPayload is the single JSON value the parent writes to the helper's
 // stdin. It carries everything the pipeline needs so the helper reads no
@@ -196,11 +198,11 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 			// CacheDir points restic at the user's cache when the share is
 			// permitted; when the pipeline falls back to --no-cache restic
 			// ignores it entirely. The helper has no secrets.Store, so this
-			// Redactor over the payload's three values is its whole redaction
-			// surface (rule 8) — they are the only secrets that exist in this
-			// process.
+			// Redactor over the payload's password and credential env values is
+			// its whole redaction surface (rule 8) — they are the only secrets
+			// that exist in this process.
 			CacheDir: payload.CacheDir,
-			Redact:   secrets.NewRedactor(payload.Creds.ResticPassword, payload.Creds.SecretKey, payload.Creds.AccessKey).Redact,
+			Redact:   helperRedactor(payload.Creds).Redact,
 		}
 	}
 
@@ -217,6 +219,17 @@ func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts Ext
 		return fmt.Errorf("extract helper: emit result: %w", err)
 	}
 	return nil
+}
+
+// helperRedactor builds the helper's secrets scrubber from the payload's
+// resolved credentials: the restic password plus every backend env value.
+func helperRedactor(creds resticx.Creds) *secrets.Redactor {
+	values := make([]string, 0, len(creds.Env)+1)
+	values = append(values, creds.ResticPassword)
+	for _, v := range creds.Env {
+		values = append(values, v)
+	}
+	return secrets.NewRedactor(values...)
 }
 
 // runHelperExtract re-asserts the boundary checks (regardless of what the

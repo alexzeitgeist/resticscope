@@ -13,7 +13,7 @@ import (
 
 // ShellSession is everything needed to launch an interactive shell scoped to one
 // repository (and optionally a selected snapshot): the resolved shell, the child
-// environment with RESTIC_*/AWS_*/RESTICSCOPE_* preloaded, a human banner to
+// environment with RESTIC_*/backend-credential/RESTICSCOPE_* vars preloaded, a human banner to
 // print before the prompt, and a Cleanup that removes any temporary password
 // file. For bash/zsh/fish the session also tags the shell's prompt with a
 // persistent "(resticscope·repo)" prefix (shellprompt.go), so the user keeps
@@ -50,7 +50,8 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 	if !ok {
 		return nil, fmt.Errorf("no repo %q in config", repoName)
 	}
-	if _, ok := a.Cfg.Credential(r.Credential); !ok { // unreachable after config validation, but stay defensive
+	// credential is optional (local/sftp backends); when set it must resolve.
+	if _, ok := a.Cfg.Credential(r.Credential); r.Credential != "" && !ok { // unreachable after config validation, but stay defensive
 		return nil, fmt.Errorf("credential %q not found", r.Credential)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
@@ -77,7 +78,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 			mode:     mode,
 			pwFile:   pwFile,
 		}),
-		Banner:  shellBanner(r.Name, resticx.RepoURL(target), snap),
+		Banner:  shellBanner(r.Name, target.Repo, snap),
 		Cleanup: cleanup,
 	}
 	if err := applyPromptTag(sess, promptTag(r.Name)); err != nil {
@@ -95,7 +96,7 @@ var ErrLocalShellInvalidDir = errors.New("local shell: invalid working directory
 
 // LocalShellSession returns a ShellSession that drops the user into their shell
 // rooted at dir, with no repository contact whatsoever. Unlike the
-// snapshot-scoped ShellSession it sets no RESTIC_*/AWS_* env vars and passes no
+// snapshot-scoped ShellSession it sets no RESTIC_*/backend env vars and passes no
 // password file — it is the purely cosmetic "open a shell in the extracted
 // directory" launch from the extract success view (framework §16). The
 // inherited environment is filtered so no credential the parent process happens
@@ -252,28 +253,16 @@ func resolveShell(configured, envShell string) string {
 	}
 }
 
-// ownedShellVars are the environment keys the shell-out sets itself. Any
-// inherited copy is stripped from the base so the child sees exactly one,
-// unambiguous value for each — in particular so a stale RESTIC_PASSWORD in the
-// parent can't override file mode's RESTIC_PASSWORD_FILE. AWS_SESSION_TOKEN is
-// stripped even though we never set one: restic's S3 credential chain reads it
-// from the environment alongside the access/secret keys, so a leftover token
-// from some other AWS context would be paired with our fresh static keys and
-// break authentication. (AWS_PROFILE/AWS_CONFIG_FILE are intentionally left
-// alone: explicit env keys take precedence over the profile/file provider, so
-// they don't affect restic, and the user may want them for other tooling.)
-var ownedShellVars = map[string]bool{
-	"RESTIC_REPOSITORY":       true,
-	"RESTIC_PASSWORD":         true,
-	"RESTIC_PASSWORD_FILE":    true,
-	"RESTIC_PASSWORD_COMMAND": true,
-	"RESTIC_CACHE_DIR":        true,
-	"AWS_ACCESS_KEY_ID":       true,
-	"AWS_SECRET_ACCESS_KEY":   true,
-	"AWS_SESSION_TOKEN":       true,
-	"AWS_DEFAULT_REGION":      true,
-	"RESTICSCOPE_REPO":        true,
-	"RESTICSCOPE_SNAPSHOT_ID": true,
+// repoShellKeptVars are credential-family names the repo shell deliberately
+// keeps from the inherited environment even though stripCredEnv's families
+// would catch them: explicit AWS env keys take precedence over the
+// profile/file provider, so these cannot affect restic, and the user may want
+// them for other tooling in the shell (the aws CLI inspecting the same
+// bucket). The local "shell here" session still strips them — its contract is
+// no credential context at all.
+var repoShellKeptVars = map[string]bool{
+	"AWS_PROFILE":     true,
+	"AWS_CONFIG_FILE": true,
 }
 
 // shellEnvOpts carries the repo/snapshot inputs buildShellEnv injects on top of
@@ -288,32 +277,53 @@ type shellEnvOpts struct {
 }
 
 // buildShellEnv assembles the child environment from a base (os.Environ() in
-// production) plus the repo's restic/S3 coordinates and resticscope context. It
-// is pure and the security-critical seam, so it is exercised directly by tests:
-// in file mode the password is delivered only by RESTIC_PASSWORD_FILE and never
-// appears in the environment; env mode is the documented opt-in that exports
-// RESTIC_PASSWORD instead (plan §8). The base keeps the user's PATH/HOME/TERM
-// for a usable interactive shell, but every var we own is stripped first.
+// production) plus the repo's restic/backend coordinates and resticscope
+// context. It is pure and the security-critical seam, so it is exercised
+// directly by tests: in file mode the password is delivered only by
+// RESTIC_PASSWORD_FILE and never appears in the environment; env mode is the
+// documented opt-in that exports RESTIC_PASSWORD instead (plan §8).
+//
+// The base keeps the user's PATH/HOME/TERM for a usable interactive shell, but
+// it is first reduced to the same credential-free floor the local shell uses
+// (stripCredEnv's families, minus repoShellKeptVars), and exactly this repo's
+// vars are layered on top. Stripping whole families rather than only the keys
+// this session sets matters two ways: an unrelated inherited credential
+// (B2_ACCOUNT_KEY in an s3 repo's shell) must not ride along, and a stale
+// same-family leftover the repo does NOT set (AWS_SESSION_TOKEN beside fresh
+// static keys, AZURE_ACCOUNT_SAS beside a fresh account key) would otherwise
+// be paired with the repo's credentials and break authentication. It also
+// keeps a manual `restic` in the shell faithful to resticscope's own runner,
+// which builds restic's environment from scratch. Backend vars this session
+// sets that fall outside the known families are stripped from the base too, so
+// the child sees exactly one value for every var we export.
 func buildShellEnv(base []string, o shellEnvOpts) []string {
-	env := make([]string, 0, len(base)+9)
+	// The repo's backend env, exactly as resticx exports it for its own restic
+	// invocations: config's non-secret vars merged with the credential's secret
+	// vars, sorted, reserved names dropped.
+	backend := resticx.BackendEnviron(o.target, o.creds)
+
+	owned := make(map[string]bool, len(backend))
+	for _, kv := range backend {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			owned[k] = true
+		}
+	}
+
+	env := make([]string, 0, len(base)+len(backend)+5)
 	for _, kv := range base {
-		if k, _, ok := strings.Cut(kv, "="); ok && ownedShellVars[k] {
-			continue
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			if owned[k] || (isCredEnvKey(k) && !repoShellKeptVars[k]) {
+				continue
+			}
 		}
 		env = append(env, kv)
 	}
 
 	env = append(env,
-		"RESTIC_REPOSITORY="+resticx.RepoURL(o.target),
-		"AWS_ACCESS_KEY_ID="+o.creds.AccessKey,
-		"AWS_SECRET_ACCESS_KEY="+o.creds.SecretKey,
+		"RESTIC_REPOSITORY="+o.target.Repo,
 		"RESTICSCOPE_REPO="+o.target.Name,
 	)
-	// Region is optional; export it only when set, mirroring resticx.buildEnv,
-	// so the shell never sees an empty AWS_DEFAULT_REGION.
-	if o.target.Region != "" {
-		env = append(env, "AWS_DEFAULT_REGION="+o.target.Region)
-	}
+	env = append(env, backend...)
 	// Point restic at the same per-repo cache the refresh runner warms, so a
 	// manual `restic stats`/`ls`/`mount` in the shell reuses it instead of
 	// cold-starting one under ~/.cache/restic that `cache prune` can't see.
@@ -333,13 +343,18 @@ func buildShellEnv(base []string, o shellEnvOpts) []string {
 	return env
 }
 
-// credEnvPrefixes name the environment-variable prefixes the local "shell here"
-// session strips from the inherited environment so the spawned shell carries no
-// repository credentials or resticscope context. This is the reverse of
-// buildShellEnv's choice: whatever the snapshot shell *sets* (the RESTIC_*,
-// AWS_*, and RESTICSCOPE_* families), the local shell *strips*. B2_* is included
-// for restic's Backblaze backend even though resticscope's S3 path never sets it.
-var credEnvPrefixes = []string{"RESTIC_", "AWS_", "B2_", "RESTICSCOPE_"}
+// credEnvPrefixes name the environment-variable prefixes that carry repository
+// credentials or resticscope context. They are the credential-free floor both
+// shell flavors share: the local "shell here" session strips them outright
+// (and is done — it carries no credentials by contract), while the repo shell
+// strips them minus repoShellKeptVars and then layers exactly its own repo's
+// vars back on top. The list covers every restic backend's credential family —
+// AWS_* (s3), B2_* (Backblaze), AZURE_*, GOOGLE_* (gs), OS_*/ST_* (swift), and
+// RCLONE_* — not just the families a configured repo happens to use.
+var credEnvPrefixes = []string{
+	"RESTIC_", "RESTICSCOPE_",
+	"AWS_", "B2_", "AZURE_", "GOOGLE_", "OS_", "ST_", "RCLONE_",
+}
 
 // credEnvExact are credential keys with no shared prefix to match on.
 var credEnvExact = map[string]bool{"GOOGLE_APPLICATION_CREDENTIALS": true}

@@ -13,7 +13,7 @@ import (
 )
 
 // detailMetaRows is the number of fixed meta lines the detail body renders
-// (Endpoint/Bucket/Snapshots/Hosts/Program/Tags/Last); detailSnapVisible
+// (Backend/Repository/Snapshots/Hosts/Program/Tags/Last); detailSnapVisible
 // subtracts it from the height to size the scrolling snapshot window.
 const detailMetaRows = 7
 
@@ -144,7 +144,7 @@ func (m Model) detailBody() string {
 
 // detailMeta renders the fixed repo facts: where it lives and what was observed.
 // Each value is clipped to the width left after the indent and label so a long
-// endpoint or bucket can't wrap and grow the block past detailMetaRows.
+// repository string can't wrap and grow the block past detailMetaRows.
 func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) string {
 	st := row.State
 
@@ -154,8 +154,8 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 	}
 
 	lines := []string{
-		m.field("Endpoint", repo.Endpoint, width),
-		m.field("Bucket", bucketLabel(repo), width),
+		m.field("Backend", repo.Backend(), width),
+		m.field("Repository", repo.RepositoryURL(), width),
 		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount), width),
 		m.field("Hosts", joinOrDash(st.Hosts), width),
 		m.field("Program", joinOrDash(model.ObservedVersions(st.Snapshots)), width),
@@ -678,13 +678,6 @@ func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 			m.detailSnapDetailRows() // the selected-snapshot sub-panel
 	}
 	return overhead
-}
-
-func bucketLabel(repo config.Repo) string {
-	if p := strings.Trim(repo.Path, "/"); p != "" {
-		return repo.Bucket + "/" + p
-	}
-	return repo.Bucket
 }
 
 func joinOrDash(vals []string) string {

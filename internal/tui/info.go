@@ -15,7 +15,7 @@ import (
 // title row, body, closed via `i`, `q`, or `esc` — and reuses the same heading
 // / label / meta styles. The bound is intentionally split off m.field's
 // labelWidth: rows like "Files unmodified" or "Data added packed" exceed the
-// detail panel's 10-cell label column, so the renderer computes its own column
+// detail panel's 11-cell label column, so the renderer computes its own column
 // width.
 
 // infoLabelMin is the floor for the info modal's label column. Real labels go

@@ -173,32 +173,137 @@ type Global struct {
 	ResticCommandTimeout  Duration `toml:"restic_command_timeout"`  // timeout for each restic invocation
 }
 
-// Credential names an S3 access-key/secret-key pair. On Hetzner a key pair is
-// project-bound and reaches every bucket in the project — including buckets in
-// different regions — so a credential carries no location: endpoint, region, and
-// bucket_lookup live on the repo. The block exists to declare which key pairs
-// exist (so a dangling repo reference is caught) and to document what
-// secrets_command must provide. The actual keys are resolved at runtime from the
-// secrets_command, keyed by Name.
+// Credential names a set of secret backend env vars — for S3 an
+// access-key/secret-key pair, for B2 the account id/key, for Azure the account
+// key, and so on. A credential carries no location or backend type: it exists
+// to declare which secret sets exist (so a dangling repo reference is caught)
+// and to document what secrets_command must provide. The actual values are
+// resolved at runtime from the secrets_command, keyed by Name. One credential
+// can back several repos (e.g. on Hetzner a project key pair reaches every
+// bucket in the project, across regions).
 type Credential struct {
 	Name string `toml:"name"`
 }
 
-// Repo is a single restic repository: a bucket (and optional path) at an
-// endpoint, reached with a named Credential's keys, plus the expected_frequency
-// that drives its freshness status. Endpoint/region/bucket_lookup live here, not
-// on the credential, so one key pair can back buckets in several regions.
+// Repo is a single restic repository plus the expected_frequency that drives
+// its freshness status. Where it lives is described one of two ways, exactly
+// one per repo:
+//
+//   - url: the restic repository string, verbatim, for any backend restic
+//     supports — "/srv/restic-repo", "sftp:user@host:/srv/restic-repo",
+//     "rest:https://host:8000/repo", "b2:bucket:path", "azure:container:/",
+//     "gs:bucket:/", "swift:container:/", "rclone:remote:path", or a
+//     spelled-out "s3:..." URL. A leading ~ is expanded against $HOME.
+//   - the s3 shorthand: endpoint (+ optional region and bucket_lookup) and
+//     bucket (+ optional path), from which resticscope assembles the s3 URL.
+//     Endpoint/region/bucket_lookup live here, not on the credential, so one
+//     key pair can back buckets in several regions.
+//
+// credential names the secret env-var set restic gets for this repo; it is
+// optional because some backends need none (local, sftp via ssh config or
+// agent, rclone via its own config). env carries non-secret backend env vars
+// (e.g. GOOGLE_PROJECT_ID, AZURE_ACCOUNT_NAME — secrets stay in the
+// credential); options carries restic -o backend options verbatim (e.g.
+// "sftp.command", "rest.connections").
 type Repo struct {
-	Name              string            `toml:"name"`
-	Description       string            `toml:"description"`
-	Credential        string            `toml:"credential"`
-	Endpoint          string            `toml:"endpoint"`
-	Region            string            `toml:"region"`
-	Bucket            string            `toml:"bucket"`
-	Path              string            `toml:"path"`
-	BucketLookup      string            `toml:"bucket_lookup"` // auto | dns | path
+	Name        string `toml:"name"`
+	Description string `toml:"description"`
+	Credential  string `toml:"credential"`
+
+	// Generic form: the restic repository string, any backend.
+	URL string `toml:"url"`
+
+	// Non-secret backend env vars and -o options, passed to restic verbatim.
+	Env     map[string]string `toml:"env"`
+	Options map[string]string `toml:"options"`
+
+	// S3 shorthand. endpoint/bucket(+path) assemble the s3 URL, region becomes
+	// AWS_DEFAULT_REGION, bucket_lookup becomes -o s3.bucket-lookup.
+	Endpoint     string `toml:"endpoint"`
+	Region       string `toml:"region"`
+	Bucket       string `toml:"bucket"`
+	Path         string `toml:"path"`
+	BucketLookup string `toml:"bucket_lookup"` // auto | dns | path
+
 	ExpectedFrequency Duration          `toml:"expected_frequency"`
 	Labels            map[string]string `toml:"labels"`
+}
+
+// knownBackendSchemes are the repository-string schemes restic understands.
+// Validate checks an explicit url against this set so a typo'd scheme fails at
+// startup instead of as a cryptic restic error mid-refresh.
+var knownBackendSchemes = map[string]bool{
+	"local": true, "sftp": true, "rest": true, "s3": true, "swift": true,
+	"b2": true, "azure": true, "gs": true, "rclone": true,
+}
+
+// RepositoryURL returns the restic repository string (RESTIC_REPOSITORY) for
+// the repo: url verbatim when set, otherwise the URL assembled from the s3
+// shorthand. The endpoint scheme is preserved — restic needs https:// to talk
+// to non-AWS endpoints like Hetzner (plan §7). Assembled form:
+// s3:https://host[:port]/bucket[/path].
+func (r Repo) RepositoryURL() string {
+	if r.URL != "" {
+		return r.URL
+	}
+	endpoint := strings.TrimRight(r.Endpoint, "/")
+	u := "s3:" + endpoint + "/" + r.Bucket
+	if p := strings.Trim(r.Path, "/"); p != "" {
+		u += "/" + p
+	}
+	return u
+}
+
+// Backend returns the repo's restic backend scheme ("s3", "sftp", ...), or
+// "local" for a bare filesystem path. Display-only; derived from the
+// repository string so the two can never disagree.
+func (r Repo) Backend() string {
+	if scheme, _, ok := strings.Cut(r.RepositoryURL(), ":"); ok && knownBackendSchemes[scheme] {
+		return scheme
+	}
+	return "local"
+}
+
+// BackendOptions returns every restic -o option for the repo: the options map
+// plus the s3 shorthand's bucket_lookup (dns/path only — auto is restic's
+// default and is not emitted). Returns nil when there are none.
+func (r Repo) BackendOptions() map[string]string {
+	var out map[string]string
+	if len(r.Options) > 0 {
+		out = make(map[string]string, len(r.Options)+1)
+		for k, v := range r.Options {
+			out[k] = v
+		}
+	}
+	if r.URL == "" && (r.BucketLookup == "dns" || r.BucketLookup == "path") {
+		if out == nil {
+			out = make(map[string]string, 1)
+		}
+		out["s3.bucket-lookup"] = r.BucketLookup
+	}
+	return out
+}
+
+// BackendEnv returns the repo's non-secret backend env vars: the env map plus
+// the s3 shorthand's region as AWS_DEFAULT_REGION (omitted when empty — the
+// endpoint host usually implies it, and restic must not see an empty value).
+// Returns nil when there are none. Secret env vars come from the credential
+// (internal/secrets), never from here.
+func (r Repo) BackendEnv() map[string]string {
+	var out map[string]string
+	if len(r.Env) > 0 {
+		out = make(map[string]string, len(r.Env)+1)
+		for k, v := range r.Env {
+			out[k] = v
+		}
+	}
+	if r.URL == "" && r.Region != "" {
+		if out == nil {
+			out = make(map[string]string, 1)
+		}
+		out["AWS_DEFAULT_REGION"] = r.Region
+	}
+	return out
 }
 
 // Credential returns the named credential block, if present.

@@ -339,8 +339,8 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 // patterns become the returned newline-joined pattern payload (delivered on
 // fd 4; the argv carries `--include-file /dev/fd/4`), the rest stay as argv
 // `--include` flags in caller order under the maxArgvIncludeBytes budget. The
-// bucket-lookup -o option is prepended by ExtractTree, not here, so these argv
-// tests stay free of S3 noise.
+// backend -o options are prepended by ExtractTree, not here, so these argv
+// tests stay free of backend noise.
 func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, err error) {
 	if err := assertCleanSnapshotID(p.SnapshotID); err != nil {
 		return nil, nil, err

@@ -1,12 +1,12 @@
 # resticscope configuration — copy to ~/.config/resticscope/config.toml and edit.
 #
 # This file describes which repos exist and what is expected of them. It holds
-# NO secrets: S3 keys and restic passwords come from secrets_command at runtime
-# (see [global].secrets_command below).
+# NO secrets: backend credentials and restic passwords come from secrets_command
+# at runtime (see [global].secrets_command below).
 
 [global]
-# secrets_command prints a single JSON document with your S3 keys and restic
-# passwords to stdout. It is run through $SHELL -c, so pipes and flags work.
+# secrets_command prints a single JSON document with your backend credentials
+# and restic passwords to stdout. It is run through $SHELL -c, so pipes and flags work.
 # For local development point it at a plaintext file; for real use point it at
 # a secret manager (pass, age, SOPS, 1Password).
 secrets_command = "pass show resticscope/credentials"
@@ -114,27 +114,52 @@ remember_target = true
 #orange = "#d65d0e"
 #grey   = "245"
 
-# --- S3 credentials -----------------------------------------------------------
-# A credential is just a NAME for an access-key/secret-key pair; it carries no
-# location. On Hetzner one project key pair reaches every bucket in the project,
-# including buckets in different regions, so endpoint/region/bucket_lookup live
-# on each repo (below), not here. Each name must be unique and match a key under
-# "credentials" in the secrets JSON.
+# --- credentials ----------------------------------------------------------------
+# A credential is just a NAME for a set of secret backend env vars — an S3
+# access-key/secret-key pair, a B2 account id/key, an Azure account key, a REST
+# server password, whatever the repo's backend reads. It carries no location or
+# backend type. One credential can back several repos (on Hetzner one project
+# key pair reaches every bucket in the project, including buckets in different
+# regions, so endpoint/region/bucket_lookup live on each repo, not here). Each
+# name must be unique and match a key under "credentials" in the secrets JSON.
+# Repos whose backend needs no secrets (local disk, sftp via ssh config/agent,
+# rclone via its own config) simply reference no credential.
 
 [[credentials]]
 name = "hetzner-home"
 
+[[credentials]]
+name = "nas-b2"
+
 # --- repositories -------------------------------------------------------------
-# Each repo references a credential by name and describes where its bucket lives:
-# endpoint (required), plus the optional region and bucket_lookup. The name must
-# be unique, match a key under "repos" in the secrets JSON, and contain only
-# letters, digits, '.', '_' and '-' (it becomes a cache filename). The name is
-# also resticscope's local identity for the repo: its status/history JSON and
-# its restic cache are both keyed on it, so renaming a repo here looks like a
-# new repo to the local tool — the next refresh rebuilds restic's cache from
-# scratch and leaves the old cache dir orphaned. Run `resticscope cache prune`
-# after renaming or removing a repo to reclaim that space. The two repos below
-# share one credential while living in different regions.
+# A repo describes where it lives in exactly one of two ways:
+#
+#   url — the restic repository string, verbatim, for ANY backend restic
+#         supports: "/srv/restic-repo" (local; ~ is expanded),
+#         "sftp:user@host:/srv/restic-repo", "rest:https://host:8000/repo",
+#         "s3:https://host/bucket", "b2:bucket:path", "azure:container:/",
+#         "gs:bucket:/", "swift:container:/", "rclone:remote:path".
+#   the s3 shorthand — endpoint (required) + bucket (required) plus the
+#         optional region, path, and bucket_lookup, from which resticscope
+#         assembles the s3 URL. Sugar for the most common hosted setup.
+#
+# Every repo may also set:
+#   credential — the name of the secret env-var set above (optional).
+#   env        — non-secret backend env vars, passed to restic verbatim
+#                (e.g. GOOGLE_PROJECT_ID, AZURE_ACCOUNT_NAME). Secrets belong
+#                in the credential, not here.
+#   options    — restic -o backend options, passed verbatim
+#                (e.g. { "sftp.command" = "...", "s3.connections" = "8" }).
+#
+# The name must be unique, match a key under "repos" in the secrets JSON, and
+# contain only letters, digits, '.', '_' and '-' (it becomes a cache filename).
+# The name is also resticscope's local identity for the repo: its
+# status/history JSON and its restic cache are both keyed on it, so renaming a
+# repo here looks like a new repo to the local tool — the next refresh rebuilds
+# restic's cache from scratch and leaves the old cache dir orphaned. Run
+# `resticscope cache prune` after renaming or removing a repo to reclaim that
+# space. The first two repos below share one credential while living in
+# different regions.
 
 [[repos]]
 name               = "homeserver-system"
@@ -159,3 +184,30 @@ endpoint           = "https://hel1.your-objectstorage.com"
 bucket             = "laptop-backups"
 expected_frequency = "24h"
 labels             = { env = "home", criticality = "medium", category = "personal" }
+
+# A Backblaze B2 repo via the generic url form. Its credential's secrets JSON
+# entry uses the generic env shape: {"env": {"B2_ACCOUNT_ID": "...",
+# "B2_ACCOUNT_KEY": "..."}}.
+[[repos]]
+name               = "nas-offsite"
+description        = "NAS offsite copy"
+credential         = "nas-b2"
+url                = "b2:nas-backups:repo"
+expected_frequency = "168h"
+labels             = { env = "home", criticality = "high", category = "offsite" }
+
+# An sftp repo: no credential at all — auth comes from ssh config / the agent.
+# options shows a restic -o backend option passed through verbatim.
+[[repos]]
+name               = "nas-sftp"
+description        = "Direct NAS repo over ssh"
+url                = "sftp:backup@nas:/srv/restic-repo"
+options            = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
+expected_frequency = "24h"
+labels             = { env = "home", criticality = "medium", category = "personal" }
+
+# A local repo on a mounted disk: just a path (~ expands), no credential.
+#[[repos]]
+#name               = "usb-archive"
+#url                = "/mnt/archive/restic-repo"
+#expected_frequency = "720h"

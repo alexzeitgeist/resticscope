@@ -1,5 +1,5 @@
 // Command resticscope is a local, on-demand overview of restic repositories on
-// S3-compatible storage.
+// any backend restic supports (local, sftp, rest, s3, b2, azure, gs, rclone, ...).
 //
 // It ships the Bubble Tea `tui` (the default), the cache-only `status`, the
 // `check` validator, and `exec` (a repo-scoped shell or one-shot command), all
@@ -65,7 +65,7 @@ Usage:
   resticscope [tui] [--config PATH]                launch the interactive TUI (default)
   resticscope status [--config PATH] [--refresh]   one line per repo from cache
   resticscope check [--config PATH]                validate config, secrets, restic, and repo reachability
-  resticscope exec [--config PATH] <repo>          open a shell scoped to <repo> (RESTIC_*/AWS_* preloaded)
+  resticscope exec [--config PATH] <repo>          open a shell scoped to <repo> (RESTIC_*/credentials preloaded)
   resticscope exec [--config PATH] <repo> -- cmd   run cmd in that environment instead of a shell
   resticscope cache prune [--config PATH]          remove restic caches for repos no longer in config
   resticscope cache prune --all                    remove every repo's restic cache (restic rebuilds it)

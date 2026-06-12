@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -132,12 +133,21 @@ func TestCheckPreservesOrder(t *testing.T) {
 		}
 	}
 
-	wantB := resticx.Target{Name: "repo-b", Endpoint: "https://hel1.example.com", BucketLookup: "dns", Bucket: "bucket-b", Path: "nested/repo"}
-	if got, ok := restic.target("repo-b"); !ok || got != wantB {
+	wantB := resticx.Target{
+		Name:    "repo-b",
+		Repo:    "s3:https://hel1.example.com/bucket-b/nested/repo",
+		Options: map[string]string{"s3.bucket-lookup": "dns"},
+	}
+	if got, ok := restic.target("repo-b"); !ok || !reflect.DeepEqual(got, wantB) {
 		t.Errorf("repo-b target = %+v, %v; want %+v, true", got, ok, wantB)
 	}
-	wantC := resticx.Target{Name: "repo-c", Endpoint: "https://nbg1.example.com", Region: "nbg1", BucketLookup: "path", Bucket: "bucket-c"}
-	if got, ok := restic.target("repo-c"); !ok || got != wantC {
+	wantC := resticx.Target{
+		Name:    "repo-c",
+		Repo:    "s3:https://nbg1.example.com/bucket-c",
+		Options: map[string]string{"s3.bucket-lookup": "path"},
+		Env:     map[string]string{"AWS_DEFAULT_REGION": "nbg1"},
+	}
+	if got, ok := restic.target("repo-c"); !ok || !reflect.DeepEqual(got, wantC) {
 		t.Errorf("repo-c target = %+v, %v; want %+v, true", got, ok, wantC)
 	}
 }

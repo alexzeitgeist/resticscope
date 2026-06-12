@@ -47,7 +47,7 @@ func (s stubCache) Save(_ context.Context, name string, st model.RepoState) erro
 type stubSecrets struct{}
 
 func (stubSecrets) Resolve(_, _ string) (secrets.Material, error) {
-	return secrets.Material{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"}, nil
+	return secrets.Material{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "pw"}, nil
 }
 
 type stubRestic struct {
@@ -996,7 +996,7 @@ func TestEnterOpensDetailView(t *testing.T) {
 	// are table columns and the panel slims to non-columnar facts.
 	for _, want := range []string{
 		"repo-a",           // detail header
-		"Endpoint",         // metadata block
+		"Repository",       // metadata block
 		"Program",          // meta rollup of observed restic versions
 		"restic 0.18.1",    // the observed version value
 		"Snapshots",        // snapshot table heading

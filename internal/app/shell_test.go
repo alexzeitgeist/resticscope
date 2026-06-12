@@ -15,13 +15,15 @@ import (
 )
 
 var shellTarget = resticx.Target{
-	Name:     "homeserver-system",
-	Endpoint: "https://fsn1.your-objectstorage.com",
-	Region:   "fsn1",
-	Bucket:   "homeserver-backups",
+	Name: "homeserver-system",
+	Repo: "s3:https://fsn1.your-objectstorage.com/homeserver-backups",
+	Env:  map[string]string{"AWS_DEFAULT_REGION": "fsn1"},
 }
 
-var shellCreds = resticx.Creds{AccessKey: "AK-XYZ", SecretKey: "SK-XYZ", ResticPassword: "super-secret-pw"}
+var shellCreds = resticx.Creds{
+	Env:            map[string]string{"AWS_ACCESS_KEY_ID": "AK-XYZ", "AWS_SECRET_ACCESS_KEY": "SK-XYZ"},
+	ResticPassword: "super-secret-pw",
+}
 
 func envValue(env []string, key string) (string, bool) {
 	for _, kv := range env {
@@ -85,18 +87,40 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 	}
 }
 
-func TestBuildShellEnvRegionOptional(t *testing.T) {
-	// A set region is exported for the shell's S3 tooling...
+func TestBuildShellEnvBackendVars(t *testing.T) {
+	// The target's non-secret backend env is exported for the shell's tooling...
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if v, _ := envValue(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
 		t.Errorf("AWS_DEFAULT_REGION = %q, want fsn1", v)
 	}
-	// ...but an empty region is omitted, never exported as an empty value.
-	noRegion := shellTarget
-	noRegion.Region = ""
-	env = buildShellEnv(nil, shellEnvOpts{target: noRegion, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
+	// ...and a target without it exports nothing extra.
+	bare := resticx.Target{Name: "local-repo", Repo: "/srv/restic-repo"}
+	env = buildShellEnv(nil, shellEnvOpts{target: bare, creds: resticx.Creds{ResticPassword: "pw"}, mode: "file", pwFile: "/tmp/pw"})
 	if _, ok := envValue(env, "AWS_DEFAULT_REGION"); ok {
-		t.Error("an empty region must not export AWS_DEFAULT_REGION")
+		t.Error("a target without backend env must not export AWS_DEFAULT_REGION")
+	}
+}
+
+// Whatever backend vars the session itself exports are also stripped from the
+// inherited base, even when they are outside the static AWS family — the
+// dynamic half of the owned-vars contract.
+func TestBuildShellEnvStripsInheritedBackendVars(t *testing.T) {
+	target := resticx.Target{Name: "nas-b2", Repo: "b2:bucket:repo"}
+	creds := resticx.Creds{
+		Env:            map[string]string{"B2_ACCOUNT_ID": "fresh-id", "B2_ACCOUNT_KEY": "fresh-key"},
+		ResticPassword: "pw",
+	}
+	base := []string{"TERM=xterm", "B2_ACCOUNT_ID=stale-id"}
+	env := buildShellEnv(base, shellEnvOpts{target: target, creds: creds, mode: "file", pwFile: "/tmp/pw"})
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "stale-id") {
+		t.Error("inherited copy of a session-set backend var must be stripped")
+	}
+	if v, _ := envValue(env, "B2_ACCOUNT_ID"); v != "fresh-id" {
+		t.Errorf("B2_ACCOUNT_ID = %q, want our value", v)
+	}
+	if n := strings.Count(joined, "B2_ACCOUNT_ID="); n != 1 {
+		t.Errorf("B2_ACCOUNT_ID appears %d times, want 1", n)
 	}
 }
 
@@ -134,7 +158,10 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=old-key",
 		"AWS_SESSION_TOKEN=stale-session-token", // never paired with our static keys
 		"RESTIC_REPOSITORY=s3:old",
-		"RESTIC_CACHE_DIR=/stale/inherited", // must be replaced by our per-repo path
+		"RESTIC_CACHE_DIR=/stale/inherited",      // must be replaced by our per-repo path
+		"B2_ACCOUNT_KEY=unrelated-b2-secret",     // another backend's credential must not ride along
+		"AWS_PROFILE=other-tooling",              // deliberately kept: cannot affect restic, useful for the aws CLI
+		"GOOGLE_APPLICATION_CREDENTIALS=/x.json", // exact-name credential family member
 	}
 	env := buildShellEnv(base, shellEnvOpts{target: shellTarget, cacheDir: "/test-cache", creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 
@@ -163,6 +190,20 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	}
 	if v, _ := envValue(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q, want our value", v)
+	}
+	// Credentials of OTHER backends are stripped too, not just the families
+	// this repo sets — the repo shell starts from the same credential-free
+	// floor as the local shell.
+	if strings.Contains(joined, "unrelated-b2-secret") {
+		t.Error("inherited B2_ACCOUNT_KEY must be stripped from an s3 repo's shell")
+	}
+	if _, ok := envValue(env, "GOOGLE_APPLICATION_CREDENTIALS"); ok {
+		t.Error("inherited GOOGLE_APPLICATION_CREDENTIALS must be stripped")
+	}
+	// ...except the documented AWS profile pointers, which explicit env keys
+	// always beat and the user may want for other tooling.
+	if v, _ := envValue(env, "AWS_PROFILE"); v != "other-tooling" {
+		t.Errorf("AWS_PROFILE = %q, want the inherited value kept", v)
 	}
 	// The user's general environment is preserved.
 	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/me", "TERM=xterm"} {
@@ -430,7 +471,10 @@ func shellApp(mode string, sec Secrets) *App {
 }
 
 func TestShellSessionFileModeWritesAndCleansUp(t *testing.T) {
-	a := shellApp("file", shellSecrets{mat: secrets.Material{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw-secret"}})
+	a := shellApp("file", shellSecrets{mat: secrets.Material{
+		Env:            map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"},
+		ResticPassword: "pw-secret",
+	}})
 
 	sess, err := a.ShellSession("repo-a", nil)
 	if err != nil {

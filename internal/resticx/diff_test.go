@@ -249,7 +249,7 @@ func TestStreamDiffPasswordOutOfBand(t *testing.T) {
 	fs := &diffStreamFake{data: ""}
 	c := &Client{Stream: fs}
 	if _, err := c.StreamDiff(context.Background(), testTarget,
-		Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "super-secret-pw"},
+		Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "super-secret-pw"},
 		"o", "n", time.Minute, nil, nil); err != nil {
 		t.Fatalf("StreamDiff: %v", err)
 	}

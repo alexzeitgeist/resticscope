@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,21 +24,23 @@ import (
 const defaultTimeout = 2 * time.Minute
 
 // Target is the restic-facing coordinates of one repository, assembled by the
-// caller from a config repo.
+// caller from a config repo. It is backend-agnostic: Repo is the repository
+// string restic itself understands (any backend), Options are the repo's
+// restic -o backend options, and Env is its non-secret backend environment.
+// Secret env vars ride in Creds, never here.
 type Target struct {
-	Name         string // repo name; used for the per-repo restic cache subdir
-	Endpoint     string // repo endpoint, scheme included (https://...)
-	Region       string // repo region; optional (the endpoint host usually implies it)
-	BucketLookup string // auto | dns | path
-	Bucket       string // repo bucket
-	Path         string // optional sub-prefix
+	Name    string            // repo name; used for the per-repo restic cache subdir
+	Repo    string            // RESTIC_REPOSITORY, e.g. "s3:https://host/bucket" or "sftp:user@host:/srv/repo"
+	Options map[string]string // restic -o key=value backend options
+	Env     map[string]string // non-secret backend env vars (e.g. AWS_DEFAULT_REGION)
 }
 
-// Creds are the resolved secret values for a Target. The restic password is
-// passed to restic out-of-band (a pipe on fd 3), never on the command line.
+// Creds are the resolved secret values for a Target: the credential's backend
+// env vars (AWS_*, B2_*, AZURE_*, ... — nil for backends that need none) plus
+// the repository password, which is passed to restic out-of-band (a pipe on
+// fd 3), never on the command line.
 type Creds struct {
-	AccessKey      string
-	SecretKey      string
+	Env            map[string]string
 	ResticPassword string
 }
 
@@ -96,7 +99,7 @@ func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.
 
 // CatConfig reaches the repository by reading and decrypting its config file
 // (`restic cat config`). It is the cheapest end-to-end probe: it exercises the
-// S3 credentials, confirms the repository exists (exit 10 otherwise), and
+// backend credentials, confirms the repository exists (exit 10 otherwise), and
 // verifies the password decrypts it (exit 12 otherwise) — all without taking a
 // lock. It returns a classified *Error on failure and nil when the repo is
 // reachable; the decrypted config (stdout) is intentionally discarded, as it
@@ -138,13 +141,13 @@ func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, ar
 }
 
 // prependBackendOpts returns args with the target's backend -o options
-// prepended — currently just s3.bucket-lookup when configured. The single
-// assembly point for every driver (runOp and the browse/diff/restore streams),
-// so a new backend option means one edit, not four.
+// prepended, in sorted key order so argv is deterministic. The single assembly
+// point for every driver (runOp and the browse/diff/restore streams), so a new
+// backend option means one config entry, not code.
 func prependBackendOpts(t Target, args ...string) []string {
-	full := make([]string, 0, len(args)+2)
-	if t.BucketLookup == "dns" || t.BucketLookup == "path" {
-		full = append(full, "-o", "s3.bucket-lookup="+t.BucketLookup)
+	full := make([]string, 0, len(args)+2*len(t.Options))
+	for _, k := range sortedKeys(t.Options) {
+		full = append(full, "-o", k+"="+t.Options[k])
 	}
 	return append(full, args...)
 }
@@ -163,18 +166,49 @@ func (c *Client) buildEnv(t Target, creds Creds) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-		"RESTIC_REPOSITORY=" + RepoURL(t),
+		"RESTIC_REPOSITORY=" + t.Repo,
 		"RESTIC_CACHE_DIR=" + c.repoCacheDir(t),
-		"AWS_ACCESS_KEY_ID=" + creds.AccessKey,
-		"AWS_SECRET_ACCESS_KEY=" + creds.SecretKey,
 		"RESTIC_PASSWORD_FILE=/dev/fd/3",
 	}
-	// Region is optional (the endpoint host usually implies it); export it only
-	// when set rather than handing restic an empty AWS_DEFAULT_REGION.
-	if t.Region != "" {
-		env = append(env, "AWS_DEFAULT_REGION="+t.Region)
+	return append(env, BackendEnviron(t, creds)...)
+}
+
+// BackendEnviron flattens the target's and credential's backend env maps into
+// sorted KEY=value entries — Target.Env (non-secret, from config) merged with
+// Creds.Env (secret), the secret value winning a key collision. It is exported
+// so the repo shell-out (internal/app) exports the identical environment.
+//
+// Reserved and invalid names are dropped here, not just rejected at
+// config/secrets validation: this assembly also runs inside the privileged
+// extract helper on a payload that crossed a process boundary, and the helper
+// runs restic as root, so the chokepoint enforces the model policy itself
+// (RESTIC_*/PATH/HOME ownership, no LD_PRELOAD-style injection).
+func BackendEnviron(t Target, creds Creds) []string {
+	merged := make(map[string]string, len(t.Env)+len(creds.Env))
+	for _, m := range []map[string]string{t.Env, creds.Env} {
+		for k, v := range m {
+			if !model.ValidBackendEnvName(k) || model.ReservedBackendEnvName(k) {
+				continue
+			}
+			merged[k] = v
+		}
+	}
+	env := make([]string, 0, len(merged))
+	for _, k := range sortedKeys(merged) {
+		env = append(env, k+"="+merged[k])
 	}
 	return env
+}
+
+// sortedKeys returns m's keys sorted, so env and argv assembly stay
+// deterministic across runs (maps iterate in random order).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func minimalEnv() []string {
@@ -213,19 +247,6 @@ func CacheRoot(cacheDir string) string {
 // repo's restic cache. It matches the directory restic actually writes to under
 // ExecRunner, so prune can map configured repos to their caches on disk.
 func RepoCacheName(repoName string) string { return sanitize(repoName) }
-
-// RepoURL builds restic's S3-compatible repository URL. The endpoint scheme is
-// preserved — restic needs https:// to talk to non-AWS endpoints like Hetzner
-// (plan §7). Form: s3:https://host[:port]/bucket[/path]. It is exported so the
-// shell-out (internal/app) can set RESTIC_REPOSITORY identically.
-func RepoURL(t Target) string {
-	endpoint := strings.TrimRight(t.Endpoint, "/")
-	u := "s3:" + endpoint + "/" + t.Bucket
-	if p := strings.Trim(t.Path, "/"); p != "" {
-		u += "/" + p
-	}
-	return u
-}
 
 // sanitize makes a repo name safe to use as a single path element.
 func sanitize(name string) string {

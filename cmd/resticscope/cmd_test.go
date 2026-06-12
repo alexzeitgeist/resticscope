@@ -343,6 +343,53 @@ func TestSecretsTemplate(t *testing.T) {
 	}
 }
 
+// A credential whose repos use the generic url form scaffolds the env-map
+// shape instead of the s3 access_key/secret_key shorthand.
+func TestSecretsTemplateEnvShape(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `
+[global]
+secrets_command = "true"
+
+[[credentials]]
+name = "nas-b2"
+
+[[repos]]
+name = "nas-offsite"
+url = "b2:nas-backups:repo"
+credential = "nas-b2"
+expected_frequency = "24h"
+`
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("secrets template exit = %d, want 0 (stderr=%q)", code, errBuf.String())
+	}
+	var doc struct {
+		Credentials map[string]struct {
+			AccessKey *string           `json:"access_key"`
+			Env       map[string]string `json:"env"`
+		} `json:"credentials"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
+	}
+	cred, ok := doc.Credentials["nas-b2"]
+	if !ok {
+		t.Fatalf("missing credential nas-b2:\n%s", out.String())
+	}
+	if cred.AccessKey != nil {
+		t.Errorf("url-form credential must not scaffold the s3 shorthand:\n%s", out.String())
+	}
+	if cred.Env == nil || len(cred.Env) != 0 {
+		t.Errorf("expected an empty env map to fill in, got %v", cred.Env)
+	}
+}
+
 func TestSecretsTemplateBadConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run(context.Background(), []string{"secrets", "template", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)

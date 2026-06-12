@@ -177,10 +177,11 @@ func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
 }
 
 // nameWidth is the fixed column width for repo names in the list; labelWidth is
-// the fixed column width for field labels in the detail view.
+// the fixed column width for field labels in the detail view — sized to its
+// longest label, "Repository", plus one separating space.
 const (
 	nameWidth  = 24
-	labelWidth = 10
+	labelWidth = 11
 )
 
 // Glyph vocabulary — one glyph per role across every surface (UX plan phase 4):

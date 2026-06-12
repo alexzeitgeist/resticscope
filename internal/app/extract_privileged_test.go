@@ -94,7 +94,7 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 	if payload.Version != helperPayloadVersion {
 		t.Errorf("payload version = %d, want %d", payload.Version, helperPayloadVersion)
 	}
-	if payload.Creds.ResticPassword != "pw" || payload.Creds.AccessKey != "AK" {
+	if payload.Creds.ResticPassword != "pw" || payload.Creds.Env["AWS_ACCESS_KEY_ID"] != "AK" {
 		t.Errorf("payload creds not the resolved material: %+v", payload.Creds)
 	}
 	if payload.Request.TargetRoot != root {

@@ -568,9 +568,9 @@ func TestExtractTreePasswordOutOfBandAndBucketLookup(t *testing.T) {
 	fs := &extractTreeStreamFake{data: ""}
 	c := &Client{Stream: fs}
 	tgt := testTarget
-	tgt.BucketLookup = "dns"
+	tgt.Options = map[string]string{"s3.bucket-lookup": "dns"}
 	if err := c.ExtractTree(context.Background(), tgt,
-		Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "super-secret-pw"},
+		Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "super-secret-pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil); err != nil {
 		t.Fatalf("ExtractTree: %v", err)
 	}

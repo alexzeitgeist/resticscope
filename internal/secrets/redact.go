@@ -44,6 +44,9 @@ func (s *Store) Redactor() *Redactor {
 	var values []string
 	for _, c := range s.credentials {
 		values = append(values, c.AccessKey, c.SecretKey)
+		for _, v := range c.Env {
+			values = append(values, v)
+		}
 	}
 	for _, r := range s.repos {
 		values = append(values, r.ResticPassword)

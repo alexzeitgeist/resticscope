@@ -49,37 +49,9 @@ func readFixture(t *testing.T, name string) []byte {
 }
 
 var testTarget = Target{
-	Name:         "homeserver-system",
-	Endpoint:     "https://fsn1.your-objectstorage.com",
-	Region:       "fsn1",
-	BucketLookup: "auto",
-	Bucket:       "homeserver-backups",
-}
-
-func TestRepoURLKeepsScheme(t *testing.T) {
-	tests := []struct {
-		name string
-		t    Target
-		want string
-	}{
-		{
-			name: "bucket only",
-			t:    Target{Endpoint: "https://fsn1.your-objectstorage.com", Bucket: "b"},
-			want: "s3:https://fsn1.your-objectstorage.com/b",
-		},
-		{
-			name: "with path",
-			t:    Target{Endpoint: "https://fsn1.your-objectstorage.com/", Bucket: "b", Path: "/sub/dir/"},
-			want: "s3:https://fsn1.your-objectstorage.com/b/sub/dir",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := RepoURL(tt.t); got != tt.want {
-				t.Errorf("RepoURL = %q, want %q", got, tt.want)
-			}
-		})
-	}
+	Name: "homeserver-system",
+	Repo: "s3:https://fsn1.your-objectstorage.com/homeserver-backups",
+	Env:  map[string]string{"AWS_DEFAULT_REGION": "fsn1"},
 }
 
 func TestSnapshotsParsesFixture(t *testing.T) {
@@ -163,7 +135,10 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 func TestEnvAndPasswordHandling(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr, CacheDir: "/cache"}
-	creds := Creds{AccessKey: "AK-XYZ", SecretKey: "SK-XYZ", ResticPassword: "super-secret-pw"}
+	creds := Creds{
+		Env:            map[string]string{"AWS_ACCESS_KEY_ID": "AK-XYZ", "AWS_SECRET_ACCESS_KEY": "SK-XYZ"},
+		ResticPassword: "super-secret-pw",
+	}
 	if _, err := c.Snapshots(context.Background(), testTarget, creds); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
@@ -176,10 +151,10 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 		t.Errorf("env missing repo URL: %q", env)
 	}
 	if !strings.Contains(env, "AWS_ACCESS_KEY_ID=AK-XYZ") {
-		t.Error("env should carry the S3 access key")
+		t.Error("env should carry the credential's backend env vars")
 	}
 	if !strings.Contains(env, "AWS_DEFAULT_REGION=fsn1") {
-		t.Error("env should carry the repo region when one is set")
+		t.Error("env should carry the target's backend env vars")
 	}
 	// The password must travel out-of-band, never in env or args.
 	if strings.Contains(env, "super-secret-pw") {
@@ -204,19 +179,54 @@ func TestSnapshotsUsesNoLock(t *testing.T) {
 	}
 }
 
-// Region is optional. When a Target carries none, restic must get no
-// AWS_DEFAULT_REGION at all rather than an empty one (Hetzner does not require
-// it, and the endpoint host implies the region).
-func TestEnvOmitsEmptyRegion(t *testing.T) {
+// A target with no backend env (a credential-less local/sftp repo) exports
+// only resticscope's own vars — no stray backend entries.
+func TestEnvOmitsAbsentBackendVars(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
-	tgt := testTarget
-	tgt.Region = ""
+	tgt := Target{Name: "local-repo", Repo: "/srv/restic-repo"}
 	if _, err := c.Snapshots(context.Background(), tgt, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
-	if strings.Contains(strings.Join(fr.gotEnv, "\n"), "AWS_DEFAULT_REGION") {
-		t.Error("an empty region must not export AWS_DEFAULT_REGION")
+	if strings.Contains(strings.Join(fr.gotEnv, "\n"), "AWS_") {
+		t.Error("a target without backend env must not export AWS_* vars")
+	}
+}
+
+// BackendEnviron is the single merge point for config and credential env: it
+// sorts for determinism, lets the secret value win a key collision, and drops
+// reserved or invalid names even though validation already rejects them — the
+// privileged extract helper replays this assembly on a payload that crossed a
+// process boundary, so the chokepoint must enforce the policy itself.
+func TestBackendEnvironMergesAndFilters(t *testing.T) {
+	tgt := Target{
+		Name: "r",
+		Repo: "s3:https://host/b",
+		Env: map[string]string{
+			"AWS_DEFAULT_REGION": "fsn1",
+			"SHARED":             "from-config",
+		},
+	}
+	creds := Creds{Env: map[string]string{
+		"SHARED":            "from-secret",
+		"AWS_ACCESS_KEY_ID": "AK",
+		"RESTIC_REPOSITORY": "s3:evil",  // reserved: resticscope owns it
+		"LD_PRELOAD":        "/evil.so", // reserved prefix: linker injection
+		"BAD NAME":          "x",        // not an env identifier
+	}}
+	got := BackendEnviron(tgt, creds)
+	want := []string{
+		"AWS_ACCESS_KEY_ID=AK",
+		"AWS_DEFAULT_REGION=fsn1",
+		"SHARED=from-secret",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("BackendEnviron = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("BackendEnviron[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -259,17 +269,18 @@ func TestCatConfigClassifiesFailure(t *testing.T) {
 	}
 }
 
-func TestBucketLookupOption(t *testing.T) {
+func TestBackendOptionsPrepended(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
 	tgt := testTarget
-	tgt.BucketLookup = "dns"
+	// Two options prove the sorted, deterministic order.
+	tgt.Options = map[string]string{"s3.bucket-lookup": "dns", "s3.connections": "8"}
 	if _, err := c.Snapshots(context.Background(), tgt, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
 	got := strings.Join(fr.gotArgs, " ")
-	if !strings.HasPrefix(got, "-o s3.bucket-lookup=dns --no-lock snapshots") {
-		t.Errorf("expected bucket-lookup option prepended, got %q", got)
+	if !strings.HasPrefix(got, "-o s3.bucket-lookup=dns -o s3.connections=8 --no-lock snapshots") {
+		t.Errorf("expected backend options prepended in sorted order, got %q", got)
 	}
 }
 

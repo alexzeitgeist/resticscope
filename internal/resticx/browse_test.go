@@ -438,7 +438,7 @@ func TestStreamSnapshotTreeRedactsStderr(t *testing.T) {
 func TestStreamSnapshotTreePasswordOutOfBand(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
 	c := &Client{Stream: fs}
-	creds := Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "super-secret-pw"}
+	creds := Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "super-secret-pw"}
 	onNode, _ := collect()
 	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, creds, "abcd", browseTimeout, onNode); err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)

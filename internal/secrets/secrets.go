@@ -1,5 +1,5 @@
-// Package secrets resolves S3 keys and restic passwords at runtime by running
-// the user's secrets_command and parsing its JSON output.
+// Package secrets resolves backend credentials and restic passwords at runtime
+// by running the user's secrets_command and parsing its JSON output.
 //
 // Secrets live only in memory for the lifetime of the process. They are never
 // written to the cache, logs, or error strings. The Redactor exists to ensure
@@ -14,19 +14,46 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"resticscope/internal/model"
 )
 
-// Material is the resolved secret bundle for a single repo: the S3 key pair
-// from its credential plus the repo's own restic password.
+// Material is the resolved secret bundle for a single repo: the backend env
+// vars from its credential (nil when the repo has no credential — local or
+// sftp backends) plus the repo's own restic password.
 type Material struct {
-	AccessKey      string
-	SecretKey      string
+	Env            map[string]string
 	ResticPassword string
 }
 
+// credEntry is one credential in the secrets JSON. env is the generic,
+// backend-agnostic shape: the secret environment variables restic needs
+// (B2_ACCOUNT_KEY, AZURE_ACCOUNT_KEY, RESTIC_REST_PASSWORD, ...).
+// access_key/secret_key remain as the s3 shorthand — exactly equivalent to env
+// entries AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY. A single entry uses one
+// shape or the other; Validate rejects mixing so no key silently shadows
+// another.
 type credEntry struct {
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
+	AccessKey string            `json:"access_key"`
+	SecretKey string            `json:"secret_key"`
+	Env       map[string]string `json:"env"`
+}
+
+// envMap flattens the entry to the env vars it provides, lowering the s3
+// shorthand onto its AWS names. Validate guarantees the two shapes are not
+// mixed, so there is no precedence question here.
+func (c credEntry) envMap() map[string]string {
+	out := make(map[string]string, len(c.Env)+2)
+	if c.AccessKey != "" {
+		out["AWS_ACCESS_KEY_ID"] = c.AccessKey
+	}
+	if c.SecretKey != "" {
+		out["AWS_SECRET_ACCESS_KEY"] = c.SecretKey
+	}
+	for k, v := range c.Env {
+		out[k] = v
+	}
+	return out
 }
 
 type repoEntry struct {
@@ -79,20 +106,43 @@ func Parse(data []byte) (*Store, error) {
 	return &Store{credentials: doc.Credentials, repos: doc.Repos}, nil
 }
 
-// Template returns a blank secrets document for the given credential and repo
-// names: the exact JSON shape Parse expects, with every value left empty for
-// the user to fill in and store in their secrets backend. It contains no
-// secrets and reads none — it is the onboarding scaffold, generated from config
-// before any secret exists, and pairs with Validate/`check` once filled in.
-// credEntry/repoEntry carry no omitempty, so empty fields render as "", and map
-// keys serialize alphabetically, so the output is deterministic.
-func Template(credNames, repoNames []string) ([]byte, error) {
-	doc := document{
-		Credentials: make(map[string]credEntry, len(credNames)),
+// TemplateCred describes one credential entry the Template scaffold emits: its
+// name, and whether to scaffold the s3 access_key/secret_key shorthand (when
+// every repo using the credential is the s3-shorthand form) or the generic env
+// map the user fills with whatever vars their backend reads.
+type TemplateCred struct {
+	Name string
+	S3   bool
+}
+
+// Template returns a blank secrets document for the given credentials and repo
+// names: a JSON shape Parse accepts, with every value left empty for the user
+// to fill in and store in their secrets backend. It contains no secrets and
+// reads none — it is the onboarding scaffold, generated from config before any
+// secret exists, and pairs with Validate/`check` once filled in. Each
+// credential scaffolds only the shape it should use (shorthand keys or env
+// map), and map keys serialize alphabetically, so the output is deterministic.
+func Template(creds []TemplateCred, repoNames []string) ([]byte, error) {
+	type envCred struct {
+		Env map[string]string `json:"env"`
+	}
+	type s3Cred struct {
+		AccessKey string `json:"access_key"`
+		SecretKey string `json:"secret_key"`
+	}
+	doc := struct {
+		Credentials map[string]any       `json:"credentials"`
+		Repos       map[string]repoEntry `json:"repos"`
+	}{
+		Credentials: make(map[string]any, len(creds)),
 		Repos:       make(map[string]repoEntry, len(repoNames)),
 	}
-	for _, n := range credNames {
-		doc.Credentials[n] = credEntry{}
+	for _, c := range creds {
+		if c.S3 {
+			doc.Credentials[c.Name] = s3Cred{}
+		} else {
+			doc.Credentials[c.Name] = envCred{Env: map[string]string{}}
+		}
 	}
 	for _, n := range repoNames {
 		doc.Repos[n] = repoEntry{}
@@ -112,12 +162,11 @@ func (s *Store) Validate(wantCreds, wantRepos []string) (warnings []string, err 
 	for _, name := range wantCreds {
 		wantCredSet[name] = true
 		c, ok := s.credentials[name]
-		switch {
-		case !ok:
+		if !ok {
 			errs = append(errs, fmt.Errorf("secrets: credential %q missing from credentials map", name))
-		case c.AccessKey == "" || c.SecretKey == "":
-			errs = append(errs, fmt.Errorf("secrets: credential %q missing access_key or secret_key", name))
+			continue
 		}
+		errs = append(errs, validateCredEntry(name, c)...)
 	}
 
 	wantRepoSet := make(map[string]bool, len(wantRepos))
@@ -149,20 +198,62 @@ func (s *Store) Validate(wantCreds, wantRepos []string) (warnings []string, err 
 	return warnings, errors.Join(errs...)
 }
 
-// Resolve returns the material for repoName using credName's S3 keys. It errors
-// (without leaking values) if either is missing.
+// validateCredEntry checks one wanted credential's shape: either the complete
+// s3 shorthand pair or a non-empty env map, never a mix, with every env name
+// valid and non-reserved and every value non-empty. Names appear in errors;
+// values never do.
+func validateCredEntry(name string, c credEntry) []error {
+	var errs []error
+	shorthand := c.AccessKey != "" || c.SecretKey != ""
+	switch {
+	case shorthand && len(c.Env) > 0:
+		errs = append(errs, fmt.Errorf("secrets: credential %q mixes access_key/secret_key with env; use one shape", name))
+	case shorthand && (c.AccessKey == "" || c.SecretKey == ""):
+		errs = append(errs, fmt.Errorf("secrets: credential %q missing access_key or secret_key", name))
+	case !shorthand && len(c.Env) == 0:
+		errs = append(errs, fmt.Errorf("secrets: credential %q provides no secrets (set access_key/secret_key or env)", name))
+	}
+	for _, k := range sortedEnvNames(c.Env) {
+		switch {
+		case !model.ValidBackendEnvName(k):
+			errs = append(errs, fmt.Errorf("secrets: credential %q: env name %q is not a valid environment variable name", name, k))
+		case model.ReservedBackendEnvName(k):
+			errs = append(errs, fmt.Errorf("secrets: credential %q: env name %q is reserved by resticscope", name, k))
+		case c.Env[k] == "":
+			errs = append(errs, fmt.Errorf("secrets: credential %q: env %q must not be empty", name, k))
+		}
+	}
+	return errs
+}
+
+func sortedEnvNames(m map[string]string) []string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Resolve returns the material for repoName using credName's backend env vars.
+// credName may be empty — a repo with no credential (local/sftp backends)
+// resolves to the password alone. It errors (without leaking values) if a
+// named credential or the repo is missing.
 func (s *Store) Resolve(repoName, credName string) (Material, error) {
-	c, ok := s.credentials[credName]
-	if !ok {
-		return Material{}, fmt.Errorf("secrets: no credential %q", credName)
+	var env map[string]string
+	if credName != "" {
+		c, ok := s.credentials[credName]
+		if !ok {
+			return Material{}, fmt.Errorf("secrets: no credential %q", credName)
+		}
+		env = c.envMap()
 	}
 	r, ok := s.repos[repoName]
 	if !ok {
 		return Material{}, fmt.Errorf("secrets: no repo %q", repoName)
 	}
 	return Material{
-		AccessKey:      c.AccessKey,
-		SecretKey:      c.SecretKey,
+		Env:            env,
 		ResticPassword: r.ResticPassword,
 	}, nil
 }

@@ -101,19 +101,16 @@ func (a *App) statusParams(r config.Repo) model.StatusParams {
 
 func targetOf(r config.Repo) resticx.Target {
 	return resticx.Target{
-		Name:         r.Name,
-		Endpoint:     r.Endpoint,
-		Region:       r.Region,
-		BucketLookup: r.BucketLookup,
-		Bucket:       r.Bucket,
-		Path:         r.Path,
+		Name:    r.Name,
+		Repo:    r.RepositoryURL(),
+		Options: r.BackendOptions(),
+		Env:     r.BackendEnv(),
 	}
 }
 
 func resticCreds(m secrets.Material) resticx.Creds {
 	return resticx.Creds{
-		AccessKey:      m.AccessKey,
-		SecretKey:      m.SecretKey,
+		Env:            m.Env,
 		ResticPassword: m.ResticPassword,
 	}
 }

@@ -28,7 +28,7 @@ func helperPayloadFor(t *testing.T, req ExtractRequest, root string) []byte {
 	b, err := json.Marshal(helperPayload{
 		Version:        helperPayloadVersion,
 		Target:         resticx.Target{Name: "repo-a"},
-		Creds:          resticx.Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"},
+		Creds:          resticx.Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "pw"},
 		Request:        req,
 		TimeoutSeconds: 120,
 	})
@@ -131,7 +131,7 @@ func cachePayloadFor(t *testing.T, req ExtractRequest, root, cacheRoot string) [
 	b, err := json.Marshal(helperPayload{
 		Version:        helperPayloadVersion,
 		Target:         resticx.Target{Name: "repo-a"},
-		Creds:          resticx.Creds{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"},
+		Creds:          resticx.Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "pw"},
 		Request:        req,
 		CacheDir:       cacheRoot,
 		TimeoutSeconds: 120,

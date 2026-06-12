@@ -121,7 +121,8 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 		return state
 	}
 
-	if _, ok := a.Cfg.Credential(r.Credential); !ok { // unreachable after config validation, but stay defensive
+	// credential is optional (local/sftp backends); when set it must resolve.
+	if _, ok := a.Cfg.Credential(r.Credential); r.Credential != "" && !ok { // unreachable after config validation, but stay defensive
 		return fail(fmt.Sprintf("credential %q not found", r.Credential))
 	}
 

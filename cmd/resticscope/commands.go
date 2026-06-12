@@ -36,7 +36,7 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "path to config.toml (default ~/.config/resticscope/config.toml)")
-	refresh := fs.Bool("refresh", false, "refresh from S3/restic before printing (slow; hits the network)")
+	refresh := fs.Bool("refresh", false, "refresh from the repositories before printing (slow; hits the backend)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -185,7 +185,7 @@ func cmdSecretsTemplate(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 2
 	}
 
-	out, err := secrets.Template(credentialNames(cfg), repoNames(cfg))
+	out, err := secrets.Template(templateCreds(cfg), repoNames(cfg))
 	if err != nil {
 		fmt.Fprintf(stderr, "secrets template: %v\n", err)
 		return 2
@@ -437,6 +437,28 @@ func credentialNames(cfg *config.Config) []string {
 		names[i] = c.Name
 	}
 	return names
+}
+
+// templateCreds maps each configured credential to the secrets-template shape
+// it should scaffold: the s3 access_key/secret_key shorthand when every repo
+// referencing it uses the s3 shorthand form, the generic env map otherwise
+// (including when nothing references it — env is the universal shape).
+func templateCreds(cfg *config.Config) []secrets.TemplateCred {
+	out := make([]secrets.TemplateCred, len(cfg.Credentials))
+	for i, c := range cfg.Credentials {
+		s3, used := true, false
+		for _, r := range cfg.Repos {
+			if r.Credential != c.Name {
+				continue
+			}
+			used = true
+			if r.URL != "" {
+				s3 = false
+			}
+		}
+		out[i] = secrets.TemplateCred{Name: c.Name, S3: used && s3}
+	}
+	return out
 }
 
 func repoNames(cfg *config.Config) []string {

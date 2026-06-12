@@ -63,7 +63,7 @@ func (f fakeSecrets) Resolve(repoName, credName string) (secrets.Material, error
 	if f.err != nil {
 		return secrets.Material{}, f.err
 	}
-	return secrets.Material{AccessKey: "AK", SecretKey: "SK", ResticPassword: "pw"}, nil
+	return secrets.Material{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "pw"}, nil
 }
 
 type fakeRestic struct {
@@ -844,7 +844,7 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 	if bc.snapID != "snap123" {
 		t.Errorf("snapshot ID = %q, want snap123", bc.snapID)
 	}
-	if bc.target.Name != "repo-a" || bc.target.Bucket != "bucket-a" {
+	if bc.target.Name != "repo-a" || !strings.Contains(bc.target.Repo, "bucket-a") {
 		t.Errorf("target = %+v, want repo-a/bucket-a", bc.target)
 	}
 	if bc.timeout != 10*time.Minute {

@@ -20,7 +20,7 @@ type RepoStatus struct {
 }
 
 // Statuses returns the current status of every configured repo, reading the
-// cache only — no S3 or restic calls. A missing or corrupt cache entry yields a
+// cache only — no backend or restic calls. A missing or corrupt cache entry yields a
 // grey (never-refreshed) status rather than an error, so `status` stays fast
 // and side-effect-free for cron and scripts.
 func (a *App) Statuses(ctx context.Context) ([]RepoStatus, error) {

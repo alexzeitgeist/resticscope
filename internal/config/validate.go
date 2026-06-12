@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
+	"resticscope/internal/model"
 	"resticscope/internal/theme"
 )
 
@@ -20,7 +22,7 @@ var validRepoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Validate checks the normalized config for structural problems: missing
 // required fields, duplicate or dangling names, and bad enum values. It does
-// not contact S3, restic, or the secrets_command.
+// not contact the backend, restic, or the secrets_command.
 func (c *Config) Validate() error {
 	var errs []error
 
@@ -78,20 +80,13 @@ func (c *Config) Validate() error {
 		if r.Name != "" && !validRepoName.MatchString(r.Name) {
 			errs = append(errs, fmt.Errorf("repo %q: name may contain only letters, digits, '.', '_' and '-' (it becomes a cache filename)", r.Name))
 		}
-		if r.Bucket == "" {
-			errs = append(errs, fmt.Errorf("repo %q: bucket is required", r.Name))
-		}
-		if r.Endpoint == "" {
-			errs = append(errs, fmt.Errorf("repo %q: endpoint is required", r.Name))
-		}
-		if !validBucketLookup[r.BucketLookup] {
-			errs = append(errs, fmt.Errorf("repo %q: bucket_lookup must be auto|dns|path, got %q", r.Name, r.BucketLookup))
-		}
-		if r.Credential == "" {
-			errs = append(errs, fmt.Errorf("repo %q: credential is required", r.Name))
-		} else if !credNames[r.Credential] {
+		errs = append(errs, validateRepoLocation(r)...)
+		// credential is optional: local/sftp/rclone backends need no secret env
+		// vars. When set it must resolve, as before.
+		if r.Credential != "" && !credNames[r.Credential] {
 			errs = append(errs, fmt.Errorf("repo %q: credential %q does not match any [[credentials]] block", r.Name, r.Credential))
 		}
+		errs = append(errs, validateRepoEnvOptions(r)...)
 		if r.ExpectedFrequency <= 0 {
 			errs = append(errs, fmt.Errorf("repo %q: expected_frequency must be a positive duration (e.g. \"24h\")", r.Name))
 		}
@@ -103,6 +98,94 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateTheme()...)
 
 	return errors.Join(errs...)
+}
+
+// validateRepoLocation checks that the repo describes where it lives in
+// exactly one of the two supported forms: a generic restic repository url, or
+// the s3 shorthand (endpoint/bucket + optional region/path/bucket_lookup).
+// Mixing them is rejected — the shorthand fields would be silently ignored
+// otherwise, which always means the user misunderstood one of the forms.
+//
+// A url is accepted when it is a known restic scheme ("scheme:rest") or a bare
+// absolute filesystem path (restic's local backend); an unknown scheme or a
+// relative path is rejected here so the typo fails at startup rather than as a
+// restic error mid-refresh. Normalize has already expanded a leading ~.
+func validateRepoLocation(r Repo) []error {
+	var errs []error
+	if r.URL == "" {
+		// s3 shorthand: same required fields as always.
+		if r.Bucket == "" {
+			errs = append(errs, fmt.Errorf("repo %q: bucket is required (or set url for a non-s3 backend)", r.Name))
+		}
+		if r.Endpoint == "" {
+			errs = append(errs, fmt.Errorf("repo %q: endpoint is required (or set url for a non-s3 backend)", r.Name))
+		}
+		if !validBucketLookup[r.BucketLookup] {
+			errs = append(errs, fmt.Errorf("repo %q: bucket_lookup must be auto|dns|path, got %q", r.Name, r.BucketLookup))
+		}
+		return errs
+	}
+	if r.Endpoint != "" || r.Region != "" || r.Bucket != "" || r.Path != "" || r.BucketLookup != "" {
+		errs = append(errs, fmt.Errorf("repo %q: url and the s3 shorthand fields (endpoint/region/bucket/path/bucket_lookup) are mutually exclusive", r.Name))
+	}
+	if scheme, _, ok := strings.Cut(r.URL, ":"); ok && schemeLike(scheme) {
+		if !knownBackendSchemes[scheme] {
+			errs = append(errs, fmt.Errorf("repo %q: url scheme %q is not a restic backend (one of: %s, or a bare absolute path)", r.Name, scheme, strings.Join(sortedKeys(knownBackendSchemes), ", ")))
+		}
+	} else if !filepath.IsAbs(r.URL) {
+		errs = append(errs, fmt.Errorf("repo %q: url must be a restic repository (scheme:...) or an absolute path", r.Name))
+	}
+	return errs
+}
+
+// schemeLike reports whether s looks like a URL scheme rather than the start
+// of a path — lowercase letters/digits only, as restic's schemes are. A path
+// like "/srv/x" or "C" fails this and is judged as a filesystem path instead.
+func schemeLike(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// validateRepoEnvOptions checks the repo's generic backend env/options maps:
+// env names must be valid, non-reserved env identifiers (the model contract
+// resticx enforces at assembly time), env values and option keys must be
+// non-empty. Values are user-chosen but non-secret, so error messages may name
+// the key; they still never echo the value.
+func validateRepoEnvOptions(r Repo) []error {
+	var errs []error
+	for _, k := range sortedKeys(r.Env) {
+		switch {
+		case !model.ValidBackendEnvName(k):
+			errs = append(errs, fmt.Errorf("repo %q: env name %q is not a valid environment variable name", r.Name, k))
+		case model.ReservedBackendEnvName(k):
+			errs = append(errs, fmt.Errorf("repo %q: env name %q is reserved by resticscope", r.Name, k))
+		case r.Env[k] == "":
+			errs = append(errs, fmt.Errorf("repo %q: env %q must not be empty", r.Name, k))
+		}
+	}
+	for _, k := range sortedKeys(r.Options) {
+		if k == "" {
+			errs = append(errs, fmt.Errorf("repo %q: options keys must not be empty", r.Name))
+		}
+	}
+	return errs
+}
+
+// sortedKeys returns m's keys sorted, for deterministic multi-error output.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // validateTheme checks the [theme] block: the name must be a built-in theme

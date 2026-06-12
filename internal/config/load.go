@@ -162,8 +162,15 @@ func (c *Config) Normalize(home string) {
 	c.Extract.TargetRoot = expandPath(c.Extract.TargetRoot, home)
 
 	for i := range c.Repos {
-		if c.Repos[i].BucketLookup == "" {
-			c.Repos[i].BucketLookup = "auto"
+		r := &c.Repos[i]
+		// A bare-path url may use ~ like every other configured path; restic
+		// scheme urls pass through expandPath untouched (no leading ~).
+		r.URL = expandPath(r.URL, home)
+		// bucket_lookup is s3-shorthand sugar, so it is seeded only for that
+		// form: a url repo with an explicit bucket_lookup must survive to
+		// validation and be rejected as a mixed form.
+		if r.URL == "" && r.BucketLookup == "" {
+			r.BucketLookup = "auto"
 		}
 	}
 }

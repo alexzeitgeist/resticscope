@@ -223,6 +223,82 @@ expected_frequency = "0s"
 `,
 			wantSub: "expected_frequency must be a positive duration",
 		},
+		{
+			name: "url mixed with s3 shorthand",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "sftp:u@h:/srv/repo"
+bucket = "b"
+expected_frequency = "24h"
+`,
+			wantSub: "mutually exclusive",
+		},
+		{
+			name: "url with unknown scheme",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "stfp:u@h:/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "is not a restic backend",
+		},
+		{
+			name: "url with relative path",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "url must be a restic repository",
+		},
+		{
+			name: "reserved env name",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "/srv/repo"
+env = { RESTIC_PASSWORD = "nope" }
+expected_frequency = "24h"
+`,
+			wantSub: "reserved by resticscope",
+		},
+		{
+			name: "invalid env name",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "/srv/repo"
+env = { "BAD-NAME" = "v" }
+expected_frequency = "24h"
+`,
+			wantSub: "not a valid environment variable name",
+		},
+		{
+			name: "empty env value",
+			toml: `
+[global]
+secrets_command = "x"
+[[repos]]
+name = "repo-a"
+url = "/srv/repo"
+env = { GOOGLE_PROJECT_ID = "" }
+expected_frequency = "24h"
+`,
+			wantSub: "must not be empty",
+		},
 	}
 
 	for _, tt := range tests {
@@ -277,6 +353,122 @@ expected_frequency = "24h"
 	}
 	if cfg.Repos[0].Region != "" {
 		t.Errorf("region = %q, want empty", cfg.Repos[0].Region)
+	}
+}
+
+// A url repo is the storage-agnostic form: any restic backend, an optional
+// credential, generic env/options. The s3 shorthand keeps working beside it.
+func TestURLRepoForms(t *testing.T) {
+	cfg, err := load(t, `
+[global]
+secrets_command = "x"
+
+[[credentials]]
+name = "b2-home"
+
+[[repos]]
+name               = "local-disk"
+url                = "/srv/restic-repo"
+expected_frequency = "24h"
+
+[[repos]]
+name               = "homedir-disk"
+url                = "~/restic-repo"
+expected_frequency = "24h"
+
+[[repos]]
+name               = "nas"
+url                = "sftp:backup@nas:/srv/restic-repo"
+options            = { "sftp.command" = "ssh -i /home/me/.ssh/nas backup@nas -s sftp" }
+expected_frequency = "24h"
+
+[[repos]]
+name               = "cloud-b2"
+url                = "b2:bucket-name:repo"
+credential         = "b2-home"
+expected_frequency = "24h"
+
+[[repos]]
+name               = "gcs"
+url                = "gs:bucket:/"
+credential         = "b2-home"
+env                = { GOOGLE_PROJECT_ID = "proj-123" }
+expected_frequency = "24h"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	local := cfg.Repos[0]
+	if local.RepositoryURL() != "/srv/restic-repo" || local.Backend() != "local" {
+		t.Errorf("local repo: url %q backend %q", local.RepositoryURL(), local.Backend())
+	}
+	if local.Credential != "" {
+		t.Errorf("credential should be optional, got %q", local.Credential)
+	}
+	if local.BucketLookup != "" {
+		t.Errorf("bucket_lookup must not be seeded for url repos, got %q", local.BucketLookup)
+	}
+	if len(local.BackendOptions()) != 0 || len(local.BackendEnv()) != 0 {
+		t.Errorf("local repo should carry no options/env, got %v / %v", local.BackendOptions(), local.BackendEnv())
+	}
+
+	if got := cfg.Repos[1].RepositoryURL(); got != "/home/tester/restic-repo" {
+		t.Errorf("~ in a bare-path url must expand, got %q", got)
+	}
+
+	nas := cfg.Repos[2]
+	if nas.Backend() != "sftp" {
+		t.Errorf("nas backend = %q, want sftp", nas.Backend())
+	}
+	if got := nas.BackendOptions()["sftp.command"]; !strings.Contains(got, "ssh -i") {
+		t.Errorf("options not carried through, got %v", nas.BackendOptions())
+	}
+
+	if b2 := cfg.Repos[3]; b2.Backend() != "b2" {
+		t.Errorf("b2 backend = %q, want b2", b2.Backend())
+	}
+
+	gcs := cfg.Repos[4]
+	if gcs.Backend() != "gs" || gcs.BackendEnv()["GOOGLE_PROJECT_ID"] != "proj-123" {
+		t.Errorf("gs repo: backend %q env %v", gcs.Backend(), gcs.BackendEnv())
+	}
+}
+
+// The s3 shorthand lowers onto the same generic surface the url form uses:
+// RepositoryURL assembles the s3 URL, region becomes AWS_DEFAULT_REGION, and a
+// non-auto bucket_lookup becomes the s3.bucket-lookup option.
+func TestS3ShorthandLowering(t *testing.T) {
+	cfg, err := load(t, `
+[global]
+secrets_command = "x"
+[[credentials]]
+name = "cred-a"
+[[repos]]
+name               = "repo-a"
+credential         = "cred-a"
+endpoint           = "https://fsn1.your-objectstorage.com/"
+region             = "fsn1"
+bucket             = "bucket-a"
+path               = "/sub/dir/"
+bucket_lookup      = "dns"
+expected_frequency = "24h"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := cfg.Repos[0]
+	if want := "s3:https://fsn1.your-objectstorage.com/bucket-a/sub/dir"; r.RepositoryURL() != want {
+		t.Errorf("RepositoryURL = %q, want %q", r.RepositoryURL(), want)
+	}
+	if r.Backend() != "s3" {
+		t.Errorf("Backend = %q, want s3", r.Backend())
+	}
+	if got := r.BackendEnv(); len(got) != 1 || got["AWS_DEFAULT_REGION"] != "fsn1" {
+		t.Errorf("BackendEnv = %v, want only AWS_DEFAULT_REGION=fsn1", got)
+	}
+	if got := r.BackendOptions(); len(got) != 1 || got["s3.bucket-lookup"] != "dns" {
+		t.Errorf("BackendOptions = %v, want only s3.bucket-lookup=dns", got)
 	}
 }
 
