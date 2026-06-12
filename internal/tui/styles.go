@@ -47,17 +47,29 @@ type styles struct {
 	chgBitrot      lipgloss.Style
 }
 
+// paletteColor turns one palette value into a lipgloss color. The keyword
+// "default" maps to NoColor — lipgloss then draws no color at all, so the text
+// keeps the terminal's own default — which is what lets the built-in
+// "terminal" theme (and any per-role "default" override) defer to the
+// terminal scheme.
+func paletteColor(s string) color.Color {
+	if s == "default" {
+		return lipgloss.NoColor{}
+	}
+	return lipgloss.Color(s)
+}
+
 func newStyles(p theme.Palette) styles {
 	var (
-		fg     = lipgloss.Color(p.Fg)
-		grey   = lipgloss.Color(p.Grey)
-		dim    = lipgloss.Color(p.Dim)
-		red    = lipgloss.Color(p.Red)
-		green  = lipgloss.Color(p.Green)
-		yellow = lipgloss.Color(p.Yellow)
-		blue   = lipgloss.Color(p.Blue)
-		aqua   = lipgloss.Color(p.Aqua)
-		orange = lipgloss.Color(p.Orange)
+		fg     = paletteColor(p.Fg)
+		grey   = paletteColor(p.Grey)
+		dim    = paletteColor(p.Dim)
+		red    = paletteColor(p.Red)
+		green  = paletteColor(p.Green)
+		yellow = paletteColor(p.Yellow)
+		blue   = paletteColor(p.Blue)
+		aqua   = paletteColor(p.Aqua)
+		orange = paletteColor(p.Orange)
 	)
 	meta := lipgloss.NewStyle().Foreground(grey)
 	key := lipgloss.NewStyle().Foreground(orange)
@@ -118,11 +130,11 @@ func newStyles(p theme.Palette) styles {
 // renderer reads back via GetWidth) intact.
 func filepickerStyles(p theme.Palette) filepicker.Styles {
 	var (
-		grey   = lipgloss.Color(p.Grey)
-		dim    = lipgloss.Color(p.Dim)
-		blue   = lipgloss.Color(p.Blue)
-		aqua   = lipgloss.Color(p.Aqua)
-		orange = lipgloss.Color(p.Orange)
+		grey   = paletteColor(p.Grey)
+		dim    = paletteColor(p.Dim)
+		blue   = paletteColor(p.Blue)
+		aqua   = paletteColor(p.Aqua)
+		orange = paletteColor(p.Orange)
 	)
 	s := filepicker.DefaultStyles()
 	s.Cursor = lipgloss.NewStyle().Foreground(orange)
@@ -142,12 +154,14 @@ func filepickerStyles(p theme.Palette) filepicker.Styles {
 // themeTerminalColors resolves the [theme] block to the terminal default
 // background/foreground View paints each frame (OSC 11/10). Both are nil —
 // paint nothing, keep the terminal's own scheme — when the user opted out via
-// `background = false`. An ANSI-256 bg/fg also skips painting its channel:
-// OSC 10/11 take a concrete color, not a palette index, so Bubble Tea would
-// flatten the value to the fixed xterm RGB table instead of the terminal's
-// own slot — and for "the terminal's slot N" the terminal's existing default
-// already is that palette, so leaving it untouched is the faithful rendering.
-// Every built-in theme uses hex bg/fg and is unaffected.
+// `background = false`. A non-hex bg/fg — an ANSI-256 code or the keyword
+// "default" (the "terminal" theme) — also skips painting its channel: OSC
+// 10/11 take a concrete color, not a palette index, so Bubble Tea would
+// flatten an ANSI value to the fixed xterm RGB table instead of the
+// terminal's own slot — and for "the terminal's slot N" or "the terminal
+// default" the terminal's existing default already is that color, so leaving
+// it untouched is the faithful rendering. Every other built-in theme uses hex
+// bg/fg and paints normally.
 func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
 	if !t.Background {
 		return nil, nil

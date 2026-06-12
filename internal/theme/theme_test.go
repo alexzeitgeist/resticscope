@@ -2,6 +2,7 @@ package theme
 
 import (
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -38,6 +39,28 @@ func TestNamesSortedAndComplete(t *testing.T) {
 	}
 }
 
+// TestTerminalThemeDefersToTerminal pins the no-theming escape hatch: the
+// "terminal" theme must not carry a single concrete color — fg/bg are the
+// terminal defaults and every accent is an ANSI-16 slot — so the TUI follows
+// whatever scheme the terminal itself uses.
+func TestTerminalThemeDefersToTerminal(t *testing.T) {
+	p, ok := Lookup("terminal")
+	if !ok {
+		t.Fatal("the terminal theme is not a built-in")
+	}
+	if p.Bg != "default" || p.Fg != "default" {
+		t.Errorf("terminal theme fg/bg must be \"default\", got %q/%q", p.Fg, p.Bg)
+	}
+	for role, v := range map[string]string{
+		"grey": p.Grey, "dim": p.Dim, "red": p.Red, "green": p.Green,
+		"yellow": p.Yellow, "blue": p.Blue, "aqua": p.Aqua, "orange": p.Orange,
+	} {
+		if n, err := strconv.Atoi(v); err != nil || n < 0 || n > 15 {
+			t.Errorf("terminal theme role %s = %q, want an ANSI-16 slot", role, v)
+		}
+	}
+}
+
 func TestLookupUnknown(t *testing.T) {
 	if _, ok := Lookup("no-such-theme"); ok {
 		t.Error("Lookup accepted an unknown theme name")
@@ -67,13 +90,13 @@ func TestAllPalettesComplete(t *testing.T) {
 }
 
 func TestValidColor(t *testing.T) {
-	valid := []string{"#fff", "#FFF", "#ebdbb2", "#EBDBB2", "#000000", "0", "15", "21", "255"}
+	valid := []string{"#fff", "#FFF", "#ebdbb2", "#EBDBB2", "#000000", "0", "15", "21", "255", "default"}
 	for _, s := range valid {
 		if !ValidColor(s) {
 			t.Errorf("ValidColor(%q) = false, want true", s)
 		}
 	}
-	invalid := []string{"", "#", "#ff", "#ffff", "#fffff", "#fffffff", "#gggggg", "fff", "ebdbb2", "256", "-1", "1.5", "red", "#ebdbb2 "}
+	invalid := []string{"", "#", "#ff", "#ffff", "#fffff", "#fffffff", "#gggggg", "fff", "ebdbb2", "256", "-1", "1.5", "red", "#ebdbb2 ", "Default", "DEFAULT"}
 	for _, s := range invalid {
 		if ValidColor(s) {
 			t.Errorf("ValidColor(%q) = true, want false", s)

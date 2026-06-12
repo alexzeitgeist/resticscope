@@ -50,11 +50,13 @@ type Theme struct {
 
 // ThemeColors holds optional per-role color overrides applied on top of the
 // named base palette. An empty field keeps the base color. Values are "#rgb" /
-// "#rrggbb" hex or an ANSI-256 code "0"–"255" (which inherits the terminal's
-// own palette for that slot). For Bg/Fg the ANSI form additionally skips the
+// "#rrggbb" hex, an ANSI-256 code "0"–"255" (which inherits the terminal's
+// own palette for that slot), or the keyword "default" (the terminal's
+// default color, rendered unstyled — the basis of the built-in "terminal"
+// theme). For Bg/Fg the ANSI and "default" forms additionally skip the
 // terminal-default painting of that channel even when Background is true,
 // because OSC 10/11 take a concrete color, not a palette index — the
-// terminal's existing default already is that slot. The role vocabulary is
+// terminal's existing default already is that color. The role vocabulary is
 // documented on theme.Palette.
 type ThemeColors struct {
 	Bg     string `toml:"bg"`

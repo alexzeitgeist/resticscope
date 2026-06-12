@@ -126,7 +126,7 @@ func (c *Config) validateTheme() []error {
 	}
 	for _, r := range roles {
 		if r.value != "" && !theme.ValidColor(r.value) {
-			errs = append(errs, fmt.Errorf("theme.colors.%s: %q is not a hex color (\"#rgb\" / \"#rrggbb\") or ANSI-256 code (\"0\"–\"255\")", r.key, r.value))
+			errs = append(errs, fmt.Errorf("theme.colors.%s: %q is not a hex color (\"#rgb\" / \"#rrggbb\"), an ANSI-256 code (\"0\"–\"255\"), or \"default\"", r.key, r.value))
 		}
 	}
 	return errs

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,6 +24,26 @@ func TestThemeTerminalColors(t *testing.T) {
 	bg, fg = themeTerminalColors(config.Theme{Name: "gruvbox-light", Background: false})
 	if bg != nil || fg != nil {
 		t.Errorf("background=false must yield nil terminal colors, got %v/%v", bg, fg)
+	}
+}
+
+func TestTerminalThemeIsUnthemed(t *testing.T) {
+	// The "terminal" theme is the no-theming escape hatch: nothing painted,
+	// and "default" roles styled with NoColor so lipgloss draws no color and
+	// the terminal's own defaults show through.
+	if c := paletteColor("default"); c != (lipgloss.NoColor{}) {
+		t.Errorf(`paletteColor("default") = %v, want lipgloss.NoColor{}`, c)
+	}
+	bg, fg := themeTerminalColors(config.Theme{Name: "terminal", Background: true})
+	if bg != nil || fg != nil {
+		t.Errorf("terminal theme must not paint OSC defaults, got %v/%v", bg, fg)
+	}
+	term, _ := theme.Lookup("terminal")
+	st := newStyles(term)
+	// name is the fg-role style (fixed-width, hence the trim); with
+	// fg=default it must emit no escape codes at all.
+	if got := st.name.Render("x"); strings.Contains(got, "\x1b") || strings.TrimRight(got, " ") != "x" {
+		t.Errorf("fg=default must render uncolored, got %q", got)
 	}
 }
 

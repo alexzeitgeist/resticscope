@@ -11,9 +11,10 @@ import (
 )
 
 // Palette is one theme's assignment of a color to each of the ten semantic
-// roles the TUI uses. Values are strings lipgloss understands: "#rgb" /
-// "#rrggbb" hex, or an ANSI-256 code "0"–"255" (which inherits the terminal's
-// own palette for that slot).
+// roles the TUI uses. Values are "#rgb" / "#rrggbb" hex, an ANSI-256 code
+// "0"–"255" (which inherits the terminal's own palette for that slot), or the
+// keyword "default" (the terminal's default fg/bg — no color drawn at all,
+// the conventional escape hatch tmux/lazygit/helix spell the same way).
 type Palette struct {
 	Bg     string // terminal background the theme is designed on (painted via OSC 11 unless [theme] background = false)
 	Fg     string // primary text (names, values)
@@ -36,6 +37,19 @@ const DefaultName = "gruvbox-dark"
 // background and body text, grey = comment color, dim = the surface/selection
 // tone, accents verbatim).
 var builtin = map[string]Palette{
+	// terminal is the no-theming theme: every role defers to the terminal's
+	// own scheme. fg/bg are the terminal defaults (nothing painted, nothing
+	// styled) and the accents are the classic ANSI-16 slots, so the TUI looks
+	// like the rest of the user's terminal — the term16/TTY convention in
+	// helix, btop, and friends. Grey and dim share bright-black ("8"), the only
+	// muted slot ANSI-16 offers; orange falls to magenta ("5"), the customary
+	// stand-in for an accent ANSI-16 lacks.
+	"terminal": {
+		Bg: "default", Fg: "default",
+		Grey: "8", Dim: "8",
+		Red: "1", Green: "2", Yellow: "3",
+		Blue: "4", Aqua: "6", Orange: "5",
+	},
 	"gruvbox-dark": {
 		Bg: "#282828",
 		Fg: "#ebdbb2", Grey: "#928374", Dim: "#7c6f64",
@@ -131,10 +145,15 @@ func Names() []string {
 }
 
 // ValidColor reports whether s is a color value the TUI accepts: "#rgb" /
-// "#rrggbb" hex (case-insensitive) or an ANSI-256 code 0–255. This is exactly
-// the set lipgloss.Color parses without falling back to no-color, so config
-// validation can reject a typo instead of silently rendering it black.
+// "#rrggbb" hex (case-insensitive), an ANSI-256 code 0–255, or the keyword
+// "default" (terminal default, rendered unstyled). Apart from the keyword this
+// is exactly the set lipgloss.Color parses without falling back to no-color,
+// so config validation can reject a typo instead of silently rendering it
+// black.
 func ValidColor(s string) bool {
+	if s == "default" {
+		return true
+	}
 	if len(s) > 0 && s[0] == '#' {
 		hex := s[1:]
 		if len(hex) != 3 && len(hex) != 6 {

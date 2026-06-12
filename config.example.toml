@@ -77,7 +77,10 @@ unsafe_symlinks = "keep"
 # The TUI's colors. All themes are compiled into the binary — no theme files.
 # Built-in names: catppuccin-latte, catppuccin-mocha, dracula, gruvbox-dark
 # (the default), gruvbox-light, monokai, nord, one-dark, solarized-dark,
-# solarized-light, tokyo-night. This whole block is optional.
+# solarized-light, terminal, tokyo-night. "terminal" is the no-theming choice:
+# it paints nothing and uses your terminal's own default fg/bg plus the
+# ANSI-16 accent slots, so the TUI follows whatever scheme your terminal uses.
+# This whole block is optional.
 #[theme]
 #name = "nord"
 
@@ -89,9 +92,10 @@ unsafe_symlinks = "keep"
 #background = true
 
 # Any role can be overridden on top of the chosen base theme — override all
-# ten and you have a fully custom theme. Values are "#rgb"/"#rrggbb" hex or an
+# ten and you have a fully custom theme. Values are "#rgb"/"#rrggbb" hex, an
 # ANSI-256 code "0"-"255" (which inherits your terminal's own palette for that
-# slot; for bg/fg an ANSI code also leaves that terminal default unpainted —
+# slot), or "default" (the terminal's default color, rendered unstyled; for
+# bg/fg, ANSI and "default" values also leave that terminal default unpainted —
 # only hex values repaint it). The roles: bg (terminal background), fg (primary text), grey
 # (metadata), dim (separators, disabled), red (errors/removed/overdue), green
 # (ok/added), yellow (titles/modified/grace), blue (headings/directories),

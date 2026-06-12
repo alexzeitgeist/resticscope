@@ -150,6 +150,13 @@ red = "crimson"
 	if !strings.Contains(err.Error(), `theme.colors.red`) {
 		t.Errorf("error does not name the bad role: %v", err)
 	}
+	// The diagnostic must enumerate the full accepted set — hex, ANSI-256, and
+	// the "default" keyword — so it cannot drift from theme.ValidColor again.
+	for _, form := range []string{"#rrggbb", "ANSI-256", `"default"`} {
+		if !strings.Contains(err.Error(), form) {
+			t.Errorf("error does not mention accepted form %s: %v", form, err)
+		}
+	}
 }
 
 func TestThemeRejectsUnknownColorRole(t *testing.T) {
