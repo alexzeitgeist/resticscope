@@ -84,17 +84,72 @@ var builtin = map[string]Palette{
 		Red: "#f92672", Green: "#a6e22e", Yellow: "#e6db74",
 		Blue: "#66d9ef", Aqua: "#a1efe4", Orange: "#fd971f",
 	},
+	// The four catppuccin flavors share one role mapping onto the official
+	// palette (github.com/catppuccin/palette): bg/fg = base/text, grey/dim =
+	// overlay0/surface2, and the accents are red/green/yellow/blue/teal/peach.
 	"catppuccin-mocha": {
 		Bg: "#1e1e2e",
 		Fg: "#cdd6f4", Grey: "#6c7086", Dim: "#585b70",
 		Red: "#f38ba8", Green: "#a6e3a1", Yellow: "#f9e2af",
 		Blue: "#89b4fa", Aqua: "#94e2d5", Orange: "#fab387",
 	},
+	"catppuccin-macchiato": {
+		Bg: "#24273a",
+		Fg: "#cad3f5", Grey: "#6e738d", Dim: "#5b6078",
+		Red: "#ed8796", Green: "#a6da95", Yellow: "#eed49f",
+		Blue: "#8aadf4", Aqua: "#8bd5ca", Orange: "#f5a97f",
+	},
+	"catppuccin-frappe": {
+		Bg: "#303446",
+		Fg: "#c6d0f5", Grey: "#737994", Dim: "#626880",
+		Red: "#e78284", Green: "#a6d189", Yellow: "#e5c890",
+		Blue: "#8caaee", Aqua: "#81c8be", Orange: "#ef9f76",
+	},
 	"catppuccin-latte": {
 		Bg: "#eff1f5",
 		Fg: "#4c4f69", Grey: "#9ca0b0", Dim: "#acb0be",
 		Red: "#d20f39", Green: "#40a02b", Yellow: "#df8e1d",
 		Blue: "#1e66f5", Aqua: "#179299", Orange: "#fe640b",
+	},
+	// ayu follows the upstream ayu-colors syntax roles (markup/string/func/
+	// entity/regexp), with orange = keyword rather than ayu's gold accent —
+	// the gold (#e6b450 dark, #f29718 light) sits too close to the func yellow
+	// already holding the yellow role to keep the two distinguishable.
+	"ayu-dark": {
+		Bg: "#10141c",
+		Fg: "#bfbdb6", Grey: "#5a6673", Dim: "#475266",
+		Red: "#f07178", Green: "#aad94c", Yellow: "#ffb454",
+		Blue: "#59c2ff", Aqua: "#95e6cb", Orange: "#ff8f40",
+	},
+	// ayu-light's official comment grey (#adaeb1) is too faint against the
+	// near-white bg for the grey role's metadata text, so grey takes the UI
+	// foreground and the comment grey slides down to dim.
+	"ayu-light": {
+		Bg: "#fcfcfc",
+		Fg: "#5c6166", Grey: "#828e9f", Dim: "#adaeb1",
+		Red: "#f07171", Green: "#86b300", Yellow: "#eba400",
+		Blue: "#22a4e6", Aqua: "#4cbf99", Orange: "#fa8532",
+	},
+	// night-owl maps the VS Code theme's signature tokens: green = the
+	// variable chartreuse, yellow = the string tan (the theme's own ANSI
+	// yellow is greenish #c5e478, which would collide with green), orange =
+	// the number/constant slot. Its iconic keyword purple #c792ea has no role
+	// here — the palette carries six accents, Night Owl seven.
+	"night-owl": {
+		Bg: "#011627",
+		Fg: "#d6deeb", Grey: "#637777", Dim: "#1d3b53",
+		Red: "#ef5350", Green: "#c5e478", Yellow: "#ecc48d",
+		Blue: "#82aaff", Aqua: "#7fdbca", Orange: "#f78c6c",
+	},
+	// night-owl-light (upstream "Light Owl") has no orange anywhere, so the
+	// orange role takes #aa0982 — the number/constant slot, i.e. the same
+	// token the dark variant's orange holds — keeping roles consistent when
+	// switching between the pair.
+	"night-owl-light": {
+		Bg: "#fbfbfb",
+		Fg: "#403f53", Grey: "#989fb1", Dim: "#d9d9d9",
+		Red: "#de3d3b", Green: "#08916a", Yellow: "#e0af02",
+		Blue: "#288ed7", Aqua: "#2aa298", Orange: "#aa0982",
 	},
 	"solarized-dark": {
 		Bg: "#002b36",

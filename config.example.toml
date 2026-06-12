@@ -75,9 +75,11 @@ unsafe_symlinks = "keep"
 
 # --- color theme ---------------------------------------------------------------
 # The TUI's colors. All themes are compiled into the binary — no theme files.
-# Built-in names: catppuccin-latte, catppuccin-mocha, dracula, gruvbox-dark
-# (the default), gruvbox-light, monokai, nord, one-dark, solarized-dark,
-# solarized-light, terminal, tokyo-night. "terminal" is the no-theming choice:
+# Built-in names: ayu-dark, ayu-light, catppuccin-frappe, catppuccin-latte,
+# catppuccin-macchiato, catppuccin-mocha, dracula, gruvbox-dark (the default),
+# gruvbox-light, monokai, night-owl, night-owl-light, nord, one-dark,
+# solarized-dark, solarized-light, terminal, tokyo-night.
+# "terminal" is the no-theming choice:
 # it paints nothing and uses your terminal's own default fg/bg plus the
 # ANSI-16 accent slots, so the TUI follows whatever scheme your terminal uses.
 # This whole block is optional.
