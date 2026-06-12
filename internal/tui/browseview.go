@@ -218,12 +218,14 @@ func browseLayout(width int) browseColLayout {
 // browseCells formats one row's worth of columns — header or data — into the
 // shared column order so both align: Name(l.name,left) · Size(10,right) ·
 // [Modified(16,left)] · [Perms(10,left)] · [Owner(11,right)]. Callers join the
-// result with two spaces. The Name cell carries arbitrary filenames, so it is
-// truncated and padded by display width (filenames can hold wide runes); the
-// fixed metadata cells are ASCII, so fmt's rune-count padding is exact for them.
+// result with two spaces. The Name cell carries arbitrary filenames or full
+// paths (the search list), so it is truncated and padded by display width
+// (filenames can hold wide runes) with truncatePathWidth, which keeps the
+// basename and extension visible through the cut; the fixed metadata cells are
+// ASCII, so fmt's rune-count padding is exact for them.
 func browseCells(l browseColLayout, name, size, mod, perms, owner string) []string {
 	cells := []string{
-		padRight(truncateWidth(name, l.name), l.name),
+		padRight(truncatePathWidth(name, l.name), l.name),
 		fmt.Sprintf("%*s", browseSizeWidth, size),
 	}
 	if l.showMod {

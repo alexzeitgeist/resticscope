@@ -3158,3 +3158,64 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+// truncateNameWidth keeps the extension (and a dir's trailing slash) visible
+// through the cut, so a column of truncated names still tells file types
+// apart; without a usable extension it degrades to plain end-truncation.
+func TestTruncateNameWidth(t *testing.T) {
+	tests := []struct {
+		s    string
+		max  int
+		want string
+	}{
+		{"short.pdf", 20, "short.pdf"},                            // fits unchanged
+		{"a-very-long-document-name.pdf", 16, "a-very-long….pdf"}, // extension survives
+		{"VID-20200507-WA0012.mp4", 12, "VID-202….mp4"},           // ditto for media names
+		{"a-very-long-directory-name/", 12, "a-very-lon…/"},       // dirs keep the trailing slash
+		{"no-extension-at-all-here", 12, "no-extensio…"},          // no ext: plain cut
+		{".config-cache-2024-backup", 12, ".config-cac…"},         // dotfile: leading dot is no ext
+		{"name.with a space.suffix here", 12, "name.with a…"},     // spaced suffix is no ext
+		{"long-name.backupfile", 14, "long-name.bac…"},            // overlong suffix is no ext
+		{"x.pdf", 4, "x.p…"},                                      // too narrow for the suffix: plain cut
+		{"héllo-wörld.txt", 10, "héllo….txt"},                     // width-measured head
+	}
+	for _, tt := range tests {
+		got := truncateNameWidth(tt.s, tt.max)
+		if got != tt.want {
+			t.Errorf("truncateNameWidth(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+		}
+		if w := lipgloss.Width(got); w > tt.max {
+			t.Errorf("truncateNameWidth(%q, %d) is %d cells wide", tt.s, tt.max, w)
+		}
+	}
+}
+
+// truncatePathWidth keeps the basename intact and elides the middle of the
+// directory chain, keeping as many leading components as fit; when even
+// "…/<base>" overflows it falls back to extension-preserving name truncation,
+// and a slash-free input behaves exactly like truncateNameWidth.
+func TestTruncatePathWidth(t *testing.T) {
+	const long = "/Android/media/com.whatsapp/WhatsApp/Media/IMG-1234.jpg"
+	tests := []struct {
+		s    string
+		max  int
+		want string
+	}{
+		{long, 60, long}, // fits unchanged
+		{long, 40, "/Android/media/…/IMG-1234.jpg"},        // middle elided at component boundaries
+		{long, 14, "…/IMG-1234.jpg"},                       // only the basename fits
+		{long, 10, "…/IMG….jpg"},                           // basename itself cut, extension kept
+		{"/a/b/c/dir/", 8, "/…/dir/"},                      // dir paths keep the trailing slash
+		{"bare-name-no-slashes.txt", 12, "bare-na….txt"},   // no slash: name truncation
+		{"  /home/deep/needle.txt", 18, "  /…/needle.txt"}, // icon prefix sticks to the head
+	}
+	for _, tt := range tests {
+		got := truncatePathWidth(tt.s, tt.max)
+		if got != tt.want {
+			t.Errorf("truncatePathWidth(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+		}
+		if w := lipgloss.Width(got); w > tt.max {
+			t.Errorf("truncatePathWidth(%q, %d) is %d cells wide", tt.s, tt.max, w)
+		}
+	}
+}

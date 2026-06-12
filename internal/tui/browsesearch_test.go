@@ -902,17 +902,18 @@ func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 		t.Errorf("the search list flex column should be labelled 'Path', got %q", hdr)
 	}
 
-	// Narrow terminal: the path is clipped (ellipsis) and the row stays within the
-	// table width on a single line — never wrapped.
+	// Narrow terminal: the path is clipped (ellipsis) but keeps the basename —
+	// the part that identifies the match — and the row stays within the table
+	// width on a single line, never wrapped.
 	m = update(t, m, tea.WindowSizeMsg{Width: 32, Height: 20})
 	narrow := stripANSI(m.View().Content)
 	tw := browseTableWidth(32)
-	row := lineContaining(t, narrow, "/home/deep")
+	row := lineContaining(t, narrow, "needle.txt")
 	if w := lipgloss.Width(strings.TrimRight(row, " ")); w > tw {
 		t.Errorf("a clipped search row width = %d, want <= %d: %q", w, tw, row)
 	}
-	if !strings.Contains(row, "…") {
-		t.Errorf("an overlong path should be clipped with an ellipsis: %q", row)
+	if !strings.Contains(row, "…/needle.txt") {
+		t.Errorf("an overlong path should elide the middle but keep the basename: %q", row)
 	}
 }
 

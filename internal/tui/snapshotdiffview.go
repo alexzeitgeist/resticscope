@@ -278,15 +278,16 @@ func (m Model) diffSearchList(w int) string {
 // (or, for dir rows, a compact `+a -r Mm` rollup) and is colored by the
 // primary change type. The name cell shows the last path component, prefixing
 // dirs with the same disclosure marker browse uses and keeping the trailing
-// slash. The whole line is clipped to width so a long name can't wrap and break
-// the row budget; the cursor row is highlighted with the accent gutter and the
-// selected style.
+// slash. An overlong name (or the search list's full path) is truncated by
+// truncatePathWidth so the basename and extension survive the cut. The whole
+// line is clipped to width so a long name can't wrap and break the row budget;
+// the cursor row is highlighted with the accent gutter and the selected style.
 func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw int) string {
 	name := r.Name
 	if r.IsDir {
 		name = "▸ " + name + "/"
 	}
-	nameCell := padRight(truncateWidth(name, l.name), l.name)
+	nameCell := padRight(truncatePathWidth(name, l.name), l.name)
 
 	marker, mstyle := diffRowMarker(r, m.styles)
 	markerCell := mstyle.Render(padRight(truncateWidth(marker, l.marker), l.marker))

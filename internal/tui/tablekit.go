@@ -43,7 +43,12 @@ func truncateWidth(s string, max int) string {
 	if lipgloss.Width(s) <= max {
 		return s
 	}
-	budget := max - 1 // reserve one cell for the ellipsis
+	return widthPrefix(s, max-1) + "…" // reserve one cell for the ellipsis
+}
+
+// widthPrefix returns the longest prefix of s that spans at most budget
+// display cells, measuring rune widths like truncateWidth.
+func widthPrefix(s string, budget int) string {
 	var b strings.Builder
 	w := 0
 	for _, r := range s {
@@ -54,5 +59,88 @@ func truncateWidth(s string, max int) string {
 		b.WriteRune(r)
 		w += rw
 	}
-	return b.String() + "…"
+	return b.String()
+}
+
+// truncExtMax bounds the suffix nameExt treats as a file extension: a dot plus
+// up to six characters covers real extensions (".pdf", ".jsonl", ".sqlite")
+// while rejecting dotted prose that happens to end a long filename.
+const truncExtMax = 7
+
+// nameExt returns the extension of name's last path component (".pdf") when it
+// has one worth carrying through truncation, else "". A leading dot (dotfiles)
+// is not an extension, and neither is a suffix longer than truncExtMax or one
+// containing spaces.
+func nameExt(name string) string {
+	dot := strings.LastIndexByte(name, '.')
+	if dot <= strings.LastIndexByte(name, '/')+1 || len(name)-dot > truncExtMax {
+		return ""
+	}
+	if strings.ContainsRune(name[dot+1:], ' ') {
+		return ""
+	}
+	return name[dot:]
+}
+
+// truncateNameWidth shortens a filename to at most max display cells like
+// truncateWidth, but keeps what identifies the entry through the cut: the
+// extension and a directory's trailing slash survive at the end, so a column
+// of truncated names still tells "….pdf" from "….mp4" instead of cutting both
+// to the same opaque "Medi…". Falls back to plain truncateWidth when the
+// column is too narrow to fit even the suffix.
+func truncateNameWidth(s string, max int) string {
+	if max <= 0 || lipgloss.Width(s) <= max {
+		return truncateWidth(s, max)
+	}
+	core, trail := s, ""
+	if strings.HasSuffix(s, "/") {
+		core, trail = s[:len(s)-1], "/"
+	}
+	ext := nameExt(core)
+	budget := max - 1 - lipgloss.Width(ext+trail) // 1 for the ellipsis
+	if budget < 1 {
+		return truncateWidth(s, max)
+	}
+	return widthPrefix(core[:len(core)-len(ext)], budget) + "…" + ext + trail
+}
+
+// truncatePathWidth shortens a path to at most max display cells, keeping the
+// final component — the part that actually identifies the entry — intact and
+// collapsing the elided middle of the directory chain to a single "…", so
+// "/Android/media/com.whatsapp/…/IMG-1234.jpg" rather than the useless
+// "/Android/media/com.wha…". Leading components are kept while they fit. When
+// even "…/<base>" overflows, the basename itself is cut extension-preservingly
+// via truncateNameWidth — which also handles a slash-free s, so this is safe
+// for flex cells that hold bare names and full paths interchangeably.
+func truncatePathWidth(s string, max int) string {
+	if max <= 0 || lipgloss.Width(s) <= max {
+		return truncateWidth(s, max)
+	}
+	core, trail := s, ""
+	if strings.HasSuffix(s, "/") {
+		core, trail = s[:len(s)-1], "/"
+	}
+	slash := strings.LastIndexByte(core, '/')
+	if slash < 0 {
+		return truncateNameWidth(s, max)
+	}
+	tail := "…" + core[slash:] + trail // "…/name.ext", or "…/name/" for a dir
+	if lipgloss.Width(tail) > max {
+		return truncateNameWidth(tail, max)
+	}
+	// Keep whole leading components while the result still fits. Each kept
+	// prefix ends at its slash, which tail's "…" follows directly; prefixes
+	// only grow, so stop at the first that overflows.
+	best := tail
+	for j, head := 0, core[:slash]; j < len(head); j++ {
+		if head[j] != '/' {
+			continue
+		}
+		cand := head[:j+1] + tail
+		if lipgloss.Width(cand) > max {
+			break
+		}
+		best = cand
+	}
+	return best
 }
