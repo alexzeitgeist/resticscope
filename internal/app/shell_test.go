@@ -210,7 +210,7 @@ func TestInteractiveArgs(t *testing.T) {
 	if len(args) != 3 || args[0] != "/bin/sh" || args[1] != "-c" {
 		t.Fatalf("args = %v, want [/bin/sh -c <script>]", args)
 	}
-	if !strings.Contains(args[2], "exec '/bin/zsh' -i") {
+	if !strings.Contains(args[2], "exec '/bin/zsh' '-i'") {
 		t.Errorf("script does not exec the user's shell: %q", args[2])
 	}
 	if !strings.Contains(args[2], "'hi there'") {
@@ -230,7 +230,7 @@ func TestInteractiveArgsEmptyBanner(t *testing.T) {
 	if strings.Contains(args[2], "printf") {
 		t.Errorf("empty banner must not emit a printf: %q", args[2])
 	}
-	if args[2] != "exec '/bin/zsh' -i" {
+	if args[2] != "exec '/bin/zsh' '-i'" {
 		t.Errorf("script = %q, want bare exec wrapper", args[2])
 	}
 }
@@ -264,10 +264,11 @@ func TestLocalShellSessionHappyPath(t *testing.T) {
 		t.Errorf("local shell must carry no banner, got %q", sess.Banner)
 	}
 	if sess.Cleanup == nil {
-		t.Fatal("Cleanup must be a no-op func, not nil")
+		t.Fatal("Cleanup must be a callable func, not nil")
 	}
+	// No password file exists here; Cleanup only removes prompt-tag scaffolding.
 	if err := sess.Cleanup(); err != nil {
-		t.Errorf("Cleanup should be a no-op, got %v", err)
+		t.Errorf("Cleanup: %v", err)
 	}
 	joined := strings.Join(sess.Env, "\n")
 	for _, banned := range []string{"hunter2", "sk-leak", "homeserver-system"} {

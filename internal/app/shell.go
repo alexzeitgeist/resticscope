@@ -15,7 +15,9 @@ import (
 // repository (and optionally a selected snapshot): the resolved shell, the child
 // environment with RESTIC_*/AWS_*/RESTICSCOPE_* preloaded, a human banner to
 // print before the prompt, and a Cleanup that removes any temporary password
-// file.
+// file. For bash/zsh/fish the session also tags the shell's prompt with a
+// persistent "(resticscope·repo)" prefix (shellprompt.go), so the user keeps
+// seeing whose shell they are in long after the banner scrolled away.
 //
 // The caller owns launching the process — the TUI via tea.ExecProcess, the
 // `exec` subcommand via os/exec — and MUST call Cleanup once the child exits.
@@ -27,7 +29,11 @@ type ShellSession struct {
 	Env     []string     // child environment; restic password handled per mode
 	Banner  string       // printed before the prompt by InteractiveArgs; empty => no banner
 	Dir     string       // optional working directory for the launched shell; empty => inherit
-	Cleanup func() error // removes the temp password file; no-op in env mode
+	Cleanup func() error // removes the temp password file and prompt-tag scaffolding
+
+	// execArgv overrides the default `Shell -i` exec when the prompt-tag setup
+	// needs extra flags (bash --rcfile, fish -C); empty means the default.
+	execArgv []string
 }
 
 // ShellSession resolves a repo's credentials and assembles a shell session for
@@ -57,7 +63,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 		return nil, err
 	}
 
-	return &ShellSession{
+	sess := &ShellSession{
 		Shell: resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
 		Env: buildShellEnv(os.Environ(), shellEnvOpts{
 			target:   target,
@@ -69,7 +75,11 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 		}),
 		Banner:  shellBanner(r.Name, resticx.RepoURL(target), snap),
 		Cleanup: cleanup,
-	}, nil
+	}
+	if err := applyPromptTag(sess, promptTag(r.Name)); err != nil {
+		a.logger().Warn("shell prompt tag skipped", "err", err)
+	}
+	return sess, nil
 }
 
 // ErrLocalShellInvalidDir is returned by LocalShellSession when the requested
@@ -81,11 +91,13 @@ var ErrLocalShellInvalidDir = errors.New("local shell: invalid working directory
 
 // LocalShellSession returns a ShellSession that drops the user into their shell
 // rooted at dir, with no repository contact whatsoever. Unlike the
-// snapshot-scoped ShellSession it sets no RESTIC_*/AWS_* env vars, passes no
-// password file, and registers a no-op Cleanup — it is the purely cosmetic
-// "open a shell in the extracted directory" launch from the extract success
-// view (framework §16). The inherited environment is filtered so no credential
-// the parent process happens to carry leaks into the child.
+// snapshot-scoped ShellSession it sets no RESTIC_*/AWS_* env vars and passes no
+// password file — it is the purely cosmetic "open a shell in the extracted
+// directory" launch from the extract success view (framework §16). The
+// inherited environment is filtered so no credential the parent process happens
+// to carry leaks into the child. It prints no banner, but the prompt still gets
+// the bare "(resticscope)" tag so the user can tell this apart from a plain
+// terminal (Cleanup removes the tag scaffolding where one is written).
 //
 // When dir itself is not enterable by the user — a privileged extract can
 // leave the target root-owned 0700 — the session starts in the nearest
@@ -124,13 +136,17 @@ func (a *App) LocalShellSession(dir string) (*ShellSession, error) {
 	if shellDir != dir {
 		banner = fmt.Sprintf("%s is enterable only by its owner — starting in %s instead (use sudo to enter it)", dir, shellDir)
 	}
-	return &ShellSession{
+	sess := &ShellSession{
 		Shell:   resolveShell(a.Cfg.Global.Shell, os.Getenv("SHELL")),
 		Env:     stripCredEnv(os.Environ()),
 		Banner:  banner,
 		Dir:     shellDir,
 		Cleanup: func() error { return nil },
-	}, nil
+	}
+	if err := applyPromptTag(sess, promptTag("")); err != nil {
+		a.logger().Warn("shell prompt tag skipped", "err", err)
+	}
+	return sess, nil
 }
 
 // nearestEnterableDir walks from dir toward the filesystem root and returns
@@ -149,14 +165,23 @@ func nearestEnterableDir(dir string) string {
 }
 
 // InteractiveArgs returns the argv that (optionally) prints the banner and then
-// replaces itself with an interactive shell. The wrapper always runs under
-// /bin/sh so it is POSIX regardless of the user's login shell; only the final,
-// exec'd shell is the user's choice. The banner and shell path are single-quoted
-// so neither can break out of the wrapper. An empty Banner (the local
-// "shell here" session) emits only the exec wrapper, with no leading blank
-// printf line.
+// replaces itself with an interactive shell — execArgv when the prompt-tag
+// setup installed one, plain `Shell -i` otherwise. The wrapper always runs
+// under /bin/sh so it is POSIX regardless of the user's login shell; only the
+// final, exec'd shell is the user's choice. The banner and every exec word are
+// single-quoted so none can break out of the wrapper. An empty Banner (the
+// local "shell here" session) emits only the exec wrapper, with no leading
+// blank printf line.
 func (s *ShellSession) InteractiveArgs() []string {
-	script := "exec " + posixQuote(s.Shell) + " -i"
+	argv := s.execArgv
+	if len(argv) == 0 {
+		argv = []string{s.Shell, "-i"}
+	}
+	words := make([]string, len(argv))
+	for i, w := range argv {
+		words[i] = posixQuote(w)
+	}
+	script := "exec " + strings.Join(words, " ")
 	if s.Banner != "" {
 		script = "printf '%s\\n' " + posixQuote(s.Banner) + "; " + script
 	}
