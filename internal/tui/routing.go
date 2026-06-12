@@ -101,11 +101,21 @@ func (m Model) handleModalViewKey(msg tea.KeyPressMsg) (Model, bool) {
 	return m, false
 }
 
-// handleHelpViewKey keeps the help overlay modal: only Back closes it. The
+// handleHelpViewKey keeps the help overlay modal while still allowing its
+// scroll keys (the body overflows the pane on narrow or short terminals). The
 // global ctrl+c/q/? path has already had first claim in handleGlobalKey.
 func (m Model) handleHelpViewKey(msg tea.KeyPressMsg) Model {
-	if key.Matches(msg, m.keys.Back) {
-		return m.goBack()
+	switch {
+	case key.Matches(msg, m.keys.Back):
+		m = m.goBack()
+	case key.Matches(msg, m.keys.Up):
+		m = m.scrollHelp(-1)
+	case key.Matches(msg, m.keys.Down):
+		m = m.scrollHelp(1)
+	case key.Matches(msg, m.keys.PageUp):
+		m = m.scrollHelp(-m.modalVisible())
+	case key.Matches(msg, m.keys.PageDown):
+		m = m.scrollHelp(m.modalVisible())
 	}
 	return m
 }
@@ -121,9 +131,9 @@ func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
 	case key.Matches(msg, m.keys.Down):
 		m = m.scrollInfo(1)
 	case key.Matches(msg, m.keys.PageUp):
-		m = m.scrollInfo(-m.infoVisible())
+		m = m.scrollInfo(-m.modalVisible())
 	case key.Matches(msg, m.keys.PageDown):
-		m = m.scrollInfo(m.infoVisible())
+		m = m.scrollInfo(m.modalVisible())
 	}
 	return m
 }
@@ -259,5 +269,6 @@ func (m Model) toggleHelp() Model {
 	}
 	m.prevView = m.view
 	m.view = helpView
+	m.helpScroll = 0 // a fresh open always starts at the top
 	return m
 }

@@ -69,12 +69,12 @@ func (m Model) infoBody() string {
 	}
 	w, _ := m.effSize()
 	lines := m.infoBodyLines(*s, w)
-	visible := m.infoVisible()
+	visible := m.modalVisible()
 	if len(lines) <= visible {
 		return strings.Join(lines, "\n")
 	}
 	// Content overflows: reserve the last visible row for a scroll hint and
-	// window the rest around m.infoScroll. clampInfoScroll guarantees the same
+	// window the rest around m.infoScroll. clampModalScroll guarantees the same
 	// bounds the key handler enforces, so the model state and what is on screen
 	// can never disagree. When visible==1 there is no room for both body and
 	// hint — drop the hint so the modal never spills into an adjacent pane.
@@ -83,7 +83,7 @@ func (m Model) infoBody() string {
 	if !showHint {
 		bodyRows = visible
 	}
-	start := clampInfoScroll(m.infoScroll, len(lines), bodyRows)
+	start := clampModalScroll(m.infoScroll, len(lines), bodyRows)
 	end := start + bodyRows
 	if end > len(lines) {
 		end = len(lines)
@@ -123,16 +123,6 @@ func (m Model) infoBodyLines(s model.Snapshot, width int) []string {
 	return lines
 }
 
-// infoVisible is how many body rows the info modal can show at once: the full
-// height minus the header, both gaps, and the rendered footer. Floored at 1.
-func (m Model) infoVisible() int {
-	_, h := m.effSize()
-	if n := h - headerRows - 2*gapRows - m.footerRows(); n >= 1 {
-		return n
-	}
-	return 1
-}
-
 // infoScrollable reports whether the info modal's body overflows the visible
 // pane and therefore needs to advertise scroll keys in the footer. It is
 // deliberately independent of m.footerRows() to avoid a cycle (footerRows
@@ -169,7 +159,7 @@ func (m Model) scrollInfo(delta int) Model {
 	}
 	w, _ := m.effSize()
 	lines := m.infoBodyLines(*s, w)
-	visible := m.infoVisible()
+	visible := m.modalVisible()
 	if len(lines) <= visible {
 		m.infoScroll = 0
 		return m
@@ -178,24 +168,8 @@ func (m Model) scrollInfo(delta int) Model {
 	if bodyRows < 1 {
 		bodyRows = 1
 	}
-	m.infoScroll = clampInfoScroll(m.infoScroll+delta, len(lines), bodyRows)
+	m.infoScroll = clampModalScroll(m.infoScroll+delta, len(lines), bodyRows)
 	return m
-}
-
-// clampInfoScroll bounds a (possibly out-of-range) scroll offset so the body
-// window [start, start+bodyRows) stays inside [0, total).
-func clampInfoScroll(scroll, total, bodyRows int) int {
-	maxScroll := total - bodyRows
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if scroll > maxScroll {
-		scroll = maxScroll
-	}
-	if scroll < 0 {
-		scroll = 0
-	}
-	return scroll
 }
 
 func (m Model) renderInfoSection(s infoSection, labelW, width int) []string {

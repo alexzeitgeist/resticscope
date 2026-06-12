@@ -572,12 +572,15 @@ func TestRefreshOnOpenSchedulesColdRepos(t *testing.T) {
 }
 
 // `?` opens the full-screen help overlay, which lists the keybindings grouped by
-// context plus a status-glyph legend; `?` again closes it back to the list.
+// context plus a status-glyph legend; `?` again closes it back to the list. The
+// terminal here is large enough for the full two-column layout so every section
+// is on screen at once; the narrow/short cases are covered separately below.
 func TestHelpOverlayToggle(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	if m.view != listView {
 		t.Fatalf("view starts at %d, want listView", m.view)
 	}
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 60})
 	m = update(t, m, press("?"))
 	if m.view != helpView {
 		t.Fatalf("? should open the help overlay, view = %d", m.view)
@@ -600,6 +603,129 @@ func TestHelpOverlayToggle(t *testing.T) {
 	m = update(t, m, press("?"))
 	if m.view != listView {
 		t.Errorf("? should close the overlay back to the list, view = %d", m.view)
+	}
+}
+
+// On a terminal wide enough for both columns the overlay keeps the side-by-side
+// layout (a left-column heading and a right-column heading share a line), and
+// when the body also fits vertically the footer must not advertise scroll keys
+// — same minimal-footer rule the info modal locks in.
+func TestHelpOverlayTwoColumnsWhenWide(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 60})
+	m = update(t, m, press("?"))
+	view := stripANSI(m.View().Content)
+	var sideBySide bool
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Global") && strings.Contains(line, "Detail") {
+			sideBySide = true
+		}
+	}
+	if !sideBySide {
+		t.Errorf("at 140 cols Global and Detail should share a line (two columns)\n---\n%s", view)
+	}
+	if strings.Contains(view, "showing lines") {
+		t.Errorf("body fits at 140x60, no scroll window expected\n---\n%s", view)
+	}
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	if footer := lines[len(lines)-1]; strings.Contains(footer, "scroll") {
+		t.Errorf("help footer should not advertise scroll keys when the body fits\nfooter: %q", footer)
+	}
+}
+
+// Below the two-column width the overlay stacks into a single column: every
+// rendered line stays inside the terminal width and the full reference —
+// including the sections that used to live in the truncated right column —
+// survives in the scrollable line list instead of being cut off.
+func TestHelpOverlayNarrowStacksSingleColumn(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = update(t, m, press("?"))
+	view := stripANSI(m.View().Content)
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 80 {
+			t.Errorf("line wider than terminal: %d > 80: %q", got, line)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Global") && strings.Contains(line, "Detail") {
+			t.Errorf("at 80 cols the columns must stack, but found a side-by-side line: %q", line)
+		}
+	}
+	// The stacked column is taller than the pane, so the body must window
+	// itself and advertise the position.
+	if !strings.Contains(view, "showing lines") {
+		t.Errorf("stacked overlay should report its scroll window\n---\n%s", view)
+	}
+	// Nothing is lost to the narrower layout: the deep sections are still in
+	// the line list the window scrolls over.
+	all := stripANSI(strings.Join(m.helpBodyLines(80), "\n"))
+	for _, want := range []string{
+		"swap snapshot direction",        // Diff section
+		"file versions across snapshots", // Browse section, truncated pre-fix
+		"never refreshed",                // glyph legend
+		"extract whole snapshot",         // Detail section
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("single-column help lost %q", want)
+		}
+	}
+	// On a pane too narrow even for one column, lines clip instead of wrapping
+	// (wrapped lines would break the fixed row budget the frame relies on).
+	for _, line := range m.helpBodyLines(40) {
+		if got := lipgloss.Width(line); got > 40 {
+			t.Errorf("line wider than 40-col pane: %d: %q", got, line)
+		}
+	}
+}
+
+// A help body taller than the terminal must remain reachable via up/down/page
+// navigation, and reopening the overlay starts back at the top.
+func TestHelpOverlayScrolls(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = update(t, m, press("?"))
+	if m.helpScroll != 0 {
+		t.Fatalf("fresh overlay helpScroll = %d, want 0", m.helpScroll)
+	}
+	initial := stripANSI(m.View().Content)
+	if strings.Contains(initial, "never refreshed") {
+		t.Fatalf("precondition: the glyph legend must start below the fold\n---\n%s", initial)
+	}
+	if !strings.Contains(initial, "scroll") {
+		t.Errorf("help footer missing the scroll chip while scrolling is needed\n---\n%s", initial)
+	}
+
+	// Page-down enough times to reach the bottom; clampModalScroll bounds the
+	// stored offset, so excess presses are a no-op once we hit the floor.
+	for i := 0; i < 20; i++ {
+		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	bottom := stripANSI(m.View().Content)
+	if !strings.Contains(bottom, "never refreshed") {
+		t.Errorf("after scrolling to the bottom, the glyph legend is still hidden\n---\n%s", bottom)
+	}
+
+	// j/k must also scroll (they share keys.Up/Down bindings; no list cursor
+	// exists behind the modal to claim them).
+	for i := 0; i < 20; i++ {
+		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	}
+	m = update(t, m, press("j"))
+	if m.helpScroll != 1 {
+		t.Errorf("after j, helpScroll = %d, want 1", m.helpScroll)
+	}
+	m = update(t, m, press("k"))
+	if m.helpScroll != 0 {
+		t.Errorf("after k, helpScroll = %d, want 0", m.helpScroll)
+	}
+
+	// Close scrolled-down, reopen: the overlay starts at the top again.
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	m = update(t, m, press("?"))
+	m = update(t, m, press("?"))
+	if m.helpScroll != 0 {
+		t.Errorf("reopened overlay helpScroll = %d, want 0", m.helpScroll)
 	}
 }
 
@@ -2863,7 +2989,7 @@ func TestInfoModalScrolls(t *testing.T) {
 		t.Fatalf("precondition: with a short window the Churn section must start off-screen\n---\n%s", initial)
 	}
 
-	// Page-down enough times to reach the bottom. clampInfoScroll bounds the
+	// Page-down enough times to reach the bottom. clampModalScroll bounds the
 	// stored offset, so excess presses are a no-op once we hit the floor.
 	for i := 0; i < 20; i++ {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})

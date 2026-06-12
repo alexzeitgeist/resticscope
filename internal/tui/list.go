@@ -463,6 +463,7 @@ func (m Model) footerView() string {
 		filtering:       m.filtering,
 		searching:       searching,
 		infoScrollable:  m.infoScrollable(),
+		helpScrollable:  m.helpScrollable(),
 		searchSuspended: m.browseSearchSuspended,
 		diffJumped:      m.diffSearchJumped,
 	}), w)

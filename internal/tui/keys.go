@@ -130,6 +130,7 @@ type viewHelp struct {
 	filtering       bool
 	searching       bool // browse global filename search input is open
 	infoScrollable  bool // info modal body overflows; advertise up/down in the footer
+	helpScrollable  bool // help overlay body overflows; advertise up/down in the footer
 	searchSuspended bool // browse: a search result set is parked; esc restores it
 	diffJumped      bool // diff: a search jump is armed; esc (and q) reverse it
 
@@ -179,6 +180,12 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		}
 		return []key.Binding{k.Back}
 	case helpView:
+		// Same scroll chip rule as the info modal: advertise the keys only when
+		// the body actually overflows, and as "scroll", not "move" — they move
+		// a document viewport, not a cursor.
+		if h.helpScrollable {
+			return []key.Binding{helpAs(moveHelp(), "scroll"), k.Back}
+		}
 		return []key.Binding{k.Back}
 	case infoView:
 		// The footer carries only the canonical back key (i and esc also close
@@ -286,6 +293,11 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 			{k.Shell, k.Keep, k.Delete, k.Back},
 		}
 	case helpView:
+		if h.helpScrollable {
+			return [][]key.Binding{
+				{k.Up, k.Down, k.PageUp, k.PageDown, k.Back},
+			}
+		}
 		return [][]key.Binding{
 			{k.Back},
 		}

@@ -122,6 +122,12 @@ type Model struct {
 	// to 0 when the modal opens; clamped to a valid range on every render.
 	infoScroll int
 
+	// Vertical scroll offset for the help overlay body, in lines. Only moves
+	// when the rendered layout (two columns on a wide terminal, one stacked
+	// column on a narrow one) overflows the pane. Reset to 0 when the overlay
+	// opens; clamped to a valid range on every render.
+	helpScroll int
+
 	// Detail-view 2-slot FIFO of marked snapshots. Marks belong to the "detail
 	// context": they survive a round-trip into the snapshot-diff or browse views
 	// (those are sub-screens reached from detail) and clear only when leaving the

@@ -45,6 +45,33 @@ func (m Model) effSize() (w, h int) {
 // keep the footer flush at the bottom.
 func (m Model) footerRows() int { return lipgloss.Height(m.footerView()) }
 
+// modalVisible is how many body rows a full-screen modal (help, info) can show
+// at once: the full height minus the header, both gaps, and the rendered
+// footer. Floored at 1.
+func (m Model) modalVisible() int {
+	_, h := m.effSize()
+	if n := h - headerRows - 2*gapRows - m.footerRows(); n >= 1 {
+		return n
+	}
+	return 1
+}
+
+// clampModalScroll bounds a (possibly out-of-range) modal scroll offset so the
+// body window [start, start+bodyRows) stays inside [0, total).
+func clampModalScroll(scroll, total, bodyRows int) int {
+	maxScroll := total - bodyRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	return scroll
+}
+
 // listHeight is the number of rows left for the repo list after the header, both
 // gaps, and the footer. Floored at 1.
 func (m Model) listHeight() int {

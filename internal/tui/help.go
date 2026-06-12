@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -11,7 +12,9 @@ import (
 
 // help.go renders the full-screen help overlay (key `?`): a complete keybinding
 // reference grouped by the context each key acts in, plus a legend for the list
-// status glyphs. It is reached via the helpView value and closed with `?`, `q`,
+// status glyphs. The layout is responsive: two balanced columns on a wide
+// terminal, a single scrollable column when the width can't fit both. It is
+// reached via the helpView value and closed with `?`, `q`,
 // or `esc`; the View() switch and handleKey route to it. The title row keeps
 // the shared `? help` chip even here — `?` is a toggle, so the affordance stays
 // truthful, and dismissal is also advertised in the key bar.
@@ -47,14 +50,16 @@ func keyLabel(b key.Binding) string {
 	return strings.Join(parts, "/")
 }
 
-// helpColumns returns the reference split into two balanced columns so the whole
-// overlay fits a standard terminal without scrolling. The glyph legend is added
-// to the left column by helpBody. Entries here use deliberately verbose
+// helpSections returns the full reference in single-column reading order:
+// the global keys, then each context by navigation depth (list → detail →
+// browse → versions/diff), then the extract modal and the text-input keys.
+// helpColumns re-splits this list for the wide two-column layout, so the two
+// layouts can never drift apart. Entries here use deliberately verbose
 // descriptions (e.g. "refresh this repo", "cycle sort order",
 // "cycle group key") to disambiguate keys that share a compact footer label
 // like "r" or "o"; the binding's WithHelp text drives the one-line footer
 // help instead, so the two are not expected to match verbatim.
-func (m Model) helpColumns() (left, right []helpSection) {
+func (m Model) helpSections() []helpSection {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
 	page := keyLabel(k.PageUp) + " " + keyLabel(k.PageDown)
@@ -69,7 +74,7 @@ func (m Model) helpColumns() (left, right []helpSection) {
 	// because it carries view-specific meaning, so it lives under List/Detail.
 	// q is not global either: it quits only on the list and steps back from nested
 	// views, so it belongs to List, not Global; ctrl+c is the one unconditional quit.
-	left = []helpSection{
+	return []helpSection{
 		{"Global", []helpEntry{
 			{keyLabel(k.RefreshAll), "refresh all repos"},
 			{keyLabel(k.Help), "toggle this help"},
@@ -86,22 +91,6 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{keyLabel(k.Refresh), "refresh this repo"},
 			{keyLabel(k.Quit), "quit"},
 		}},
-		{"Extract", []helpEntry{
-			{keyLabel(k.Enter), "extract"},
-			{keyLabel(k.Target), "choose target root"},
-			{keyLabel(k.Priv), "toggle extract as root"},
-			{keyLabel(k.Shell), "shell at extracted dir"},
-			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},
-			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back"},
-		}},
-		{"Filter & search input", []helpEntry{
-			{keyLabel(k.FilterAccept), "apply filter / open match"},
-			{keyLabel(k.FilterCancel), "clear filter / cancel search"},
-			{keyLabel(k.SearchUp) + " " + keyLabel(k.SearchDown), "move through matches"},
-			{keyLabel(k.FilterDelete), "delete a character"},
-		}},
-	}
-	right = []helpSection{
 		{"Detail", []helpEntry{
 			{move, "select snapshot"},
 			{page, "page up/down"},
@@ -146,6 +135,37 @@ func (m Model) helpColumns() (left, right []helpSection) {
 			{diffFilters, "toggle change filters"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},
+		{"Extract", []helpEntry{
+			{keyLabel(k.Enter), "extract"},
+			{keyLabel(k.Target), "choose target root"},
+			{keyLabel(k.Priv), "toggle extract as root"},
+			{keyLabel(k.Shell), "shell at extracted dir"},
+			{keyLabel(k.Keep) + "/" + keyLabel(k.Delete), "keep / delete staging"},
+			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back"},
+		}},
+		{"Filter & search input", []helpEntry{
+			{keyLabel(k.FilterAccept), "apply filter / open match"},
+			{keyLabel(k.FilterCancel), "clear filter / cancel search"},
+			{keyLabel(k.SearchUp) + " " + keyLabel(k.SearchDown), "move through matches"},
+			{keyLabel(k.FilterDelete), "delete a character"},
+		}},
+	}
+}
+
+// helpColumns splits the reference into the two hand-balanced columns the wide
+// layout shows side by side: the contexts entered from the list plus the input
+// keys on the left, the drill-down views on the right. The glyph legend joins
+// the left column in helpBodyLines.
+func (m Model) helpColumns() (left, right []helpSection) {
+	onLeft := map[string]bool{
+		"Global": true, "List": true, "Extract": true, "Filter & search input": true,
+	}
+	for _, s := range m.helpSections() {
+		if onLeft[s.title] {
+			left = append(left, s)
+		} else {
+			right = append(right, s)
+		}
 	}
 	return left, right
 }
@@ -154,7 +174,43 @@ func (m Model) helpTitle() string {
 	return m.styles.title.Render("help: keybindings")
 }
 
+// helpBody renders the reference responsively: two balanced columns when the
+// terminal is wide enough, one stacked column when it is not. Either layout is
+// windowed around m.helpScroll with a "showing lines" hint when it is taller
+// than the pane (the stacked column always is), mirroring infoBody so the two
+// modals scroll identically.
 func (m Model) helpBody() string {
+	w, _ := m.effSize()
+	lines := m.helpBodyLines(w)
+	visible := m.modalVisible()
+	if len(lines) <= visible {
+		return strings.Join(lines, "\n")
+	}
+	bodyRows := visible - 1
+	showHint := bodyRows >= 1
+	if !showHint {
+		bodyRows = visible
+	}
+	start := clampModalScroll(m.helpScroll, len(lines), bodyRows)
+	end := start + bodyRows
+	if end > len(lines) {
+		end = len(lines)
+	}
+	out := make([]string, 0, end-start+1)
+	out = append(out, lines[start:end]...)
+	if showHint {
+		hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
+		out = append(out, clip(m.styles.meta.Render(hint), w))
+	}
+	return strings.Join(out, "\n")
+}
+
+// helpBodyLines builds the overlay body as a flat line list so helpBody can
+// window it. The two-column layout is used whenever it fits the width; below
+// that the sections stack into one column in helpSections' reading order with
+// the glyph legend last, every line clipped so a narrow pane truncates a row
+// instead of letting the terminal wrap or clip the whole layout.
+func (m Model) helpBodyLines(width int) []string {
 	left, right := m.helpColumns()
 
 	// One key column width across both columns keeps the descriptions aligned.
@@ -171,11 +227,69 @@ func (m Model) helpBody() string {
 		rightBlocks = append(rightBlocks, m.renderHelpSection(s, w))
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	twoCol := lipgloss.JoinHorizontal(lipgloss.Top,
 		strings.Join(leftBlocks, "\n\n"),
 		"      ",
 		strings.Join(rightBlocks, "\n\n"),
 	)
+	if lipgloss.Width(twoCol) <= width {
+		return strings.Split(twoCol, "\n")
+	}
+
+	var lines []string
+	for _, s := range m.helpSections() {
+		if len(lines) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, strings.Split(m.renderHelpSection(s, w), "\n")...)
+	}
+	lines = append(lines, "")
+	lines = append(lines, strings.Split(m.glyphLegend(), "\n")...)
+	for i := range lines {
+		lines[i] = clip(lines[i], width)
+	}
+	return lines
+}
+
+// scrollHelp adjusts the overlay scroll offset by delta lines and clamps the
+// result against the actual body extent so the model state always matches what
+// the renderer will show. A no-op when the body already fits on screen.
+func (m Model) scrollHelp(delta int) Model {
+	w, _ := m.effSize()
+	lines := m.helpBodyLines(w)
+	visible := m.modalVisible()
+	if len(lines) <= visible {
+		m.helpScroll = 0
+		return m
+	}
+	bodyRows := visible - 1
+	if bodyRows < 1 {
+		bodyRows = 1
+	}
+	m.helpScroll = clampModalScroll(m.helpScroll+delta, len(lines), bodyRows)
+	return m
+}
+
+// helpScrollable reports whether the help overlay's body overflows the visible
+// pane and therefore needs to advertise scroll keys in the footer. Like
+// infoScrollable it is deliberately independent of m.footerRows() to avoid a
+// cycle (footerRows builds viewHelp, which calls this). The overlay cannot have
+// an active filter/search prompt, but an async status message can add one
+// footer row.
+func (m Model) helpScrollable() bool {
+	if m.view != helpView {
+		return false
+	}
+	w, h := m.effSize()
+	footer := 1
+	if m.statusMsg != "" {
+		footer = 2
+	}
+	available := h - headerRows - 2*gapRows - footer
+	if available < 1 {
+		available = 1
+	}
+	return len(m.helpBodyLines(w)) > available
 }
 
 func helpKeyWidth(secs []helpSection) int {
