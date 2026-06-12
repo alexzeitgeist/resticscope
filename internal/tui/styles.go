@@ -1,10 +1,25 @@
 package tui
 
 import (
+	"charm.land/bubbles/v2/filepicker"
 	helpbubble "charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 
 	"resticscope/internal/model"
+)
+
+// Gruvbox dark palette — the single source for every color in the TUI, shared
+// by newStyles and filepickerStyles.
+var (
+	gruvFg     = lipgloss.Color("#ebdbb2")
+	gruvGrey   = lipgloss.Color("#928374")
+	gruvDim    = lipgloss.Color("#7c6f64")
+	gruvRed    = lipgloss.Color("#fb4934")
+	gruvGreen  = lipgloss.Color("#b8bb26")
+	gruvYellow = lipgloss.Color("#fabd2f")
+	gruvBlue   = lipgloss.Color("#83a598")
+	gruvAqua   = lipgloss.Color("#8ec07c")
+	gruvOrange = lipgloss.Color("#fe8019")
 )
 
 // styles holds the Lip Gloss styles for the TUI. Colors use the Gruvbox dark
@@ -42,15 +57,15 @@ type styles struct {
 
 func newStyles() styles {
 	var (
-		fg     = lipgloss.Color("#ebdbb2")
-		grey   = lipgloss.Color("#928374")
-		dim    = lipgloss.Color("#7c6f64")
-		red    = lipgloss.Color("#fb4934")
-		green  = lipgloss.Color("#b8bb26")
-		yellow = lipgloss.Color("#fabd2f")
-		blue   = lipgloss.Color("#83a598")
-		aqua   = lipgloss.Color("#8ec07c")
-		orange = lipgloss.Color("#fe8019")
+		fg     = gruvFg
+		grey   = gruvGrey
+		dim    = gruvDim
+		red    = gruvRed
+		green  = gruvGreen
+		yellow = gruvYellow
+		blue   = gruvBlue
+		aqua   = gruvAqua
+		orange = gruvOrange
 	)
 	meta := lipgloss.NewStyle().Foreground(grey)
 	key := lipgloss.NewStyle().Foreground(orange)
@@ -99,6 +114,30 @@ func newStyles() styles {
 		chgTypeChanged: lipgloss.NewStyle().Foreground(aqua),
 		chgBitrot:      lipgloss.NewStyle().Foreground(orange).Bold(true),
 	}
+}
+
+// filepickerStyles maps the embedded bubbles filepicker (the extract
+// target-root overlay) onto the same Gruvbox roles the rest of the TUI uses:
+// orange accent for the cursor row, grey for metadata (permissions, sizes),
+// dim for the disabled/empty cases. Directories are blue — the navigable,
+// selectable rows — while plain files are grey, since this picker only ever
+// selects directories. Starting from DefaultStyles keeps the layout-bearing
+// bits (the right-aligned size column width, which the picker's cursor-row
+// renderer reads back via GetWidth) intact.
+func filepickerStyles() filepicker.Styles {
+	s := filepicker.DefaultStyles()
+	s.Cursor = lipgloss.NewStyle().Foreground(gruvOrange)
+	s.Selected = lipgloss.NewStyle().Foreground(gruvOrange).Bold(true)
+	s.DisabledCursor = lipgloss.NewStyle().Foreground(gruvDim)
+	s.DisabledSelected = lipgloss.NewStyle().Foreground(gruvDim)
+	s.Directory = lipgloss.NewStyle().Foreground(gruvBlue)
+	s.File = lipgloss.NewStyle().Foreground(gruvGrey)
+	s.DisabledFile = lipgloss.NewStyle().Foreground(gruvDim)
+	s.Symlink = lipgloss.NewStyle().Foreground(gruvAqua)
+	s.Permission = lipgloss.NewStyle().Foreground(gruvGrey)
+	s.FileSize = s.FileSize.Foreground(gruvGrey)
+	s.EmptyDirectory = s.EmptyDirectory.Foreground(gruvDim).SetString("empty directory")
+	return s
 }
 
 // nameWidth is the fixed column width for repo names in the list; labelWidth is

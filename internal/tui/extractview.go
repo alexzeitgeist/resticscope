@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
@@ -562,16 +563,92 @@ func (m Model) extractKeepDeleteBody(w int) string {
 // extractFilePickerBody renders the embedded filepicker overlay. The picker's
 // View() is clipped line-by-line to the body width: bubbles' filepicker has no
 // width concept (no SetWidth/AutoWidth as of v2.1.0), so a long entry name
-// would otherwise overflow past the layout boundary.
+// would otherwise overflow past the layout boundary. Lines also pass through
+// alignFilePickerModes, fixing the picker's wobbling size/name columns.
 func (m Model) extractFilePickerBody(w int) string {
 	em := m.extract
 	header := clip(m.styles.meta.Render("  "+em.filepicker.CurrentDirectory), w)
-	body := clipLines(strings.Split(em.filepicker.View(), "\n"), w)
+	body := clipLines(alignFilePickerModes(strings.Split(em.filepicker.View(), "\n")), w)
 	out := []string{header, "", body}
 	if em.filepickerErr != "" {
 		out = append(out, "", clip(m.styles.errText.Render("  "+em.filepickerErr), w))
 	}
 	return strings.Join(out, "\n")
+}
+
+// alignFilePickerModes left-pads the picker's permission column to a uniform
+// width so the size and name columns line up. Go's FileMode.String() emits a
+// variable-length type prefix — "-rw-r--r--" is 10 cells but a sticky dir is
+// "dtrwxrwxrwx" (11) — and bubbles' filepicker (v2.1.0) writes it unpadded in
+// both its cursor-row and plain-row branches. The cursor row never goes
+// through Styles.Permission, so a Width on that style cannot fix it; instead
+// the rendered lines are normalized here, padding each mode to the widest one
+// on screen. Inserted spaces inherit whatever SGR attributes are open at that
+// point, which is harmless: the picker only sets foreground and bold.
+func alignFilePickerModes(lines []string) []string {
+	type span struct{ at, n int } // byte offset just past the mode token, and its cell count
+	spans := make([]span, len(lines))
+	maxw := 0
+	for i, ln := range lines {
+		at, n, ok := filePickerModeSpan(ln)
+		if !ok {
+			spans[i] = span{-1, 0}
+			continue
+		}
+		spans[i] = span{at, n}
+		maxw = max(maxw, n)
+	}
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		if sp := spans[i]; sp.at >= 0 && sp.n < maxw {
+			ln = ln[:sp.at] + strings.Repeat(" ", maxw-sp.n) + ln[sp.at:]
+		}
+		out[i] = ln
+	}
+	return out
+}
+
+// filePickerModeSpan locates the mode token of one rendered picker row: the
+// first visible token after the one-cell cursor column and its following gap.
+// It walks the raw string skipping CSI escape sequences, so the returned byte
+// offset can be used to splice padding into the styled line. ok is false for
+// rows that do not carry a mode at that position (filler lines, the
+// empty-directory notice), which are left untouched.
+func filePickerModeSpan(line string) (at, n int, ok bool) {
+	// Every character Go's FileMode.String() can produce: the type/flag prefix
+	// alphabet, '-' for "no bits", and the rwx permission triplets.
+	const modeChars = "dalTLDpSugct?rwx-"
+	visible := 0 // visible cell index; everything up to the mode is one cell per rune
+	for i := 0; i < len(line); {
+		if line[i] == 0x1b { // skip a CSI sequence: ESC '[' params final-byte
+			j := i + 1
+			if j < len(line) && line[j] == '[' {
+				for j++; j < len(line) && (line[j] < 0x40 || line[j] > 0x7e); j++ {
+				}
+				if j < len(line) {
+					j++
+				}
+			}
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		switch {
+		case visible < 2: // the cursor cell and the gap before the mode
+		case strings.ContainsRune(modeChars, r):
+			n++
+		default:
+			// First rune past the mode: a real mode is ≥10 cells ("-rw-r--r--")
+			// and is always followed by the size column's leading space.
+			if n >= 10 && r == ' ' {
+				return i, n, true
+			}
+			return 0, 0, false
+		}
+		visible++
+		i += size
+	}
+	return 0, 0, false
 }
 
 // extractRow is a single labeled row for the labeled-field screens (review,

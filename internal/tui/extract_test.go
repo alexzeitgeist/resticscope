@@ -395,6 +395,44 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	}
 }
 
+// alignFilePickerModes pads Go's variable-width mode strings ("-rw-r--r--" is
+// 10 cells, a sticky dir "dtrwxrwxrwx" is 11) to one column so the size and
+// name columns line up — including on the cursor row, where the picker embeds
+// the mode inside the selected style's span instead of rendering it through
+// Styles.Permission.
+func TestAlignFilePickerModes(t *testing.T) {
+	const (
+		accent = "\x1b[38;2;254;128;25m"
+		reset  = "\x1b[0m"
+	)
+	lines := []string{
+		// Cursor row: glyph styled separately, then one styled span for the rest.
+		accent + "▎" + reset + accent + " dtrwxrwxrwx     60B .ICE-unix" + reset,
+		// Plain row whose mode closes its style right after the token.
+		"  " + accent + "drwx------" + reset + "     60B claude-1000",
+		"  -rw-r--r--      0B config-err",
+		"",
+		"  empty directory",
+	}
+	want := []string{
+		// The 11-cell sticky-dir mode is the widest, so it stays put...
+		lines[0],
+		// ...10-cell modes gain one space right after the token (past any
+		// escape sequence that closes its style)...
+		"  " + accent + "drwx------" + reset + "      60B claude-1000",
+		"  -rw-r--r--       0B config-err",
+		// ...and filler / notice lines pass through untouched.
+		"",
+		"  empty directory",
+	}
+	got := alignFilePickerModes(lines)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got %q\nwant %q", i, got[i], want[i])
+		}
+	}
+}
+
 // planExtractOverride rejects an existing target and accepts a fresh one.
 func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())

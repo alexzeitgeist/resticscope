@@ -446,6 +446,10 @@ func (m *extractModel) ensureFilepicker() tea.Cmd {
 	}
 	m.filepickerInit = true
 	fp := filepicker.New()
+	fp.Styles = filepickerStyles()
+	// The same accent gutter glyph every list in the app marks its cursor row
+	// with (browse, detail, snapshot diff).
+	fp.Cursor = "▎"
 	fp.DirAllowed = true
 	fp.FileAllowed = false
 	// Show dotfiles so target roots under hidden directories (e.g. ~/.local,
