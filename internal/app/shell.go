@@ -34,6 +34,10 @@ type ShellSession struct {
 	// execArgv overrides the default `Shell -i` exec when the prompt-tag setup
 	// needs extra flags (bash --rcfile, fish -C); empty means the default.
 	execArgv []string
+	// promptZDotDir is the throwaway ZDOTDIR holding the zsh prompt-tag rc.
+	// It reaches the child only via InteractiveEnv, so non-interactive uses of
+	// Env (`exec repo -- cmd`) stay free of interactive-only scaffolding.
+	promptZDotDir string
 }
 
 // ShellSession resolves a repo's credentials and assembles a shell session for
@@ -186,6 +190,18 @@ func (s *ShellSession) InteractiveArgs() []string {
 		script = "printf '%s\\n' " + posixQuote(s.Banner) + "; " + script
 	}
 	return []string{"/bin/sh", "-c", script}
+}
+
+// InteractiveEnv returns the child environment for the interactive launch: Env
+// plus the prompt-tag ZDOTDIR override when zsh scaffolding was written. Env
+// itself stays the plain credential environment on purpose, because `exec repo
+// -- cmd` reuses it for arbitrary non-interactive commands that must not see
+// interactive-only vars.
+func (s *ShellSession) InteractiveEnv() []string {
+	if s.promptZDotDir == "" {
+		return s.Env
+	}
+	return append(envWithout(s.Env, "ZDOTDIR"), "ZDOTDIR="+s.promptZDotDir)
 }
 
 // passwordMode normalizes the configured shell_password_mode, defaulting to the

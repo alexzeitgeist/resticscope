@@ -71,7 +71,7 @@ func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
 func shellCmdFromSession(sess *app.ShellSession) tea.Cmd {
 	args := sess.InteractiveArgs()
 	c := exec.Command(args[0], args[1:]...)
-	c.Env = sess.Env
+	c.Env = sess.InteractiveEnv()
 	if sess.Dir != "" {
 		c.Dir = sess.Dir
 	}

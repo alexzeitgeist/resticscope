@@ -111,13 +111,16 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 	var cmd *exec.Cmd
 	if interactive {
 		// No context cancellation here: the shell owns the foreground and exits
-		// on the user's command. Signals are handled below.
+		// on the user's command. Signals are handled below. The interactive env
+		// additionally carries the prompt-tag scaffolding (zsh ZDOTDIR); command
+		// mode below gets the plain credential env.
 		ia := sess.InteractiveArgs()
 		cmd = exec.Command(ia[0], ia[1:]...)
+		cmd.Env = sess.InteractiveEnv()
 	} else {
 		cmd = exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+		cmd.Env = sess.Env
 	}
-	cmd.Env = sess.Env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
