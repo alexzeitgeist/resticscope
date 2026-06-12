@@ -323,7 +323,7 @@ func (m Model) snapshotTable() string {
 
 	d := m.snapDisplay()
 	if len(d.nodes) == 0 {
-		return header + "\n" + clip(m.styles.meta.Render("  no snapshots"), w)
+		return header + "\n" + clip(m.styles.meta.Render("   no snapshots"), w)
 	}
 	if d.sections == nil {
 		return header + "\n" + m.snapshotTableFlat(d, l, w)
@@ -331,10 +331,11 @@ func (m Model) snapshotTable() string {
 	return header + "\n" + m.snapshotTableGrouped(d, l, w)
 }
 
-// snapshotRowLine formats one node into a clipped table line with the 2-cell
-// cursor/mark gutter. The gutter carries both the cursor accent (cell 1 = ▎
-// when selected) and the mark glyph (cell 2 = * when this node is in the diff
-// FIFO). Both can show at once (▎*); marks live on the head row even when the
+// snapshotRowLine formats one node into a clipped table line with the 3-cell
+// cursor/mark gutter. The gutter carries the cursor accent (cell 1 = ▎ when
+// selected), the mark glyph (cell 2 = * when this node is in the diff FIFO),
+// and a spacer (cell 3) so the mark doesn't butt against the ID column. Both
+// indicators can show at once (▎*); marks live on the head row even when the
 // mark originally targeted a now-folded peer (isNodeMarked ORs head + peers).
 func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected bool) string {
 	s := node.head
@@ -360,7 +361,7 @@ func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected 
 	if m.isNodeMarked(node) {
 		right = m.styles.chgAdded.Render("*")
 	}
-	return clip(left+right+content, width)
+	return clip(left+right+" "+content, width)
 }
 
 // snapshotTableFlat renders the windowed flat path: the same simple scroll
@@ -375,7 +376,7 @@ func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string 
 		lines = append(lines, m.snapshotRowLine(d.nodes[i], l, width, i == cur))
 	}
 	if (start > 0 || end < len(d.nodes)) && m.detailWindowNoteVisible(m.detailSnapDetailVisible()) {
-		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, len(d.nodes))), width))
+		lines = append(lines, clip(m.styles.meta.Render(fmt.Sprintf("   showing %d–%d of %d", start+1, end, len(d.nodes))), width))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -503,7 +504,7 @@ func (m Model) snapTableScrollNote(start, end, total, width int, visible bool) s
 	if start <= 0 && end >= total {
 		return ""
 	}
-	return clip(m.styles.meta.Render(fmt.Sprintf("  showing %d–%d of %d", start+1, end, total)), width)
+	return clip(m.styles.meta.Render(fmt.Sprintf("   showing %d–%d of %d", start+1, end, total)), width)
 }
 
 // snapLayout describes the snapshot table's variable geometry for a given width:
@@ -521,15 +522,15 @@ type snapLayout struct {
 const (
 	snapAddedWidth          = 9  // "+1023 GiB" target width, right-aligned like Size
 	snapTookWidth           = 6  // "12h59m" target width; truncate longer durations to this
-	snapPromoFlexMin        = 38 // host+tags cells that must remain after promoting a column
+	snapPromoFlexMin        = 37 // host+tags cells that must remain after promoting a column; absorbs the gutter's spacer cell so Added/Took still promote at 92/100
 	snapCollapseSuffixWidth = 3  // "+N" suffix slot reserved next to ID when collapse is on; fits +99 cleanly, wider counts widen that one row only
 )
 
 // snapHeader is the dim column-label row for the snapshot table, built from the
-// same snapCells layout as the data rows (plus the two-cell gutter the rows get
-// from their indicator) so labels line up with their values at every width.
+// same snapCells layout as the data rows (plus the three-cell gutter the rows
+// get from their indicator) so labels line up with their values at every width.
 func snapHeader(l snapLayout) string {
-	return "  " + strings.Join(
+	return "   " + strings.Join(
 		snapCells(l, snapRow{id: "ID", tm: "Time", host: "Hostname", size: "Size", added: "Added", took: "Took", tags: "Tags"}), "  ")
 }
 
@@ -581,7 +582,7 @@ func snapTook(s model.Snapshot) string {
 }
 
 // snapshotLayout sizes the snapshot table's variable columns to the total width. A
-// two-cell indicator, the fixed-width short-id, 16-cell time, 9-cell size, and
+// three-cell indicator, the fixed-width short-id, 16-cell time, 9-cell size, and
 // their two-space gaps are always reserved. Added then Took are promoted in
 // priority order, each only while the host+tags flex area would stay usable
 // (snapPromoFlexMin) afterwards; promotion stops at the first that won't fit so
@@ -591,7 +592,7 @@ func snapTook(s model.Snapshot) string {
 // shared with browseLayout via promoteColumns; only the host/tags split below is
 // snapshot-specific.
 func snapshotLayout(width int, collapseOn bool) snapLayout {
-	const indicator, timeW, sizeW, gaps = 2, 16, 9, 8
+	const indicator, timeW, sizeW, gaps = 3, 16, 9, 8
 	var l snapLayout
 	l.idWidth = snapIDWidth
 	if collapseOn {
