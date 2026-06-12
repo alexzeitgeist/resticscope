@@ -103,7 +103,46 @@ func (m Model) View() tea.View {
 	}
 	v := tea.NewView(m.frame(title, body))
 	v.AltScreen = true
+	v.WindowTitle = m.windowTitle()
 	return v
+}
+
+// windowTitle is the terminal-tab/window title: the app name, plus the active
+// repo when a view is pinned to one — a plain-text echo of the in-app
+// `view: repo` title row. Declaring it on every view keeps the title owned by
+// resticscope for the whole session: the renderer re-asserts it after a
+// shell-out resumes, so whatever the child shell left in the title (its last
+// command line and directory) cannot linger over the TUI.
+func (m Model) windowTitle() string {
+	if repo := m.windowTitleRepo(m.view); repo != "" {
+		return "resticscope · " + repo
+	}
+	return "resticscope"
+}
+
+// windowTitleRepo names the repo the given view is pinned to, or "" for the
+// repo-less list view. detailName is read only for the detail view and its
+// info overlay — it deliberately survives a return to the list (it keys the
+// cached detail context), so the list arm must not fall back to it. The help
+// overlay defers to the view beneath it.
+func (m Model) windowTitleRepo(v view) string {
+	switch v {
+	case browseView:
+		return m.browseRepo
+	case findVersionsView:
+		return m.findRepo
+	case snapshotDiffView:
+		return m.diffRepo
+	case extractView:
+		return m.extract.req.Repo
+	case detailView, infoView:
+		return m.detailName
+	case helpView:
+		if m.prevView != helpView {
+			return m.windowTitleRepo(m.prevView)
+		}
+	}
+	return ""
 }
 
 // titleRow is the shared top line of every view: the view title left, the
