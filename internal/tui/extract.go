@@ -183,6 +183,17 @@ type extractModel struct {
 	filepickerErr  string
 	pickerStyles   filepicker.Styles
 
+	// pickerModeW is the widest FileMode string (in cells) across the picker's
+	// whole current directory, scanned asynchronously (pickerModeWidthCmd)
+	// whenever syncPickerModeWidth notices the picker navigated.
+	// alignFilePickerModes pads to it so the columns don't shift as wide-mode
+	// rows (e.g. a sticky dir's "dtrwxrwxrwx") scroll in and out of the
+	// viewport — the picker keeps its file list unexported, so the directory is
+	// re-read to see past the visible window. pickerModeDir is the directory
+	// the last scan was issued for (the recompute edge detector).
+	pickerModeW   int
+	pickerModeDir string
+
 	// sudoBusy is true between committing a privileged extract and the sudo
 	// probe / interactive auth resolving. It debounces enter on review and
 	// gen-gates the probe/auth messages alongside gen itself.
@@ -477,7 +488,57 @@ func (m *extractModel) ensureFilepicker() tea.Cmd {
 	}
 	fp.CurrentDirectory = dir
 	m.filepicker = fp
-	return m.filepicker.Init()
+	return tea.Batch(m.filepicker.Init(), m.syncPickerModeWidth())
+}
+
+// syncPickerModeWidth notices a picker directory change and returns the
+// command that scans the new directory for pickerModeW — async like the
+// picker's own readDir, so a large or slow (automounted) directory never
+// stalls the update loop. nil while the directory is unchanged. Until the
+// result lands the width is reset to 0 and alignFilePickerModes falls back to
+// the on-screen max (the pre-scan behavior).
+func (m *extractModel) syncPickerModeWidth() tea.Cmd {
+	dir := m.filepicker.CurrentDirectory
+	if dir == m.pickerModeDir {
+		return nil
+	}
+	m.pickerModeDir = dir
+	m.pickerModeW = 0
+	return pickerModeWidthCmd(dir)
+}
+
+// extractPickerModeWidthMsg carries one pickerModeWidthCmd result. dir is the
+// directory the scan ran over — the staleness guard: updateFilePicker applies
+// w only while the picker is still in that directory.
+type extractPickerModeWidthMsg struct {
+	dir string
+	w   int
+}
+
+// pickerModeWidthCmd scans dir for the widest FileMode string, with the same
+// lstat-level os.ReadDir + Info the picker itself renders from, so the width
+// matches every row the picker can ever scroll to (ShowHidden is on, so the
+// picker filters nothing out). On a read error w stays 0 and the on-screen
+// fallback persists for this directory.
+func pickerModeWidthCmd(dir string) tea.Cmd {
+	return func() tea.Msg {
+		out := extractPickerModeWidthMsg{dir: dir}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return out
+		}
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			// Mode strings are ASCII, so byte length is the cell count.
+			if n := len(info.Mode().String()); n > out.w {
+				out.w = n
+			}
+		}
+		return out
+	}
 }
 
 // extractFilePickerHeight sizes the embedded picker's scroll viewport from the
@@ -509,9 +570,17 @@ func (m *extractModel) setHeight(h int) {
 // from its Update default branch while the overlay is open; without it the
 // picker would render forever empty.
 func (m extractModel) updateFilePicker(msg tea.Msg) (extractModel, tea.Cmd) {
+	if wm, ok := msg.(extractPickerModeWidthMsg); ok {
+		// Stale-guard: a scan that raced a navigation reports a directory the
+		// picker has already left; its width belongs to the wrong listing.
+		if wm.dir == m.filepicker.CurrentDirectory {
+			m.pickerModeW = wm.w
+		}
+		return m, nil
+	}
 	var cmd tea.Cmd
 	m.filepicker, cmd = m.filepicker.Update(msg)
-	return m, cmd
+	return m, tea.Batch(cmd, m.syncPickerModeWidth())
 }
 
 // applyRunDone installs the result of a live run. On a clean completion with
@@ -868,6 +937,7 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 	}
 	var cmd tea.Cmd
 	m.filepicker, cmd = m.filepicker.Update(msg)
+	cmd = tea.Batch(cmd, m.syncPickerModeWidth())
 	if didSelect, fppath := m.filepicker.DidSelectFile(msg); didSelect {
 		if newReq, staging, final, perr := m.planOverrideAllSides(fppath); perr == nil {
 			m.req = newReq

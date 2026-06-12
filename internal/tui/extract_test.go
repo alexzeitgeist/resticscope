@@ -396,6 +396,50 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	}
 }
 
+// The picker's directory-wide mode-width scan is async (pickerModeWidthCmd —
+// filesystem work stays off the update loop): opening the picker batches it
+// with the picker's own readDir, the result applies while the picker is still
+// in that directory, and a stale result from a directory the picker already
+// left is dropped.
+func TestExtractPickerModeWidthAsync(t *testing.T) {
+	a := extractApp(t)
+	if err := os.Mkdir(filepath.Join(a.Cfg.Extract.TargetRoot, "subdir"), 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	if err != nil {
+		t.Fatalf("newExtractModel: %v", err)
+	}
+	em.drv = &fakeExtractDriver{}
+	em.height = 24
+
+	em, cmd, _ := dispatchKey(em, defaultKeys(), "t")
+	var wm extractPickerModeWidthMsg
+	found := false
+	for _, msg := range runBatchLeaves(t, cmd) {
+		if w, ok := msg.(extractPickerModeWidthMsg); ok {
+			wm, found = w, true
+		}
+	}
+	if !found {
+		t.Fatal("opening the filepicker produced no mode-width scan command")
+	}
+	if wm.dir != em.filepicker.CurrentDirectory {
+		t.Fatalf("scan dir = %q, want %q", wm.dir, em.filepicker.CurrentDirectory)
+	}
+	if wm.w < 10 { // every real mode string is at least "-rw-r--r--"
+		t.Fatalf("scanned width = %d, want >= 10", wm.w)
+	}
+	em, _ = em.updateFilePicker(wm)
+	if em.pickerModeW != wm.w {
+		t.Errorf("pickerModeW = %d after width msg, want %d", em.pickerModeW, wm.w)
+	}
+	em, _ = em.updateFilePicker(extractPickerModeWidthMsg{dir: "/somewhere/else", w: 99})
+	if em.pickerModeW == 99 {
+		t.Error("width msg for a directory the picker is not in must be dropped")
+	}
+}
+
 // alignFilePickerModes pads Go's variable-width mode strings ("-rw-r--r--" is
 // 10 cells, a sticky dir "dtrwxrwxrwx" is 11) to one column so the size and
 // name columns line up — including on the cursor row, where the picker embeds
@@ -426,7 +470,27 @@ func TestAlignFilePickerModes(t *testing.T) {
 		"",
 		"  empty directory",
 	}
-	got := alignFilePickerModes(lines)
+	got := alignFilePickerModes(lines, 0)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got %q\nwant %q", i, got[i], want[i])
+		}
+	}
+}
+
+// With a directory-wide floor wider than anything on screen (the widest row —
+// e.g. a sticky dir — has scrolled out of the viewport), alignFilePickerModes
+// still pads to the floor so the columns don't shift during scrolling.
+func TestAlignFilePickerModesFloor(t *testing.T) {
+	lines := []string{
+		"  drwx------     60B claude-1000",
+		"  -rw-r--r--      0B config-err",
+	}
+	want := []string{
+		"  drwx------      60B claude-1000",
+		"  -rw-r--r--       0B config-err",
+	}
+	got := alignFilePickerModes(lines, 11)
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("line %d:\n got %q\nwant %q", i, got[i], want[i])

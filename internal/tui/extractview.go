@@ -568,7 +568,7 @@ func (m Model) extractKeepDeleteBody(w int) string {
 func (m Model) extractFilePickerBody(w int) string {
 	em := m.extract
 	header := clip(m.styles.meta.Render("  "+em.filepicker.CurrentDirectory), w)
-	body := clipLines(alignFilePickerModes(strings.Split(em.filepicker.View(), "\n")), w)
+	body := clipLines(alignFilePickerModes(strings.Split(em.filepicker.View(), "\n"), em.pickerModeW), w)
 	out := []string{header, "", body}
 	if em.filepickerErr != "" {
 		out = append(out, "", clip(m.styles.errText.Render("  "+em.filepickerErr), w))
@@ -582,13 +582,15 @@ func (m Model) extractFilePickerBody(w int) string {
 // "dtrwxrwxrwx" (11) — and bubbles' filepicker (v2.1.0) writes it unpadded in
 // both its cursor-row and plain-row branches. The cursor row never goes
 // through Styles.Permission, so a Width on that style cannot fix it; instead
-// the rendered lines are normalized here, padding each mode to the widest one
-// on screen. Inserted spaces inherit whatever SGR attributes are open at that
-// point, which is harmless: the picker only sets foreground and bold.
-func alignFilePickerModes(lines []string) []string {
+// the rendered lines are normalized here, padding each mode to the widest of
+// the on-screen modes and floor — the directory-wide max (pickerModeW), so the
+// columns hold still as wide-mode rows scroll out of the viewport. Inserted
+// spaces inherit whatever SGR attributes are open at that point, which is
+// harmless: the picker only sets foreground and bold.
+func alignFilePickerModes(lines []string, floor int) []string {
 	type span struct{ at, n int } // byte offset just past the mode token, and its cell count
 	spans := make([]span, len(lines))
-	maxw := 0
+	maxw := floor
 	for i, ln := range lines {
 		at, n, ok := filePickerModeSpan(ln)
 		if !ok {

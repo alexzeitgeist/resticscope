@@ -123,11 +123,15 @@ var builtin = map[string]Palette{
 	},
 	// ayu-light's official comment grey (#adaeb1) is too faint against the
 	// near-white bg for the grey role's metadata text, so grey takes the UI
-	// foreground and the comment grey slides down to dim.
+	// foreground and the comment grey slides down to dim. Yellow is the func
+	// gold #eba400 darkened to #bf8600: upstream's value reads at 2.1:1 on
+	// this bg (the yellow role carries titles, which need more) and ayu has
+	// no darker yellow, so this keeps the hue at 3.1:1 — gruvbox-light's
+	// yellow weight.
 	"ayu-light": {
 		Bg: "#fcfcfc",
 		Fg: "#5c6166", Grey: "#828e9f", Dim: "#adaeb1",
-		Red: "#f07171", Green: "#86b300", Yellow: "#eba400",
+		Red: "#f07171", Green: "#86b300", Yellow: "#bf8600",
 		Blue: "#22a4e6", Aqua: "#4cbf99", Orange: "#fa8532",
 	},
 	// night-owl maps the VS Code theme's signature tokens: green = the
@@ -144,11 +148,14 @@ var builtin = map[string]Palette{
 	// night-owl-light (upstream "Light Owl") has no orange anywhere, so the
 	// orange role takes #aa0982 — the number/constant slot, i.e. the same
 	// token the dark variant's orange holds — keeping roles consistent when
-	// switching between the pair.
+	// switching between the pair. Dim is the line-number foreground (the
+	// whitespace grey #d9d9d9 reads at 1.4:1, invisible as text), and yellow
+	// is the official #e0af02 darkened to #b58a00: upstream's only yellows
+	// sit at 2:1 on this bg, too faint for the titles the yellow role draws.
 	"night-owl-light": {
 		Bg: "#fbfbfb",
-		Fg: "#403f53", Grey: "#989fb1", Dim: "#d9d9d9",
-		Red: "#de3d3b", Green: "#08916a", Yellow: "#e0af02",
+		Fg: "#403f53", Grey: "#989fb1", Dim: "#90a7b2",
+		Red: "#de3d3b", Green: "#08916a", Yellow: "#b58a00",
 		Blue: "#288ed7", Aqua: "#2aa298", Orange: "#aa0982",
 	},
 	"solarized-dark": {
