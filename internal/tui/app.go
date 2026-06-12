@@ -204,6 +204,16 @@ type Model struct {
 	// outside that set as browse, so a stale or unset value (the zero value is
 	// listView) lands on the historical default.
 	extractReturn view
+
+	// extractTargetMemo remembers, for this process's lifetime only, the target
+	// root the most recent extract run actually dispatched with (copied from the
+	// sub-model's ranTargetRoot on modal close, so a picker selection without a
+	// run is forgotten). Each launch site seeds fresh requests from it via
+	// seedTargetMemo. Deliberately in-memory only: non-negotiable #1 keeps
+	// RepoState, log.jsonl, and the cache free of any recent-targets memory,
+	// and this field is never written down. [extract] remember_target = false
+	// disables the capture, so the field then stays empty for the whole run.
+	extractTargetMemo string
 }
 
 // Run loads cached state for an instant first paint, then starts the program in
@@ -386,7 +396,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// supersede cancels any in-flight per-op work; replacing the sub-model
 		// with its zero value drops every transient path field (non-negotiable
-		// #1: no filenames linger after leaving the modal).
+		// #1: no filenames linger after leaving the modal). The one survivor is
+		// the session target memo: a root the user actually ran an extract
+		// against this session, kept in memory only so the next extract starts
+		// there ("" — no run, or a config-default run — keeps the prior memo).
+		// Gated here, the single capture point, so [extract] remember_target =
+		// false means the memo simply never exists.
+		if t := m.extract.ranTargetRoot; t != "" && m.app.Cfg.Extract.RememberTarget {
+			m.extractTargetMemo = t
+		}
 		m.extract.supersede()
 		m.extract = extractModel{}
 		// Land on the originating view; anything unset or stale falls back to

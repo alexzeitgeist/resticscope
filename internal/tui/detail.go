@@ -103,7 +103,7 @@ func (m Model) openExtractSnapshot() (Model, tea.Cmd) {
 	if snap.Summary != nil {
 		srcSize = snap.Summary.TotalBytesProcessed
 	}
-	sub, err := newExtractModel(m.app, m.ctx, req, srcSize)
+	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), srcSize)
 	if err != nil {
 		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
 		// offending field, so the notice carries no path either.

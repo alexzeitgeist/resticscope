@@ -395,7 +395,7 @@ func (m Model) openExtract() (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	sub, err := newExtractModel(m.app, m.ctx, req, e.Size)
+	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), e.Size)
 	if err != nil {
 		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
 		// offending field, so the notice carries no path either.

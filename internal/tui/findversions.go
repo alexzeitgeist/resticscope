@@ -157,7 +157,7 @@ func (m Model) openExtractVersion() Model {
 		m.statusMsg = "extract: " + firstLine(err.Error())
 		return m
 	}
-	sub, err := newExtractModel(m.app, m.ctx, req, v.Size)
+	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), v.Size)
 	if err != nil {
 		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
 		// offending field, so the notice carries no path either.

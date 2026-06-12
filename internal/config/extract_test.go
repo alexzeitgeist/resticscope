@@ -22,6 +22,19 @@ func TestExtractDefaultsApplied(t *testing.T) {
 	if cfg.Extract.UnsafeSymlinks != "keep" {
 		t.Errorf("unsafe_symlinks = %q, want default %q", cfg.Extract.UnsafeSymlinks, "keep")
 	}
+	if !cfg.Extract.RememberTarget {
+		t.Error("remember_target should default to true when the key is omitted")
+	}
+}
+
+func TestExtractRememberTargetHonorsExplicitFalse(t *testing.T) {
+	cfg, err := load(t, minimalTOML+"\n[extract]\nremember_target = false\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Extract.RememberTarget {
+		t.Error("explicit remember_target = false must be honored, got true")
+	}
 }
 
 // unsafe_symlinks is enum-validated: skip/placeholder are accepted, anything else

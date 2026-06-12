@@ -73,6 +73,13 @@ extract_timeout = "30m"
 # follows an unsafe link.
 unsafe_symlinks = "keep"
 
+# Remember the target directory the last extract actually ran with (picked via
+# `t` on the review screen) and offer it as the default for the next extract,
+# for as long as the app runs. In-memory only — nothing is written to disk, and
+# a fresh start always begins at target_root again. Set to false to make every
+# extract start from target_root instead.
+remember_target = true
+
 # --- color theme ---------------------------------------------------------------
 # The TUI's colors. All themes are compiled into the binary — no theme files.
 # Built-in names: ayu-dark, ayu-light, catppuccin-frappe, catppuccin-latte,

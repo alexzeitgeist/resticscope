@@ -527,10 +527,10 @@ func (m Model) openDiffExtract() (Model, tea.Cmd) {
 	}
 	var reqs []app.ExtractRequest
 	if len(set.First) > 0 {
-		reqs = append(reqs, mk(m.diffOlder, set.First))
+		reqs = append(reqs, m.seedTargetMemo(mk(m.diffOlder, set.First)))
 	}
 	if len(set.Second) > 0 {
-		reqs = append(reqs, mk(m.diffNewer, set.Second))
+		reqs = append(reqs, m.seedTargetMemo(mk(m.diffNewer, set.Second)))
 	}
 	sub, err := newExtractDiffModel(m.app, m.ctx, reqs, extractDiffMeta{
 		firstShort:  firstShort,

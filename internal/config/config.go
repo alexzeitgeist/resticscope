@@ -146,6 +146,12 @@ type Extract struct {
 	// the output), or "placeholder" (replace with an inert text file recording the
 	// target). Validated against that enum; defaulted in Decode.
 	UnsafeSymlinks string `toml:"unsafe_symlinks"`
+
+	// RememberTarget keeps the target root the last extract run dispatched with
+	// as the default for the next extract, for the lifetime of one TUI process
+	// (in memory only — never persisted). Default true; seeded pre-decode like
+	// every default-true bool so an explicit `false` stays distinguishable.
+	RememberTarget bool `toml:"remember_target"`
 }
 
 // Global holds process-wide settings.

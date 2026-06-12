@@ -84,6 +84,8 @@ func Decode(data []byte) (*Config, error) {
 			TargetRoot:     defaultExtractTargetRoot,
 			ExtractTimeout: Duration(defaultExtractTimeout),
 			UnsafeSymlinks: defaultUnsafeSymlinks,
+			// Default-true bool, seeded pre-decode like refresh_on_open.
+			RememberTarget: true,
 		},
 		// Background, like refresh_on_open, is a default-true bool and must be
 		// seeded before the decode so an explicit `background = false` stays

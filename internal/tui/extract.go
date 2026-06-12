@@ -93,6 +93,14 @@ type extractModel struct {
 	// file and directory sources. TargetRoot is updated by the filepicker overlay.
 	req app.ExtractRequest
 
+	// ranTargetRoot is req.TargetRoot as of the last dispatched run — "" when no
+	// run started or the run used the config-default root. The root model copies
+	// it into its session-scoped extractTargetMemo on modal close, so a target
+	// is remembered only once an extract actually ran against it (cancelled or
+	// failed runs count); a picker selection the user backed out of without
+	// running is dropped with the rest of the sub-model.
+	ranTargetRoot string
+
 	// queue holds the not-yet-run sides of a multi-request (diff) extract, in
 	// run order. applyRunDone advances through it: each clean completion either
 	// starts the next side or lands on success once the queue drains. Empty for
@@ -219,6 +227,18 @@ type extractModel struct {
 // nor "dir" (symlink, device, fifo, socket). Browse wiring surfaces this on the
 // status line when the user presses `e` on an unsupported row.
 var ErrExtractUnsupportedType = errors.New("extract: source type not supported in v1")
+
+// seedTargetMemo applies the session's remembered extract target root to a
+// freshly-built request, so repeat extracts land where the user last actually
+// ran one without re-picking through the filepicker each time. The memo is
+// only ever a root a run dispatched against (see extractTargetMemo), and a
+// request that already carries an explicit override is left alone.
+func (m Model) seedTargetMemo(req app.ExtractRequest) app.ExtractRequest {
+	if req.TargetRoot == "" {
+		req.TargetRoot = m.extractTargetMemo
+	}
+	return req
+}
 
 // newExtractModel constructs the sub-model from an explicit request. It calls
 // PlanExtractPaths to derive staging / final; an invalid request bubbles back
@@ -421,6 +441,7 @@ func (m *extractModel) startRun() tea.Cmd {
 	m.cancel = cancel
 	gen := m.gen
 	req := m.req
+	m.ranTargetRoot = req.TargetRoot
 	drv := m.drv
 
 	progress := make(chan app.ExtractProgress, extractProgressBuffer)
@@ -454,8 +475,8 @@ func waitForExtractProgress(gen int, progress <-chan app.ExtractProgress) tea.Cm
 }
 
 // ensureFilepicker constructs the embedded filepicker on first use. The
-// current directory falls back to the user's home if the configured TargetRoot
-// is empty or unreadable.
+// current directory starts at the request's target-root override when set,
+// then the configured TargetRoot, falling back to the user's home.
 func (m *extractModel) ensureFilepicker() tea.Cmd {
 	if m.filepickerInit {
 		return nil
@@ -478,7 +499,13 @@ func (m *extractModel) ensureFilepicker() tea.Cmd {
 	// we size it ourselves here and again on every WindowSizeMsg.
 	fp.AutoHeight = false
 	fp.SetHeight(extractFilePickerHeight(m.height))
-	dir := m.cfg.TargetRoot
+	// Start at the effective target root: a request-level override (the session
+	// memo seeded at construction) wins over the configured default, so a
+	// re-pick begins where the last run landed.
+	dir := m.req.TargetRoot
+	if dir == "" {
+		dir = m.cfg.TargetRoot
+	}
 	if dir == "" || !filepath.IsAbs(dir) {
 		if home, err := os.UserHomeDir(); err == nil {
 			dir = home

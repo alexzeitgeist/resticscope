@@ -156,6 +156,7 @@ func extractCfg(t *testing.T) (config.Extract, string) {
 	return config.Extract{
 		TargetRoot:     root,
 		ExtractTimeout: config.Duration(5 * time.Minute),
+		RememberTarget: true, // the decode-time default
 	}, root
 }
 
@@ -2141,5 +2142,136 @@ func TestExtractReviewSpaceWarning(t *testing.T) {
 	m.extract = em
 	if body := stripANSI(m.extractBody()); strings.Contains(body, "may not fit") {
 		t.Errorf("probe-less review body carries the space warning:\n%s", body)
+	}
+}
+
+// startRun records the target root the run dispatched with (ranTargetRoot), so
+// the root model can remember a picker-chosen target once an extract actually
+// ran — outcome irrelevant, a cancelled run counts. A config-default run
+// records nothing.
+func TestExtractStartRunRecordsTargetRoot(t *testing.T) {
+	keys := defaultKeys()
+	em, _ := newExtractFixture(t, dirReq())
+	em, _, _ = dispatchKey(em, keys, "enter")
+	if em.state != extractStateRunning {
+		t.Fatalf("enter on review should start the run, state = %v", em.state)
+	}
+	if em.ranTargetRoot != "" {
+		t.Errorf("ranTargetRoot = %q after a config-default run, want empty", em.ranTargetRoot)
+	}
+
+	em2, _ := newExtractFixture(t, dirReq())
+	picked := t.TempDir()
+	req, staging, final, err := planExtractOverride(em2.cfg, em2.req, picked)
+	if err != nil {
+		t.Fatalf("planExtractOverride: %v", err)
+	}
+	em2.req, em2.staging, em2.final = req, staging, final
+	em2, _, _ = dispatchKey(em2, keys, "enter")
+	if em2.ranTargetRoot != picked {
+		t.Errorf("ranTargetRoot = %q, want the overridden root %q", em2.ranTargetRoot, picked)
+	}
+}
+
+// A target the user actually ran an extract against is remembered for the
+// session: the root model captures it when the modal closes and seeds the
+// next extract's request with it, so repeat extracts land there without
+// re-picking. A retarget the user backed out of without running is forgotten
+// with the sub-model.
+func TestExtractTargetMemoRemembersLastRunTarget(t *testing.T) {
+	m := extractDetailModel(t)
+	picked := t.TempDir()
+
+	// Retarget without a run: nothing is remembered.
+	m = update(t, m, press("e"))
+	if m.view != extractView {
+		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
+	}
+	m.extract.req.TargetRoot = picked
+	next, cmd := m.Update(press("esc"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("esc on review should return an exit cmd")
+	}
+	m = update(t, m, cmd())
+	if m.extractTargetMemo != "" {
+		t.Fatalf("extractTargetMemo = %q after a run-less retarget, want empty", m.extractTargetMemo)
+	}
+
+	// Retarget + dispatched run: the worker Cmd is deliberately never executed
+	// (dispatch alone qualifies the target), the run is then cancelled, and the
+	// close still lands the root in the memo.
+	m = update(t, m, press("e"))
+	m.extract.req.TargetRoot = picked
+	next, _ = m.Update(press("enter"))
+	m = next.(Model)
+	if m.extract.state != extractStateRunning {
+		t.Fatalf("enter on review should start the run, state = %v", m.extract.state)
+	}
+	m = update(t, m, extractRunDoneMsg{gen: m.extract.gen, err: context.Canceled})
+	if m.extract.state != extractStateCanceled {
+		t.Fatalf("state = %v after a cancelled run, want canceled", m.extract.state)
+	}
+	next, cmd = m.Update(press("esc"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("esc on the canceled screen should return an exit cmd")
+	}
+	m = update(t, m, cmd())
+	if m.extractTargetMemo != picked {
+		t.Fatalf("extractTargetMemo = %q, want the run target %q", m.extractTargetMemo, picked)
+	}
+
+	// The next extract opens already targeted at the remembered root.
+	m = update(t, m, press("e"))
+	if m.extract.req.TargetRoot != picked {
+		t.Errorf("reopened req.TargetRoot = %q, want the remembered %q", m.extract.req.TargetRoot, picked)
+	}
+	if !strings.HasPrefix(m.extract.final, picked+string(filepath.Separator)) {
+		t.Errorf("reopened final = %q, want it under %q", m.extract.final, picked)
+	}
+}
+
+// The filepicker opens at the request's effective target root, so a re-pick
+// starts where the session memo (or an earlier retarget) already points.
+func TestExtractFilePickerStartsAtOverrideRoot(t *testing.T) {
+	em, _ := newExtractFixture(t, dirReq())
+	picked := t.TempDir()
+	em.req.TargetRoot = picked
+	em.height = 24
+	_ = em.ensureFilepicker()
+	if em.filepicker.CurrentDirectory != picked {
+		t.Errorf("picker dir = %q, want the override root %q", em.filepicker.CurrentDirectory, picked)
+	}
+}
+
+// remember_target = false disables the session memo entirely: even a
+// dispatched run leaves nothing behind on close, and the next extract starts
+// from the config default again.
+func TestExtractTargetMemoDisabled(t *testing.T) {
+	m := extractDetailModel(t)
+	m.app.Cfg.Extract.RememberTarget = false
+	picked := t.TempDir()
+
+	m = update(t, m, press("e"))
+	m.extract.req.TargetRoot = picked
+	next, _ := m.Update(press("enter"))
+	m = next.(Model)
+	if m.extract.state != extractStateRunning {
+		t.Fatalf("enter on review should start the run, state = %v", m.extract.state)
+	}
+	m = update(t, m, extractRunDoneMsg{gen: m.extract.gen, err: context.Canceled})
+	next, cmd := m.Update(press("esc"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("esc on the canceled screen should return an exit cmd")
+	}
+	m = update(t, m, cmd())
+	if m.extractTargetMemo != "" {
+		t.Fatalf("extractTargetMemo = %q with remember_target = false, want empty", m.extractTargetMemo)
+	}
+	m = update(t, m, press("e"))
+	if m.extract.req.TargetRoot != "" {
+		t.Errorf("reopened req.TargetRoot = %q with remember_target = false, want empty", m.extract.req.TargetRoot)
 	}
 }
