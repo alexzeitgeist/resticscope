@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"resticscope/internal/model"
 )
@@ -43,7 +42,7 @@ type FindFileVersionsResult struct {
 func (a *App) FindFileVersions(ctx context.Context, repoName, originHost, p string, allHosts bool) (FindFileVersionsResult, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
-		return FindFileVersionsResult{}, fmt.Errorf("unknown repo %q", repoName)
+		return FindFileVersionsResult{}, unknownRepoError(repoName)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {

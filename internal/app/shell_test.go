@@ -523,8 +523,8 @@ func TestShellSessionEnvModeNoFile(t *testing.T) {
 
 func TestShellSessionUnknownRepo(t *testing.T) {
 	a := shellApp("file", shellSecrets{})
-	if _, err := a.ShellSession("nope", nil); err == nil {
-		t.Error("expected an error for an unknown repo")
+	if _, err := a.ShellSession("nope", nil); !errors.Is(err, ErrUnknownRepo) {
+		t.Errorf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 

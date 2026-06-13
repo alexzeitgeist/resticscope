@@ -48,7 +48,7 @@ type ShellSession struct {
 func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
-		return nil, fmt.Errorf("no repo %q in config", repoName)
+		return nil, unknownRepoError(repoName)
 	}
 	// credential is optional (local/sftp backends); when set it must resolve.
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)

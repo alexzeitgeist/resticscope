@@ -468,7 +468,7 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 	// 3. Cred-resolution preamble (same path as ShellSession / BrowseSession).
 	r, ok := a.repo(req.Repo)
 	if !ok {
-		return result, fmt.Errorf("extract: unknown repo %q", req.Repo)
+		return result, fmt.Errorf("extract: %w", unknownRepoError(req.Repo))
 	}
 	// credential is optional (local/sftp backends); when set it must resolve.
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 
 	"resticscope/internal/model"
 )
@@ -21,7 +20,7 @@ import (
 func (a *App) SnapshotDiff(ctx context.Context, repoName, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
-		return model.SnapshotDiff{}, fmt.Errorf("unknown repo %q", repoName)
+		return model.SnapshotDiff{}, unknownRepoError(repoName)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {

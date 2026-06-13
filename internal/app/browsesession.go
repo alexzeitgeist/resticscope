@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -193,7 +192,7 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	}
 	r, ok := a.repo(repoName)
 	if !ok {
-		return fmt.Errorf("unknown repo %q", repoName)
+		return unknownRepoError(repoName)
 	}
 	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE beginOp
 	// so it runs LAST (after release has dropped opMu), since running it under the session
@@ -292,7 +291,7 @@ func (a *App) ListDir(ctx context.Context, repoName, snapshotID, dir string) ([]
 	}
 	r, ok := a.repo(repoName)
 	if !ok {
-		return nil, fmt.Errorf("unknown repo %q", repoName)
+		return nil, unknownRepoError(repoName)
 	}
 	ctx, store, release, err := a.Browse.beginOp(ctx)
 	if err != nil {
@@ -315,7 +314,7 @@ func (a *App) SubtreeCounts(ctx context.Context, repoName, snapshotID, dir strin
 	}
 	r, ok := a.repo(repoName)
 	if !ok {
-		return 0, 0, false, fmt.Errorf("unknown repo %q", repoName)
+		return 0, 0, false, unknownRepoError(repoName)
 	}
 	ctx, store, release, err := a.Browse.beginOp(ctx)
 	if err != nil {
@@ -336,7 +335,7 @@ func (a *App) SearchSnapshot(ctx context.Context, repoName, snapshotID, query st
 	}
 	r, ok := a.repo(repoName)
 	if !ok {
-		return model.BrowseSearchResult{}, fmt.Errorf("unknown repo %q", repoName)
+		return model.BrowseSearchResult{}, unknownRepoError(repoName)
 	}
 	ctx, store, release, err := a.Browse.beginOp(ctx)
 	if err != nil {

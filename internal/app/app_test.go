@@ -785,8 +785,8 @@ func TestRefreshRowSurfacesSaveFailureWithLiveRow(t *testing.T) {
 
 func TestRefreshRowUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
-	if _, err := a.RefreshRow(context.Background(), "nope"); err == nil {
-		t.Fatal("expected error for unknown repo")
+	if _, err := a.RefreshRow(context.Background(), "nope"); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 
@@ -820,6 +820,13 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("entries = %d, want 1", len(entries))
+	}
+}
+
+func TestSnapshotDiffUnknownRepo(t *testing.T) {
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	if _, err := a.SnapshotDiff(context.Background(), "nope", "old", "new", nil, nil); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 
@@ -1062,8 +1069,8 @@ func TestIndexSnapshotNilBrowseGuard(t *testing.T) {
 
 func TestIndexSnapshotUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if err := a.IndexSnapshot(context.Background(), "nope", "s1", nil); err == nil {
-		t.Fatal("expected error for unknown repo")
+	if err := a.IndexSnapshot(context.Background(), "nope", "s1", nil); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 
@@ -1114,8 +1121,8 @@ func TestListDirNilBrowseGuard(t *testing.T) {
 
 func TestListDirUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); err == nil {
-		t.Fatal("expected error for unknown repo")
+	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 
@@ -1140,6 +1147,15 @@ func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
 	if _, _, known, err := a.SubtreeCounts(context.Background(), "repo-a", "s1", "/"); err != nil || known {
 		t.Errorf("known=%v err=%v, want false, nil", known, err)
+	}
+}
+
+// Unlike a nil Browse session (which degrades to known=false), an unknown repo
+// is a caller error and must surface as ErrUnknownRepo, not silently degrade.
+func TestSubtreeCountsUnknownRepo(t *testing.T) {
+	a := browseApp(newFakeStore(), fakeRestic{})
+	if _, _, _, err := a.SubtreeCounts(context.Background(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 
@@ -1179,8 +1195,8 @@ func TestSearchSnapshotNilBrowseGuard(t *testing.T) {
 
 func TestSearchSnapshotUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if _, err := a.SearchSnapshot(context.Background(), "nope", "s1", "q", 200); err == nil {
-		t.Fatal("expected error for unknown repo")
+	if _, err := a.SearchSnapshot(context.Background(), "nope", "s1", "q", 200); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 

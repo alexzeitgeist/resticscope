@@ -853,8 +853,8 @@ func TestExtractUnknownRepo(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{}, t.TempDir())
 	req := fileReq()
 	req.Repo = "nope"
-	if _, err := a.Extract(context.Background(), req, nil); err == nil {
-		t.Fatal("expected an error for an unknown repo")
+	if _, err := a.Extract(context.Background(), req, nil); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo (wrapped under extract:)", err)
 	}
 }
 

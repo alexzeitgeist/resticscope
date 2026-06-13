@@ -10,6 +10,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"time"
@@ -89,6 +91,20 @@ func (a *App) repo(name string) (config.Repo, bool) {
 		}
 	}
 	return config.Repo{}, false
+}
+
+// ErrUnknownRepo is the sentinel every app entry point returns when asked to act
+// on a repo name that is not in the loaded config. It is wrapped (with the name)
+// by unknownRepoError so callers can match the condition with errors.Is rather
+// than string-comparing the message. The name is the only dynamic part; the
+// repo name is not a secret (it is the user's own config label, not a URL or
+// credential).
+var ErrUnknownRepo = errors.New("unknown repo")
+
+// unknownRepoError builds the "unknown repo" error for a missing a.repo lookup,
+// wrapping ErrUnknownRepo so errors.Is(err, ErrUnknownRepo) holds.
+func unknownRepoError(name string) error {
+	return fmt.Errorf("%w %q", ErrUnknownRepo, name)
 }
 
 func (a *App) statusParams(r config.Repo) model.StatusParams {

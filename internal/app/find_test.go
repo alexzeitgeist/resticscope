@@ -159,8 +159,8 @@ func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
 func TestFindFileVersionsUnknownRepo(t *testing.T) {
 	fc := newFakeCache()
 	a := findTestApp(fc, fakeRestic{})
-	if _, err := a.FindFileVersions(context.Background(), "no-such-repo", "host", "/etc", false); err == nil {
-		t.Fatal("expected error for unknown repo")
+	if _, err := a.FindFileVersions(context.Background(), "no-such-repo", "host", "/etc", false); !errors.Is(err, ErrUnknownRepo) {
+		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
 

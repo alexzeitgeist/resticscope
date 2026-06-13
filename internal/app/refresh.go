@@ -17,7 +17,7 @@ import (
 func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error) {
 	r, ok := a.repo(name)
 	if !ok {
-		return model.RepoState{}, fmt.Errorf("no repo %q in config", name)
+		return model.RepoState{}, unknownRepoError(name)
 	}
 	state := a.refreshOne(ctx, r)
 	if err := a.Cache.Save(ctx, name, state); err != nil {
@@ -35,7 +35,7 @@ func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error)
 func (a *App) RefreshRow(ctx context.Context, name string) (RepoStatus, error) {
 	r, ok := a.repo(name)
 	if !ok {
-		return RepoStatus{}, fmt.Errorf("no repo %q in config", name)
+		return RepoStatus{}, unknownRepoError(name)
 	}
 	state, err := a.Refresh(ctx, name)
 	row := a.statusRow(a.Clock.Now(), r, state, a.Cfg.Global.StaleAfter.Std())
