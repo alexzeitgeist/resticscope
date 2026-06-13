@@ -57,8 +57,8 @@ func TestExampleConfigLoads(t *testing.T) {
 	if got := cfg.CredentialNames(); len(got) != 2 {
 		t.Fatalf("example credentials = %v, want 2", got)
 	}
-	if len(cfg.Repos) != 4 {
-		t.Fatalf("example repos = %d, want 4", len(cfg.Repos))
+	if len(cfg.Repos) != 5 {
+		t.Fatalf("example repos = %d, want 5", len(cfg.Repos))
 	}
 }
 
