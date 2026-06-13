@@ -32,16 +32,15 @@ func setup(t *testing.T, states map[string]model.RepoState) string {
 		if err := c.Save(context.Background(), name, st); err != nil {
 			t.Fatalf("seed cache: %v", err)
 		}
-		fmt.Fprintf(&repos, "\n[[repos]]\nname=%q\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nregion=\"fsn1\"\nbucket=%q\nexpected_frequency=\"24h\"\n", name, name+"-bucket")
+		fmt.Fprintf(&repos, "\n[repos.%s]\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nregion=\"fsn1\"\nbucket=%q\nexpected_frequency=\"24h\"\n", name, name+"-bucket")
 	}
 
 	cfg := fmt.Sprintf(`
+credentials = ["cred-a"]
+
 [global]
 secrets_command = "true"
 cache_dir = %q
-
-[[credentials]]
-name = "cred-a"
 %s`, cacheDir, repos.String())
 
 	cfgPath := filepath.Join(dir, "config.toml")
@@ -123,7 +122,7 @@ func appendRepoWithoutCache(t *testing.T, cfgPath string) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	fmt.Fprint(f, "\n[[repos]]\nname=\"cold-repo\"\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nbucket=\"cold-bucket\"\nexpected_frequency=\"24h\"\n")
+	fmt.Fprint(f, "\n[repos.cold-repo]\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nbucket=\"cold-bucket\"\nexpected_frequency=\"24h\"\n")
 }
 
 func TestStatusOutputFormat(t *testing.T) {
@@ -348,14 +347,12 @@ func TestSecretsTemplate(t *testing.T) {
 func TestSecretsTemplateEnvShape(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `
+credentials = ["nas-b2"]
+
 [global]
 secrets_command = "true"
 
-[[credentials]]
-name = "nas-b2"
-
-[[repos]]
-name = "nas-offsite"
+[repos.nas-offsite]
 url = "b2:nas-backups:repo"
 credential = "nas-b2"
 expected_frequency = "24h"

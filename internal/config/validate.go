@@ -53,14 +53,14 @@ func (c *Config) Validate() error {
 	}
 
 	credNames := map[string]bool{}
-	for i, cr := range c.Credentials {
+	for i, name := range c.Credentials {
 		switch {
-		case cr.Name == "":
+		case name == "":
 			errs = append(errs, fmt.Errorf("credentials[%d]: name is required", i))
-		case credNames[cr.Name]:
-			errs = append(errs, fmt.Errorf("duplicate credential name %q", cr.Name))
+		case credNames[name]:
+			errs = append(errs, fmt.Errorf("duplicate credential name %q", name))
 		default:
-			credNames[cr.Name] = true
+			credNames[name] = true
 		}
 	}
 
@@ -84,7 +84,7 @@ func (c *Config) Validate() error {
 		// credential is optional: local/sftp/rclone backends need no secret env
 		// vars. When set it must resolve, as before.
 		if r.Credential != "" && !credNames[r.Credential] {
-			errs = append(errs, fmt.Errorf("repo %q: credential %q does not match any [[credentials]] block", r.Name, r.Credential))
+			errs = append(errs, fmt.Errorf("repo %q: credential %q does not match any configured credential", r.Name, r.Credential))
 		}
 		errs = append(errs, validateRepoEnvOptions(r)...)
 		if r.ExpectedFrequency <= 0 {
@@ -153,26 +153,32 @@ func schemeLike(s string) bool {
 	return true
 }
 
-// validateRepoEnvOptions checks the repo's generic backend env/options maps:
-// env names must be valid, non-reserved env identifiers (the model contract
-// resticx enforces at assembly time), env values and option keys must be
-// non-empty. Values are user-chosen but non-secret, so error messages may name
-// the key; they still never echo the value.
+// validateRepoEnvOptions checks the repo's generic backend env/options maps.
 func validateRepoEnvOptions(r Repo) []error {
+	return validateEnvOptions(fmt.Sprintf("repo %q", r.Name), r.Env, r.Options)
+}
+
+// validateEnvOptions checks a generic backend env/options pair: env names must
+// be valid, non-reserved env identifiers (the model contract resticx enforces at
+// assembly time), env values and option keys must be non-empty. It is shared by
+// repos and profiles, so the caller passes the label the errors are prefixed
+// with. Values are user-chosen but non-secret, so error messages may name the
+// key; they still never echo the value.
+func validateEnvOptions(label string, env, options map[string]string) []error {
 	var errs []error
-	for _, k := range sortedKeys(r.Env) {
+	for _, k := range sortedKeys(env) {
 		switch {
 		case !model.ValidBackendEnvName(k):
-			errs = append(errs, fmt.Errorf("repo %q: env name %q is not a valid environment variable name", r.Name, k))
+			errs = append(errs, fmt.Errorf("%s: env name %q is not a valid environment variable name", label, k))
 		case model.ReservedBackendEnvName(k):
-			errs = append(errs, fmt.Errorf("repo %q: env name %q is reserved by resticscope", r.Name, k))
-		case r.Env[k] == "":
-			errs = append(errs, fmt.Errorf("repo %q: env %q must not be empty", r.Name, k))
+			errs = append(errs, fmt.Errorf("%s: env name %q is reserved by resticscope", label, k))
+		case env[k] == "":
+			errs = append(errs, fmt.Errorf("%s: env %q must not be empty", label, k))
 		}
 	}
-	for _, k := range sortedKeys(r.Options) {
+	for _, k := range sortedKeys(options) {
 		if k == "" {
-			errs = append(errs, fmt.Errorf("repo %q: options keys must not be empty", r.Name))
+			errs = append(errs, fmt.Errorf("%s: options keys must not be empty", label))
 		}
 	}
 	return errs

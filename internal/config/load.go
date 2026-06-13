@@ -95,10 +95,28 @@ func Decode(data []byte) (*Config, error) {
 		// keeps the default — the browse index_timeout pattern.
 		Theme: Theme{Name: theme.DefaultName, Background: true},
 	}
-	md, err := toml.Decode(string(data), &cfg)
+	// Repos and profiles are TOML maps (`[repos.<name>]`, `[profiles.<name>]`),
+	// but the rest of the program wants repos as a file-ordered slice and never
+	// needs the profiles after resolution. Decode both into a local wrapper so
+	// each Repo's fields are still decoded straight from their struct tags (no
+	// hand-written field dispatch), then assemble the ordered, profile-merged
+	// slice. The embedded Config keeps every other section — and the defaults
+	// seeded above — decoding exactly as before.
+	doc := struct {
+		Config
+		Repos    map[string]Repo `toml:"repos"`
+		Profiles map[string]Repo `toml:"profiles"`
+	}{Config: cfg}
+	md, err := toml.Decode(string(data), &doc)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	repos, err := assembleRepos(doc.Repos, doc.Profiles, md)
+	if err != nil {
+		return nil, err
+	}
+	cfg = doc.Config
+	cfg.Repos = repos
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
 		keys := make([]string, len(undecoded))
 		for i, k := range undecoded {

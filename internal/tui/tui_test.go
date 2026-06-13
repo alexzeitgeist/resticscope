@@ -230,7 +230,7 @@ func testApp(states map[string]model.RepoState) *app.App {
 	}
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2},
-		Credentials: []config.Credential{{Name: "cred-a"}},
+		Credentials: []string{"cred-a"},
 		Repos: []config.Repo{
 			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
 				Labels: map[string]string{"env": "home", "criticality": "high"}},
@@ -1805,7 +1805,7 @@ func assertLinesFit(t *testing.T, s string, width int) {
 func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2},
-		Credentials: []config.Credential{{Name: "cred-a"}},
+		Credentials: []string{"cred-a"},
 		Repos: []config.Repo{
 			{Name: "charlie", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
 			{Name: "ada", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
@@ -2342,7 +2342,7 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []config.Credential{{Name: "c"}},
+		Credentials: []string{"c"},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
@@ -2382,7 +2382,7 @@ func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []config.Credential{{Name: "c"}},
+		Credentials: []string{"c"},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
@@ -2451,7 +2451,7 @@ func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	cfg := &config.Config{
 		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []config.Credential{{Name: "c"}},
+		Credentials: []string{"c"},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)

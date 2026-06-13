@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -8,14 +9,12 @@ import (
 )
 
 const minimalTOML = `
+credentials = ["cred-a"]
+
 [global]
 secrets_command = "cat ./test-secrets.json"
 
-[[credentials]]
-name = "cred-a"
-
-[[repos]]
-name               = "repo-a"
+[repos.repo-a]
 credential         = "cred-a"
 endpoint           = "https://fsn1.your-objectstorage.com"
 region             = "fsn1"
@@ -45,6 +44,23 @@ func TestParsesMinimalConfig(t *testing.T) {
 	}
 	if cfg.Repos[0].ExpectedFrequency.Std() != 24*time.Hour {
 		t.Errorf("expected_frequency = %v, want 24h", cfg.Repos[0].ExpectedFrequency.Std())
+	}
+}
+
+func TestExampleConfigLoads(t *testing.T) {
+	data, err := os.ReadFile("../../config.example.toml")
+	if err != nil {
+		t.Fatalf("read config.example.toml: %v", err)
+	}
+	cfg, err := load(t, string(data))
+	if err != nil {
+		t.Fatalf("example config should load: %v", err)
+	}
+	if len(cfg.Credentials) != 2 {
+		t.Fatalf("example credentials = %d, want 2", len(cfg.Credentials))
+	}
+	if len(cfg.Repos) != 4 {
+		t.Fatalf("example repos = %d, want 4", len(cfg.Repos))
 	}
 }
 
@@ -110,49 +126,40 @@ func TestValidationErrors(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name: "duplicate repo names",
-			toml: minimalTOML + `
-[[repos]]
-name               = "repo-a"
-credential         = "cred-a"
-bucket             = "bucket-b"
-expected_frequency = "24h"
-`,
-			wantSub: "duplicate repo name",
-		},
-		{
 			name: "duplicate credential names",
-			toml: minimalTOML + `
-[[credentials]]
-name = "cred-a"
+			toml: `
+credentials = ["cred-a", "cred-a"]
+[global]
+secrets_command = "x"
+[repos.repo-a]
+credential = "cred-a"
+endpoint = "https://e"
+bucket = "b"
+expected_frequency = "24h"
 `,
 			wantSub: "duplicate credential name",
 		},
 		{
 			name: "dangling credential reference",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "missing"
 endpoint = "https://e"
 bucket = "b"
 expected_frequency = "24h"
 `,
-			wantSub: "does not match any [[credentials]] block",
+			wantSub: "does not match any configured credential",
 		},
 		{
 			name: "missing bucket",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 endpoint = "https://e"
 expected_frequency = "24h"
@@ -162,12 +169,10 @@ expected_frequency = "24h"
 		{
 			name: "missing endpoint",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 bucket = "b"
 expected_frequency = "24h"
@@ -177,12 +182,10 @@ expected_frequency = "24h"
 		{
 			name: "bad bucket_lookup",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 endpoint = "https://e"
 bucket = "b"
@@ -194,12 +197,10 @@ expected_frequency = "24h"
 		{
 			name: "repo name with path-unsafe characters",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "foo/bar"
+[repos."foo/bar"]
 credential = "cred-a"
 endpoint = "https://e"
 bucket = "b"
@@ -210,12 +211,10 @@ expected_frequency = "24h"
 		{
 			name: "zero expected_frequency",
 			toml: `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 endpoint = "https://e"
 bucket = "b"
@@ -228,8 +227,7 @@ expected_frequency = "0s"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "sftp:u@h:/srv/repo"
 bucket = "b"
 expected_frequency = "24h"
@@ -241,8 +239,7 @@ expected_frequency = "24h"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "stfp:u@h:/srv/repo"
 expected_frequency = "24h"
 `,
@@ -253,8 +250,7 @@ expected_frequency = "24h"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "srv/repo"
 expected_frequency = "24h"
 `,
@@ -265,8 +261,7 @@ expected_frequency = "24h"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "/srv/repo"
 env = { RESTIC_PASSWORD = "nope" }
 expected_frequency = "24h"
@@ -278,8 +273,7 @@ expected_frequency = "24h"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "/srv/repo"
 env = { "BAD-NAME" = "v" }
 expected_frequency = "24h"
@@ -291,8 +285,7 @@ expected_frequency = "24h"
 			toml: `
 [global]
 secrets_command = "x"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 url = "/srv/repo"
 env = { GOOGLE_PROJECT_ID = "" }
 expected_frequency = "24h"
@@ -314,15 +307,295 @@ expected_frequency = "24h"
 	}
 }
 
+// Two `[repos.<name>]` tables with the same key are impossible in TOML, so the
+// duplicate-name invariant (it becomes a cache filename) can only be violated by
+// constructing repos directly — guard it at the Validate layer regardless.
+func TestValidateRejectsDuplicateRepoName(t *testing.T) {
+	cfg := &Config{
+		Global:      Global{SecretsCommand: "x", ShellPasswordMode: "file"},
+		Credentials: []string{"cred-a"},
+		Repos: []Repo{
+			{Name: "dup", Credential: "cred-a", URL: "/srv/a", ExpectedFrequency: Duration(24 * time.Hour)},
+			{Name: "dup", Credential: "cred-a", URL: "/srv/b", ExpectedFrequency: Duration(24 * time.Hour)},
+		},
+	}
+	cfg.Normalize("/home/tester")
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "duplicate repo name") {
+		t.Fatalf("want duplicate repo name error, got %v", err)
+	}
+}
+
+func TestParsesNamedReposAndProfiles(t *testing.T) {
+	cfg, err := load(t, `
+credentials = ["hetzner-home", "b2-offsite"]
+
+[global]
+secrets_command = "x"
+
+[profiles.hetzner-nbg]
+credential = "hetzner-home"
+endpoint = "https://nbg1.your-objectstorage.com"
+bucket_lookup = "auto"
+expected_frequency = "24h"
+labels = { entity = "private", hoster = "hetzner" }
+
+[repos.test-local]
+url = "/tmp/restic-test"
+expected_frequency = "24h"
+labels = { entity = "private", hoster = "local" }
+
+[repos.thinkpad-x1]
+profile = "hetzner-nbg"
+description = "Manual backup"
+bucket = "backups"
+path = "laptop"
+labels = { device = "laptop", hoster = "custom" }
+
+[repos.pve]
+profile = "hetzner-nbg"
+description = "Server backup"
+bucket = "backups"
+path = "fileserver"
+labels = { location = "ch" }
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := len(cfg.Credentials), 2; got != want {
+		t.Fatalf("credentials len = %d, want %d", got, want)
+	}
+	if cfg.Credentials[0] != "hetzner-home" || cfg.Credentials[1] != "b2-offsite" {
+		t.Fatalf("credentials = %+v", cfg.Credentials)
+	}
+	if got := []string{cfg.Repos[0].Name, cfg.Repos[1].Name, cfg.Repos[2].Name}; !slices.Equal(got, []string{"test-local", "thinkpad-x1", "pve"}) {
+		t.Fatalf("repo order = %v", got)
+	}
+
+	thinkpad := cfg.Repos[1]
+	if thinkpad.Credential != "hetzner-home" {
+		t.Errorf("profile credential not inherited: %+v", thinkpad)
+	}
+	if thinkpad.Endpoint != "https://nbg1.your-objectstorage.com" || thinkpad.BucketLookup != "auto" {
+		t.Errorf("profile s3 fields not inherited: %+v", thinkpad)
+	}
+	if thinkpad.ExpectedFrequency.Std() != 24*time.Hour {
+		t.Errorf("profile expected_frequency = %v, want 24h", thinkpad.ExpectedFrequency.Std())
+	}
+	wantLabels := map[string]string{
+		"entity": "private",
+		"hoster": "custom",
+		"device": "laptop",
+	}
+	if !mapsEqual(thinkpad.Labels, wantLabels) {
+		t.Errorf("labels = %v, want %v", thinkpad.Labels, wantLabels)
+	}
+	if got := thinkpad.RepositoryURL(); got != "s3:https://nbg1.your-objectstorage.com/backups/laptop" {
+		t.Errorf("RepositoryURL = %q", got)
+	}
+}
+
+// A repo's own non-empty fields override the profile's; the profile only fills
+// gaps the repo leaves.
+func TestRepoOverridesProfileFields(t *testing.T) {
+	cfg, err := load(t, `
+credentials = ["c"]
+
+[global]
+secrets_command = "x"
+
+[profiles.base]
+credential = "c"
+endpoint = "https://nbg1.example.com"
+region = "nbg1"
+bucket_lookup = "auto"
+expected_frequency = "24h"
+
+[repos.r]
+profile = "base"
+region = "fsn1"
+bucket_lookup = "path"
+bucket = "b"
+expected_frequency = "168h"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := cfg.Repos[0]
+	if r.Region != "fsn1" || r.BucketLookup != "path" {
+		t.Errorf("repo did not override profile scalars: region=%q bucket_lookup=%q", r.Region, r.BucketLookup)
+	}
+	if r.ExpectedFrequency.Std() != 168*time.Hour {
+		t.Errorf("expected_frequency = %v, want 168h", r.ExpectedFrequency.Std())
+	}
+	if r.Endpoint != "https://nbg1.example.com" {
+		t.Errorf("endpoint not inherited from profile: %q", r.Endpoint)
+	}
+}
+
+func TestParsesCredentialsList(t *testing.T) {
+	cfg, err := load(t, `
+credentials = ["cred-a"]
+
+[global]
+secrets_command = "x"
+
+[repos.repo-a]
+credential = "cred-a"
+endpoint = "https://e"
+bucket = "b"
+expected_frequency = "24h"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Credentials) != 1 || cfg.Credentials[0] != "cred-a" {
+		t.Fatalf("credentials = %+v", cfg.Credentials)
+	}
+}
+
+func TestRejectsBadRepoConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		toml    string
+		wantSub string
+	}{
+		{
+			name: "profile reference missing",
+			toml: `
+credentials = ["cred-a"]
+[global]
+secrets_command = "x"
+[repos.repo-a]
+profile = "missing"
+bucket = "b"
+expected_frequency = "24h"
+`,
+			wantSub: "does not match any [profiles.<name>] table",
+		},
+		{
+			name: "name in named repo",
+			toml: `
+[global]
+secrets_command = "x"
+[repos.repo-a]
+name = "repo-a"
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "repo name is the table key",
+		},
+		{
+			name: "unknown repo key",
+			toml: `
+[global]
+secrets_command = "x"
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+frequncy = "24h"
+`,
+			wantSub: "unknown config keys: repos.repo-a.frequncy",
+		},
+		{
+			name: "profile cannot contain profile",
+			toml: `
+[global]
+secrets_command = "x"
+[profiles.base]
+profile = "other"
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "profile is not allowed inside a profile",
+		},
+		{
+			name: "name inside profile",
+			toml: `
+[global]
+secrets_command = "x"
+[profiles.base]
+name = "base"
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "name is not allowed; a profile is named by its table key",
+		},
+		{
+			name: "credentials list must be strings",
+			toml: `
+credentials = ["cred-a", 42]
+[global]
+secrets_command = "x"
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "credentials",
+		},
+		{
+			// A typo in a profile must fail even when no repo uses that profile
+			// yet — the profile is validated for its self-contained fields.
+			name: "unused profile bad bucket_lookup",
+			toml: `
+[global]
+secrets_command = "x"
+[profiles.base]
+bucket_lookup = "wrong"
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: "profiles.base: bucket_lookup must be auto|dns|path",
+		},
+		{
+			name: "unused profile reserved env name",
+			toml: `
+[global]
+secrets_command = "x"
+[profiles.base]
+env = { RESTIC_PASSWORD = "x" }
+[repos.repo-a]
+url = "/srv/repo"
+expected_frequency = "24h"
+`,
+			wantSub: `profiles.base: env name "RESTIC_PASSWORD" is reserved`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := load(t, tt.toml)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantSub)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantSub)
+			}
+		})
+	}
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func TestRejectsBadShellPasswordMode(t *testing.T) {
 	_, err := load(t, `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 shell_password_mode = "shout"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 endpoint = "https://e"
 bucket = "b"
@@ -337,12 +610,10 @@ expected_frequency = "24h"
 // it must load and validate cleanly (and refresh exports no AWS_DEFAULT_REGION).
 func TestOmittedRegionAccepted(t *testing.T) {
 	cfg, err := load(t, `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name = "repo-a"
+[repos.repo-a]
 credential = "cred-a"
 endpoint = "https://hel1.your-objectstorage.com"
 bucket = "b"
@@ -360,36 +631,30 @@ expected_frequency = "24h"
 // credential, generic env/options. The s3 shorthand keeps working beside it.
 func TestURLRepoForms(t *testing.T) {
 	cfg, err := load(t, `
+credentials = ["b2-home"]
+
 [global]
 secrets_command = "x"
 
-[[credentials]]
-name = "b2-home"
-
-[[repos]]
-name               = "local-disk"
+[repos.local-disk]
 url                = "/srv/restic-repo"
 expected_frequency = "24h"
 
-[[repos]]
-name               = "homedir-disk"
+[repos.homedir-disk]
 url                = "~/restic-repo"
 expected_frequency = "24h"
 
-[[repos]]
-name               = "nas"
+[repos.nas]
 url                = "sftp:backup@nas:/srv/restic-repo"
 options            = { "sftp.command" = "ssh -i /home/me/.ssh/nas backup@nas -s sftp" }
 expected_frequency = "24h"
 
-[[repos]]
-name               = "cloud-b2"
+[repos.cloud-b2]
 url                = "b2:bucket-name:repo"
 credential         = "b2-home"
 expected_frequency = "24h"
 
-[[repos]]
-name               = "gcs"
+[repos.gcs]
 url                = "gs:bucket:/"
 credential         = "b2-home"
 env                = { GOOGLE_PROJECT_ID = "proj-123" }
@@ -440,12 +705,10 @@ expected_frequency = "24h"
 // non-auto bucket_lookup becomes the s3.bucket-lookup option.
 func TestS3ShorthandLowering(t *testing.T) {
 	cfg, err := load(t, `
+credentials = ["cred-a"]
 [global]
 secrets_command = "x"
-[[credentials]]
-name = "cred-a"
-[[repos]]
-name               = "repo-a"
+[repos.repo-a]
 credential         = "cred-a"
 endpoint           = "https://fsn1.your-objectstorage.com/"
 region             = "fsn1"

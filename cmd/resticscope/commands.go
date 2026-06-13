@@ -433,9 +433,7 @@ func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 
 func credentialNames(cfg *config.Config) []string {
 	names := make([]string, len(cfg.Credentials))
-	for i, c := range cfg.Credentials {
-		names[i] = c.Name
-	}
+	copy(names, cfg.Credentials)
 	return names
 }
 
@@ -445,10 +443,10 @@ func credentialNames(cfg *config.Config) []string {
 // (including when nothing references it — env is the universal shape).
 func templateCreds(cfg *config.Config) []secrets.TemplateCred {
 	out := make([]secrets.TemplateCred, len(cfg.Credentials))
-	for i, c := range cfg.Credentials {
+	for i, name := range cfg.Credentials {
 		s3, used := true, false
 		for _, r := range cfg.Repos {
-			if r.Credential != c.Name {
+			if r.Credential != name {
 				continue
 			}
 			used = true
@@ -456,7 +454,7 @@ func templateCreds(cfg *config.Config) []secrets.TemplateCred {
 				s3 = false
 			}
 		}
-		out[i] = secrets.TemplateCred{Name: c.Name, S3: used && s3}
+		out[i] = secrets.TemplateCred{Name: name, S3: used && s3}
 	}
 	return out
 }

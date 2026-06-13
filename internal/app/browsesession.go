@@ -196,7 +196,7 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 		return fmt.Errorf("unknown repo %q", repoName)
 	}
 	// credential is optional (local/sftp backends); when set it must resolve.
-	if _, ok := a.Cfg.Credential(r.Credential); r.Credential != "" && !ok { // unreachable after config validation, but stay defensive
+	if r.Credential != "" && !a.Cfg.HasCredential(r.Credential) { // unreachable after config validation, but stay defensive
 		return fmt.Errorf("credential %q not found", r.Credential)
 	}
 

@@ -4,6 +4,18 @@
 # NO secrets: backend credentials and restic passwords come from secrets_command
 # at runtime (see [global].secrets_command below).
 
+# --- credentials --------------------------------------------------------------
+# A credential is just a NAME for a set of secret backend env vars — an S3
+# access-key/secret-key pair, a B2 account id/key, an Azure account key, a REST
+# server password, whatever the repo's backend reads. It carries no location or
+# backend type, so one name can back several repos (on Hetzner one project key
+# pair reaches every bucket in the project, across regions). Each name must be
+# unique and match a key under "credentials" in the secrets JSON. Repos whose
+# backend needs no secrets (local disk, sftp via ssh config/agent, rclone via
+# its own config) reference no credential. This is a plain top-level list, so it
+# must come before the first [section] — hence at the very top of the file.
+credentials = ["hetzner-home", "nas-b2"]
+
 [global]
 # secrets_command prints a single JSON document with your backend credentials
 # and restic passwords to stdout. It is run through $SHELL -c, so pipes and flags work.
@@ -114,24 +126,32 @@ remember_target = true
 #orange = "#d65d0e"
 #grey   = "245"
 
-# --- credentials ----------------------------------------------------------------
-# A credential is just a NAME for a set of secret backend env vars — an S3
-# access-key/secret-key pair, a B2 account id/key, an Azure account key, a REST
-# server password, whatever the repo's backend reads. It carries no location or
-# backend type. One credential can back several repos (on Hetzner one project
-# key pair reaches every bucket in the project, including buckets in different
-# regions, so endpoint/region/bucket_lookup live on each repo, not here). Each
-# name must be unique and match a key under "credentials" in the secrets JSON.
-# Repos whose backend needs no secrets (local disk, sftp via ssh config/agent,
-# rclone via its own config) simply reference no credential.
+# --- repository profiles ------------------------------------------------------
+# A profile is optional TOML sugar for fields many repos share. A repo opts into
+# one with `profile = "hetzner-fsn1"` and overrides any field by setting its own
+# value (a profile's value can be replaced, but not cleared back to empty).
+# labels, env, and options are merged, with the repo's values winning. Profiles
+# keep common credential/endpoint/frequency/label boilerplate out of every repo.
+[profiles.hetzner-fsn1]
+credential         = "hetzner-home"
+endpoint           = "https://fsn1.your-objectstorage.com"
+region             = "fsn1"
+bucket_lookup      = "auto" # auto | dns | path (use dns only if a bucket requires it)
+expected_frequency = "24h"  # older than this (+ stale_grace) turns the repo amber/red
+labels             = { env = "home", category = "personal" }
 
-[[credentials]]
-name = "hetzner-home"
-
-[[credentials]]
-name = "nas-b2"
+[profiles.hetzner-hel1]
+credential         = "hetzner-home"
+endpoint           = "https://hel1.your-objectstorage.com"
+bucket_lookup      = "auto"
+expected_frequency = "24h"
+labels             = { env = "home", category = "personal" }
 
 # --- repositories -------------------------------------------------------------
+# A repo's name is the final component of its table header, so no separate
+# `name = ...` line is needed. Use quotes if the name contains a dot:
+# [repos."host.daily"].
+#
 # A repo describes where it lives in exactly one of two ways:
 #
 #   url — the restic repository string, verbatim, for ANY backend restic
@@ -144,6 +164,7 @@ name = "nas-b2"
 #         assembles the s3 URL. Sugar for the most common hosted setup.
 #
 # Every repo may also set:
+#   profile    — a profile above whose fields should be inherited (optional).
 #   credential — the name of the secret env-var set above (optional).
 #   env        — non-secret backend env vars, passed to restic verbatim
 #                (e.g. GOOGLE_PROJECT_ID, AZURE_ACCOUNT_NAME). Secrets belong
@@ -158,38 +179,28 @@ name = "nas-b2"
 # repo here looks like a new repo to the local tool — the next refresh rebuilds
 # restic's cache from scratch and leaves the old cache dir orphaned. Run
 # `resticscope cache prune` after renaming or removing a repo to reclaim that
-# space. The first two repos below share one credential while living in
-# different regions.
+# space. The first two repos below inherit the same credential/frequency labels
+# through profiles while living in different regions.
 
-[[repos]]
-name               = "homeserver-system"
-description        = "Daily system backup of homeserver"
-credential         = "hetzner-home"
-endpoint           = "https://fsn1.your-objectstorage.com"
-region             = "fsn1"
-bucket             = "homeserver-backups"
-path               = ""                         # optional sub-prefix within the bucket
-bucket_lookup      = "auto"                     # auto | dns | path (use dns only if a bucket requires it)
-expected_frequency = "24h"                      # older than this (+ stale_grace) turns the repo amber/red
-labels             = { env = "home", criticality = "high", category = "personal" }
+[repos.homeserver-system]
+profile     = "hetzner-fsn1"
+description = "Daily system backup of homeserver"
+bucket      = "homeserver-backups"
+path        = "" # optional sub-prefix within the bucket
+labels      = { criticality = "high" }
 
-# region, path, and bucket_lookup are all optional — omitted here. The endpoint
-# host implies the region, path defaults to the bucket root, bucket_lookup to
-# "auto". Same credential as above, different region.
-[[repos]]
-name               = "laptop-restic"
-description        = "Laptop backup in Helsinki"
-credential         = "hetzner-home"
-endpoint           = "https://hel1.your-objectstorage.com"
-bucket             = "laptop-backups"
-expected_frequency = "24h"
-labels             = { env = "home", criticality = "medium", category = "personal" }
+# Same credential as above, different region. path is omitted, so it defaults
+# to the bucket root.
+[repos.laptop-restic]
+profile     = "hetzner-hel1"
+description = "Laptop backup in Helsinki"
+bucket      = "laptop-backups"
+labels      = { criticality = "medium" }
 
 # A Backblaze B2 repo via the generic url form. Its credential's secrets JSON
 # entry uses the generic env shape: {"env": {"B2_ACCOUNT_ID": "...",
 # "B2_ACCOUNT_KEY": "..."}}.
-[[repos]]
-name               = "nas-offsite"
+[repos.nas-offsite]
 description        = "NAS offsite copy"
 credential         = "nas-b2"
 url                = "b2:nas-backups:repo"
@@ -198,8 +209,7 @@ labels             = { env = "home", criticality = "high", category = "offsite" 
 
 # An sftp repo: no credential at all — auth comes from ssh config / the agent.
 # options shows a restic -o backend option passed through verbatim.
-[[repos]]
-name               = "nas-sftp"
+[repos.nas-sftp]
 description        = "Direct NAS repo over ssh"
 url                = "sftp:backup@nas:/srv/restic-repo"
 options            = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
@@ -207,7 +217,6 @@ expected_frequency = "24h"
 labels             = { env = "home", criticality = "medium", category = "personal" }
 
 # A local repo on a mounted disk: just a path (~ expands), no credential.
-#[[repos]]
-#name               = "usb-archive"
+#[repos.usb-archive]
 #url                = "/mnt/archive/restic-repo"
 #expected_frequency = "720h"

@@ -17,14 +17,26 @@ import (
 )
 
 // Config is the fully parsed, normalized, validated configuration.
+//
+// Credentials is just the list of credential names declared at the top of the
+// file with `credentials = ["name", ...]`. A credential is nothing but a name
+// for a set of secret backend env vars (resolved at runtime from the
+// secrets_command, keyed by that name); it carries no location or backend type,
+// so one name can back several repos. Repos are decoded separately from their
+// `[repos.<name>]` tables and assembled in Decode — see the Repos field.
 type Config struct {
-	Global      Global       `toml:"global"`
-	Credentials []Credential `toml:"credentials"`
-	Repos       []Repo       `toml:"repos"`
-	Browse      Browse       `toml:"browse"`
-	Diff        Diff         `toml:"diff"`
-	Extract     Extract      `toml:"extract"`
-	Theme       Theme        `toml:"theme"`
+	Global      Global   `toml:"global"`
+	Credentials []string `toml:"credentials"`
+	Browse      Browse   `toml:"browse"`
+	Diff        Diff     `toml:"diff"`
+	Extract     Extract  `toml:"extract"`
+	Theme       Theme    `toml:"theme"`
+
+	// Repos is the file-ordered repo list. It is not decoded directly (hence
+	// `toml:"-"`): TOML yields the `[repos.<name>]` tables as an unordered map,
+	// so Decode assembles this slice in file order and resolves profile
+	// inheritance before any other code sees it.
+	Repos []Repo `toml:"-"`
 }
 
 // Theme selects the TUI color theme: one of the built-in palettes compiled
@@ -173,18 +185,6 @@ type Global struct {
 	ResticCommandTimeout  Duration `toml:"restic_command_timeout"`  // timeout for each restic invocation
 }
 
-// Credential names a set of secret backend env vars — for S3 an
-// access-key/secret-key pair, for B2 the account id/key, for Azure the account
-// key, and so on. A credential carries no location or backend type: it exists
-// to declare which secret sets exist (so a dangling repo reference is caught)
-// and to document what secrets_command must provide. The actual values are
-// resolved at runtime from the secrets_command, keyed by Name. One credential
-// can back several repos (e.g. on Hetzner a project key pair reaches every
-// bucket in the project, across regions).
-type Credential struct {
-	Name string `toml:"name"`
-}
-
 // Repo is a single restic repository plus the expected_frequency that drives
 // its freshness status. Where it lives is described one of two ways, exactly
 // one per repo:
@@ -206,7 +206,12 @@ type Credential struct {
 // credential); options carries restic -o backend options verbatim (e.g.
 // "sftp.command", "rest.connections").
 type Repo struct {
+	// Name is the final component of the repo's table header (`[repos.<name>]`),
+	// assigned in Decode — a literal `name = ...` inside a repo table is rejected.
+	// Profile names a `[profiles.<name>]` table whose fields this repo inherits
+	// (optional); it is resolved away in Decode, leaving every field merged.
 	Name        string `toml:"name"`
+	Profile     string `toml:"profile"`
 	Description string `toml:"description"`
 	Credential  string `toml:"credential"`
 
@@ -306,14 +311,14 @@ func (r Repo) BackendEnv() map[string]string {
 	return out
 }
 
-// Credential returns the named credential block, if present.
-func (c *Config) Credential(name string) (Credential, bool) {
-	for _, cr := range c.Credentials {
-		if cr.Name == name {
-			return cr, true
+// HasCredential reports whether name matches a configured credential.
+func (c *Config) HasCredential(name string) bool {
+	for _, n := range c.Credentials {
+		if n == name {
+			return true
 		}
 	}
-	return Credential{}, false
+	return false
 }
 
 // Duration is a time.Duration that unmarshals from a TOML string ("24h").

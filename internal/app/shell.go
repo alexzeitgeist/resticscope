@@ -51,7 +51,7 @@ func (a *App) ShellSession(repoName string, snap *model.Snapshot) (*ShellSession
 		return nil, fmt.Errorf("no repo %q in config", repoName)
 	}
 	// credential is optional (local/sftp backends); when set it must resolve.
-	if _, ok := a.Cfg.Credential(r.Credential); r.Credential != "" && !ok { // unreachable after config validation, but stay defensive
+	if r.Credential != "" && !a.Cfg.HasCredential(r.Credential) { // unreachable after config validation, but stay defensive
 		return nil, fmt.Errorf("credential %q not found", r.Credential)
 	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
