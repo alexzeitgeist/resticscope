@@ -114,8 +114,14 @@ type repoRefreshedMsg struct {
 
 // shellExitedMsg is delivered after an interactive shell-out returns (via
 // tea.ExecProcess) or after the session could not be prepared at all. err is the
-// shell's exit error or the preparation failure; it never carries a secret
-// (app.ShellSession resolves secrets without embedding their values).
+// shell's exit error or the preparation failure; cleanupErr is the failure to
+// remove the session's temp password file once the child exited. Neither carries
+// a secret (app.ShellSession resolves secrets without embedding their values, and
+// Cleanup's error names the file operation, not the password). cleanupErr is
+// surfaced in preference to err because a lingering 0600 password file is the
+// part the user can act on (manually delete it); the shell's own exit status
+// rarely is.
 type shellExitedMsg struct {
-	err error
+	err        error
+	cleanupErr error
 }

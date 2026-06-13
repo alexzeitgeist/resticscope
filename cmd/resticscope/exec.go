@@ -61,7 +61,7 @@ func cmdExec(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "exec: %v\n", err)
 		return 2
 	}
-	defer sess.Cleanup() //nolint:errcheck // best-effort; the temp file is gone on process exit regardless
+	defer sess.Cleanup() //nolint:errcheck // best-effort: this one-shot subcommand has no UI to report a cleanup failure on (the TUI, which is long-lived, does surface it)
 
 	return runExec(ctx, sess, cmdArgs, stdout, stderr)
 }

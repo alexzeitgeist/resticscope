@@ -75,14 +75,32 @@ func shellCmdFromSession(sess *app.ShellSession) tea.Cmd {
 	if sess.Dir != "" {
 		c.Dir = sess.Dir
 	}
-	return tea.ExecProcess(c, func(err error) tea.Msg {
-		_ = sess.Cleanup()
-		return shellExitedMsg{err: err}
-	})
+	return tea.ExecProcess(c, shellExitCallback(sess))
+}
+
+// shellExitCallback is the tea.ExecProcess completion callback. It runs the
+// session Cleanup (which removes the 0600 temp password file in file mode) and
+// reports both the shell's exit error and any cleanup failure. The `exec`
+// subcommand can discard this same error because it has no long-lived UI surface
+// to report it on and exits right after its deferred Cleanup runs; the TUI keeps
+// running for hours after the shell returns, so a failed removal must not be
+// swallowed — it would leave a plaintext restic password on disk (the temp file
+// is removed by Cleanup, not on process exit) for the rest of the session.
+// Pulled out of shellCmdFromSession so the cleanup-error wiring is unit-testable
+// without the bubbletea runtime.
+func shellExitCallback(sess *app.ShellSession) func(error) tea.Msg {
+	return func(err error) tea.Msg {
+		return shellExitedMsg{err: err, cleanupErr: sess.Cleanup()}
+	}
 }
 
 func (m Model) applyShellExit(msg shellExitedMsg) Model {
-	if msg.err != nil {
+	switch {
+	case msg.cleanupErr != nil:
+		// A leftover password file is actionable (delete it); prefer it over the
+		// shell's exit status, which the user usually triggered themselves.
+		m.statusMsg = "shell cleanup: " + firstLine(msg.cleanupErr.Error())
+	case msg.err != nil:
 		m.statusMsg = "shell: " + firstLine(msg.err.Error())
 	}
 	return m
