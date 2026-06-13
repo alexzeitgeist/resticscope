@@ -2087,6 +2087,20 @@ func TestRenderRowStaleMarkerSuppressedWhilePending(t *testing.T) {
 	}
 }
 
+// An errored repo carries over its last successful RefreshedAt, which often
+// reads as stale — but the `✕` glyph and "refresh failed" text already tell the
+// freshness story, so the stale `*` marker is suppressed. Without this guard the
+// cell renders the jammed-together "✕*".
+func TestRenderRowStaleMarkerSuppressedOnError(t *testing.T) {
+	m := newTestModel(t, testApp(nil))
+	row := app.RepoStatus{Name: "repo-a", Status: model.StatusError, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow.Add(-72 * time.Hour), LastError: "repository does not exist"}}
+	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
+	if strings.Contains(rendered, "*") {
+		t.Errorf("error row should suppress stale '*' marker\n---\n%s", rendered)
+	}
+}
+
 // A repo with an active lock shows "L" in the marker cell. Lock wins over
 // stale because it's the more actionable signal.
 func TestRenderRowLockMarker(t *testing.T) {
