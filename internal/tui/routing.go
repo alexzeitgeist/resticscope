@@ -120,7 +120,7 @@ func (m Model) handleHelpViewKey(msg tea.KeyPressMsg) Model {
 	return m
 }
 
-// handleInfoViewKey keeps the info modal modal while still allowing its scroll
+// handleInfoViewKey keeps the info modal while still allowing its scroll
 // keys. The global ctrl+c/q/? path has already had first claim in handleGlobalKey.
 func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
 	switch {

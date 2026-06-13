@@ -696,7 +696,7 @@ func publishExtract(mode ExtractMode, source, staging, final string, mkdir func(
 		}
 		// rename cannot overwrite a non-empty dir; for a directory node, safe.
 		if err := os.Rename(node, final); err != nil {
-			return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+			return fmt.Errorf("%w: %w", ErrExtractRenameFailed, pathFreeCause(err))
 		}
 	case ExtractFile:
 		if err := linkExtractNode(node, final); err != nil {
@@ -721,7 +721,7 @@ func linkExtractNode(node, final string) error {
 		if errors.Is(err, os.ErrExist) { // lost the race / occupied → refuse, never clobber
 			return ErrExtractFinalExists
 		}
-		return fmt.Errorf("%w: %v", ErrExtractRenameFailed, pathFreeCause(err))
+		return fmt.Errorf("%w: %w", ErrExtractRenameFailed, pathFreeCause(err))
 	}
 	_ = os.Remove(node)
 	return nil

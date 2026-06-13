@@ -182,12 +182,12 @@ func writePromptFile(pattern, content string) (string, error) {
 	}
 	name := f.Name()
 	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(name)
+		_ = f.Close()
+		_ = os.Remove(name)
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return "", err
 	}
 	return name, nil
@@ -211,7 +211,7 @@ func writeZshPromptDir(tag, origZDotDir string) (string, error) {
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-			os.RemoveAll(dir)
+			_ = os.RemoveAll(dir)
 			return "", err
 		}
 	}

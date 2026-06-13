@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"resticscope/internal/model"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-
-	"resticscope/internal/model"
 )
 
 // chrome_test.go locks the unified TUI chrome: the frame() contract (footer

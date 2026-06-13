@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // --- browse test fakes ---
@@ -781,7 +781,6 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 	// satisfied by the wait leaf.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
-		c := c
 		go func() {
 			if msg, ok := c().(browseIndexedMsg); ok {
 				done <- msg
@@ -810,7 +809,7 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 // an assertion meant for another.
 func lineContaining(t *testing.T, s, sub string) string {
 	t.Helper()
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.Contains(line, sub) {
 			return line
 		}
@@ -1213,7 +1212,6 @@ func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
 	// channel, so we filter for the worker's done message only.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
-		c := c
 		go func() {
 			if msg, ok := c().(extractRunDoneMsg); ok {
 				done <- msg

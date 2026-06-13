@@ -29,7 +29,7 @@ func (ExecRunner) Run(ctx context.Context, env []string, password string, args .
 		if pipeErr != nil {
 			return nil, nil, pipeErr
 		}
-		defer pr.Close()
+		defer func() { _ = pr.Close() }()
 		// pr becomes fd 3 in the child (fds 0,1,2 are stdio).
 		cmd.ExtraFiles = []*os.File{pr}
 		go func() {
@@ -83,7 +83,7 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 		if pipeErr != nil {
 			return nil, pipeErr
 		}
-		defer pr.Close()
+		defer func() { _ = pr.Close() }()
 		cmd.ExtraFiles = []*os.File{pr} // pr becomes fd 3 in the child
 		go func() {
 			if password != "" {
@@ -96,7 +96,7 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 			if pipeErr != nil {
 				return nil, pipeErr
 			}
-			defer pr4.Close()
+			defer func() { _ = pr4.Close() }()
 			cmd.ExtraFiles = append(cmd.ExtraFiles, pr4) // pr4 becomes fd 4
 			go func() {
 				_, _ = pw4.Write(patterns)
@@ -121,11 +121,9 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 	var errBuf LimitedBuffer
 	errBuf.Limit = streamStderrLimit
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		_, _ = io.Copy(&errBuf, errPipe)
-	}()
+	})
 
 	cbErr := onStdout(stdout)
 	// Drain any stdout the callback left unread so restic is never wedged on a

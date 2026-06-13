@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
 	"resticscope/internal/theme"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // findversions_test.go drives the find-versions view through its state

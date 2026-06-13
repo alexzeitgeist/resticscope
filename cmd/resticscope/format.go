@@ -39,7 +39,7 @@ func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 			fmt.Fprintln(tw, line)
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 func lastBackupDuration(snaps []model.Snapshot) string {
@@ -83,7 +83,7 @@ func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", e.Name, humanize.Bytes(e.Size), action)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	fmt.Fprintln(w)
 	switch n := res.Pruned(); {

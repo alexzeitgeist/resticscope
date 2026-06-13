@@ -4,10 +4,10 @@ import (
 	"path"
 	"strings"
 
+	"resticscope/internal/model"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"resticscope/internal/model"
 )
 
 // handleBrowseSearchKey consumes keys while the global filename search input is

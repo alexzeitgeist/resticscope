@@ -41,6 +41,13 @@ func randomKey(t *testing.T) []byte {
 	return key
 }
 
+func mustAdd(t *testing.T, ctx context.Context, itx *IndexTx, n model.BrowseNode) {
+	t.Helper()
+	if err := itx.Add(ctx, n); err != nil {
+		t.Fatalf("Add(%q): %v", n.Path, err)
+	}
+}
+
 func mustIndex(t *testing.T, db *DB, repo, snap string, nodes []model.BrowseNode) {
 	t.Helper()
 	ctx := context.Background()
@@ -226,9 +233,9 @@ func TestPathCleaning(t *testing.T) {
 			t.Fatalf("Add(%q): %v", p, err)
 		}
 	}
-	itx.Add(ctx, model.BrowseNode{Path: "/etc/", IsDir: true}) // -> /etc
-	itx.Add(ctx, model.BrowseNode{Path: "etc/passwd"})         // -> /etc/passwd
-	itx.Add(ctx, model.BrowseNode{Path: "/a/../b"})            // -> /b
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/", IsDir: true}) // -> /etc
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "etc/passwd"})         // -> /etc/passwd
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/a/../b"})            // -> /b
 	if err := itx.Commit(ctx); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -261,8 +268,8 @@ func TestDuplicatePathsNotCollapsedWithinBatch(t *testing.T) {
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
-	itx.Add(ctx, model.BrowseNode{Path: "/etc/passwd", Size: 1})
-	itx.Add(ctx, model.BrowseNode{Path: "/etc//passwd", Size: 2}) // cleans to same path
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/passwd", Size: 1})
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc//passwd", Size: 2}) // cleans to same path
 	if err := itx.Commit(ctx); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -287,11 +294,11 @@ func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
-	itx.Add(ctx, model.BrowseNode{Path: "/etc/dup", Size: 1})
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/dup", Size: 1})
 	if err := itx.flush(ctx); err != nil { // force the first row into its own statement
 		t.Fatalf("flush: %v", err)
 	}
-	itx.Add(ctx, model.BrowseNode{Path: "/etc/dup", Size: 2})
+	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/dup", Size: 2})
 	if err := itx.Commit(ctx); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -326,7 +333,7 @@ func TestBatchFlush(t *testing.T) {
 	ctx := context.Background()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
-	for i := 0; i < batchRows; i++ {
+	for i := range batchRows {
 		if err := itx.Add(ctx, model.BrowseNode{Path: fmt.Sprintf("/f%05d", i)}); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
@@ -354,8 +361,10 @@ func TestBatchFlush(t *testing.T) {
 		t.Errorf("entries = %d, want %d", len(entries), batchRows+1)
 	}
 	var n int64
-	db.pool.QueryRowContext(ctx,
-		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`, repo, snap).Scan(&n)
+	if err := db.pool.QueryRowContext(ctx,
+		`SELECT entries FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`, repo, snap).Scan(&n); err != nil {
+		t.Fatalf("scan marker entries: %v", err)
+	}
 	if n != int64(batchRows+1) {
 		t.Errorf("marker entries = %d, want %d", n, batchRows+1)
 	}
@@ -372,7 +381,7 @@ func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 	// Dirs are now held until Commit (so their subtree sizes can be folded), so the
 	// buffer is never trimmed mid-stream: reserving a full dirBatchRows worth leaves
 	// root + dirBatchRows rows buffered.
-	for i := 0; i < dirBatchRows; i++ {
+	for i := range dirBatchRows {
 		if _, err := itx.ensureCleanDir(ctx, fmt.Sprintf("/d%05d", i)); err != nil {
 			t.Fatalf("ensureCleanDir: %v", err)
 		}
@@ -770,7 +779,7 @@ func TestDirCommitChunkingExceedsParamCap(t *testing.T) {
 	// Each subdirectory is a real node (so it lists under /base) holding one file,
 	// so /base has dirCount children and ListDir(/base) drives dirSizes path
 	// chunking past dirSizePathChunk.
-	for i := 0; i < dirCount; i++ {
+	for i := range dirCount {
 		if err := itx.Add(ctx, model.BrowseNode{Path: fmt.Sprintf("/base/d%05d", i), IsDir: true}); err != nil {
 			t.Fatalf("Add(dir): %v", err)
 		}
@@ -1001,8 +1010,8 @@ func lockingSupported() bool {
 	if err != nil {
 		return false
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer func() { _ = os.Remove(f.Name()) }()
+	defer func() { _ = f.Close() }()
 	_, supported := tryLock(f)
 	return supported
 }
@@ -1062,7 +1071,7 @@ func TestCleanStaleSessionsSkipsLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LockSession: %v", err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	old := time.Now().Add(-24 * time.Hour)
 	if err := os.Chtimes(dir, old, old); err != nil {
 		t.Fatal(err)
@@ -1084,7 +1093,7 @@ func TestLockSessionRejectsHeldLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first LockSession: %v", err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	second, err := LockSession(dir)
 	if err == nil {

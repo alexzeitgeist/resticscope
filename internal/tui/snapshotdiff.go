@@ -5,11 +5,11 @@ import (
 	"path"
 	"sort"
 
-	"charm.land/bubbles/v2/key"
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/model"
+
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 // snapshotdiff.go is the controller for snapshotDiffView: the tree-style diff

@@ -6,10 +6,10 @@ import (
 	"path"
 	"time"
 
+	"resticscope/internal/model"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"resticscope/internal/model"
 )
 
 // browse.go is the TUI's in-app snapshot file browser: the controller that

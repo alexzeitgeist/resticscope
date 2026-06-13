@@ -11,17 +11,17 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/spinner"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/cache"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
 	"resticscope/internal/resticx"
 	"resticscope/internal/secrets"
+
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // --- fakes built on app's exported consumer-side interfaces ---
@@ -231,8 +231,10 @@ func testApp(states map[string]model.RepoState) *app.App {
 	cfg := &config.Config{
 		Global: config.Global{Parallelism: 2},
 		Repos: []config.Repo{
-			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
-				Labels: map[string]string{"env": "home", "criticality": "high"}},
+			{
+				Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
+				Labels: map[string]string{"env": "home", "criticality": "high"},
+			},
 			{Name: "repo-b", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b2", ExpectedFrequency: config.Duration(24 * time.Hour)},
 		},
 	}
@@ -544,7 +546,6 @@ func TestQuitCancelsInFlightRefresh(t *testing.T) {
 	// result so the cancel assertion below isn't satisfied by the tick.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
-		c := c
 		go func() {
 			if msg, ok := c().(repoRefreshedMsg); ok {
 				done <- msg
@@ -625,7 +626,7 @@ func TestHelpOverlayTwoColumnsWhenWide(t *testing.T) {
 	m = update(t, m, press("?"))
 	view := stripANSI(m.View().Content)
 	var sideBySide bool
-	for _, line := range strings.Split(view, "\n") {
+	for line := range strings.SplitSeq(view, "\n") {
 		if strings.Contains(line, "Global") && strings.Contains(line, "Detail") {
 			sideBySide = true
 		}
@@ -651,12 +652,12 @@ func TestHelpOverlayNarrowStacksSingleColumn(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 30})
 	m = update(t, m, press("?"))
 	view := stripANSI(m.View().Content)
-	for _, line := range strings.Split(view, "\n") {
+	for line := range strings.SplitSeq(view, "\n") {
 		if got := lipgloss.Width(line); got > 80 {
 			t.Errorf("line wider than terminal: %d > 80: %q", got, line)
 		}
 	}
-	for _, line := range strings.Split(view, "\n") {
+	for line := range strings.SplitSeq(view, "\n") {
 		if strings.Contains(line, "Global") && strings.Contains(line, "Detail") {
 			t.Errorf("at 80 cols the columns must stack, but found a side-by-side line: %q", line)
 		}
@@ -707,7 +708,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 
 	// Page-down enough times to reach the bottom; clampModalScroll bounds the
 	// stored offset, so excess presses are a no-op once we hit the floor.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 	bottom := stripANSI(m.View().Content)
@@ -717,7 +718,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 
 	// j/k must also scroll (they share keys.Up/Down bindings; no list cursor
 	// exists behind the modal to claim them).
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	}
 	m = update(t, m, press("j"))
@@ -1072,10 +1073,12 @@ func TestSnapshotDetailBackupWindowCrossesDate(t *testing.T) {
 		"repo-a": {
 			Name: "repo-a", RefreshedAt: testNow, LastSnapshot: start, SnapshotCount: 1,
 			Snapshots: []model.Snapshot{
-				{ID: "id-cross", ShortID: "x", Time: start, Hostname: "h",
+				{
+					ID: "id-cross", ShortID: "x", Time: start, Hostname: "h",
 					Summary: &model.SnapshotSummary{
 						TotalBytesProcessed: 1024, BackupStart: start, BackupEnd: end,
-					}},
+					},
+				},
 			},
 		},
 	})
@@ -1159,12 +1162,12 @@ func TestDetailSnapshotsUseModelOrdering(t *testing.T) {
 func TestDetailBackReturnsToList(t *testing.T) {
 	for _, k := range []string{"esc", "q"} {
 		m := newTestModel(t, detailApp(t))
-		next, cmd := m.Update(press("enter"))
+		next, _ := m.Update(press("enter"))
 		m = next.(Model)
 		if m.view != detailView {
 			t.Fatal("expected detail view after enter")
 		}
-		next, cmd = m.Update(press(k))
+		next, cmd := m.Update(press(k))
 		m = next.(Model)
 		if m.view != listView {
 			t.Errorf("%q did not return to the list view", k)
@@ -1541,7 +1544,7 @@ func TestListViewClipsNarrowTerminalStates(t *testing.T) {
 			m.width = 10
 			m = tc.setup(m)
 
-			for _, line := range strings.Split(m.listView(), "\n") {
+			for line := range strings.SplitSeq(m.listView(), "\n") {
 				if got := lipgloss.Width(line); got > m.width {
 					t.Fatalf("line width = %d, want <= %d: %q", got, m.width, line)
 				}
@@ -1801,7 +1804,7 @@ func TestDetailViewFitsCompactTerminal(t *testing.T) {
 
 func assertLinesFit(t *testing.T, s string, width int) {
 	t.Helper()
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if got := lipgloss.Width(line); got > width {
 			t.Fatalf("line width = %d, want <= %d: %q", got, width, line)
 		}
@@ -1894,8 +1897,10 @@ func TestSortedSelectionSurvivesRefreshReorder(t *testing.T) {
 	// repo-b becomes Error; the visible order flips to repo-b, repo-a. applyRefresh
 	// assigns msg.row directly without re-evaluating status, so the injected row
 	// carries an explicit Status.
-	errored := app.RepoStatus{Name: "repo-b", Status: model.StatusError,
-		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastError: "boom"}}
+	errored := app.RepoStatus{
+		Name: "repo-b", Status: model.StatusError,
+		State: model.RepoState{Name: "repo-b", RefreshedAt: testNow, LastError: "boom"},
+	}
 	m = update(t, m, repoRefreshedMsg{name: "repo-b", row: errored})
 
 	if got := visNames(m); got != "repo-b,repo-a" {
@@ -1944,8 +1949,10 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 	}
 	// repo-a recovers to Green; under urgency sort repo-b (Amber) would now sort
 	// first, so a cursor-based detail view would jump to repo-b.
-	fresher := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
-		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)}}
+	fresher := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour)},
+	}
 	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: fresher})
 	if row, ok := m.detailRow(); !ok || row.Name != "repo-a" {
 		t.Errorf("detail jumped to %q after reorder, want repo-a", row.Name)
@@ -1959,8 +1966,7 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 // + 2 = 3 extra cells is the floor for Labels to appear (1 content cell + the
 // 2-space separator).
 func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
-	// baseFixed = gutter(2)+status(2)+gap(1)+name(24)+last(10)+snaps(5)+2*2 = 48
-	const baseFixed = 48
+	// baseFixed = gutter(2)+status(2)+gap(1)+name(24)+last(10)+snaps(5)+2*2 = 48.
 	// Took promotion needs baseFixed + 7 + 2 = 57.
 	// Labels promotion needs Took on AND remaining >= flexMin(3), i.e. width >= 60.
 	for _, tc := range []struct {
@@ -2009,9 +2015,13 @@ func TestListHeaderSortIndicator(t *testing.T) {
 // edge. The 5-cell prefix (gutter+status+gap) is present in both.
 func TestListHeaderAlignsWithRows(t *testing.T) {
 	m := newTestModel(t, testApp(map[string]model.RepoState{
-		"repo-a": {Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 7,
-			Snapshots: []model.Snapshot{{ID: "id", Time: testNow.Add(-2 * time.Hour),
-				Summary: &model.SnapshotSummary{BackupStart: testNow.Add(-2 * time.Hour), BackupEnd: testNow.Add(-2*time.Hour + 9*time.Second)}}}},
+		"repo-a": {
+			Name: "repo-a", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 7,
+			Snapshots: []model.Snapshot{{
+				ID: "id", Time: testNow.Add(-2 * time.Hour),
+				Summary: &model.SnapshotSummary{BackupStart: testNow.Add(-2 * time.Hour), BackupEnd: testNow.Add(-2*time.Hour + 9*time.Second)},
+			}},
+		},
 	}))
 
 	const width = 100
@@ -2068,8 +2078,10 @@ func TestListHeaderAlignsWithRows(t *testing.T) {
 // marker (`*` for stale, blank otherwise). The marker must not widen the row.
 func TestRenderRowStaleMarker(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
-	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
-		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1}}
+	row := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1},
+	}
 	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
 	if !strings.Contains(rendered, statusGlyph(model.StatusGreen)+"*") {
 		t.Errorf("stale row should show '%s*' status cell\n---\n%s", statusGlyph(model.StatusGreen), rendered)
@@ -2082,8 +2094,10 @@ func TestRenderRowStaleMarker(t *testing.T) {
 func TestRenderRowStaleMarkerSuppressedWhilePending(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	m.pending["repo-a"] = true
-	stale := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
-		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1}}
+	stale := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1},
+	}
 	rendered := stripANSI(m.renderRow(stale, computeListLayout(100), false, 100))
 	if strings.Contains(rendered, "*") {
 		t.Errorf("pending refresh should suppress '*' marker\n---\n%s", rendered)
@@ -2103,8 +2117,10 @@ func TestRenderRowStaleMarkerSuppressedWhilePending(t *testing.T) {
 // cell renders the jammed-together "×*".
 func TestRenderRowStaleMarkerSuppressedOnError(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
-	row := app.RepoStatus{Name: "repo-a", Status: model.StatusError, Stale: true,
-		State: model.RepoState{RefreshedAt: testNow.Add(-72 * time.Hour), LastError: "repository does not exist"}}
+	row := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusError, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow.Add(-72 * time.Hour), LastError: "repository does not exist"},
+	}
 	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
 	if strings.Contains(rendered, "*") {
 		t.Errorf("error row should suppress stale '*' marker\n---\n%s", rendered)
@@ -2116,8 +2132,10 @@ func TestRenderRowStaleMarkerSuppressedOnError(t *testing.T) {
 func TestRenderRowLockMarker(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	locked := testNow.Add(-time.Hour)
-	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen, Stale: true,
-		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1, LockedSince: &locked}}
+	row := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusGreen, Stale: true,
+		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-time.Hour), SnapshotCount: 1, LockedSince: &locked},
+	}
 	rendered := stripANSI(m.renderRow(row, computeListLayout(100), false, 100))
 	if !strings.Contains(rendered, statusGlyph(model.StatusGreen)+"L") {
 		t.Errorf("locked row should show 'L' marker\n---\n%s", rendered)
@@ -2137,10 +2155,16 @@ func TestRenderRowFixedCellsDoNotWiden(t *testing.T) {
 		labels: []string{strings.Repeat("verylonglabel", 5)},
 	}
 	start := testNow.Add(-1001 * time.Hour)
-	row := app.RepoStatus{Name: "repo-a", Status: model.StatusGreen,
-		State: model.RepoState{RefreshedAt: testNow, LastSnapshot: testNow.Add(-9999 * time.Hour), SnapshotCount: 999999,
-			Snapshots: []model.Snapshot{{ID: "id", Time: testNow.Add(-time.Hour),
-				Summary: &model.SnapshotSummary{BackupStart: start, BackupEnd: start.Add(1000 * time.Hour)}}}}}
+	row := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusGreen,
+		State: model.RepoState{
+			RefreshedAt: testNow, LastSnapshot: testNow.Add(-9999 * time.Hour), SnapshotCount: 999999,
+			Snapshots: []model.Snapshot{{
+				ID: "id", Time: testNow.Add(-time.Hour),
+				Summary: &model.SnapshotSummary{BackupStart: start, BackupEnd: start.Add(1000 * time.Hour)},
+			}},
+		},
+	}
 	for _, w := range []int{60, 80, 100, 120} {
 		l := computeListLayout(w)
 		rendered := m.renderRow(row, l, false, w)
@@ -2196,7 +2220,7 @@ func TestGroupedSectionsCaseOnlyCollisionIsStable(t *testing.T) {
 		"d": {byKey: map[string]string{"env": "prod"}},
 	}
 	// Run repeatedly to exercise different map iteration orders.
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		secs := groupedSections(rows, meta, "env", sortConfig)
 		if len(secs) != 2 {
 			t.Fatalf("iter %d: got %d sections, want 2", i, len(secs))
@@ -2351,8 +2375,10 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 	// Background refresh: repo-a also becomes Error; in-group urgency ties, so
 	// stable sort reverts to config order repo-a, repo-b and the cursor must
 	// follow repo-b to index 1.
-	errored := app.RepoStatus{Name: "repo-a", Status: model.StatusError,
-		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastError: "splat"}}
+	errored := app.RepoStatus{
+		Name: "repo-a", Status: model.StatusError,
+		State: model.RepoState{Name: "repo-a", RefreshedAt: testNow, LastError: "splat"},
+	}
 	m = update(t, m, repoRefreshedMsg{name: "repo-a", row: errored})
 	if row, ok := m.currentRow(); !ok || row.Name != "repo-b" {
 		t.Errorf("after refresh-reorder, cursor on %q (idx=%d), want repo-b", row.Name, m.cursor)
@@ -2570,7 +2596,7 @@ func TestCycleGroupingThroughKeys(t *testing.T) {
 	}
 }
 
-// A one-key configuration behaves like the old toggle: key → flat → key → …
+// A one-key configuration behaves like the old toggle: key → flat → key → ….
 func TestCycleGroupingSingleKey(t *testing.T) {
 	a := testApp(nil)
 	a.Cfg.Global.GroupBy = []string{"env"}
@@ -3039,7 +3065,7 @@ func TestInfoModalScrolls(t *testing.T) {
 
 	// Page-down enough times to reach the bottom. clampModalScroll bounds the
 	// stored offset, so excess presses are a no-op once we hit the floor.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
 	bottom := m.View().Content
@@ -3048,7 +3074,7 @@ func TestInfoModalScrolls(t *testing.T) {
 	}
 
 	// Page-up returns to the top.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	}
 	if m.infoScroll != 0 {
@@ -3099,7 +3125,7 @@ func TestInfoModalScrollResetsOnOpen(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
 	m = update(t, m, press("enter"))
 	m = update(t, m, press("i"))
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		m = update(t, m, press("j"))
 	}
 	if m.infoScroll == 0 {

@@ -208,10 +208,7 @@ func browseLayout(width int) browseColLayout {
 		{browseOwnerWidth, &l.showOwner},
 	})
 
-	l.name = width - baseFixed - reservedExtra
-	if l.name < 1 {
-		l.name = 1
-	}
+	l.name = max(width-baseFixed-reservedExtra, 1)
 	return l
 }
 

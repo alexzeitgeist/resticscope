@@ -533,7 +533,7 @@ func hasXattr(t *testing.T, p, name string) bool {
 	if err != nil {
 		return false
 	}
-	for _, b := range bytes.Split(buf[:sz], []byte{0}) {
+	for b := range bytes.SplitSeq(buf[:sz], []byte{0}) {
 		if string(b) == name {
 			return true
 		}

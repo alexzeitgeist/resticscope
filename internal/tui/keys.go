@@ -168,8 +168,10 @@ func (h viewHelp) ShortHelp() []key.Binding {
 			// After a search jump q mirrors esc and reverses the jump instead
 			// of leaving the view (routing.go), so the normal `q back` chip
 			// would lie; one combined chip replaces it until the jump is undone.
-			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(),
-				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous"))}
+			return []key.Binding{
+				moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(),
+				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous")),
+			}
 		}
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(), k.Back}
 	case extractView:

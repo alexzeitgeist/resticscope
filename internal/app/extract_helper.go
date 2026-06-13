@@ -152,7 +152,7 @@ type ExtractHelperOpts struct {
 // path-free; cmd prints it to stderr and exits non-zero.
 func RunExtractHelper(ctx context.Context, in io.Reader, out io.Writer, opts ExtractHelperOpts) error {
 	enc := json.NewEncoder(out)
-	emitErr := func(code, msg string, stagingDir string, stagingCreated bool) error {
+	emitErr := func(code, msg, stagingDir string, stagingCreated bool) error {
 		_ = enc.Encode(helperEvent{Kind: helperEventError, Error: &helperError{
 			Code: code, Message: msg, StagingDir: stagingDir, StagingCreated: stagingCreated,
 		}})
@@ -401,7 +401,7 @@ func chownCacheForOwner(dir string, uid, gid int) {
 	}
 	_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // keep walking what we can
+			return nil //nolint:nilerr // best-effort walk: skip the unreadable entry, keep going
 		}
 		_ = os.Lchown(p, uid, gid)
 		return nil
@@ -421,7 +421,7 @@ func chownStagingForCleanup(staging string, uid, gid int) {
 	}
 	_ = filepath.WalkDir(staging, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // keep walking what we can
+			return nil //nolint:nilerr // best-effort walk: skip the unreadable entry, keep going
 		}
 		_ = os.Lchown(p, uid, gid)
 		if d.IsDir() {

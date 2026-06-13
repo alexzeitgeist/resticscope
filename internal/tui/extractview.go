@@ -183,13 +183,11 @@ func (m Model) extractRunningBody(w int) string {
 	// Scale the bar to the pane: cap it at 48 so a wide terminal doesn't draw an
 	// ungainly full-width bar (keeping the canonical mockup's look at >=58 cols),
 	// and floor it at 16 so the trailing percentage stays visible when narrow.
-	barW := w - 2 - len([]rune(pctLabel)) - 2 // leading indent + label + slack
-	if barW > 48 {
-		barW = 48
-	}
-	if barW < 16 {
-		barW = 16
-	}
+	barW := max(
+		// leading indent + label + slack
+		min(
+
+			w-2-len([]rune(pctLabel))-2, 48), 16)
 	bar := renderProgressBar(barW, pct, hasPct)
 	barLine := clip("  "+bar+pctLabel, w)
 	statusLine := clip("  "+m.styles.meta.Render(extractRunningStatus(em)), w)
@@ -224,13 +222,7 @@ func renderProgressBar(width int, pct float64, has bool) string {
 	if !has {
 		return strings.Repeat("░", width)
 	}
-	fill := int(float64(width) * pct)
-	if fill < 0 {
-		fill = 0
-	}
-	if fill > width {
-		fill = width
-	}
+	fill := min(max(int(float64(width)*pct), 0), width)
 	return strings.Repeat("█", fill) + strings.Repeat("░", width-fill)
 }
 
@@ -242,7 +234,7 @@ func extractRunningStatus(em extractModel) string {
 	if p.BytesTotal > 0 {
 		parts = append(parts, fmt.Sprintf("%s / %s", humanize.Bytes(p.BytesDone), humanize.Bytes(p.BytesTotal)))
 	} else {
-		parts = append(parts, fmt.Sprintf("%s / —", humanize.Bytes(p.BytesDone)))
+		parts = append(parts, humanize.Bytes(p.BytesDone)+" / —")
 	}
 	if p.FilesTotal > 0 {
 		parts = append(parts, fmt.Sprintf("%d / %s", p.FilesDone, humanize.Count(p.FilesTotal, "file", "files")))
@@ -250,7 +242,7 @@ func extractRunningStatus(em extractModel) string {
 		parts = append(parts, humanize.Count(p.FilesDone, "file", "files"))
 	}
 	if em.rate.rate > 0 {
-		parts = append(parts, fmt.Sprintf("%s/s", humanize.Bytes(int64(em.rate.rate))))
+		parts = append(parts, humanize.Bytes(int64(em.rate.rate))+"/s")
 	}
 	// No ETA segment: restic restore's JSON reports no seconds_remaining.
 	return strings.Join(parts, " · ")
@@ -275,7 +267,7 @@ func (m Model) extractSuccessBody(w int) string {
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
 	}
-	for _, ln := range strings.Split(wrapPathValue(em.result.FinalPath, w-4), "\n") {
+	for ln := range strings.SplitSeq(wrapPathValue(em.result.FinalPath, w-4), "\n") {
 		body = append(body, "    "+m.styles.meta.Render(ln))
 	}
 	if em.req.Privileged {
@@ -368,7 +360,7 @@ func (m Model) extractDiffSuccessBody(w int) string {
 		"",
 		"  " + m.styles.label.UnsetWidth().Render("Target"),
 	}
-	for _, ln := range strings.Split(wrapPathValue(em.diff.containerDir, w-4), "\n") {
+	for ln := range strings.SplitSeq(wrapPathValue(em.diff.containerDir, w-4), "\n") {
 		body = append(body, "    "+m.styles.meta.Render(ln))
 	}
 	body = append(body, "")
@@ -508,7 +500,7 @@ func (m Model) extractTerminalBody(w int) string {
 		)
 		// Wrap the staging path onto indented lines (framework §14) so the path the
 		// user keeps or deletes is fully visible rather than clip-truncated.
-		for _, ln := range strings.Split(wrapPathValue(em.result.StagingDir, w-4), "\n") {
+		for ln := range strings.SplitSeq(wrapPathValue(em.result.StagingDir, w-4), "\n") {
 			lines = append(lines, "    "+m.styles.meta.Render(ln))
 		}
 		lines = append(lines,
@@ -802,10 +794,7 @@ func wrapPathValue(p string, avail int) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		end := i + avail
-		if end > len(r) {
-			end = len(r)
-		}
+		end := min(i+avail, len(r))
 		b.WriteString(string(r[i:end]))
 	}
 	return b.String()
@@ -823,7 +812,7 @@ func wrapWords(s string, avail int) string {
 	}
 	var lines []string
 	var cur string
-	for _, word := range strings.Fields(s) {
+	for word := range strings.FieldsSeq(s) {
 		switch {
 		case cur == "":
 			cur = word

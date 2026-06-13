@@ -38,8 +38,8 @@ type SnapshotSummary struct {
 	TotalBytesProcessed int64     `json:"total_bytes_processed"`           // logical size of this snapshot
 	DataAdded           *int64    `json:"data_added,omitempty"`            // new (deduped) bytes this run added
 	DataAddedPacked     *int64    `json:"data_added_packed,omitempty"`     // actual repo growth this run (compressed)
-	BackupStart         time.Time `json:"backup_start,omitempty"`          // when this run began
-	BackupEnd           time.Time `json:"backup_end,omitempty"`            // when this run finished; End-Start is the duration
+	BackupStart         time.Time `json:"backup_start,omitzero"`           // when this run began
+	BackupEnd           time.Time `json:"backup_end,omitzero"`             // when this run finished; End-Start is the duration
 	FilesNew            *uint64   `json:"files_new,omitempty"`             // files added this run
 	FilesChanged        *uint64   `json:"files_changed,omitempty"`         // files modified this run
 	FilesUnmodified     *uint64   `json:"files_unmodified,omitempty"`      // files unchanged this run

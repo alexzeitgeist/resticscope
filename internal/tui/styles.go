@@ -4,13 +4,13 @@ import (
 	"image/color"
 	"strings"
 
-	"charm.land/bubbles/v2/filepicker"
-	helpbubble "charm.land/bubbles/v2/help"
-	"charm.land/lipgloss/v2"
-
 	"resticscope/internal/config"
 	"resticscope/internal/model"
 	"resticscope/internal/theme"
+
+	"charm.land/bubbles/v2/filepicker"
+	helpbubble "charm.land/bubbles/v2/help"
+	"charm.land/lipgloss/v2"
 )
 
 // styles holds the Lip Gloss styles for the TUI. Colors come from the

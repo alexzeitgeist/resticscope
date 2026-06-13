@@ -4,14 +4,14 @@ import (
 	"context"
 	"image/color"
 
+	"resticscope/internal/app"
+	"resticscope/internal/config"
+	"resticscope/internal/model"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
-
-	"resticscope/internal/app"
-	"resticscope/internal/config"
-	"resticscope/internal/model"
 )
 
 // view selects which screen the Model renders.

@@ -42,7 +42,7 @@ type SessionLock struct {
 // is gone). On platforms where locking is supported, acquisition failure is fatal
 // because stale cleanup relies on that lock to identify live sessions.
 func LockSession(dir string) (*SessionLock, error) {
-	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // path is an internal session dir joined with a constant lock filename
 	if err != nil {
 		return nil, fmt.Errorf("browsedb lock: %w", PathFreeFSError(err))
 	}
@@ -114,13 +114,13 @@ func sessionIsStale(dir string, now time.Time) bool {
 	if now.Sub(info.ModTime()) < staleThreshold {
 		return false
 	}
-	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR, 0)
+	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR, 0) //nolint:gosec // path is an internal session dir joined with a constant lock filename
 	if err != nil {
 		// A sufficiently old session dir with no lock file at all is a crash
 		// leftover from before the lock was created; anything else is ambiguous.
 		return errors.Is(err, os.ErrNotExist)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	ok, supported := tryLock(f)
 	if !supported || !ok {
 		return false

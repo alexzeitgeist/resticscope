@@ -15,10 +15,7 @@ func Ago(now, t time.Time) string {
 	if t.IsZero() {
 		return "never"
 	}
-	d := now.Sub(t)
-	if d < 0 {
-		d = 0
-	}
+	d := max(now.Sub(t), 0)
 	switch {
 	case d < time.Minute:
 		return "just now"
@@ -77,7 +74,9 @@ func Bytes(n int64) string {
 		exp++
 	}
 	value := float64(n) / float64(div)
-	suffix := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}[exp]
+	// exp counts 1024-divisions of an int64: the max (~8 EiB) gives exp == 5,
+	// the last of six suffixes, so the index can never run off the end.
+	suffix := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}[exp] //nolint:gosec // exp is bounded to [0,5] by int64's range
 	if value >= 10 {
 		return fmt.Sprintf("%.0f %s", value, suffix)
 	}

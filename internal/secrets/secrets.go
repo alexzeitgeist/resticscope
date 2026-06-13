@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 
 	"resticscope/internal/model"
@@ -50,9 +51,7 @@ func (c credEntry) envMap() map[string]string {
 	if c.SecretKey != "" {
 		out["AWS_SECRET_ACCESS_KEY"] = c.SecretKey
 	}
-	for k, v := range c.Env {
-		out[k] = v
-	}
+	maps.Copy(out, c.Env)
 	return out
 }
 

@@ -226,12 +226,12 @@ func writePasswordFile(mode, password string) (string, func() error, error) {
 	}
 	name := f.Name()
 	if _, err := f.WriteString(password); err != nil {
-		f.Close()
-		os.Remove(name)
+		_ = f.Close()
+		_ = os.Remove(name)
 		return "", nil, fmt.Errorf("write password file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(name)
+		_ = os.Remove(name)
 		return "", nil, fmt.Errorf("close password file: %w", err)
 	}
 	return name, func() error { return os.Remove(name) }, nil

@@ -145,7 +145,8 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
 		e.OwnerKnown = ownerKnown != 0
-		e.UID, e.GID = uint32(uid), uint32(gid)
+		// uid/gid were stored from uint32 (int64(r.uid)); the round-trip back is lossless.
+		e.UID, e.GID = uint32(uid), uint32(gid) //nolint:gosec // values originate from uint32, no truncation
 		if mtimeKnown != 0 {
 			// FixedZone preserves the wall-clock minute the old browse table
 			// displayed; Location().String() is intentionally not meaningful.
@@ -233,7 +234,8 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
 		e.OwnerKnown = ownerKnown != 0
-		e.UID, e.GID = uint32(uid), uint32(gid)
+		// uid/gid were stored from uint32 (int64(r.uid)); the round-trip back is lossless.
+		e.UID, e.GID = uint32(uid), uint32(gid) //nolint:gosec // values originate from uint32, no truncation
 		if mtimeKnown != 0 {
 			loc := zones[mtimeOff]
 			if loc == nil {
@@ -312,38 +314,42 @@ func (db *DB) dirSizes(ctx context.Context, repo, snapshot string, paths []strin
 	}
 	out := make(map[string]int64, len(paths))
 	for start := 0; start < len(paths); start += dirSizePathChunk {
-		end := start + dirSizePathChunk
-		if end > len(paths) {
-			end = len(paths)
+		end := min(start+dirSizePathChunk, len(paths))
+		if err := db.dirSizesChunk(ctx, repo, snapshot, paths[start:end], out); err != nil {
+			return nil, err
 		}
-		chunk := paths[start:end]
-		args := make([]any, 0, len(chunk)+2)
-		args = append(args, repo, snapshot)
-		for _, p := range chunk {
-			args = append(args, p)
-		}
-		rows, err := db.pool.QueryContext(ctx, buildDirSizesSQL(len(chunk)), args...)
-		if err != nil {
-			return nil, fmt.Errorf("browsedb dir-sizes: %w", err)
-		}
-		for rows.Next() {
-			var (
-				p    string
-				size int64
-			)
-			if err := rows.Scan(&p, &size); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("browsedb dir-sizes scan: %w", err)
-			}
-			out[p] = size
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("browsedb dir-sizes rows: %w", err)
-		}
-		rows.Close()
 	}
 	return out, nil
+}
+
+// dirSizesChunk runs one bind-capped chunk of dirSizes, writing results into out.
+// rows is scoped to this call so defer closes it before the next chunk opens one
+// (a function-wide defer in dirSizes' loop would leak each chunk's cursor).
+func (db *DB) dirSizesChunk(ctx context.Context, repo, snapshot string, chunk []string, out map[string]int64) error {
+	args := make([]any, 0, len(chunk)+2)
+	args = append(args, repo, snapshot)
+	for _, p := range chunk {
+		args = append(args, p)
+	}
+	rows, err := db.pool.QueryContext(ctx, buildDirSizesSQL(len(chunk)), args...)
+	if err != nil {
+		return fmt.Errorf("browsedb dir-sizes: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			p    string
+			size int64
+		)
+		if err := rows.Scan(&p, &size); err != nil {
+			return fmt.Errorf("browsedb dir-sizes scan: %w", err)
+		}
+		out[p] = size
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("browsedb dir-sizes rows: %w", err)
+	}
+	return nil
 }
 
 // buildDirSizesSQL builds the dirSizes query for a chunk of n directory paths,
@@ -352,7 +358,7 @@ func buildDirSizesSQL(n int) string {
 	var b strings.Builder
 	b.WriteString(`SELECT d.path,d.subtree_size FROM dirs d JOIN snapshots s ON s.sid=d.sid ` +
 		`WHERE s.repo=? AND s.snapshot=? AND s.indexed_at_unix IS NOT NULL AND d.subtree_size>0 AND d.path IN (`)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if i > 0 {
 			b.WriteByte(',')
 		}

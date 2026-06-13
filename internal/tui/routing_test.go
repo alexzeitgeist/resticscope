@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"unsafe"
 
@@ -12,12 +13,7 @@ import (
 
 // envHas reports whether env contains an exact "KEY=value" entry.
 func envHas(env []string, kv string) bool {
-	for _, e := range env {
-		if e == kv {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(env, kv)
 }
 
 // TestRepoCommandKeysAreIgnoredByHelpOverlay locks that the help overlay is modal:
@@ -91,7 +87,7 @@ func TestBrowseShellSessionIncludesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
-	defer sess.Cleanup() // no-op in env mode (browseApp sets ShellPasswordMode="env")
+	defer func() { _ = sess.Cleanup() }() // no-op in env mode (browseApp sets ShellPasswordMode="env")
 
 	want := "RESTICSCOPE_SNAPSHOT_ID=" + m.browseSnapshot
 	if !envHas(sess.Env, want) {
@@ -201,7 +197,7 @@ func TestDetailShellSessionIncludesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
-	defer sess.Cleanup() // no-op in env mode (detailApp sets ShellPasswordMode="env")
+	defer func() { _ = sess.Cleanup() }() // no-op in env mode (detailApp sets ShellPasswordMode="env")
 
 	want := "RESTICSCOPE_SNAPSHOT_ID=" + snap.ID
 	if !envHas(sess.Env, want) {

@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/model"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // snap is a terse fixture builder for the pipeline tests. ID and ShortID are

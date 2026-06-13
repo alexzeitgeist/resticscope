@@ -19,9 +19,9 @@ func freeBytesAt(path string) (int64, bool) {
 	// Clamp the product to avoid int64 overflow: Bavail is unsigned on
 	// linux (uint64), and the multiplication would wrap when free space
 	// exceeds ~8 EiB — advisory only; restic's own error is authoritative.
-	bs := int64(st.Bsize)
-	if bs > 0 && uint64(st.Bavail) > math.MaxInt64/uint64(bs) {
+	bs := int64(st.Bsize)                                       //nolint:unconvert // Bsize is uint32 on darwin; the cast is needed cross-platform
+	if bs > 0 && uint64(st.Bavail) > math.MaxInt64/uint64(bs) { //nolint:unconvert // normalizes Bavail across platforms where its type varies
 		return math.MaxInt64, true
 	}
-	return int64(st.Bavail) * bs, true
+	return int64(st.Bavail) * bs, true //nolint:gosec // the clamp above guarantees the product fits in int64
 }

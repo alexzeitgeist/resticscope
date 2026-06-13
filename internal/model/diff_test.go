@@ -195,7 +195,7 @@ func TestScanDiffNDJSONContextCancellation(t *testing.T) {
 
 func TestScanDiffNDJSONProgressCadence(t *testing.T) {
 	var lines []string
-	for i := 0; i < diffProgressEvery*2+5; i++ {
+	for range diffProgressEvery*2 + 5 {
 		lines = append(lines, `{"message_type":"change","path":"/x","modifier":"+"}`)
 	}
 	in := ndjsonLines(lines...)

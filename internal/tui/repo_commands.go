@@ -3,10 +3,10 @@ package tui
 import (
 	"os/exec"
 
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/model"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // shellSnap returns the snapshot the Shell key scopes to for the active view.
@@ -70,7 +70,7 @@ func (m Model) openShellCmd(snap *model.Snapshot) tea.Cmd {
 // ancestor).
 func shellCmdFromSession(sess *app.ShellSession) tea.Cmd {
 	args := sess.InteractiveArgs()
-	c := exec.Command(args[0], args[1:]...)
+	c := exec.Command(args[0], args[1:]...) //nolint:gosec // args are the internally-built shell invocation; exec.Command runs no shell, so there is no injection vector
 	c.Env = sess.InteractiveEnv()
 	if sess.Dir != "" {
 		c.Dir = sess.Dir

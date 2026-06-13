@@ -84,10 +84,7 @@ func (m Model) infoBody() string {
 		bodyRows = visible
 	}
 	start := clampModalScroll(m.infoScroll, len(lines), bodyRows)
-	end := start + bodyRows
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(start+bodyRows, len(lines))
 	out := make([]string, 0, end-start+1)
 	out = append(out, lines[start:end]...)
 	if showHint {
@@ -141,10 +138,7 @@ func (m Model) infoScrollable() bool {
 	if m.statusMsg != "" {
 		footer = 2
 	}
-	available := h - headerRows - 2*gapRows - footer
-	if available < 1 {
-		available = 1
-	}
+	available := max(h-headerRows-2*gapRows-footer, 1)
 	return len(m.infoBodyLines(*s, w)) > available
 }
 
@@ -164,10 +158,7 @@ func (m Model) scrollInfo(delta int) Model {
 		m.infoScroll = 0
 		return m
 	}
-	bodyRows := visible - 1
-	if bodyRows < 1 {
-		bodyRows = 1
-	}
+	bodyRows := max(visible-1, 1)
 	m.infoScroll = clampModalScroll(m.infoScroll+delta, len(lines), bodyRows)
 	return m
 }
@@ -335,7 +326,7 @@ func churnRows(s model.Snapshot) []infoRow {
 	// the file total without inventing a number.
 	if sum.DirsNew != nil && sum.DirsChanged != nil && sum.DirsUnmodified != nil {
 		total := *sum.DirsNew + *sum.DirsChanged + *sum.DirsUnmodified
-		rows = append(rows, infoRow{label: "Dirs total", values: []string{fmt.Sprintf("%d", total)}})
+		rows = append(rows, infoRow{label: "Dirs total", values: []string{strconv.FormatUint(total, 10)}})
 	}
 	return rows
 }

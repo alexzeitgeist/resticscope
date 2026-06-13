@@ -1,0 +1,121 @@
+version: "2"
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 50
+
+linters:
+  enable:
+    # correctness
+    - govet            # built-in checker: copylocks, printf formats, struct tags, unreachable code
+    - staticcheck      # extensive static analysis: deprecated APIs, common mistakes, simplifications
+    - unused           # unused variables, functions, types
+    - errcheck         # unchecked error returns and type assertions
+    - errorlint        # correct use of errors.Is/As and %w wrapping (Go 1.13+)
+    - nilerr           # returning nil error when err is non-nil
+    - forcetypeassert  # type assertions without comma-ok check
+    - copyloopvar      # loop variable copy issues (Go 1.22+)
+    - durationcheck    # detect time.Duration * time.Duration bugs
+    - reassign         # package-level variable reassignment
+    # style
+    - gocritic         # opinionated style: unnecessary conversions, range copies, redundant code
+    - revive           # naming conventions, exported types, stuttered package names
+    - whitespace       # trailing whitespace, unnecessary blank lines
+    - godot            # exported-symbol comments must end with a period
+    - misspell         # common English misspellings in identifiers and comments
+    - predeclared      # shadowing Go built-ins (len, cap, error)
+    # NOTE: dupword is intentionally NOT enabled. This codebase embeds generated
+    # shell scaffolding (fish/zsh/bash) in raw string literals where keywords
+    # legitimately repeat (fish closes both `if` and `function` with `end`), and
+    # dupword's autofix DELETES the "duplicate", corrupting the script. The risk
+    # of its --fix outweighs catching "the the"-style typos.
+    - errname          # error type/var naming conventions (ErrFoo, FooError)
+    - asciicheck       # non-ASCII identifiers (prevents homoglyph/trojan source attacks)
+    # complexity
+    - gocyclo          # cyclomatic complexity threshold
+    - nestif           # deeply nested if/else chains
+    - funlen           # function length limits (lines and statements)
+    # performance
+    - perfsprint       # faster alternatives to fmt.Sprintf
+    - unconvert        # unnecessary type conversions
+    - ineffassign      # assignments to variables never read
+    - goconst          # repeated literals that should be constants
+    # security & resources
+    - gosec            # security scanner: SQL injection, hardcoded credentials, weak crypto, path traversal
+    - bidichk          # dangerous bidirectional Unicode sequences (trojan source CVE-2021-42574)
+    - sqlclosecheck    # unclosed sql.Rows and sql.Stmt
+    - rowserrcheck     # unchecked sql.Rows.Err() after iteration
+    # testing
+    - testifylint      # testify best practices
+    - thelper          # test helpers missing t.Helper()
+    - usetesting       # use t.Setenv/t.TempDir instead of os equivalents in tests
+    # modernization & meta
+    - modernize        # old patterns replaceable with newer Go features
+    - exptostd         # replace golang.org/x/exp/ functions with stdlib equivalents
+    - intrange         # range over integer instead of C-style loop (Go 1.22+)
+    - usestdlibvars    # use stdlib constants instead of hardcoded values
+    - nolintlint       # enforces proper //nolint directive usage
+
+  exclusions:
+    paths:
+      - upstream  # nested module: vendored restic reference source, not ours to lint
+      - vendor$
+    rules:
+      # In tests, a type assertion that panics on the wrong type is an
+      # intentional, loud failure; production code is held to comma-ok.
+      # gosec on tests is noise: fixtures use relaxed file perms, temp-path
+      # variables, and hardcoded sample credentials by design.
+      - path: _test\.go
+        linters:
+          - forcetypeassert
+          - gosec
+
+  settings:
+    errcheck:
+      # Type-assertion safety is covered by forcetypeassert for production code;
+      # in tests a panicking assertion is an intentional, loud failure.
+      check-type-assertions: false
+      exclude-functions:
+        # CLI output to stdout/stderr/tabwriter: a write error there is
+        # unactionable (nowhere left to report it) in this local TUI/CLI tool.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # Read-side cursor close in a query path; rows.Err() is checked separately
+        # (enforced by rowserrcheck).
+        - (*database/sql.Rows).Close
+    funlen:
+      lines: 120
+      statements: 80
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+    gocyclo:
+      min-complexity: 15
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports  # keeps local (resticscope) imports in a separate group from stdlib
+  settings:
+    goimports:
+      local-prefixes:
+        - resticscope
+    gofumpt:
+      # The module path has no dot in its first segment, so without this gofumpt
+      # misclassifies resticscope/* imports as stdlib and merges them into the
+      # std group. With it, gofumpt groups them locally — matching goimports.
+      module-path: resticscope
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - upstream

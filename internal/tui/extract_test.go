@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
 	"resticscope/internal/theme"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // extract_test.go drives the extract sub-model through every state transition

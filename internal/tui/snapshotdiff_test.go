@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/model"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // snapshotdiff_test.go covers the controller's three areas of interest: the
@@ -1331,7 +1331,6 @@ func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
 	// leaf returning nil doesn't satisfy the assertion below.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
-		c := c
 		go func() {
 			if msg, ok := c().(snapshotDiffMsg); ok {
 				done <- msg

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
-
 	"resticscope/internal/theme"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Defaults applied when a setting is left at its zero value.
@@ -43,7 +43,7 @@ const (
 // Load reads, normalizes, and validates the config at path. The returned
 // Config has defaults applied and ~ expanded against the current user's home.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the user-selected config file; reading it is the function's purpose
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}

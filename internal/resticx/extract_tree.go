@@ -465,7 +465,7 @@ func assertCleanSnapshotID(id string) error {
 	if len(id) != snapshotIDHexLen {
 		return ErrExtractInvalidSnapshotID
 	}
-	for i := 0; i < len(id); i++ {
+	for i := range len(id) {
 		c := id[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return ErrExtractInvalidSnapshotID

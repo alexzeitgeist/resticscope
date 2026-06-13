@@ -4,10 +4,10 @@ import (
 	"sort"
 	"strings"
 
+	"resticscope/internal/model"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"resticscope/internal/model"
 )
 
 // snapshotdiffsearch.go is the in-memory fuzzy search over the currently loaded

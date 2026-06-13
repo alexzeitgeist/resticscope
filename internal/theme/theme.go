@@ -221,7 +221,7 @@ func ValidColor(s string) bool {
 		if len(hex) != 3 && len(hex) != 6 {
 			return false
 		}
-		for i := 0; i < len(hex); i++ {
+		for i := range len(hex) {
 			c := hex[i]
 			ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 			if !ok {

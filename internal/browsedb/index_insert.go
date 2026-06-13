@@ -59,8 +59,10 @@ func newBatchInsertSpec(table, columns, placeholder, errPrefix string, batchRows
 	return s
 }
 
-var nodeInsertSpec = newBatchInsertSpec("nodes", insertColumns, rowPlaceholder, "index", batchRows)
-var dirInsertSpec = newBatchInsertSpec("dirs", dirInsertColumns, dirRowPlaceholder, "dir", dirBatchRows)
+var (
+	nodeInsertSpec = newBatchInsertSpec("nodes", insertColumns, rowPlaceholder, "index", batchRows)
+	dirInsertSpec  = newBatchInsertSpec("dirs", dirInsertColumns, dirRowPlaceholder, "dir", dirBatchRows)
+)
 
 // flush writes the buffered rows as one multi-row plain INSERT. Full batches
 // reuse a tx-scoped prepared statement; the final partial batch keeps its
@@ -95,10 +97,7 @@ func (itx *IndexTx) flushDirs(ctx context.Context) error {
 		return itx.failed
 	}
 	for len(itx.dirBuf) > 0 {
-		n := len(itx.dirBuf)
-		if n > dirBatchRows {
-			n = dirBatchRows
-		}
+		n := min(len(itx.dirBuf), dirBatchRows)
 		chunk := itx.dirBuf[:n]
 		if err := itx.flushDirRows(ctx, chunk); err != nil {
 			return err
@@ -127,7 +126,7 @@ func buildBatchInsertSQL(spec batchInsertSpec, n int) string {
 	b.WriteByte(' ')
 	b.WriteString(spec.columns)
 	b.WriteString(" VALUES ")
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if i > 0 {
 			b.WriteByte(',')
 		}
@@ -165,7 +164,10 @@ func (itx *IndexTx) cachedFullStmt(ctx context.Context, spec batchInsertSpec, ca
 // chunking — callers keep those.
 func (itx *IndexTx) execBatch(ctx context.Context, spec batchInsertSpec, cache **sql.Stmt, rowCount int, args []any) error {
 	if rowCount == spec.batchRows {
-		stmt, err := itx.cachedFullStmt(ctx, spec, cache)
+		// stmt is a tx-scoped prepared statement cached in *cache for reuse across
+		// batches; database/sql closes it automatically when itx.tx commits or rolls
+		// back, so it must not be closed per call.
+		stmt, err := itx.cachedFullStmt(ctx, spec, cache) //nolint:sqlclosecheck // tx-scoped cached stmt, auto-closed on tx finalize
 		if err != nil {
 			return err
 		}

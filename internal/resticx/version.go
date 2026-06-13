@@ -1,6 +1,7 @@
 package resticx
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -42,7 +43,7 @@ func parseVersion(s string) (version, error) {
 		core = core[:i]
 	}
 	if core == "" {
-		return version{}, fmt.Errorf("empty version string")
+		return version{}, errors.New("empty version string")
 	}
 	parts := strings.Split(core, ".")
 	if len(parts) > 3 {

@@ -414,7 +414,8 @@ func TestCacheLayoutHelpers(t *testing.T) {
 
 func asResticError(err error, target **Error) bool {
 	for err != nil {
-		if e, ok := err.(*Error); ok {
+		e := &Error{}
+		if errors.As(err, &e) {
 			*target = e
 			return true
 		}

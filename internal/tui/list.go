@@ -6,14 +6,14 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
+
+	"charm.land/lipgloss/v2"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // list.go renders the main repo-list screen: a column-aligned table that
@@ -185,10 +185,7 @@ func (m Model) frame(titleLeft, body string) string {
 	_, h := m.effSize()
 	footer := m.footerView()
 	content := lipgloss.JoinVertical(lipgloss.Left, m.titleRow(titleLeft), "", body)
-	blanks := h - lipgloss.Height(content) - lipgloss.Height(footer)
-	if blanks < gapRows {
-		blanks = gapRows
-	}
+	blanks := max(h-lipgloss.Height(content)-lipgloss.Height(footer), gapRows)
 	return content + strings.Repeat("\n", blanks+1) + footer
 }
 

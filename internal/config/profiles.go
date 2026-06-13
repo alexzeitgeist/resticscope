@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/BurntSushi/toml"
@@ -60,7 +61,7 @@ func assembleRepos(byName, profiles map[string]Repo, md toml.MetaData) ([]Repo, 
 //   - expected_frequency — a consuming repo re-validates it (> 0) on the merged
 //     repo, and an unused profile's value never takes effect.
 func validateProfile(name string, p Repo) []error {
-	label := fmt.Sprintf("profiles.%s", name)
+	label := "profiles." + name
 	var errs []error
 	switch {
 	case p.Name != "":
@@ -156,11 +157,7 @@ func mergeStringMaps(base, override map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(base)+len(override))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range override {
-		out[k] = v
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, override)
 	return out
 }

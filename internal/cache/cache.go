@@ -55,7 +55,7 @@ func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) 
 	var state model.RepoState
 	if err := json.Unmarshal(data, &state); err != nil {
 		// Corrupt cache is treated as cold, not fatal.
-		return model.RepoState{}, fmt.Errorf("decode cache %q: %v: %w", name, err, ErrCorrupt)
+		return model.RepoState{}, fmt.Errorf("decode cache %q: %w: %w", name, err, ErrCorrupt)
 	}
 	return state, nil
 }
@@ -79,18 +79,18 @@ func (s *Store) Save(ctx context.Context, name string, state model.RepoState) er
 		return fmt.Errorf("create temp cache file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed; cleans up on any error path
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed; cleans up on any error path
 
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod temp cache file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write temp cache file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("fsync temp cache file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

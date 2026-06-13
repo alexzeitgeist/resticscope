@@ -106,7 +106,7 @@ func (r *SudoPrivilegedRunner) AuthCommand() *exec.Cmd {
 // package comment for the control-channel design; the error path returns the
 // first line of captured stderr, which the helper keeps path-free.
 func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine func(line []byte) error) error {
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "--", r.Exe, ExtractHelperSubcommand)
+	cmd := exec.CommandContext(ctx, "sudo", "-n", "--", r.Exe, ExtractHelperSubcommand) //nolint:gosec // fixed argv: sudo re-execs this same binary's helper subcommand, no shell
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -179,7 +179,7 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 
 // firstNonEmptyLine returns the first non-blank, space-trimmed line of b.
 func firstNonEmptyLine(b []byte) string {
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		if t := strings.TrimSpace(line); t != "" {
 			return t
 		}

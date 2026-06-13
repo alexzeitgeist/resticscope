@@ -115,10 +115,10 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 		// additionally carries the prompt-tag scaffolding (zsh ZDOTDIR); command
 		// mode below gets the plain credential env.
 		ia := sess.InteractiveArgs()
-		cmd = exec.Command(ia[0], ia[1:]...)
+		cmd = exec.Command(ia[0], ia[1:]...) //nolint:gosec // args are the internally-built shell invocation; exec.Command runs no shell, so there is no injection vector
 		cmd.Env = sess.InteractiveEnv()
 	} else {
-		cmd = exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+		cmd = exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...) //nolint:gosec // cmdArgs is the user-requested command (everything after --), run directly via exec.CommandContext with no shell expansion
 		cmd.Env = sess.Env
 	}
 	cmd.Stdin = os.Stdin

@@ -209,7 +209,7 @@ func TestStreamDiffMissingBinaryClassifies(t *testing.T) {
 
 func TestStreamDiffProgressFires(t *testing.T) {
 	var lines []string
-	for i := 0; i < 600; i++ {
+	for range 600 {
 		lines = append(lines, `{"message_type":"change","path":"/x","modifier":"+"}`)
 	}
 	fs := &diffStreamFake{data: strings.Join(lines, "\n") + "\n"}

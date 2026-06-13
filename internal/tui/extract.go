@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"charm.land/bubbles/v2/filepicker"
-	"charm.land/bubbles/v2/key"
-	tea "charm.land/bubbletea/v2"
-
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/model"
+
+	"charm.land/bubbles/v2/filepicker"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 // extract.go is the TUI sub-model for the extract feature: a self-contained Bubble

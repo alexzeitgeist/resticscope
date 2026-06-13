@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"resticscope/internal/model"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/lipgloss/v2"
-
-	"resticscope/internal/model"
 )
 
 // help.go renders the full-screen help overlay (key `?`): a complete keybinding
@@ -192,10 +192,7 @@ func (m Model) helpBody() string {
 		bodyRows = visible
 	}
 	start := clampModalScroll(m.helpScroll, len(lines), bodyRows)
-	end := start + bodyRows
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(start+bodyRows, len(lines))
 	out := make([]string, 0, end-start+1)
 	out = append(out, lines[start:end]...)
 	if showHint {
@@ -262,10 +259,7 @@ func (m Model) scrollHelp(delta int) Model {
 		m.helpScroll = 0
 		return m
 	}
-	bodyRows := visible - 1
-	if bodyRows < 1 {
-		bodyRows = 1
-	}
+	bodyRows := max(visible-1, 1)
 	m.helpScroll = clampModalScroll(m.helpScroll+delta, len(lines), bodyRows)
 	return m
 }
@@ -285,10 +279,7 @@ func (m Model) helpScrollable() bool {
 	if m.statusMsg != "" {
 		footer = 2
 	}
-	available := h - headerRows - 2*gapRows - footer
-	if available < 1 {
-		available = 1
-	}
+	available := max(h-headerRows-2*gapRows-footer, 1)
 	return len(m.helpBodyLines(w)) > available
 }
 

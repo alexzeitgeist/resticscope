@@ -2,12 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
-
-	"charm.land/lipgloss/v2"
 
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
+
+	"charm.land/lipgloss/v2"
 )
 
 // snapshotdiffview.go renders snapshotDiffView: a header naming the
@@ -159,7 +160,7 @@ func diffStatsLabel(s model.DiffStats, filter model.ModifierKind, st styles) str
 		if c.n == 0 {
 			continue
 		}
-		text := c.glyph + fmt.Sprintf("%d", c.n)
+		text := c.glyph + strconv.Itoa(c.n)
 		if filter&c.bit == 0 {
 			parts = append(parts, st.dim.Render(text))
 		} else {
@@ -238,10 +239,7 @@ type diffColLayout struct {
 func diffLayout(width int) diffColLayout {
 	const indicator, gap = 2, 2
 	baseFixed := indicator + diffMarkerWidth + gap
-	name := width - baseFixed
-	if name < diffNameMin {
-		name = diffNameMin
-	}
+	name := max(width-baseFixed, diffNameMin)
 	return diffColLayout{marker: diffMarkerWidth, name: name}
 }
 
@@ -338,7 +336,7 @@ func diffRollup(s model.DiffStats) string {
 	parts := make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		if p.n > 0 {
-			parts = append(parts, p.glyph+fmt.Sprintf("%d", p.n))
+			parts = append(parts, p.glyph+strconv.Itoa(p.n))
 		}
 	}
 	if len(parts) == 0 {

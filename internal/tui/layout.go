@@ -59,10 +59,7 @@ func (m Model) modalVisible() int {
 // clampModalScroll bounds a (possibly out-of-range) modal scroll offset so the
 // body window [start, start+bodyRows) stays inside [0, total).
 func clampModalScroll(scroll, total, bodyRows int) int {
-	maxScroll := total - bodyRows
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
+	maxScroll := max(total-bodyRows, 0)
 	if scroll > maxScroll {
 		scroll = maxScroll
 	}
@@ -116,10 +113,7 @@ func scrollWindow(cursor, total, visible int) (start, end int) {
 	if total <= visible {
 		return 0, total
 	}
-	start = cursor - visible/2
-	if start < 0 {
-		start = 0
-	}
+	start = max(cursor-visible/2, 0)
 	end = start + visible
 	if end > total {
 		end = total

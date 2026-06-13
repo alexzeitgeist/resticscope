@@ -4,14 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"resticscope/internal/config"
+	"resticscope/internal/model"
+	"resticscope/internal/theme"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/mattn/go-runewidth"
-
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/theme"
 )
 
 func TestThemeTerminalColors(t *testing.T) {

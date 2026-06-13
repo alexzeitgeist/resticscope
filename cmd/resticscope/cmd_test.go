@@ -119,8 +119,10 @@ func appendRepoWithoutCache(t *testing.T, cfgPath string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
 	fmt.Fprint(f, "\n[repos.cold-repo]\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nbucket=\"cold-bucket\"\nexpected_frequency=\"24h\"\n")
+	if err := f.Close(); err != nil {
+		t.Fatalf("close %s: %v", cfgPath, err)
+	}
 }
 
 func TestStatusOutputFormat(t *testing.T) {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 
+	"resticscope/internal/app"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-
-	"resticscope/internal/app"
 )
 
 // findversions.go is the controller for the read-only "show me other versions

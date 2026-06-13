@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"resticscope/internal/model"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-
-	"resticscope/internal/model"
 )
 
 // browsesearch_test.go drives the global fuzzy filename search added to the
@@ -824,7 +824,7 @@ func TestBrowseSearchSummaryStates(t *testing.T) {
 // never masquerades as complete.
 func TestBrowseSearchFooterShowsCappedNote(t *testing.T) {
 	nodes := []model.BrowseNode{bnode("/home", "home", true, 0)}
-	for i := 0; i < browseSearchResultLimit+5; i++ {
+	for i := range browseSearchResultLimit + 5 {
 		name := fmt.Sprintf("match-%04d.log", i)
 		nodes = append(nodes, bnode("/home/"+name, name, false, 1))
 	}

@@ -104,6 +104,24 @@ func TestFishPromptInit(t *testing.T) {
 	if !strings.Contains(init, "prompt_pwd") {
 		t.Errorf("init missing the fallback prompt:\n%s", init)
 	}
+	// _resticscope_orig_prompt must appear three times: the `functions -c` copy,
+	// the `if functions -q` guard, and the then-body that actually invokes it.
+	// A dropped then-body (only two occurrences) leaves the wrapper a no-op.
+	if got := strings.Count(init, "_resticscope_orig_prompt"); got != 3 {
+		t.Errorf("expected 3 _resticscope_orig_prompt references, got %d:\n%s", got, init)
+	}
+	// fish blocks are closed with `end`: the function plus its inner `if` need
+	// exactly two. A malformed body (e.g. a dropped `end`) makes fish abort with
+	// "Missing end to balance this function definition", so guard the balance.
+	ends := 0
+	for line := range strings.SplitSeq(init, "\n") {
+		if strings.TrimSpace(line) == "end" {
+			ends++
+		}
+	}
+	if ends != 2 {
+		t.Errorf("fish init is not block-balanced (want 2 `end`, got %d):\n%s", ends, init)
+	}
 }
 
 func TestApplyPromptTagBash(t *testing.T) {
@@ -293,6 +311,6 @@ func TestApplyPromptTagVersionedShell(t *testing.T) {
 		if len(sess.execArgv) == 0 && sess.promptZDotDir == "" {
 			t.Fatalf("%s: neither execArgv nor ZDOTDIR set — versioned binary not matched", shell)
 		}
-		sess.Cleanup()
+		_ = sess.Cleanup()
 	}
 }

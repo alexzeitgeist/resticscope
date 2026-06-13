@@ -226,5 +226,5 @@ func applyUnsafeSymlinkPolicy(p, target string, policy unsafeSymlinkPolicy) erro
 // metaErr wraps a filesystem failure as ErrExtractMetadataNormalization with the
 // path stripped.
 func metaErr(err error) error {
-	return fmt.Errorf("%w: %v", ErrExtractMetadataNormalization, pathFreeCause(err))
+	return fmt.Errorf("%w: %w", ErrExtractMetadataNormalization, pathFreeCause(err))
 }

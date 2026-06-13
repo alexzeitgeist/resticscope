@@ -199,9 +199,16 @@ func (c *Config) validateTheme() []error {
 	}
 	o := c.Theme.Colors
 	roles := []struct{ key, value string }{
-		{"bg", o.Bg}, {"fg", o.Fg}, {"grey", o.Grey}, {"dim", o.Dim},
-		{"red", o.Red}, {"green", o.Green}, {"yellow", o.Yellow},
-		{"blue", o.Blue}, {"aqua", o.Aqua}, {"orange", o.Orange},
+		{"bg", o.Bg},
+		{"fg", o.Fg},
+		{"grey", o.Grey},
+		{"dim", o.Dim},
+		{"red", o.Red},
+		{"green", o.Green},
+		{"yellow", o.Yellow},
+		{"blue", o.Blue},
+		{"aqua", o.Aqua},
+		{"orange", o.Orange},
 	}
 	for _, r := range roles {
 		if r.value != "" && !theme.ValidColor(r.value) {

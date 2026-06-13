@@ -370,7 +370,7 @@ func checkRestic(
 		failures++
 		fmt.Fprintf(tw, "  %s\tFAILED: %s\n", rc.Name, firstLine(rc.Err.Error()))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	if failures > 0 {
 		fmt.Fprintf(stderr, "\ncheck failed: %d of %s unreachable\n",

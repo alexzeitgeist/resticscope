@@ -2,14 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
-
-	tea "charm.land/bubbletea/v2"
 
 	"resticscope/internal/app"
 	"resticscope/internal/config"
 	"resticscope/internal/humanize"
 	"resticscope/internal/model"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // detailMetaRows is the number of fixed meta lines the detail body renders
@@ -157,7 +158,7 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 	lines := []string{
 		m.field("Backend", repo.Backend(), width),
 		m.field("Repository", repoURL, width),
-		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount), width),
+		m.field("Snapshots", strconv.Itoa(st.SnapshotCount), width),
 		m.field("Hosts", joinOrDash(st.Hosts), width),
 		m.field("Program", joinOrDash(model.ObservedVersions(st.Snapshots)), width),
 		m.field("Tags", joinOrDash(st.Tags), width),
@@ -281,10 +282,7 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 // the value clipped to whatever width is left. The whole line is clipped too, so
 // even a pane too narrow for the label itself can't wrap.
 func (m Model) field(label, value string, width int) string {
-	avail := width - 2 - labelWidth
-	if avail < 1 {
-		avail = 1
-	}
+	avail := max(width-2-labelWidth, 1)
 	return clip("  "+m.styles.label.Render(label)+truncate(value, avail), width)
 }
 
@@ -611,21 +609,9 @@ func snapshotLayout(width int, collapseOn bool) snapLayout {
 		{snapTookWidth, &l.showTook},
 	})
 
-	rest := width - baseFixed - reservedExtra
-	if rest < 2 {
-		rest = 2
-	}
-	l.host = rest / 2
-	if l.host < 8 {
-		l.host = 8
-	}
-	if l.host > 24 {
-		l.host = 24
-	}
-	l.tags = rest - l.host
-	if l.tags < 1 {
-		l.tags = 1
-	}
+	rest := max(width-baseFixed-reservedExtra, 2)
+	l.host = min(max(rest/2, 8), 24)
+	l.tags = max(rest-l.host, 1)
 	return l
 }
 

@@ -121,7 +121,6 @@ func findLayout(width int) findColLayout {
 	}
 	if rest >= findOwnerWidth+gap {
 		l.showOwner = true
-		rest -= findOwnerWidth + gap
 	}
 	return l
 }

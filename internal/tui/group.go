@@ -164,10 +164,7 @@ func (m Model) renderGroupToken(t groupTok, sections []listSection, cursor int, 
 func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading bool) {
 	if cursorPos < hPos+max {
 		start = hPos
-		end = start + max
-		if end > n {
-			end = n
-		}
+		end = min(start+max, n)
 		return start, end, false
 	}
 	prependHeading = true
@@ -176,13 +173,11 @@ func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading 
 	if start < hPos+1 {
 		start = hPos + 1
 	}
-	end = start + tailSize
-	if end > n {
-		end = n
+	end = min(start+tailSize,
 		// No slide-back: once end clamps to n, a full tail window would
 		// move start backward to n-tailSize. We deliberately keep the
 		// centered start instead, accepting a smaller tail window near EOF.
-	}
+		n)
 	return start, end, prependHeading
 }
 

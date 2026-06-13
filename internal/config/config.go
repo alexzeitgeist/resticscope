@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -273,9 +274,7 @@ func (r Repo) BackendOptions() map[string]string {
 	var out map[string]string
 	if len(r.Options) > 0 {
 		out = make(map[string]string, len(r.Options)+1)
-		for k, v := range r.Options {
-			out[k] = v
-		}
+		maps.Copy(out, r.Options)
 	}
 	if r.URL == "" && (r.BucketLookup == "dns" || r.BucketLookup == "path") {
 		if out == nil {
@@ -295,9 +294,7 @@ func (r Repo) BackendEnv() map[string]string {
 	var out map[string]string
 	if len(r.Env) > 0 {
 		out = make(map[string]string, len(r.Env)+1)
-		for k, v := range r.Env {
-			out[k] = v
-		}
+		maps.Copy(out, r.Env)
 	}
 	if r.URL == "" && r.Region != "" {
 		if out == nil {
@@ -376,9 +373,15 @@ func parseByteSize(raw string) (int64, error) {
 		suffix string
 		mult   int64
 	}{
-		{"gib", 1 << 30}, {"gb", 1 << 30}, {"g", 1 << 30},
-		{"mib", 1 << 20}, {"mb", 1 << 20}, {"m", 1 << 20},
-		{"kib", 1 << 10}, {"kb", 1 << 10}, {"k", 1 << 10},
+		{"gib", 1 << 30},
+		{"gb", 1 << 30},
+		{"g", 1 << 30},
+		{"mib", 1 << 20},
+		{"mb", 1 << 20},
+		{"m", 1 << 20},
+		{"kib", 1 << 10},
+		{"kb", 1 << 10},
+		{"k", 1 << 10},
 		{"b", 1},
 	}
 	mult := int64(1)
