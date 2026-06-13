@@ -39,15 +39,23 @@ func promptTag(repoName string) string {
 // feature must not block a perfectly working shell. The error carries at most
 // a temp-scaffolding path, never a repo credential or snapshot path.
 func applyPromptTag(s *ShellSession, tag string) error {
-	switch filepath.Base(s.Shell) {
-	case "bash":
+	base := filepath.Base(s.Shell)
+	switch {
+	case base == "bash" || strings.HasPrefix(base, "bash-"):
+	case base == "zsh" || strings.HasPrefix(base, "zsh-"):
+	case base == "fish" || strings.HasPrefix(base, "fish-"):
+	default:
+		return nil
+	}
+	switch {
+	case base == "bash" || strings.HasPrefix(base, "bash-"):
 		rc, err := writePromptFile("resticscope-bashrc-*", bashPromptRC(tag))
 		if err != nil {
 			return err
 		}
 		s.execArgv = []string{s.Shell, "--rcfile", rc, "-i"}
 		s.Cleanup = chainCleanup(s.Cleanup, func() error { return os.Remove(rc) })
-	case "zsh":
+	case base == "zsh" || strings.HasPrefix(base, "zsh-"):
 		var origZDot string
 		if v, ok := envLookup(s.Env, "ZDOTDIR"); ok {
 			origZDot = v
@@ -58,7 +66,7 @@ func applyPromptTag(s *ShellSession, tag string) error {
 		}
 		s.promptZDotDir = dir
 		s.Cleanup = chainCleanup(s.Cleanup, func() error { return os.RemoveAll(dir) })
-	case "fish":
+	case base == "fish" || strings.HasPrefix(base, "fish-"):
 		s.execArgv = []string{s.Shell, "-i", "-C", fishPromptInit(tag)}
 	}
 	return nil

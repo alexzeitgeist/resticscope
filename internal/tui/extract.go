@@ -649,7 +649,6 @@ func (m *extractModel) applyRunDone(msg extractRunDoneMsg) tea.Cmd {
 // degrades to the normal error screen rather than a panic.
 func (m *extractModel) advanceQueue() tea.Cmd {
 	next := m.queue[0]
-	m.queue = m.queue[1:]
 	next.Privileged = m.req.Privileged
 	next.TargetRoot = m.req.TargetRoot
 	staging, final, err := app.PlanExtractPaths(m.cfg, next)
@@ -659,6 +658,7 @@ func (m *extractModel) advanceQueue() tea.Cmd {
 		m.stagingExists = false
 		return nil
 	}
+	m.queue = m.queue[1:]
 	m.req = next
 	m.staging, m.final = staging, final
 	cmd := m.startRun()
@@ -1005,6 +1005,7 @@ func (m *extractModel) planOverrideAllSides(root string) (app.ExtractRequest, st
 		}
 		newQueue[i] = nq
 	}
+	m.queue = newQueue
 	if m.diff != nil {
 		dir, derr := app.ExtractDiffTargetDir(m.cfg, newReq)
 		if derr != nil {
@@ -1012,7 +1013,6 @@ func (m *extractModel) planOverrideAllSides(root string) (app.ExtractRequest, st
 		}
 		m.diff.containerDir = dir
 	}
-	m.queue = newQueue
 	return newReq, staging, final, nil
 }
 

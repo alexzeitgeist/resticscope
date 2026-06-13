@@ -257,6 +257,18 @@ expected_frequency = "24h"
 `,
 			wantSub: "must not be empty",
 		},
+		{
+			name: "empty option value",
+			toml: `
+[global]
+secrets_command = "x"
+[repos.repo-a]
+url = "/srv/repo"
+options = { "sftp.command" = "" }
+expected_frequency = "24h"
+`,
+			wantSub: "must not be empty",
+		},
 	}
 
 	for _, tt := range tests {

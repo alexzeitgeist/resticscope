@@ -96,7 +96,7 @@ func TestValidColor(t *testing.T) {
 			t.Errorf("ValidColor(%q) = false, want true", s)
 		}
 	}
-	invalid := []string{"", "#", "#ff", "#ffff", "#fffff", "#fffffff", "#gggggg", "fff", "ebdbb2", "256", "-1", "1.5", "red", "#ebdbb2 ", "Default", "DEFAULT"}
+	invalid := []string{"", "#", "#ff", "#ffff", "#fffff", "#fffffff", "#gggggg", "fff", "ebdbb2", "256", "-1", "+15", "1.5", "red", "#ebdbb2 ", "Default", "DEFAULT"}
 	for _, s := range invalid {
 		if ValidColor(s) {
 			t.Errorf("ValidColor(%q) = true, want false", s)

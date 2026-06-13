@@ -230,6 +230,12 @@ func ValidColor(s string) bool {
 		}
 		return true
 	}
+	// Reject a leading '+' — strconv.Atoi accepts it, but lipgloss.Color
+	// falls back to no-color on "+15", so validation would pass a value
+	// that renders as black.
+	if len(s) > 0 && s[0] == '+' {
+		return false
+	}
 	n, err := strconv.Atoi(s)
 	return err == nil && n >= 0 && n <= 255
 }

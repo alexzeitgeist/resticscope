@@ -238,7 +238,7 @@ func TestShellSessionBashPromptTag(t *testing.T) {
 	if !strings.Contains(string(content), "(resticscope·repo-a)") {
 		t.Errorf("rcfile does not name the repo:\n%s", content)
 	}
-	pwFile, _ := envValue(sess.Env, "RESTIC_PASSWORD_FILE")
+	pwFile, _ := envLookup(sess.Env, "RESTIC_PASSWORD_FILE")
 	if err := sess.Cleanup(); err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
@@ -277,5 +277,22 @@ func TestInteractiveArgsExecArgvQuoted(t *testing.T) {
 	want := `exec '/usr/bin/fish' '-i' '-C' 'echo it'\''s tagged'`
 	if args[2] != want {
 		t.Errorf("script = %q, want %q", args[2], want)
+	}
+}
+
+func TestApplyPromptTagVersionedShell(t *testing.T) {
+	for _, shell := range []string{
+		"/usr/bin/bash-5.2",
+		"/opt/homebrew/bin/zsh-5.9",
+		"/usr/local/bin/fish-3.6.1",
+	} {
+		sess := &ShellSession{Shell: shell, Cleanup: func() error { return nil }}
+		if err := applyPromptTag(sess, "(resticscope·repo-a)"); err != nil {
+			t.Fatalf("%s: applyPromptTag: %v", shell, err)
+		}
+		if len(sess.execArgv) == 0 && sess.promptZDotDir == "" {
+			t.Fatalf("%s: neither execArgv nor ZDOTDIR set — versioned binary not matched", shell)
+		}
+		sess.Cleanup()
 	}
 }

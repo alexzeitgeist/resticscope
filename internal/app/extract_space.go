@@ -2,7 +2,11 @@
 
 package app
 
-import "golang.org/x/sys/unix"
+import (
+	"math"
+
+	"golang.org/x/sys/unix"
+)
 
 // freeBytesAt reports the bytes available to an unprivileged caller on the
 // filesystem containing path (statfs Bavail, not Bfree — root-reserved blocks
@@ -12,5 +16,12 @@ func freeBytesAt(path string) (int64, bool) {
 	if err := unix.Statfs(path, &st); err != nil {
 		return 0, false
 	}
-	return int64(st.Bavail) * int64(st.Bsize), true
+	// Clamp the product to avoid int64 overflow: Bavail is unsigned on
+	// linux (uint64), and the multiplication would wrap when free space
+	// exceeds ~8 EiB — advisory only; restic's own error is authoritative.
+	bs := int64(st.Bsize)
+	if bs > 0 && uint64(st.Bavail) > math.MaxInt64/uint64(bs) {
+		return math.MaxInt64, true
+	}
+	return int64(st.Bavail) * bs, true
 }

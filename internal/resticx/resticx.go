@@ -184,6 +184,9 @@ func (c *Client) buildEnv(t Target, creds Creds) []string {
 // runs restic as root, so the chokepoint enforces the model policy itself
 // (RESTIC_*/PATH/HOME ownership, no LD_PRELOAD-style injection).
 func BackendEnviron(t Target, creds Creds) []string {
+	if len(t.Env) == 0 && len(creds.Env) == 0 {
+		return nil
+	}
 	merged := make(map[string]string, len(t.Env)+len(creds.Env))
 	for _, m := range []map[string]string{t.Env, creds.Env} {
 		for k, v := range m {

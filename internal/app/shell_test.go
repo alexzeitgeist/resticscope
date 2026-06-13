@@ -25,15 +25,6 @@ var shellCreds = resticx.Creds{
 	ResticPassword: "super-secret-pw",
 }
 
-func envValue(env []string, key string) (string, bool) {
-	for _, kv := range env {
-		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
-			return v, true
-		}
-	}
-	return "", false
-}
-
 func TestResolveShell(t *testing.T) {
 	tests := []struct {
 		configured, env, want string
@@ -52,22 +43,22 @@ func TestResolveShell(t *testing.T) {
 func TestBuildShellEnvFileMode(t *testing.T) {
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw-123"})
 
-	if v, _ := envValue(env, "RESTIC_PASSWORD_FILE"); v != "/tmp/pw-123" {
+	if v, _ := envLookup(env, "RESTIC_PASSWORD_FILE"); v != "/tmp/pw-123" {
 		t.Errorf("RESTIC_PASSWORD_FILE = %q, want /tmp/pw-123", v)
 	}
-	if _, ok := envValue(env, "RESTIC_PASSWORD"); ok {
+	if _, ok := envLookup(env, "RESTIC_PASSWORD"); ok {
 		t.Error("file mode must not export RESTIC_PASSWORD")
 	}
-	if v, _ := envValue(env, "RESTIC_REPOSITORY"); v != "s3:https://fsn1.your-objectstorage.com/homeserver-backups" {
+	if v, _ := envLookup(env, "RESTIC_REPOSITORY"); v != "s3:https://fsn1.your-objectstorage.com/homeserver-backups" {
 		t.Errorf("RESTIC_REPOSITORY = %q", v)
 	}
-	if v, _ := envValue(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
+	if v, _ := envLookup(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q", v)
 	}
-	if v, _ := envValue(env, "RESTICSCOPE_REPO"); v != "homeserver-system" {
+	if v, _ := envLookup(env, "RESTICSCOPE_REPO"); v != "homeserver-system" {
 		t.Errorf("RESTICSCOPE_REPO = %q", v)
 	}
-	if _, ok := envValue(env, "RESTICSCOPE_SNAPSHOT_ID"); ok {
+	if _, ok := envLookup(env, "RESTICSCOPE_SNAPSHOT_ID"); ok {
 		t.Error("no snapshot selected, RESTICSCOPE_SNAPSHOT_ID must be absent")
 	}
 	// The password must never reach the environment in file mode.
@@ -79,10 +70,10 @@ func TestBuildShellEnvFileMode(t *testing.T) {
 func TestBuildShellEnvEnvMode(t *testing.T) {
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "env"})
 
-	if v, _ := envValue(env, "RESTIC_PASSWORD"); v != "super-secret-pw" {
+	if v, _ := envLookup(env, "RESTIC_PASSWORD"); v != "super-secret-pw" {
 		t.Errorf("env mode should export RESTIC_PASSWORD, got %q", v)
 	}
-	if _, ok := envValue(env, "RESTIC_PASSWORD_FILE"); ok {
+	if _, ok := envLookup(env, "RESTIC_PASSWORD_FILE"); ok {
 		t.Error("env mode must not set RESTIC_PASSWORD_FILE")
 	}
 }
@@ -90,13 +81,13 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 func TestBuildShellEnvBackendVars(t *testing.T) {
 	// The target's non-secret backend env is exported for the shell's tooling...
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
-	if v, _ := envValue(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
+	if v, _ := envLookup(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
 		t.Errorf("AWS_DEFAULT_REGION = %q, want fsn1", v)
 	}
 	// ...and a target without it exports nothing extra.
 	bare := resticx.Target{Name: "local-repo", Repo: "/srv/restic-repo"}
 	env = buildShellEnv(nil, shellEnvOpts{target: bare, creds: resticx.Creds{ResticPassword: "pw"}, mode: "file", pwFile: "/tmp/pw"})
-	if _, ok := envValue(env, "AWS_DEFAULT_REGION"); ok {
+	if _, ok := envLookup(env, "AWS_DEFAULT_REGION"); ok {
 		t.Error("a target without backend env must not export AWS_DEFAULT_REGION")
 	}
 }
@@ -116,7 +107,7 @@ func TestBuildShellEnvStripsInheritedBackendVars(t *testing.T) {
 	if strings.Contains(joined, "stale-id") {
 		t.Error("inherited copy of a session-set backend var must be stripped")
 	}
-	if v, _ := envValue(env, "B2_ACCOUNT_ID"); v != "fresh-id" {
+	if v, _ := envLookup(env, "B2_ACCOUNT_ID"); v != "fresh-id" {
 		t.Errorf("B2_ACCOUNT_ID = %q, want our value", v)
 	}
 	if n := strings.Count(joined, "B2_ACCOUNT_ID="); n != 1 {
@@ -129,14 +120,14 @@ func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 	// the refresh runner warms, so a manual restic reuses that cache.
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, cacheDir: "/home/me/.cache/resticscope", creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	want := resticx.RepoCacheDir("/home/me/.cache/resticscope", shellTarget.Name)
-	if v, _ := envValue(env, "RESTIC_CACHE_DIR"); v != want {
+	if v, _ := envLookup(env, "RESTIC_CACHE_DIR"); v != want {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want %q", v, want)
 	}
 
 	// With no cache dir configured, the var is omitted so restic falls back to
 	// its own default rather than seeing an empty RESTIC_CACHE_DIR.
 	env = buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
-	if _, ok := envValue(env, "RESTIC_CACHE_DIR"); ok {
+	if _, ok := envLookup(env, "RESTIC_CACHE_DIR"); ok {
 		t.Error("unconfigured cache dir must not export RESTIC_CACHE_DIR")
 	}
 }
@@ -144,7 +135,7 @@ func TestBuildShellEnvSetsCacheDir(t *testing.T) {
 func TestBuildShellEnvSnapshotContext(t *testing.T) {
 	snap := &model.Snapshot{ID: "a1b2c3d4e5", ShortID: "a1b2c3d4"}
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, snap: snap, mode: "file", pwFile: "/tmp/pw"})
-	if v, _ := envValue(env, "RESTICSCOPE_SNAPSHOT_ID"); v != "a1b2c3d4e5" {
+	if v, _ := envLookup(env, "RESTICSCOPE_SNAPSHOT_ID"); v != "a1b2c3d4e5" {
 		t.Errorf("RESTICSCOPE_SNAPSHOT_ID = %q, want the full id", v)
 	}
 }
@@ -172,7 +163,7 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	if strings.Contains(joined, "/stale/inherited") {
 		t.Error("inherited RESTIC_CACHE_DIR must be stripped, not carried through")
 	}
-	if v, _ := envValue(env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", shellTarget.Name) {
+	if v, _ := envLookup(env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", shellTarget.Name) {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want our per-repo path", v)
 	}
 	if n := strings.Count(joined, "RESTIC_CACHE_DIR="); n != 1 {
@@ -181,14 +172,14 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	if strings.Contains(joined, "old-key") || strings.Contains(joined, "s3:old") {
 		t.Error("inherited owned vars must be replaced, not duplicated")
 	}
-	if _, ok := envValue(env, "AWS_SESSION_TOKEN"); ok {
+	if _, ok := envLookup(env, "AWS_SESSION_TOKEN"); ok {
 		t.Error("inherited AWS_SESSION_TOKEN must be stripped: pairing it with our static keys breaks S3 auth")
 	}
 	// Exactly one RESTIC_REPOSITORY / AWS_ACCESS_KEY_ID, holding our value.
 	if n := strings.Count(joined, "RESTIC_REPOSITORY="); n != 1 {
 		t.Errorf("RESTIC_REPOSITORY appears %d times, want 1", n)
 	}
-	if v, _ := envValue(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
+	if v, _ := envLookup(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q, want our value", v)
 	}
 	// Credentials of OTHER backends are stripped too, not just the families
@@ -197,12 +188,12 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	if strings.Contains(joined, "unrelated-b2-secret") {
 		t.Error("inherited B2_ACCOUNT_KEY must be stripped from an s3 repo's shell")
 	}
-	if _, ok := envValue(env, "GOOGLE_APPLICATION_CREDENTIALS"); ok {
+	if _, ok := envLookup(env, "GOOGLE_APPLICATION_CREDENTIALS"); ok {
 		t.Error("inherited GOOGLE_APPLICATION_CREDENTIALS must be stripped")
 	}
 	// ...except the documented AWS profile pointers, which explicit env keys
 	// always beat and the user may want for other tooling.
-	if v, _ := envValue(env, "AWS_PROFILE"); v != "other-tooling" {
+	if v, _ := envLookup(env, "AWS_PROFILE"); v != "other-tooling" {
 		t.Errorf("AWS_PROFILE = %q, want the inherited value kept", v)
 	}
 	// The user's general environment is preserved.
@@ -318,12 +309,12 @@ func TestLocalShellSessionHappyPath(t *testing.T) {
 		}
 	}
 	for _, key := range []string{"RESTIC_PASSWORD", "AWS_SECRET_ACCESS_KEY", "RESTICSCOPE_REPO"} {
-		if _, ok := envValue(sess.Env, key); ok {
+		if _, ok := envLookup(sess.Env, key); ok {
 			t.Errorf("local shell env still carries %s", key)
 		}
 	}
 	// The user's general environment is preserved.
-	if _, ok := envValue(sess.Env, "PATH"); !ok {
+	if _, ok := envLookup(sess.Env, "PATH"); !ok {
 		t.Error("local shell dropped PATH; the shell would be unusable")
 	}
 }
@@ -480,14 +471,14 @@ func TestShellSessionFileModeWritesAndCleansUp(t *testing.T) {
 		t.Fatalf("ShellSession: %v", err)
 	}
 
-	pwFile, ok := envValue(sess.Env, "RESTIC_PASSWORD_FILE")
+	pwFile, ok := envLookup(sess.Env, "RESTIC_PASSWORD_FILE")
 	if !ok {
 		t.Fatal("file mode did not set RESTIC_PASSWORD_FILE")
 	}
 
 	// The session must export the same per-repo cache dir the refresh runner
 	// uses, wired through from Global.CacheDir.
-	if v, _ := envValue(sess.Env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", "repo-a") {
+	if v, _ := envLookup(sess.Env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", "repo-a") {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want the per-repo cache path", v)
 	}
 	info, err := os.Stat(pwFile)
@@ -519,10 +510,10 @@ func TestShellSessionEnvModeNoFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
-	if _, ok := envValue(sess.Env, "RESTIC_PASSWORD_FILE"); ok {
+	if _, ok := envLookup(sess.Env, "RESTIC_PASSWORD_FILE"); ok {
 		t.Error("env mode must not create a password file")
 	}
-	if v, _ := envValue(sess.Env, "RESTIC_PASSWORD"); v != "pw-secret" {
+	if v, _ := envLookup(sess.Env, "RESTIC_PASSWORD"); v != "pw-secret" {
 		t.Errorf("env mode RESTIC_PASSWORD = %q", v)
 	}
 	if err := sess.Cleanup(); err != nil {

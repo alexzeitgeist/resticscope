@@ -153,9 +153,10 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 		last = st.LastSnapshot.Format("2006-01-02 15:04") + " (" + last + ")"
 	}
 
+	repoURL := repo.RepositoryURL()
 	lines := []string{
 		m.field("Backend", repo.Backend(), width),
-		m.field("Repository", repo.RepositoryURL(), width),
+		m.field("Repository", repoURL, width),
 		m.field("Snapshots", fmt.Sprintf("%d", st.SnapshotCount), width),
 		m.field("Hosts", joinOrDash(st.Hosts), width),
 		m.field("Program", joinOrDash(model.ObservedVersions(st.Snapshots)), width),

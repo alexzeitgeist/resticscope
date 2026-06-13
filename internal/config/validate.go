@@ -164,8 +164,11 @@ func validateEnvOptions(label string, env, options map[string]string) []error {
 		}
 	}
 	for _, k := range sortedKeys(options) {
-		if k == "" {
+		switch {
+		case k == "":
 			errs = append(errs, fmt.Errorf("%s: options keys must not be empty", label))
+		case options[k] == "":
+			errs = append(errs, fmt.Errorf("%s: option %q must not be empty", label, k))
 		}
 	}
 	return errs
