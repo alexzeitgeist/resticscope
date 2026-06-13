@@ -187,9 +187,11 @@ const (
 // Glyph vocabulary — one glyph per role across every surface (UX plan phase 4):
 //
 //	·  separates inline values (titles, summaries, status lines, the shell banner)
-//	•  separates key chips in the footer bar (the bubbles/help default)
+//	•  separates key chips in the footer bar (the bubbles/help default), and
+//	   marks the green/healthy repo in the list status column — two surfaces
+//	   that never share a line, so the reuse reads cleanly
 //	—  "no value" in table cells; also the prose dash inside sentences
-//	✕  the failure cross (status glyph, extract error headline)
+//	×  the failure cross (status glyph, extract error headline)
 //	…  truncation and "still loading"
 //
 // New text should pick from this table rather than introduce a lookalike.
@@ -212,15 +214,21 @@ func statusWord(s model.Status) string {
 	}
 }
 
-// statusGlyph maps a status to its one-cell list glyph (plan §5).
+// statusGlyph maps a status to its one-cell list glyph (plan §5). Every glyph
+// here must share one terminal-display-width class so the status column lines up
+// row to row: the green/amber/grey glyphs are East-Asian "ambiguous" width, so
+// the red glyph is `×` (U+00D7, also ambiguous) rather than the heavier Dingbat
+// `✕` (U+2715). go-runewidth — and so lipgloss.Width, which sizes the column —
+// calls `✕` one cell, but some fonts/terminals draw that Dingbat double-width,
+// which shoved every error row one column right of the healthy rows.
 func statusGlyph(s model.Status) string {
 	switch s {
 	case model.StatusGreen:
-		return "●"
+		return "•"
 	case model.StatusAmber:
-		return "▲"
+		return "△"
 	case model.StatusRed, model.StatusError:
-		return "✕"
+		return "×"
 	default: // grey / never refreshed
 		return "…"
 	}

@@ -322,8 +322,9 @@ func TestStatusWord(t *testing.T) {
 // status must read as a semantic word, never the literal color name.
 func TestViewTitleConvention(t *testing.T) {
 	m := update(t, newTestModel(t, detailApp(t)), press("enter"))
-	if got := stripANSI(m.detailTitle()); !strings.Contains(got, "detail: repo-a · ● on schedule") {
-		t.Errorf("detail title = %q, want 'detail: repo-a · ● on schedule'", got)
+	wantDetail := "detail: repo-a · " + statusGlyph(model.StatusGreen) + " on schedule"
+	if got := stripANSI(m.detailTitle()); !strings.Contains(got, wantDetail) {
+		t.Errorf("detail title = %q, want %q", got, wantDetail)
 	}
 	if got := stripANSI(m.detailTitle()); strings.Contains(got, "green") {
 		t.Errorf("detail title must not show the literal color word, got %q", got)

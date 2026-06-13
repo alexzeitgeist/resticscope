@@ -440,10 +440,10 @@ func (m Model) renderRow(row app.RepoStatus, l listLayout, selected bool, width 
 // lock (`L`) or a stale cache (`*`). Lock wins over stale because it's the more
 // actionable signal, and the stale marker is suppressed in two cases where it
 // would only be noise: while a refresh is pending — the spinner already conveys
-// "data is being updated right now" — and on an error row, where the `✕` glyph
+// "data is being updated right now" — and on an error row, where the `×` glyph
 // and the "refresh failed: …" text already tell the freshness story (a failed
 // refresh carries over the last successful RefreshedAt, which often reads as
-// stale, so without this guard the cell renders the jammed-together `✕*`). The
+// stale, so without this guard the cell renders the jammed-together `×*`). The
 // cell width is invariant so column alignment never breaks.
 func (m Model) statusCell(row app.RepoStatus) string {
 	var glyph string

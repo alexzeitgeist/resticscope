@@ -489,7 +489,7 @@ func (m Model) extractTerminalBody(w int) string {
 	case extractStateCanceled:
 		headline = m.styles.bad.Render("! ") + extractCancelHeadline(em)
 	default:
-		headline = m.styles.errText.Render("✕ ") + extractErrorHeadline(em)
+		headline = m.styles.errText.Render("× ") + extractErrorHeadline(em)
 	}
 	lines := []string{"  " + headline}
 	if em.diff != nil {

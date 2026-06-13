@@ -7,8 +7,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/mattn/go-runewidth"
 
 	"resticscope/internal/config"
+	"resticscope/internal/model"
 	"resticscope/internal/theme"
 )
 
@@ -110,5 +112,52 @@ func TestViewPaintsThemeBackground(t *testing.T) {
 	m.quitting = true
 	if v := m.View(); v.BackgroundColor != nil || v.ForegroundColor != nil {
 		t.Error("quitting view must not carry theme colors")
+	}
+}
+
+// TestStatusGlyphsShareWidthClass pins statusGlyph's real contract: every status
+// glyph must occupy the same terminal display width so the status column lines up
+// row to row. That holds only when the glyphs share one East-Asian-width class.
+//
+// This guards the 89b4088 fix directly, without pinning literals (which would
+// just restate statusGlyph and churn on every intentional aesthetic tweak). Red
+// used to be the Dingbat `✕` (U+2715), which go-runewidth — and so lipgloss.Width,
+// which sizes the column — measures as one cell like the ambiguous-width
+// `•`/`△`/`…`, yet some fonts/terminals draw it double-width, shoving every error
+// row one column right of the healthy rows. `✕` has the width profile (1,1) under
+// (ambiguous=1, ambiguous=2) while the shipped set is (1,2), so reintroducing it
+// for red/error trips this test. An intentional in-class swap, or moving the whole
+// set to a different shared class, still passes.
+func TestStatusGlyphsShareWidthClass(t *testing.T) {
+	narrow := runewidth.NewCondition() // ambiguous counts as 1 cell — lipgloss's default
+	wide := runewidth.NewCondition()
+	wide.EastAsianWidth = true // ambiguous counts as 2 cells — a CJK-configured terminal
+
+	statuses := []model.Status{
+		model.StatusGreen, model.StatusAmber, model.StatusRed,
+		model.StatusError, model.StatusGrey,
+	}
+	type widthProfile struct{ narrow, wide int }
+	var want widthProfile
+	for i, s := range statuses {
+		g := statusGlyph(s)
+		runes := []rune(g)
+		if len(runes) != 1 {
+			t.Fatalf("statusGlyph(%s) = %q, want a single rune", s, g)
+		}
+		got := widthProfile{narrow.RuneWidth(runes[0]), wide.RuneWidth(runes[0])}
+		// The layout reserves exactly one cell for the glyph, so its default width
+		// must be 1 regardless of class.
+		if got.narrow != 1 {
+			t.Errorf("statusGlyph(%s) = %q spans %d cells (ambiguous=1); status glyphs must be one cell", s, g, got.narrow)
+		}
+		if i == 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Errorf("statusGlyph(%s) = %q width profile (ambiguous=1:%d, ambiguous=2:%d) differs from the other glyphs' (%d, %d); a mixed width class breaks column alignment on some terminals",
+				s, g, got.narrow, got.wide, want.narrow, want.wide)
+		}
 	}
 }

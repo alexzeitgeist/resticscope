@@ -11,6 +11,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/goccy/go-json v0.10.6
+	github.com/mattn/go-runewidth v0.0.23
 	github.com/ncruces/go-sqlite3 v0.34.2
 	golang.org/x/sys v0.45.0
 )
@@ -25,7 +26,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
-	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/ncruces/go-sqlite3-wasm/v2 v2.4.35301 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
