@@ -58,25 +58,21 @@ labels = { env = "home", category = "work" }
 
 [repos.homeserver-system]
 profile = "hetzner-fsn1"
-description = "Daily system backup of homeserver"
 bucket = "homeserver-backups"
 labels = { criticality = "high" }
 
 [repos.laptop-restic]
 profile = "hetzner-hel1"
-description = "Laptop backup in Helsinki"
 bucket = "laptop-backups"
 labels = { criticality = "medium" }
 
 [repos.nas-offsite]
-description = "NAS offsite copy"
 credential = "nas-b2"
 url = "b2:nas-backups:repo"
 expected_frequency = "168h"
 labels = { env = "home", criticality = "high", category = "offsite" }
 
 [repos.nas-sftp]
-description = "Direct NAS repo over ssh"
 url = "sftp:backup@nas:/srv/restic-repo"
 options = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
 expected_frequency = "24h"

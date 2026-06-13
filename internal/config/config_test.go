@@ -345,14 +345,12 @@ labels = { entity = "private", hoster = "local" }
 
 [repos.thinkpad-x1]
 profile = "hetzner-nbg"
-description = "Manual backup"
 bucket = "backups"
 path = "laptop"
 labels = { device = "laptop", hoster = "custom" }
 
 [repos.pve]
 profile = "hetzner-nbg"
-description = "Server backup"
 bucket = "backups"
 path = "fileserver"
 labels = { location = "ch" }
@@ -795,6 +793,15 @@ func TestRejectsRemovedCoverageKeys(t *testing.T) {
 				t.Fatalf("expected unknown-keys error for %s, got %v", key, err)
 			}
 		})
+	}
+}
+
+func TestRejectsRemovedRepoDescription(t *testing.T) {
+	toml := strings.Replace(minimalTOML, "expected_frequency", `description = "old metadata"
+expected_frequency`, 1)
+	_, err := load(t, toml)
+	if err == nil || !strings.Contains(err.Error(), "unknown config keys") {
+		t.Fatalf("expected unknown-keys error for repo description, got %v", err)
 	}
 }
 

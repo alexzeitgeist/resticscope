@@ -117,9 +117,6 @@ func repoOrder(md toml.MetaData, byName map[string]Repo) []string {
 // a repo overrides with a different value, not with absence.
 func mergeRepoProfile(profile, repo Repo) Repo {
 	out := profile
-	if repo.Description != "" {
-		out.Description = repo.Description
-	}
 	if repo.Credential != "" {
 		out.Credential = repo.Credential
 	}

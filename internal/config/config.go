@@ -208,10 +208,9 @@ type Repo struct {
 	// assigned in Decode — a literal `name = ...` inside a repo table is rejected.
 	// Profile names a `[profiles.<name>]` table whose fields this repo inherits
 	// (optional); it is resolved away in Decode, leaving every field merged.
-	Name        string `toml:"name"`
-	Profile     string `toml:"profile"`
-	Description string `toml:"description"`
-	Credential  string `toml:"credential"`
+	Name       string `toml:"name"`
+	Profile    string `toml:"profile"`
+	Credential string `toml:"credential"`
 
 	// Generic form: the restic repository string, any backend.
 	URL string `toml:"url"`
