@@ -18,19 +18,17 @@ import (
 
 // Config is the fully parsed, normalized, validated configuration.
 //
-// Credentials is just the list of credential names declared at the top of the
-// file with `credentials = ["name", ...]`. A credential is nothing but a name
-// for a set of secret backend env vars (resolved at runtime from the
-// secrets_command, keyed by that name); it carries no location or backend type,
-// so one name can back several repos. Repos are decoded separately from their
-// `[repos.<name>]` tables and assembled in Decode — see the Repos field.
+// There is no separate credentials section: a repo names the secret env-var set
+// it needs with `credential = "..."` (see Repo.Credential), and that reference
+// is the declaration. CredentialNames derives the set of names the
+// secrets_command must provide. Repos are decoded from their `[repos.<name>]`
+// tables and assembled in Decode — see the Repos field.
 type Config struct {
-	Global      Global   `toml:"global"`
-	Credentials []string `toml:"credentials"`
-	Browse      Browse   `toml:"browse"`
-	Diff        Diff     `toml:"diff"`
-	Extract     Extract  `toml:"extract"`
-	Theme       Theme    `toml:"theme"`
+	Global  Global  `toml:"global"`
+	Browse  Browse  `toml:"browse"`
+	Diff    Diff    `toml:"diff"`
+	Extract Extract `toml:"extract"`
+	Theme   Theme   `toml:"theme"`
 
 	// Repos is the file-ordered repo list. It is not decoded directly (hence
 	// `toml:"-"`): TOML yields the `[repos.<name>]` tables as an unordered map,
@@ -311,14 +309,22 @@ func (r Repo) BackendEnv() map[string]string {
 	return out
 }
 
-// HasCredential reports whether name matches a configured credential.
-func (c *Config) HasCredential(name string) bool {
-	for _, n := range c.Credentials {
-		if n == name {
-			return true
+// CredentialNames returns, in first-reference order, the distinct credential
+// names the repos use. Credentials are not declared separately: a repo names the
+// secret env-var set it needs with `credential = "..."`, and that reference is
+// the declaration. The result drives the secrets-template scaffold and the
+// secrets completeness check, where each name must resolve to material the
+// secrets_command provides.
+func (c *Config) CredentialNames() []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, r := range c.Repos {
+		if r.Credential != "" && !seen[r.Credential] {
+			seen[r.Credential] = true
+			names = append(names, r.Credential)
 		}
 	}
-	return false
+	return names
 }
 
 // Duration is a time.Duration that unmarshals from a TOML string ("24h").

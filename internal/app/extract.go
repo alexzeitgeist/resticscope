@@ -471,9 +471,6 @@ func (a *App) Extract(ctx context.Context, req ExtractRequest, onProgress func(E
 		return result, fmt.Errorf("extract: unknown repo %q", req.Repo)
 	}
 	// credential is optional (local/sftp backends); when set it must resolve.
-	if r.Credential != "" && !a.Cfg.HasCredential(r.Credential) { // unreachable after config validation, but stay defensive
-		return result, fmt.Errorf("extract: credential %q not found", r.Credential)
-	}
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
 		return result, err

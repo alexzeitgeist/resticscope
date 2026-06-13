@@ -9,12 +9,12 @@
 # access-key/secret-key pair, a B2 account id/key, an Azure account key, a REST
 # server password, whatever the repo's backend reads. It carries no location or
 # backend type, so one name can back several repos (on Hetzner one project key
-# pair reaches every bucket in the project, across regions). Each name must be
-# unique and match a key under "credentials" in the secrets JSON. Repos whose
+# pair reaches every bucket in the project, across regions). Credentials are NOT
+# declared separately: a repo names the one it needs with `credential = "..."`
+# (see the profiles/repos below), and that reference is the declaration — the
+# name must match a key under "credentials" in the secrets JSON. Repos whose
 # backend needs no secrets (local disk, sftp via ssh config/agent, rclone via
-# its own config) reference no credential. This is a plain top-level list, so it
-# must come before the first [section] — hence at the very top of the file.
-credentials = ["hetzner-home", "nas-b2"]
+# its own config) name no credential.
 
 [global]
 # secrets_command prints a single JSON document with your backend credentials

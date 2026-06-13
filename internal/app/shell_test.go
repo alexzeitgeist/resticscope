@@ -463,9 +463,8 @@ func (s shellSecrets) Resolve(_, _ string) (secrets.Material, error) { return s.
 
 func shellApp(mode string, sec Secrets) *App {
 	cfg := &config.Config{
-		Global:      config.Global{ShellPasswordMode: mode, Shell: "/bin/sh", CacheDir: "/test-cache"},
-		Credentials: []string{"cred-a"},
-		Repos:       []config.Repo{{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b"}},
+		Global: config.Global{ShellPasswordMode: mode, Shell: "/bin/sh", CacheDir: "/test-cache"},
+		Repos:  []config.Repo{{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b"}},
 	}
 	return &App{Cfg: cfg, Secrets: sec}
 }

@@ -122,10 +122,6 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	}
 
 	// credential is optional (local/sftp backends); when set it must resolve.
-	if r.Credential != "" && !a.Cfg.HasCredential(r.Credential) { // unreachable after config validation, but stay defensive
-		return fail(fmt.Sprintf("credential %q not found", r.Credential))
-	}
-
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
 		return fail(err.Error())

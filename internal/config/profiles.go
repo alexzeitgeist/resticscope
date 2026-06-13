@@ -18,7 +18,7 @@ import (
 // assembleRepos flattens the decoded `[repos.<name>]` tables into a file-ordered
 // slice, sets each repo's Name from its table key, and resolves profile
 // inheritance. Every profile is checked first (see validateProfile) so a typo in
-// one fails at startup even before any repo points at it.
+// one fails at config load even before any repo points at it.
 func assembleRepos(byName, profiles map[string]Repo, md toml.MetaData) ([]Repo, error) {
 	var perrs []error
 	for _, name := range sortedKeys(profiles) {
@@ -48,16 +48,17 @@ func assembleRepos(byName, profiles map[string]Repo, md toml.MetaData) ([]Repo, 
 }
 
 // validateProfile checks the fields of a `[profiles.<name>]` table that are
-// well-formed in isolation, so a typo fails at startup even if no repo uses the
-// profile yet — without forcing a profile to be a complete repo. It deliberately
-// does NOT check:
+// well-formed in isolation, so a typo is caught at config load even if no repo
+// uses the profile yet — without forcing a profile to be a complete repo. It
+// deliberately does NOT check:
 //   - endpoint/bucket presence — partial profiles (shared fields only) are the
 //     whole point;
 //   - url — its leading ~ is only expanded during Normalize, after profiles are
 //     already merged, so a profile url is validated on the merged repo;
-//   - credential and expected_frequency — every consuming repo re-validates both
-//     after the merge, and an unused profile's values never take effect (the
-//     same "defined but unused is harmless" stance config takes for credentials).
+//   - credential — it is never config-validated (used or not); it is just a name
+//     resolved against the secrets document when a command loads secrets;
+//   - expected_frequency — a consuming repo re-validates it (> 0) on the merged
+//     repo, and an unused profile's value never takes effect.
 func validateProfile(name string, p Repo) []error {
 	label := fmt.Sprintf("profiles.%s", name)
 	var errs []error

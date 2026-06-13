@@ -36,8 +36,6 @@ func setup(t *testing.T, states map[string]model.RepoState) string {
 	}
 
 	cfg := fmt.Sprintf(`
-credentials = ["cred-a"]
-
 [global]
 secrets_command = "true"
 cache_dir = %q
@@ -347,8 +345,6 @@ func TestSecretsTemplate(t *testing.T) {
 func TestSecretsTemplateEnvShape(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `
-credentials = ["nas-b2"]
-
 [global]
 secrets_command = "true"
 

@@ -439,8 +439,7 @@ func browseApp(store BrowseStore, r fakeRestic) *App {
 
 func testConfig() *config.Config {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 4},
-		Credentials: []string{"cred-a"},
+		Global: config.Global{Parallelism: 4},
 		Repos: []config.Repo{
 			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://fsn1.example.com", Region: "fsn1", BucketLookup: "auto", Bucket: "bucket-a", ExpectedFrequency: config.Duration(24 * time.Hour)},
 		},

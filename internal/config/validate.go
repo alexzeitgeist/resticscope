@@ -52,18 +52,6 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	credNames := map[string]bool{}
-	for i, name := range c.Credentials {
-		switch {
-		case name == "":
-			errs = append(errs, fmt.Errorf("credentials[%d]: name is required", i))
-		case credNames[name]:
-			errs = append(errs, fmt.Errorf("duplicate credential name %q", name))
-		default:
-			credNames[name] = true
-		}
-	}
-
 	if len(c.Repos) == 0 {
 		errs = append(errs, errors.New("no repos configured"))
 	}
@@ -81,11 +69,10 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("repo %q: name may contain only letters, digits, '.', '_' and '-' (it becomes a cache filename)", r.Name))
 		}
 		errs = append(errs, validateRepoLocation(r)...)
-		// credential is optional: local/sftp/rclone backends need no secret env
-		// vars. When set it must resolve, as before.
-		if r.Credential != "" && !credNames[r.Credential] {
-			errs = append(errs, fmt.Errorf("repo %q: credential %q does not match any configured credential", r.Name, r.Credential))
-		}
+		// credential is optional (local/sftp/rclone need no secret env vars); when
+		// set, the name is a key the secrets_command must provide. It is resolved
+		// against the secrets document when a command loads secrets (the TUI,
+		// `check`, a refresh), not validated here.
 		errs = append(errs, validateRepoEnvOptions(r)...)
 		if r.ExpectedFrequency <= 0 {
 			errs = append(errs, fmt.Errorf("repo %q: expected_frequency must be a positive duration (e.g. \"24h\")", r.Name))

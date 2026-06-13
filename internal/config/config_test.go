@@ -9,8 +9,6 @@ import (
 )
 
 const minimalTOML = `
-credentials = ["cred-a"]
-
 [global]
 secrets_command = "cat ./test-secrets.json"
 
@@ -56,8 +54,8 @@ func TestExampleConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("example config should load: %v", err)
 	}
-	if len(cfg.Credentials) != 2 {
-		t.Fatalf("example credentials = %d, want 2", len(cfg.Credentials))
+	if got := cfg.CredentialNames(); len(got) != 2 {
+		t.Fatalf("example credentials = %v, want 2", got)
 	}
 	if len(cfg.Repos) != 4 {
 		t.Fatalf("example repos = %d, want 4", len(cfg.Repos))
@@ -126,37 +124,8 @@ func TestValidationErrors(t *testing.T) {
 		wantSub string
 	}{
 		{
-			name: "duplicate credential names",
-			toml: `
-credentials = ["cred-a", "cred-a"]
-[global]
-secrets_command = "x"
-[repos.repo-a]
-credential = "cred-a"
-endpoint = "https://e"
-bucket = "b"
-expected_frequency = "24h"
-`,
-			wantSub: "duplicate credential name",
-		},
-		{
-			name: "dangling credential reference",
-			toml: `
-credentials = ["cred-a"]
-[global]
-secrets_command = "x"
-[repos.repo-a]
-credential = "missing"
-endpoint = "https://e"
-bucket = "b"
-expected_frequency = "24h"
-`,
-			wantSub: "does not match any configured credential",
-		},
-		{
 			name: "missing bucket",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -169,7 +138,6 @@ expected_frequency = "24h"
 		{
 			name: "missing endpoint",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -182,7 +150,6 @@ expected_frequency = "24h"
 		{
 			name: "bad bucket_lookup",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -197,7 +164,6 @@ expected_frequency = "24h"
 		{
 			name: "repo name with path-unsafe characters",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos."foo/bar"]
@@ -211,7 +177,6 @@ expected_frequency = "24h"
 		{
 			name: "zero expected_frequency",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -312,8 +277,7 @@ expected_frequency = "24h"
 // constructing repos directly — guard it at the Validate layer regardless.
 func TestValidateRejectsDuplicateRepoName(t *testing.T) {
 	cfg := &Config{
-		Global:      Global{SecretsCommand: "x", ShellPasswordMode: "file"},
-		Credentials: []string{"cred-a"},
+		Global: Global{SecretsCommand: "x", ShellPasswordMode: "file"},
 		Repos: []Repo{
 			{Name: "dup", Credential: "cred-a", URL: "/srv/a", ExpectedFrequency: Duration(24 * time.Hour)},
 			{Name: "dup", Credential: "cred-a", URL: "/srv/b", ExpectedFrequency: Duration(24 * time.Hour)},
@@ -326,10 +290,44 @@ func TestValidateRejectsDuplicateRepoName(t *testing.T) {
 	}
 }
 
+// CredentialNames is the derived set of credential names the repos reference:
+// distinct, in first-reference order, skipping repos that name no credential.
+func TestCredentialNamesDerivedFromRepos(t *testing.T) {
+	cfg, err := load(t, `
+[global]
+secrets_command = "x"
+
+[repos.a]
+credential         = "cred-x"
+endpoint           = "https://e"
+bucket             = "b-a"
+expected_frequency = "24h"
+
+[repos.b]
+credential         = "cred-y"
+endpoint           = "https://e"
+bucket             = "b-b"
+expected_frequency = "24h"
+
+[repos.c]
+credential         = "cred-x"
+url                = "b2:bucket:repo"
+expected_frequency = "24h"
+
+[repos.local]
+url                = "/srv/local"
+expected_frequency = "24h"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := cfg.CredentialNames(), []string{"cred-x", "cred-y"}; !slices.Equal(got, want) {
+		t.Fatalf("CredentialNames = %v, want %v", got, want)
+	}
+}
+
 func TestParsesNamedReposAndProfiles(t *testing.T) {
 	cfg, err := load(t, `
-credentials = ["hetzner-home", "b2-offsite"]
-
 [global]
 secrets_command = "x"
 
@@ -362,11 +360,9 @@ labels = { location = "ch" }
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got, want := len(cfg.Credentials), 2; got != want {
-		t.Fatalf("credentials len = %d, want %d", got, want)
-	}
-	if cfg.Credentials[0] != "hetzner-home" || cfg.Credentials[1] != "b2-offsite" {
-		t.Fatalf("credentials = %+v", cfg.Credentials)
+	// Only hetzner-home is referenced (test-local names no credential).
+	if got, want := cfg.CredentialNames(), []string{"hetzner-home"}; !slices.Equal(got, want) {
+		t.Fatalf("CredentialNames = %v, want %v", got, want)
 	}
 	if got := []string{cfg.Repos[0].Name, cfg.Repos[1].Name, cfg.Repos[2].Name}; !slices.Equal(got, []string{"test-local", "thinkpad-x1", "pve"}) {
 		t.Fatalf("repo order = %v", got)
@@ -399,8 +395,6 @@ labels = { location = "ch" }
 // gaps the repo leaves.
 func TestRepoOverridesProfileFields(t *testing.T) {
 	cfg, err := load(t, `
-credentials = ["c"]
-
 [global]
 secrets_command = "x"
 
@@ -433,27 +427,6 @@ expected_frequency = "168h"
 	}
 }
 
-func TestParsesCredentialsList(t *testing.T) {
-	cfg, err := load(t, `
-credentials = ["cred-a"]
-
-[global]
-secrets_command = "x"
-
-[repos.repo-a]
-credential = "cred-a"
-endpoint = "https://e"
-bucket = "b"
-expected_frequency = "24h"
-`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.Credentials) != 1 || cfg.Credentials[0] != "cred-a" {
-		t.Fatalf("credentials = %+v", cfg.Credentials)
-	}
-}
-
 func TestRejectsBadRepoConfig(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -463,7 +436,6 @@ func TestRejectsBadRepoConfig(t *testing.T) {
 		{
 			name: "profile reference missing",
 			toml: `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -524,18 +496,6 @@ expected_frequency = "24h"
 			wantSub: "name is not allowed; a profile is named by its table key",
 		},
 		{
-			name: "credentials list must be strings",
-			toml: `
-credentials = ["cred-a", 42]
-[global]
-secrets_command = "x"
-[repos.repo-a]
-url = "/srv/repo"
-expected_frequency = "24h"
-`,
-			wantSub: "credentials",
-		},
-		{
 			// A typo in a profile must fail even when no repo uses that profile
 			// yet — the profile is validated for its self-contained fields.
 			name: "unused profile bad bucket_lookup",
@@ -591,7 +551,6 @@ func mapsEqual(a, b map[string]string) bool {
 
 func TestRejectsBadShellPasswordMode(t *testing.T) {
 	_, err := load(t, `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 shell_password_mode = "shout"
@@ -610,7 +569,6 @@ expected_frequency = "24h"
 // it must load and validate cleanly (and refresh exports no AWS_DEFAULT_REGION).
 func TestOmittedRegionAccepted(t *testing.T) {
 	cfg, err := load(t, `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]
@@ -631,8 +589,6 @@ expected_frequency = "24h"
 // credential, generic env/options. The s3 shorthand keeps working beside it.
 func TestURLRepoForms(t *testing.T) {
 	cfg, err := load(t, `
-credentials = ["b2-home"]
-
 [global]
 secrets_command = "x"
 
@@ -705,7 +661,6 @@ expected_frequency = "24h"
 // non-auto bucket_lookup becomes the s3.bucket-lookup option.
 func TestS3ShorthandLowering(t *testing.T) {
 	cfg, err := load(t, `
-credentials = ["cred-a"]
 [global]
 secrets_command = "x"
 [repos.repo-a]

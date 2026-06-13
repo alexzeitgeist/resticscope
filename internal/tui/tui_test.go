@@ -229,8 +229,7 @@ func testApp(states map[string]model.RepoState) *app.App {
 		states = map[string]model.RepoState{}
 	}
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2},
-		Credentials: []string{"cred-a"},
+		Global: config.Global{Parallelism: 2},
 		Repos: []config.Repo{
 			{Name: "repo-a", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour),
 				Labels: map[string]string{"env": "home", "criticality": "high"}},
@@ -1804,8 +1803,7 @@ func assertLinesFit(t *testing.T, s string, width int) {
 // active sort for each non-config mode.
 func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2},
-		Credentials: []string{"cred-a"},
+		Global: config.Global{Parallelism: 2},
 		Repos: []config.Repo{
 			{Name: "charlie", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
 			{Name: "ada", Credential: "cred-a", Endpoint: "https://e", Region: "fsn1", BucketLookup: "auto", Bucket: "b", ExpectedFrequency: config.Duration(24 * time.Hour)},
@@ -2341,8 +2339,7 @@ func TestGroupedSortAndRefreshKeepSelection(t *testing.T) {
 // height: the rendered View should never push the footer past m.height.
 func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []string{"c"},
+		Global: config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
@@ -2381,8 +2378,7 @@ func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 // max=2" case where centering would otherwise drop the heading.
 func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []string{"c"},
+		Global: config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
@@ -2450,8 +2446,7 @@ func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 // line; the renderer must anchor the heading at start.
 func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	cfg := &config.Config{
-		Global:      config.Global{Parallelism: 2, GroupBy: []string{"category"}},
-		Credentials: []string{"c"},
+		Global: config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)

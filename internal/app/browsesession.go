@@ -195,11 +195,6 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	if !ok {
 		return fmt.Errorf("unknown repo %q", repoName)
 	}
-	// credential is optional (local/sftp backends); when set it must resolve.
-	if r.Credential != "" && !a.Cfg.HasCredential(r.Credential) { // unreachable after config validation, but stay defensive
-		return fmt.Errorf("credential %q not found", r.Credential)
-	}
-
 	// debug.FreeOSMemory() is a stop-the-world GC. Register the trim BEFORE beginOp
 	// so it runs LAST (after release has dropped opMu), since running it under the session
 	// lock would stall a concurrent Close/ListDir for the whole pause. It is gated

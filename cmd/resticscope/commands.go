@@ -289,7 +289,7 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	checkLine(stdout, "config", "ok", fmt.Sprintf("%s, %s",
 		humanize.Count(len(cfg.Repos), "repo", "repos"),
-		humanize.Count(len(cfg.Credentials), "credential", "credentials")))
+		humanize.Count(len(cfg.CredentialNames()), "credential", "credentials")))
 
 	logger := newLogger(cfg)
 	store, client, err := refreshDeps(ctx, cfg, logger)
@@ -413,7 +413,7 @@ func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		return nil, nil, err
 	}
 
-	warnings, err := store.Validate(credentialNames(cfg), repoNames(cfg))
+	warnings, err := store.Validate(cfg.CredentialNames(), repoNames(cfg))
 	for _, w := range warnings {
 		logger.Warn(w)
 	}
@@ -431,30 +431,22 @@ func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	return store, client, nil
 }
 
-func credentialNames(cfg *config.Config) []string {
-	names := make([]string, len(cfg.Credentials))
-	copy(names, cfg.Credentials)
-	return names
-}
-
-// templateCreds maps each configured credential to the secrets-template shape
-// it should scaffold: the s3 access_key/secret_key shorthand when every repo
-// referencing it uses the s3 shorthand form, the generic env map otherwise
-// (including when nothing references it — env is the universal shape).
+// templateCreds maps each credential the repos reference to the secrets-template
+// shape it should scaffold: the s3 access_key/secret_key shorthand when every
+// repo using it is the s3 shorthand form, the generic env map otherwise. The
+// names come from the repo references (config.CredentialNames), so each is used
+// by at least one repo by construction.
 func templateCreds(cfg *config.Config) []secrets.TemplateCred {
-	out := make([]secrets.TemplateCred, len(cfg.Credentials))
-	for i, name := range cfg.Credentials {
-		s3, used := true, false
+	names := cfg.CredentialNames()
+	out := make([]secrets.TemplateCred, len(names))
+	for i, name := range names {
+		s3 := true
 		for _, r := range cfg.Repos {
-			if r.Credential != name {
-				continue
-			}
-			used = true
-			if r.URL != "" {
+			if r.Credential == name && r.URL != "" {
 				s3 = false
 			}
 		}
-		out[i] = secrets.TemplateCred{Name: name, S3: used && s3}
+		out[i] = secrets.TemplateCred{Name: name, S3: s3}
 	}
 	return out
 }
