@@ -238,6 +238,16 @@ func testApp(states map[string]model.RepoState) *app.App {
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
+	// Pin a non-interactive shell so building a session (the `s` key →
+	// openShellCmd → ShellSession) never resolves to the developer's real $SHELL.
+	// Tests that only assert "a shell command was produced" discard the session
+	// without reaching its Cleanup (it is buried in the tea.ExecProcess command);
+	// were the shell bash/zsh/fish, applyPromptTag would eagerly write a temp
+	// rcfile/ZDOTDIR at build time that then leaks into /tmp. /bin/sh is not
+	// prompt-tagged, so no scaffolding is created and the result is host-independent.
+	// Tests that actually run the shell (e.g. TestDetailShellKeyRoutePassesSnapshot)
+	// override this with their own fake executable.
+	cfg.Global.Shell = "/bin/sh"
 	return &app.App{
 		Cfg:     cfg,
 		Cache:   stubCache{states: states},
