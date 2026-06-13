@@ -1,3 +1,7 @@
+// Package tui implements resticscope's interactive terminal UI: the bubbletea
+// Model that drives every screen (repo list, snapshot detail, browse, find
+// versions, snapshot diff, extract, help, info) along with the rendering, key
+// handling, and command plumbing behind them.
 package tui
 
 import (
@@ -294,6 +298,8 @@ func (m Model) refreshOnOpenNames() []string {
 	return names
 }
 
+// Init implements tea.Model: it seeds refresh-on-open commands for stale repos
+// and starts the spinner when any refresh is pending.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.app.Cfg.Global.RefreshOnOpen {
@@ -309,7 +315,11 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update implements tea.Model. It is the central message dispatcher: a flat
+// type-switch over message kinds, intentionally not split — the cases are
+// tightly coupled to the Model's fields and splitting them would scatter
+// closely-related state transitions across helpers.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funlen // central bubbletea message dispatcher; a flat type-switch whose cases share Model state, so splitting would reduce, not improve, readability
 	switch msg := msg.(type) {
 	case tea.ColorProfileMsg:
 		// Sent once at startup (and again if the profile is upgraded). ANSI and

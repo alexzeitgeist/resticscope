@@ -536,8 +536,8 @@ func TestShellSessionSecretsError(t *testing.T) {
 	}
 }
 
-var errResolve = &resolveErr{}
+var errResolve = &resolveError{}
 
-type resolveErr struct{}
+type resolveError struct{}
 
-func (*resolveErr) Error() string { return "secrets: no repo" }
+func (*resolveError) Error() string { return "secrets: no repo" }

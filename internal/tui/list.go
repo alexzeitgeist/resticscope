@@ -77,6 +77,9 @@ func buildMeta(cfg *config.Config) map[string]rowMeta {
 	return out
 }
 
+// View implements tea.Model: it renders the current screen (list, detail,
+// browse, find versions, snapshot diff, extract, help, or info) plus the
+// shared chrome.
 func (m Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
@@ -496,7 +499,7 @@ func listLabelsValue(rm rowMeta, skipKey string) string {
 func tookDuration(snaps []model.Snapshot) string {
 	d, ok := model.LastBackupDuration(snaps)
 	if !ok {
-		return "—"
+		return emDash
 	}
 	return humanize.Duration(d)
 }

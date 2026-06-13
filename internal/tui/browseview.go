@@ -8,6 +8,13 @@ import (
 	"resticscope/internal/model"
 )
 
+// Shared view literals used across multiple TUI views.
+const (
+	emDash         = "—"              // placeholder for an absent/unknown field value (U+2014)
+	searchPrompt   = "type to search" // prompt shown when the search box is empty
+	noMatchesLabel = "(no matches)"   // label shown when a search returns nothing
+)
+
 func (m Model) browseTitle() string {
 	label := "browse: " + m.browseRepo
 	if id := shortID(m.browseSnapshot); id != "" {
@@ -69,9 +76,9 @@ func (m Model) browseSearchSummary() string {
 	}
 	if m.browseSearchTotal == 0 {
 		if strings.TrimSpace(m.browseSearchQuery) == "" {
-			return "type to search"
+			return searchPrompt
 		}
-		return "(no matches)"
+		return noMatchesLabel
 	}
 	if shown := len(m.browseSearchRows); shown < m.browseSearchTotal {
 		return fmt.Sprintf("showing %d of %s", shown, humanize.Count(m.browseSearchTotal, "match", "matches"))
@@ -303,15 +310,15 @@ func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout,
 	// Directories now carry a real recursive subtree size, so render every entry's
 	// size unconditionally; an empty directory's 0 renders as "0 B".
 	size := humanize.Bytes(e.Size)
-	mod := "—"
+	mod := emDash
 	if !e.ModTime.IsZero() {
 		mod = e.ModTime.Format("2006-01-02 15:04")
 	}
-	perms := "—"
+	perms := emDash
 	if e.Permissions != "" {
 		perms = truncate(e.Permissions, browsePermsWidth)
 	}
-	owner := "—"
+	owner := emDash
 	if e.OwnerKnown {
 		owner = truncate(fmt.Sprintf("%d:%d", e.UID, e.GID), browseOwnerWidth)
 	}

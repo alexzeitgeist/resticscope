@@ -247,7 +247,7 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 		return "no summary"
 	}
 	parts := make([]string, 0, 4)
-	if includeAdded {
+	if includeAdded { //nolint:nestif // a 2×2 matrix (includeAdded × which DataAdded* field is set); the nesting mirrors that structure, and flattening it would duplicate the conditions
 		if sum.DataAdded != nil {
 			added := "+" + humanize.Bytes(*sum.DataAdded) + " added"
 			if sum.DataAddedPacked != nil {
@@ -273,7 +273,7 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 		if includeAdded {
 			return "churn unavailable"
 		}
-		return "—"
+		return emDash
 	}
 	return strings.Join(parts, " · ")
 }
@@ -338,7 +338,7 @@ func (m Model) snapshotTable() string {
 // mark originally targeted a now-folded peer (isNodeMarked ORs head + peers).
 func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected bool) string {
 	s := node.head
-	size := "—"
+	size := emDash
 	if s.Summary != nil {
 		size = humanize.Bytes(s.Summary.TotalBytesProcessed)
 	}
@@ -564,7 +564,7 @@ func snapCells(l snapLayout, r snapRow) []string {
 // or an em-dash when the summary (pre-0.17) or the field is absent.
 func snapAdded(s model.Snapshot) string {
 	if s.Summary == nil || s.Summary.DataAdded == nil {
-		return "—"
+		return emDash
 	}
 	return "+" + humanize.Bytes(*s.Summary.DataAdded)
 }
@@ -575,7 +575,7 @@ func snapAdded(s model.Snapshot) string {
 func snapTook(s model.Snapshot) string {
 	d, ok := model.SnapshotBackupDuration(s)
 	if !ok {
-		return "—"
+		return emDash
 	}
 	return truncate(humanize.Duration(d), snapTookWidth)
 }
@@ -658,7 +658,7 @@ func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 		1 + // the "Snapshots" heading
 		1 // the table's column-header row
 	if withWindowNote {
-		overhead += 1 // the "showing N–M of T" note
+		overhead++ // the "showing N–M of T" note
 	}
 	if withSnapDetail {
 		overhead += 1 + // the blank line between the table and the snapshot sub-panel
@@ -669,7 +669,7 @@ func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 
 func joinOrDash(vals []string) string {
 	if len(vals) == 0 {
-		return "—"
+		return emDash
 	}
 	return strings.Join(vals, ", ")
 }

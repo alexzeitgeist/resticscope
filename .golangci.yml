@@ -68,11 +68,46 @@ linters:
       # In tests, a type assertion that panics on the wrong type is an
       # intentional, loud failure; production code is held to comma-ok.
       # gosec on tests is noise: fixtures use relaxed file perms, temp-path
-      # variables, and hardcoded sample credentials by design.
+      # variables, and hardcoded sample credentials by design. gocyclo/funlen
+      # on tests is noise too: table-driven tests are branchy and long by
+      # nature, which is not a code-quality signal. goconst on tests likewise:
+      # fixtures deliberately repeat repo names and paths inline, where a shared
+      # constant would hurt readability rather than help it.
       - path: _test\.go
         linters:
           - forcetypeassert
           - gosec
+          - gocyclo
+          - funlen
+          - goconst
+      # revive unused-parameter: a deliberate, repo-wide disable of a
+      # high-false-positive rule. In Go an unused parameter is overwhelmingly
+      # intentional — interface/callback conformance (bubbletea handlers, tea.Cmd
+      # closures, command/runner signatures) — and the hits span app, resticx,
+      # cmd, tui, and secrets, not one layer, so path-scoping would not be
+      # honest. revive's remedy (rename to _) costs more in lost parameter-name
+      # documentation than it buys. TRADE-OFF: a genuinely forgotten parameter
+      # also goes unflagged; that is accepted as low-severity.
+      - linters: [revive]
+        text: "^unused-parameter:"
+      # revive redefines-builtin-id: a pure duplicate of predeclared, which is
+      # enabled and remains the ACTIVE guard — predeclared.ignore lists only
+      # cap/min/max, so dangerous shadows (len, error, copy, append, new, delete)
+      # are still caught. Every current revive hit is a local named cap/min/max
+      # (min/max became builtins only in Go 1.21); this exclusion just suppresses
+      # revive's redundant copy of those, leaving predeclared as the single guard.
+      - linters: [revive]
+        text: "^redefines-builtin-id:"
+      # revive context-as-argument: SCOPED, not repo-wide, so "context first"
+      # stays enforced everywhere else. The only deliberate exceptions are the
+      # two extract constructors that take the *app.App handle first
+      # (newExtractModel/newExtractDiffModel) and test helpers that take
+      # *testing.T first. revive's allowTypesBefore argument can't be set without
+      # replacing revive's entire default rule set, so the exception is a path
+      # scope instead.
+      - path: (_test\.go|internal/tui/extract\.go)
+        linters: [revive]
+        text: "^context-as-argument:"
 
   settings:
     errcheck:
@@ -95,7 +130,20 @@ linters:
       min-len: 3
       min-occurrences: 4
     gocyclo:
-      min-complexity: 15
+      # 30 is golangci-lint's own default. This TUI's bubbletea message
+      # dispatchers and key handlers are branchy by nature; a threshold of 15
+      # flagged a dozen of them with no real quality signal. The two genuine
+      # outliers that remain (Model.Update, PlanExtractPaths) carry a targeted
+      # nolint with a justification.
+      min-complexity: 30
+    predeclared:
+      # Allow the pervasive, benign convention of locals named cap/min/max
+      # (min/max only became builtins in Go 1.21). predeclared still flags the
+      # dangerous shadows — len, error, copy, append, new, delete — in new code.
+      ignore:
+        - cap
+        - min
+        - max
     nolintlint:
       require-explanation: true
       require-specific: true

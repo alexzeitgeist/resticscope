@@ -203,11 +203,13 @@ func TestRunExtractHelperCachePathNotADir(t *testing.T) {
 		plant func(t *testing.T, repoCache string)
 	}{
 		{"file", func(t *testing.T, repoCache string) {
+			t.Helper()
 			if err := os.WriteFile(repoCache, []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"symlink", func(t *testing.T, repoCache string) {
+			t.Helper()
 			if err := os.Symlink(t.TempDir(), repoCache); err != nil {
 				t.Fatal(err)
 			}

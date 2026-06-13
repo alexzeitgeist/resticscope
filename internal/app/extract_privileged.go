@@ -208,16 +208,16 @@ func helperDetailedSentinel(sentinel error, msg string) error {
 	if msg == "" || msg == sentinel.Error() {
 		return sentinel
 	}
-	return &helperSentinelDetail{sentinel: sentinel, msg: msg}
+	return &helperSentinelDetailError{sentinel: sentinel, msg: msg}
 }
 
-type helperSentinelDetail struct {
+type helperSentinelDetailError struct {
 	sentinel error
 	msg      string
 }
 
-func (e *helperSentinelDetail) Error() string { return e.msg }
-func (e *helperSentinelDetail) Unwrap() error { return e.sentinel }
+func (e *helperSentinelDetailError) Error() string { return e.msg }
+func (e *helperSentinelDetailError) Unwrap() error { return e.sentinel }
 
 // probeHelperStaging reports whether the planned staging dir exists on disk —
 // the fallback staging fate when the helper vanished without a terminal event.

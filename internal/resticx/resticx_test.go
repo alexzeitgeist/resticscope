@@ -33,11 +33,11 @@ func (f *fakeRunner) Run(ctx context.Context, env []string, password string, arg
 	return f.stdout, f.stderr, f.err
 }
 
-// fakeExit mimics *exec.ExitError for classification tests.
-type fakeExit int
+// fakeExitError mimics *exec.ExitError for classification tests.
+type fakeExitError int
 
-func (e fakeExit) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
-func (e fakeExit) ExitCode() int { return int(e) }
+func (e fakeExitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e fakeExitError) ExitCode() int { return int(e) }
 
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -247,11 +247,11 @@ func TestCatConfigReachable(t *testing.T) {
 func TestCatConfigClassifiesFailure(t *testing.T) {
 	tests := []struct {
 		name string
-		exit fakeExit
+		exit fakeExitError
 		want ErrorKind
 	}{
-		{"missing repo", fakeExit(10), KindRepoNotFound},
-		{"wrong password", fakeExit(12), KindWrongPassword},
+		{"missing repo", fakeExitError(10), KindRepoNotFound},
+		{"wrong password", fakeExitError(12), KindWrongPassword},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -291,10 +291,10 @@ func TestClassifyExitCodes(t *testing.T) {
 		stderr string
 		want   ErrorKind
 	}{
-		{"repo not found", fakeExit(10), "", KindRepoNotFound},
-		{"locked", fakeExit(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
-		{"wrong password", fakeExit(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
-		{"unknown exit", fakeExit(1), "some other failure", KindUnknown},
+		{"repo not found", fakeExitError(10), "", KindRepoNotFound},
+		{"locked", fakeExitError(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
+		{"wrong password", fakeExitError(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
+		{"unknown exit", fakeExitError(1), "some other failure", KindUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -364,7 +364,7 @@ func TestClassifyCanceled(t *testing.T) {
 }
 
 func TestStderrRedactedInError(t *testing.T) {
-	fr := &fakeRunner{err: fakeExit(1), stderr: []byte("failed using key AK-LEAKED-123")}
+	fr := &fakeRunner{err: fakeExitError(1), stderr: []byte("failed using key AK-LEAKED-123")}
 	c := &Client{
 		Runner: fr,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAKED-123", "[REDACTED]") },

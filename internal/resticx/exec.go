@@ -20,6 +20,8 @@ const streamStderrLimit = 64 << 10
 // password out of the argument list and out of /proc/<pid>/environ (plan §7).
 type ExecRunner struct{}
 
+// Run executes restic with env and args, delivering password over the fd-3
+// pipe, and returns its fully-buffered stdout, stderr, and exit error.
 func (ExecRunner) Run(ctx context.Context, env []string, password string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, "restic", args...)
 	cmd.Env = env
@@ -78,7 +80,7 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 	cmd := exec.CommandContext(ctx, "restic", args...)
 	cmd.Env = env
 
-	if password != "" || patterns != nil {
+	if password != "" || patterns != nil { //nolint:nestif // sequential out-of-band fd wiring: the outer block sets up the fd-3 password pipe, the inner branch only adds the optional fd-4 patterns pipe
 		pr, pw, pipeErr := os.Pipe()
 		if pipeErr != nil {
 			return nil, pipeErr
@@ -163,4 +165,5 @@ func (b *LimitedBuffer) Write(p []byte) (int, error) {
 	return accepted, nil
 }
 
+// Bytes returns the accumulated (capped) contents.
 func (b *LimitedBuffer) Bytes() []byte { return b.buf.Bytes() }

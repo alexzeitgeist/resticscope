@@ -406,7 +406,7 @@ func TestStreamSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
 }
 
 func TestStreamSnapshotTreeResticFailureClassifies(t *testing.T) {
-	fs := &fakeStream{err: fakeExit(10), stderr: []byte("repository does not exist")}
+	fs := &fakeStream{err: fakeExitError(10), stderr: []byte("repository does not exist")}
 	c := &Client{Stream: fs}
 	onNode, _ := collect()
 	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
@@ -417,7 +417,7 @@ func TestStreamSnapshotTreeResticFailureClassifies(t *testing.T) {
 }
 
 func TestStreamSnapshotTreeRedactsStderr(t *testing.T) {
-	fs := &fakeStream{err: fakeExit(1), stderr: []byte("failed using key AK-LEAKED-9")}
+	fs := &fakeStream{err: fakeExitError(1), stderr: []byte("failed using key AK-LEAKED-9")}
 	c := &Client{
 		Stream: fs,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAKED-9", "[REDACTED]") },

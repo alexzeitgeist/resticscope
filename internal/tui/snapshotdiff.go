@@ -257,8 +257,7 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 // opens the modal for the selected row's changed paths. Navigation is
 // paused while a stream is loading because the rows are about to be replaced.
 func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Back):
+	if key.Matches(msg, m.keys.Back) {
 		if m.diffSearchJumped {
 			return m.cancelDiffSearch(), nil
 		}

@@ -135,7 +135,7 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 			close(sigCh)
 		}()
 		go func() {
-			for range sigCh {
+			for range sigCh { //nolint:revive // intentional drain: swallow SIGINT while the child shell owns the terminal
 			}
 		}()
 	}

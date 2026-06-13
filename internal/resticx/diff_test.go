@@ -163,14 +163,14 @@ func TestStreamDiffResticFailureClassifies(t *testing.T) {
 	// TestClassifyExitCodes on the Snapshots path.
 	tests := []struct {
 		name   string
-		exit   fakeExit
+		exit   fakeExitError
 		stderr string
 		want   ErrorKind
 	}{
-		{"repo not found", fakeExit(10), "repository does not exist", KindRepoNotFound},
-		{"locked", fakeExit(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
-		{"wrong password", fakeExit(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
-		{"unknown exit", fakeExit(1), "some other failure", KindUnknown},
+		{"repo not found", fakeExitError(10), "repository does not exist", KindRepoNotFound},
+		{"locked", fakeExitError(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
+		{"wrong password", fakeExitError(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
+		{"unknown exit", fakeExitError(1), "some other failure", KindUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

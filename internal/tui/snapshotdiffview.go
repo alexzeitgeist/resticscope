@@ -88,9 +88,9 @@ func (m Model) diffSearchSummary() string {
 func diffSearchSummaryBody(query string, total, shown int) string {
 	if total == 0 {
 		if strings.TrimSpace(query) == "" {
-			return "type to search"
+			return searchPrompt
 		}
-		return "(no matches)"
+		return noMatchesLabel
 	}
 	if shown < total {
 		return fmt.Sprintf("showing %d of %s", shown, humanize.Count(total, "match", "matches"))

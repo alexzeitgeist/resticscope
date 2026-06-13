@@ -169,7 +169,7 @@ func findHeaderRow(l findColLayout) string {
 }
 
 func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw int) string {
-	mod := "—"
+	mod := emDash
 	if !v.ModTime.IsZero() {
 		mod = v.ModTime.Format("2006-01-02 15:04")
 	}
@@ -183,14 +183,14 @@ func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw 
 		cells = append(cells, padRight(truncateWidth(latest, l.latest), l.latest))
 	}
 	if l.showPerms {
-		perms := "—"
+		perms := emDash
 		if v.Permissions != "" {
 			perms = truncate(v.Permissions, findPermsWidth)
 		}
 		cells = append(cells, fmt.Sprintf("%-*s", findPermsWidth, perms))
 	}
 	if l.showOwner {
-		owner := "—"
+		owner := emDash
 		if v.OwnerKnown {
 			owner = truncate(fmt.Sprintf("%d:%d", v.UID, v.GID), findOwnerWidth)
 		}
@@ -211,16 +211,16 @@ func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw 
 // disambiguate which machine the most recent copy lives on).
 func findLatestText(v *model.FileVersion, allHosts bool) string {
 	if len(v.Occurrences) == 0 {
-		return "—"
+		return emDash
 	}
 	o := v.Occurrences[0]
-	ts := "—"
+	ts := emDash
 	if !o.SnapTime.IsZero() {
 		ts = o.SnapTime.Format("2006-01-02 15:04")
 	}
 	id := o.ShortID
 	if id == "" {
-		id = "—"
+		id = emDash
 	}
 	out := ts + " " + id
 	if allHosts && o.Hostname != "" {

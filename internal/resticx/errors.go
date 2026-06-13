@@ -11,6 +11,8 @@ import (
 // restic 0.17.0+; older versions are not supported (plan §9, §12).
 type ErrorKind int
 
+// The ErrorKind values; KindUnknown is the zero value, and the inline comment
+// on each gives the restic exit code or condition it classifies.
 const (
 	KindUnknown       ErrorKind = iota
 	KindRepoNotFound            // restic exit 10

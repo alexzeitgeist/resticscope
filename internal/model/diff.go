@@ -20,6 +20,8 @@ import (
 // ChangeType is the single primary kind chosen for color/glyph display.
 type ChangeType uint8
 
+// The ChangeType values, low to high; ChangeUnknown is the zero value. The
+// inline comment on each names the restic marker character it maps to.
 const (
 	ChangeUnknown      ChangeType = iota // synthetic ancestor / `?` marker
 	ChangeAdded                          // `+`
@@ -36,6 +38,7 @@ const (
 // read this bitmask, not the singular ChangeType.
 type ModifierKind uint8
 
+// The ModifierKind bits, one per restic marker character.
 const (
 	KindAdded       ModifierKind = 1 << iota // `+`
 	KindRemoved                              // `-`

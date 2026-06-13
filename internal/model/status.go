@@ -6,6 +6,8 @@ import "time"
 // glyph in the TUI and as a word by `resticscope status`.
 type Status string
 
+// The Status values; the inline comment on each gives the condition
+// EvaluateStatus assigns it for.
 const (
 	StatusGreen Status = "green" // last snapshot within expected_frequency
 	StatusAmber Status = "amber" // within expected_frequency + stale_grace

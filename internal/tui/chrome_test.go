@@ -30,6 +30,7 @@ type chromeCase struct {
 // fixtures.
 func chromeViews() []chromeCase {
 	diffModel := func(t *testing.T) Model {
+		t.Helper()
 		a := detailApp(t)
 		a.Restic = stubRestic{
 			snaps: []model.Snapshot{{Hostname: "h"}},
@@ -48,41 +49,50 @@ func chromeViews() []chromeCase {
 	}
 	return []chromeCase{
 		{"list", func(t *testing.T) Model {
+			t.Helper()
 			return newTestModel(t, detailApp(t))
 		}, "q quit"},
 		{"list filtering", func(t *testing.T) Model {
+			t.Helper()
 			m := newTestModel(t, detailApp(t))
 			m = update(t, m, press("/"))
 			return typeFilter(t, m, "re")
 		}, "esc clear"},
 		{"list with status notice", func(t *testing.T) Model {
+			t.Helper()
 			m := newTestModel(t, detailApp(t))
 			m.statusMsg = "cache write failed: disk full"
 			return m
 		}, "q quit"},
 		{"detail", func(t *testing.T) Model {
+			t.Helper()
 			return update(t, newTestModel(t, detailApp(t)), press("enter"))
 		}, "q back"},
 		{"browse", func(t *testing.T) Model {
+			t.Helper()
 			return openBrowse(t, newTestModel(t, browseApp(t,
 				bnode("/home", "home", true, 0),
 				bnode("/home/report.txt", "report.txt", false, 10),
 			)))
 		}, "q back"},
 		{"find versions", func(t *testing.T) Model {
+			t.Helper()
 			a, _ := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 			return openFindVersions(t, newTestModel(t, a), "hostname")
 		}, "q back"},
 		{"snapshot diff", diffModel, "q back"},
 		{"info", func(t *testing.T) Model {
+			t.Helper()
 			m := newTestModel(t, snapshotInfoApp(t))
 			m = update(t, m, press("enter"))
 			return update(t, m, press("i"))
 		}, "q back"},
 		{"help", func(t *testing.T) Model {
+			t.Helper()
 			return update(t, newTestModel(t, detailApp(t)), press("?"))
 		}, "q back"},
 		{"extract review", func(t *testing.T) Model {
+			t.Helper()
 			em, _ := newExtractFixture(t, dirReq())
 			m := newTestModel(t, extractApp(t))
 			m.extract = em
@@ -139,15 +149,18 @@ func TestHelpChipPresentInEveryNonInputState(t *testing.T) {
 func TestHelpChipSuppressedWhileTyping(t *testing.T) {
 	cases := []chromeCase{
 		{"list filtering", func(t *testing.T) Model {
+			t.Helper()
 			m := newTestModel(t, detailApp(t))
 			m = update(t, m, press("/"))
 			return typeFilter(t, m, "re")
 		}, ""},
 		{"browse searching", func(t *testing.T) Model {
+			t.Helper()
 			m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
 			return openSearch(t, m)
 		}, ""},
 		{"diff searching", func(t *testing.T) Model {
+			t.Helper()
 			for _, c := range chromeViews() {
 				if c.name == "snapshot diff" {
 					return openDiffSearch(t, c.setup(t))

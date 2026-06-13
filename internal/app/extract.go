@@ -267,7 +267,7 @@ func SanitizeExtractSlug(s string) (string, error) {
 // and config. It is exported for testing, is deterministic, and touches no
 // filesystem. It also re-asserts every request invariant the app layer owns;
 // failure returns a path-free ErrExtractInvalidRequest naming the bad field.
-func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final string, err error) {
+func PlanExtractPaths(cfg config.Extract, req ExtractRequest) (staging, final string, err error) { //nolint:gocyclo // a flat sequence of guard clauses re-asserting each request invariant before any work; splitting it would scatter the validation and obscure the ordering
 	if req.Repo == "" {
 		return "", "", invalidExtractRequest("repo")
 	}

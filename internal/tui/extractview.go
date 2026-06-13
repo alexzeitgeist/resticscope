@@ -638,7 +638,7 @@ func filePickerModeSpan(line string) (at, n int, ok bool) {
 		if line[i] == 0x1b { // skip a CSI sequence: ESC '[' params final-byte
 			j := i + 1
 			if j < len(line) && line[j] == '[' {
-				for j++; j < len(line) && (line[j] < 0x40 || line[j] > 0x7e); j++ {
+				for j++; j < len(line) && (line[j] < 0x40 || line[j] > 0x7e); j++ { //nolint:revive // intentional empty body: the loop's post-statement scans j past the CSI parameter bytes
 				}
 				if j < len(line) {
 					j++

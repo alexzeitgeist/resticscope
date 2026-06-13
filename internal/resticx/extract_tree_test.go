@@ -357,14 +357,14 @@ func TestExtractTreeMalformedJSONIsParseError(t *testing.T) {
 func TestExtractTreeClassifiesExitCodes(t *testing.T) {
 	tests := []struct {
 		name   string
-		exit   fakeExit
+		exit   fakeExitError
 		stderr string
 		want   ErrorKind
 	}{
-		{"repo not found", fakeExit(10), "repository does not exist", KindRepoNotFound},
-		{"locked", fakeExit(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
-		{"wrong password", fakeExit(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
-		{"generic failure, no summary", fakeExit(1), "some other failure", KindUnknown},
+		{"repo not found", fakeExitError(10), "repository does not exist", KindRepoNotFound},
+		{"locked", fakeExitError(11), string(readFixture(t, "restic-error-locked.stderr")), KindLocked},
+		{"wrong password", fakeExitError(12), string(readFixture(t, "restic-error-wrong-password.stderr")), KindWrongPassword},
+		{"generic failure, no summary", fakeExitError(1), "some other failure", KindUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -390,7 +390,7 @@ func TestExtractTreeClassifiesExitCodes(t *testing.T) {
 func TestExtractTreePartialFromSummaryThenExit1(t *testing.T) {
 	fs := &extractTreeStreamFake{
 		data: `{"message_type":"summary","total_files":9,"files_restored":7,"total_bytes":100,"bytes_restored":80}` + "\n",
-		err:  fakeExit(1),
+		err:  fakeExitError(1),
 	}
 	c := &Client{Stream: fs}
 	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
@@ -443,7 +443,7 @@ func TestExtractTreeScrubsPathsKeepsSecretMask(t *testing.T) {
 	const source = "/etc/secret-dir"
 	const target = "/abs/staging/extract-7f3a"
 	fs := &extractTreeStreamFake{
-		err:    fakeExit(1),
+		err:    fakeExitError(1),
 		stderr: []byte("Fatal: AK-LEAK-123 failed restoring " + source + " into " + target + " boom"),
 	}
 	c := &Client{
@@ -471,7 +471,7 @@ func TestExtractTreeScrubsPathsKeepsSecretMask(t *testing.T) {
 // wholesale, while the *Error classification is preserved.
 func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 	fs := &extractTreeStreamFake{
-		err:    fakeExit(1),
+		err:    fakeExitError(1),
 		stderr: []byte("Fatal: error reading /var/lib/other/unrelated/file: permission denied"),
 	}
 	c := &Client{Stream: fs}
@@ -512,7 +512,7 @@ func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 			const target = "/abs/staging/extract-7f3a"
 			// restic mentions the full selected path and, separately, the bare leaf.
 			stderr := "Fatal: AK-LEAK-123 restoring " + c.includePath + " (item vzdump.conf) failed"
-			fs := &extractTreeStreamFake{err: fakeExit(1), stderr: []byte(stderr)}
+			fs := &extractTreeStreamFake{err: fakeExitError(1), stderr: []byte(stderr)}
 			cl := &Client{
 				Stream: fs,
 				Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAK-123", "[REDACTED]") },
@@ -770,7 +770,7 @@ func TestExtractTreeScrubsEveryIncludePath(t *testing.T) {
 	const target = "/abs/staging/extract-7f3a"
 	incs := []string{"/.config/secret-one.txt", "/.local/secret-two.dat"}
 	stderr := "Fatal: restoring " + incs[0] + " and " + incs[1] + " (item secret-two.dat) failed"
-	fs := &extractTreeStreamFake{err: fakeExit(1), stderr: []byte(stderr)}
+	fs := &extractTreeStreamFake{err: fakeExitError(1), stderr: []byte(stderr)}
 	cl := &Client{Stream: fs}
 	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/home/alex", IncludePaths: incs, Target: target}, nil)

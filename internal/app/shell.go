@@ -187,7 +187,7 @@ func (s *ShellSession) InteractiveArgs() []string {
 	if s.Banner != "" {
 		script = "printf '%s\\n' " + posixQuote(s.Banner) + "; " + script
 	}
-	return []string{"/bin/sh", "-c", script}
+	return []string{posixShell, "-c", script}
 }
 
 // InteractiveEnv returns the child environment for the interactive launch: Env
@@ -202,14 +202,21 @@ func (s *ShellSession) InteractiveEnv() []string {
 	return append(envWithout(s.Env, "ZDOTDIR"), "ZDOTDIR="+s.promptZDotDir)
 }
 
+// Shell password modes (config shell_password_mode): file (the default) writes
+// the password to a 0600 temp file; env exports it as RESTIC_PASSWORD.
+const (
+	passwordModeFile = "file"
+	passwordModeEnv  = "env"
+)
+
 // passwordMode normalizes the configured shell_password_mode, defaulting to the
 // safer "file" mode for any unset/unknown value (config validation already
 // rejects unknown values, so this is just belt-and-suspenders).
 func passwordMode(configured string) string {
-	if configured == "env" {
-		return "env"
+	if configured == passwordModeEnv {
+		return passwordModeEnv
 	}
-	return "file"
+	return passwordModeFile
 }
 
 // writePasswordFile writes the restic password to a fresh 0600 temp file in file
@@ -217,7 +224,7 @@ func passwordMode(configured string) string {
 // creates no file and returns a no-op cleanup. os.CreateTemp creates the file
 // 0600, so the password is never world- or group-readable.
 func writePasswordFile(mode, password string) (string, func() error, error) {
-	if mode == "env" {
+	if mode == passwordModeEnv {
 		return "", func() error { return nil }, nil
 	}
 	f, err := os.CreateTemp("", "resticscope-pw-*")
@@ -237,6 +244,10 @@ func writePasswordFile(mode, password string) (string, func() error, error) {
 	return name, func() error { return os.Remove(name) }, nil
 }
 
+// posixShell runs the interactive launch wrapper and is the last-resort shell
+// when none is configured and $SHELL is unset.
+const posixShell = "/bin/sh"
+
 // resolveShell picks the interactive shell: the configured value wins, then
 // $SHELL, then /bin/sh as a last resort.
 func resolveShell(configured, envShell string) string {
@@ -246,7 +257,7 @@ func resolveShell(configured, envShell string) string {
 	case envShell != "":
 		return envShell
 	default:
-		return "/bin/sh"
+		return posixShell
 	}
 }
 
@@ -332,7 +343,7 @@ func buildShellEnv(base []string, o shellEnvOpts) []string {
 	if o.snap != nil {
 		env = append(env, "RESTICSCOPE_SNAPSHOT_ID="+o.snap.ID)
 	}
-	if o.mode == "env" {
+	if o.mode == passwordModeEnv {
 		env = append(env, "RESTIC_PASSWORD="+o.creds.ResticPassword)
 	} else {
 		env = append(env, "RESTIC_PASSWORD_FILE="+o.pwFile)
