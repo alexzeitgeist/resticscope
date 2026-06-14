@@ -32,7 +32,7 @@ func findApp(t *testing.T, results []model.FindSnapshotResult, nodes ...model.Br
 	cap := &stubFindCapture{}
 	a.Restic = stubRestic{browseNodes: nodes, findResults: results, findCap: cap}
 	store := newFakeBrowseStore()
-	a.Browse = app.NewBrowseSession(func() (app.BrowseStore, error) { return store, nil })
+	a.Browse = app.NewBrowseSession(func(context.Context) (app.BrowseStore, error) { return store, nil })
 	t.Cleanup(func() { _ = a.Browse.Close() })
 	return a, cap
 }

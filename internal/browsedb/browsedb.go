@@ -120,6 +120,15 @@ func sqliteURIPath(p string) string {
 // via PRAGMA hexkey in a per-connection init callback so every (re)connection is
 // keyed without ever placing the key in the DSN/URI.
 func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
+	return OpenContext(context.Background(), path, key, maxDiskBytes)
+}
+
+// OpenContext opens the encrypted browse DB like Open, using ctx while applying
+// the schema.
+func OpenContext(ctx context.Context, path string, key []byte, maxDiskBytes int64) (*DB, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(key) != 32 {
 		return nil, fmt.Errorf("browsedb open: %w", errInvalidKey)
 	}
@@ -172,7 +181,7 @@ func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 	pool.SetMaxIdleConns(1)
 
 	db := &DB{pool: pool, dir: filepath.Dir(path), maxDiskBytes: maxDiskBytes}
-	if err := db.applySchema(context.Background()); err != nil {
+	if err := db.applySchema(ctx); err != nil {
 		_ = pool.Close()
 		return nil, err
 	}

@@ -431,7 +431,7 @@ func (w *fakeWriter) Rollback() error {
 // browseApp wires an App whose Browse session serves store and whose Restic is r.
 func browseApp(store BrowseStore, r fakeRestic) *App {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: r}
-	a.Browse = NewBrowseSession(func() (BrowseStore, error) { return store, nil })
+	a.Browse = NewBrowseSession(func(context.Context) (BrowseStore, error) { return store, nil })
 	return a
 }
 
@@ -1060,6 +1060,50 @@ func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 	}
 }
 
+func TestBrowseSessionCloseCancelsInFlightOpen(t *testing.T) {
+	started := make(chan struct{})
+	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	a.Browse = NewBrowseSession(func(ctx context.Context) (BrowseStore, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	indexDone := make(chan error, 1)
+	go func() {
+		indexDone <- a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("browse store open never started")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- a.Browse.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not cancel the in-flight open")
+	}
+
+	select {
+	case err := <-indexDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("IndexSnapshot err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("index did not exit after Close cancelled open")
+	}
+}
+
 func TestIndexSnapshotNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
 	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); !errors.Is(err, ErrBrowseNotEnabled) {
@@ -1077,7 +1121,7 @@ func TestIndexSnapshotUnknownRepo(t *testing.T) {
 func TestEnsureStoreOpenFailureNotCached(t *testing.T) {
 	calls := 0
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	a.Browse = NewBrowseSession(func() (BrowseStore, error) {
+	a.Browse = NewBrowseSession(func(context.Context) (BrowseStore, error) {
 		calls++
 		return nil, errors.New("open failed")
 	})

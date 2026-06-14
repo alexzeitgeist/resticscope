@@ -67,8 +67,11 @@ func (s *browseStore) Close() error {
 // takes the advisory session lock, and opens the encrypted DB. On any failure it
 // removes whatever it created so a broken open never orphans a session directory,
 // and the surfaced error is path-free.
-func newBrowseOpen(cacheDir string, maxDiskBytes int64) func() (app.BrowseStore, error) {
-	return func() (app.BrowseStore, error) {
+func newBrowseOpen(cacheDir string, maxDiskBytes int64) func(context.Context) (app.BrowseStore, error) {
+	return func(ctx context.Context) (app.BrowseStore, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return nil, fmt.Errorf("browse key: %w", err)
@@ -89,7 +92,7 @@ func newBrowseOpen(cacheDir string, maxDiskBytes int64) func() (app.BrowseStore,
 			return nil, err
 		}
 
-		db, err := browsedb.Open(filepath.Join(dir, "db.sqlite"), key, maxDiskBytes)
+		db, err := browsedb.OpenContext(ctx, filepath.Join(dir, "db.sqlite"), key, maxDiskBytes)
 		if err != nil {
 			_ = lock.Close()
 			_ = os.RemoveAll(dir)

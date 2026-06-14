@@ -73,7 +73,7 @@ type IndexWriter interface {
 // operation lock serializes store use with Close so shutdown cannot tear down the
 // DB under an in-flight browse command.
 type BrowseSession struct {
-	open func() (BrowseStore, error)
+	open func(context.Context) (BrowseStore, error)
 
 	mu       sync.Mutex // protects store, closed, and inflight
 	store    BrowseStore
@@ -92,24 +92,42 @@ type BrowseSession struct {
 // NewBrowseSession returns a session whose store is opened lazily by open on the
 // first browse. open is responsible for cleaning up anything it created if it
 // returns an error, so a failed open leaves no orphaned session directory.
-func NewBrowseSession(open func() (BrowseStore, error)) *BrowseSession {
+func NewBrowseSession(open func(context.Context) (BrowseStore, error)) *BrowseSession {
 	return &BrowseSession{open: open}
 }
 
 // ensureStore returns the session store, opening it on first use. A failed open
 // is not cached: the next browse retries rather than wedging on a broken store.
-func (s *BrowseSession) ensureStore() (BrowseStore, error) {
+// It drops mu during open so Close can cancel a slow first open; callers must
+// hold opMu, which serializes opens.
+func (s *BrowseSession) ensureStore(ctx context.Context) (BrowseStore, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil, errBrowseSessionClosed
 	}
 	if s.store != nil {
-		return s.store, nil
+		store := s.store
+		s.mu.Unlock()
+		return store, nil
 	}
-	store, err := s.open()
+	open := s.open
+	s.mu.Unlock()
+
+	store, err := open(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		closeErr := store.Close()
+		return nil, errors.Join(err, closeErr)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		closeErr := store.Close()
+		return nil, errors.Join(errBrowseSessionClosed, closeErr)
 	}
 	s.store = store
 	return store, nil
@@ -123,14 +141,9 @@ func (s *BrowseSession) ensureStore() (BrowseStore, error) {
 // MUST be deferred. A closed session returns errBrowseSessionClosed.
 func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseStore, func(), error) {
 	s.opMu.Lock()
-	store, err := s.ensureStore()
-	if err != nil {
-		s.opMu.Unlock()
-		return nil, nil, nil, err
-	}
 	opCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
-	if s.closed { // Close raced in between ensureStore and registration
+	if s.closed {
 		s.mu.Unlock()
 		cancel()
 		s.opMu.Unlock()
@@ -138,6 +151,16 @@ func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseSto
 	}
 	s.inflight = cancel
 	s.mu.Unlock()
+
+	store, err := s.ensureStore(opCtx)
+	if err != nil {
+		s.mu.Lock()
+		s.inflight = nil
+		s.mu.Unlock()
+		cancel()
+		s.opMu.Unlock()
+		return nil, nil, nil, err
+	}
 
 	release := func() {
 		s.mu.Lock()

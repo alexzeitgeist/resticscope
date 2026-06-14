@@ -225,7 +225,7 @@ func browseAppWithStore(t *testing.T, nodes ...model.BrowseNode) (*app.App, *fak
 	a.Cfg.Browse = config.Browse{IndexTimeout: config.Duration(10 * time.Minute)}
 	a.Restic = stubRestic{browseNodes: nodes}
 	store := newFakeBrowseStore()
-	a.Browse = app.NewBrowseSession(func() (app.BrowseStore, error) { return store, nil })
+	a.Browse = app.NewBrowseSession(func(context.Context) (app.BrowseStore, error) { return store, nil })
 	t.Cleanup(func() { _ = a.Browse.Close() })
 	return a, store
 }
@@ -766,7 +766,7 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 	started := make(chan struct{})
 	a.Restic = blockingRestic{started: started}
 	store := newFakeBrowseStore()
-	a.Browse = app.NewBrowseSession(func() (app.BrowseStore, error) { return store, nil })
+	a.Browse = app.NewBrowseSession(func(context.Context) (app.BrowseStore, error) { return store, nil })
 	t.Cleanup(func() { _ = a.Browse.Close() })
 	m := newTestModel(t, a)
 
