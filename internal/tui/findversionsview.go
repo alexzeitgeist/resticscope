@@ -67,7 +67,7 @@ func (m Model) findSummaryLine() string {
 	if m.findErr != "" {
 		return m.findErr
 	}
-	if m.isFindLoading {
+	if m.findLoading() {
 		return "loading…"
 	}
 	if len(m.findRows) == 0 {
@@ -130,7 +130,7 @@ func (m Model) findList(w int) string {
 	l := findLayout(tw)
 	header := clip(m.styles.dim.Render(findHeaderRow(l)), tw)
 
-	if m.isFindLoading || m.findErr != "" || len(m.findRows) == 0 {
+	if m.findLoading() || m.findErr != "" || len(m.findRows) == 0 {
 		// The summary line already explains the empty state ("loading…",
 		// "(no matches)", or the error), so render just the column header here.
 		return header

@@ -48,7 +48,6 @@ func (m Model) beginFind() (Model, tea.Cmd) {
 func (m Model) dispatchFind() (Model, tea.Cmd) {
 	fctx, fcancel := context.WithCancel(m.ctx)
 	m.findCancel = fcancel
-	m.isFindLoading = true
 	m.findErr = ""
 
 	gen := m.findGen
@@ -74,7 +73,6 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 	if msg.gen != m.findGen {
 		return m
 	}
-	m.isFindLoading = false
 	m = m.cancelFind()
 	if msg.err != nil {
 		m.findRows = nil
@@ -110,7 +108,7 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.beginFind()
 	}
 
-	if m.isFindLoading {
+	if m.findLoading() {
 		return m, nil
 	}
 
@@ -130,7 +128,7 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Extract), key.Matches(msg, m.keys.Enter):
 		// enter (the primary action; e stays as an alias) extracts the queried
 		// file from the selected version's newest occurrence snapshot, through
-		// the shared extract modal. Sits below the isFindLoading guard so it
+		// the shared extract modal. Sits below the find-loading guard so it
 		// can't fire against a row set being replaced.
 		m = m.openExtractVersion()
 	}
@@ -201,6 +199,10 @@ func (m Model) cancelFind() Model {
 	return m
 }
 
+func (m Model) findLoading() bool {
+	return m.findCancel != nil
+}
+
 // clearFindVersions zeroes all find-versions state. Called on every exit from
 // the view so no repo, path, or host string lingers in the model past the
 // user's leave (non-negotiable #1: paths do not persist).
@@ -214,7 +216,6 @@ func (m Model) clearFindVersions() Model {
 	m.findRows = nil
 	m.findCursor = 0
 	m.findErr = ""
-	m.isFindLoading = false
 	m.findCancel = nil
 	return m
 }

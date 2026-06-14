@@ -50,6 +50,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"resticscope/internal/config"
@@ -357,6 +358,13 @@ func mkdirAllOwned(dir string, uid, gid int) error {
 		cur = parent
 	}
 	if len(missing) == 0 {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			return &os.PathError{Op: "mkdir", Path: dir, Err: syscall.ENOTDIR}
+		}
 		return nil // dir already exists; nothing to create or own
 	}
 	// cur is the first existing ancestor: confine the downward create+chown to
@@ -400,8 +408,9 @@ func prepareHelperCache(repoCache string, uid, gid int) bool {
 	if err := mkdirAllOwned(repoCache, uid, gid); err != nil {
 		return false
 	}
-	// Re-Lstat rather than trusting mkdirAllOwned: its target-exists check is
-	// deliberately lenient (a pre-existing leaf of any type counts as done).
+	// Re-Lstat rather than trusting mkdirAllOwned: it rejects a file leaf
+	// (ENOTDIR) but still treats a symlink-to-dir leaf as done, whereas this
+	// path requires a real dir owned by the invoker.
 	info, err := os.Lstat(repoCache)
 	if err != nil || !info.Mode().IsDir() {
 		return false

@@ -61,7 +61,7 @@ func (m Model) snapshotDiffBody() string {
 		summaryText = m.diffSearchSummary()
 	}
 	summary := clip(m.styles.meta.Render("  "+summaryText), w)
-	if m.isDiffLoading {
+	if m.diffLoading() {
 		// While the stream is in flight the body area shows only the meta block;
 		// the table will appear once entries land and BuildDiffTree runs on the
 		// terminal msg.
@@ -111,7 +111,7 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 // replaces this line while search is open, prefixes the same warning for the
 // same reason.
 func (m Model) diffSummaryLine() string {
-	if m.isDiffLoading {
+	if m.diffLoading() {
 		return fmt.Sprintf("loading… %s seen · esc/back cancels", humanize.Count(m.diffLoadCount, "change", "changes"))
 	}
 	parts := make([]string, 0, 6)

@@ -4,6 +4,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path"
@@ -662,6 +663,21 @@ func TestMkdirAllOwned(t *testing.T) {
 	// Idempotent: the whole chain now exists, so a second call is a no-op success.
 	if err := mkdirAllOwned(target, uid, gid); err != nil {
 		t.Errorf("mkdirAllOwned (idempotent re-call): %v", err)
+	}
+	existingFile := filepath.Join(base, "file")
+	mustSetup(t, os.WriteFile(existingFile, []byte("x"), 0o600))
+	if err := mkdirAllOwned(existingFile, uid, gid); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("mkdirAllOwned(existing file) err = %v, want ENOTDIR", err)
+	}
+	linkDir := filepath.Join(base, "link-dir")
+	mustSetup(t, os.Symlink(target, linkDir))
+	if err := mkdirAllOwned(linkDir, uid, gid); err != nil {
+		t.Errorf("mkdirAllOwned(symlink to dir): %v", err)
+	}
+	linkFile := filepath.Join(base, "link-file")
+	mustSetup(t, os.Symlink(existingFile, linkFile))
+	if err := mkdirAllOwned(linkFile, uid, gid); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("mkdirAllOwned(symlink to file) err = %v, want ENOTDIR", err)
 	}
 	// Unknown invoker (negative ids) falls back to plain MkdirAll, still creating.
 	other := filepath.Join(base, "x", "y")

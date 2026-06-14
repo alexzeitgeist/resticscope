@@ -1939,7 +1939,7 @@ func TestFindVersionsEnterOpensSubModel(t *testing.T) {
 // enter while a find is loading is swallowed by the loading guard, same as e.
 func TestFindVersionsEnterPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
-	m.isFindLoading = true
+	m.findCancel = func() {}
 
 	m = update(t, m, press("enter"))
 
@@ -2020,7 +2020,7 @@ func TestFindVersionsExtractNoRowsIsNoop(t *testing.T) {
 // about to be replaced, so the selection is not actionable.
 func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
-	m.isFindLoading = true
+	m.findCancel = func() {}
 
 	m = update(t, m, press("e"))
 

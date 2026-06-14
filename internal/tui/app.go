@@ -125,7 +125,6 @@ type Model struct {
 	findOriginHost      string              // originating snapshot hostname from the live TUI row
 	findPath            string              // the path being searched (held by the model only)
 	findRequestAllHosts bool                // user toggle position, flipped by `a`
-	isFindLoading       bool                // a find call is in flight
 	findResultHost      string              // host the latest response actually filtered by; "" when result.AllHosts
 	findResultAllHosts  bool                // mirrors the latest response's AllHosts so the renderer can label without inference
 	findRows            []model.FileVersion // distinct (size, mtime) versions, newest-first
@@ -188,7 +187,6 @@ type Model struct {
 	diffStats     model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
 	diffErr       string             // sticky partial-diff warning rendered with the loaded tree
 	diffParseErrs int                // tolerated malformed diff lines in the completed stream
-	isDiffLoading bool               // a diff stream is in flight (navigation paused)
 	diffLoadCount int                // entries seen on the wire while loading (progress UX)
 	diffGen       int                // generation token; stale diff msgs are discarded
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)

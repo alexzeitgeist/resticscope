@@ -113,7 +113,7 @@ func TestFindVersionsOpensFromBrowseAndPopulates(t *testing.T) {
 	if m.view != findVersionsView {
 		t.Fatalf("view = %d, want findVersionsView", m.view)
 	}
-	if m.isFindLoading {
+	if m.findLoading() {
 		t.Error("after the result lands, loading should be false")
 	}
 	if len(m.findRows) != 1 {
@@ -409,7 +409,7 @@ func TestApplyFindVersionsMsgDropsStaleGen(t *testing.T) {
 // Cursor moves are paused while a find is loading, since the row set is about
 // to be replaced.
 func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
-	m := Model{view: findVersionsView, isFindLoading: true, findCursor: 0}
+	m := Model{view: findVersionsView, findCancel: func() {}, findCursor: 0}
 	m.keys = defaultKeys()
 	m.ctx = t.Context()
 	next, _ := m.handleFindVersionsKey(press("j"))
@@ -421,11 +421,10 @@ func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 func TestStartFindVersionsCancelsPriorFindBeforeClearing(t *testing.T) {
 	canceled := false
 	m := Model{
-		ctx:           t.Context(),
-		findGen:       7,
-		isFindLoading: true,
-		findCancel:    func() { canceled = true },
-		findRows:      []model.FileVersion{{Size: 1}},
+		ctx:        t.Context(),
+		findGen:    7,
+		findCancel: func() { canceled = true },
+		findRows:   []model.FileVersion{{Size: 1}},
 	}
 
 	next, cmd := m.startFindVersions("repo-a", "host-a", "/x")
@@ -438,9 +437,8 @@ func TestStartFindVersionsCancelsPriorFindBeforeClearing(t *testing.T) {
 	if next.findGen != 8 {
 		t.Fatalf("findGen = %d, want one supersede to 8", next.findGen)
 	}
-	if !next.isFindLoading || next.findCancel == nil {
-		t.Fatalf("new find should be in flight with a fresh cancel func: loading=%v cancel-nil=%v",
-			next.isFindLoading, next.findCancel == nil)
+	if !next.findLoading() {
+		t.Fatal("new find should be in flight with a fresh cancel func")
 	}
 	if next.findRepo != "repo-a" || next.findOriginHost != "host-a" || next.findPath != "/x" {
 		t.Fatalf("new find query not pinned: repo=%q host=%q path=%q",
