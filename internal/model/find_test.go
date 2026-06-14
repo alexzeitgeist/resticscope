@@ -66,6 +66,24 @@ func TestGroupFileVersions(t *testing.T) {
 		}
 	})
 
+	t.Run("out-of-range mtimes stay distinct", func(t *testing.T) {
+		// 2^64ns = 18446744073s + 709551616ns. A UnixNano-based key
+		// can wrap a pre-1678 time onto an otherwise distinct in-range
+		// timestamp; normalized time.Time keys do not.
+		preUnixNanoRange := time.Unix(mtA.Unix()-18446744073, int64(mtA.Nanosecond())-709551616).UTC()
+		if !preUnixNanoRange.Before(time.Date(1678, 1, 1, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("test setup expected pre-1678 time, got %v", preUnixNanoRange)
+		}
+		results := []FindSnapshotResult{
+			{SnapshotID: "snap-1", Matches: []FindMatch{mkMatch(1500, preUnixNanoRange)}},
+			{SnapshotID: "snap-2", Matches: []FindMatch{mkMatch(1500, mtA)}},
+		}
+		got := GroupFileVersions(results, path, snapshotsByID(snapOld, snapMid))
+		if len(got) != 2 {
+			t.Fatalf("want distinct rows for mtimes outside UnixNano's defined range, got %+v", got)
+		}
+	})
+
 	t.Run("size differs: two rows", func(t *testing.T) {
 		results := []FindSnapshotResult{
 			{SnapshotID: "snap-1", Matches: []FindMatch{mkMatch(1500, mtA)}},

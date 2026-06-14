@@ -61,12 +61,13 @@ type FileVersion struct {
 	Occurrences []FileVersionOccurrence
 }
 
-// fileVersionKey is the dedup tuple over (Size, ModTime). ModTime is reduced
-// to UnixNano so equivalent instants with different time.Location pointers
-// still group together; time.Time == would split them.
+// fileVersionKey is the dedup tuple over (Size, ModTime). ModTime is normalized
+// to UTC so equivalent instants with different time.Location pointers still
+// group together; using time.Time directly without normalization would split
+// them.
 type fileVersionKey struct {
 	size  int64
-	mtime int64
+	mtime time.Time
 }
 
 // GroupFileVersions collapses restic find's flat per-snapshot list into
@@ -102,7 +103,7 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 			if m.Type != "" && m.Type != NodeTypeFile {
 				continue
 			}
-			key := fileVersionKey{size: m.Size, mtime: m.ModTime.UnixNano()}
+			key := fileVersionKey{size: m.Size, mtime: m.ModTime.UTC()}
 			occ := FileVersionOccurrence{SnapshotID: r.SnapshotID}
 			if snapKnown {
 				occ.ShortID = snap.ShortID
