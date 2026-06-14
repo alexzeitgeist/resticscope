@@ -272,7 +272,7 @@ func (a *App) IndexSnapshot(ctx context.Context, repoName, snapshotID string, pr
 	if progress != nil {
 		progress(tx.Count())
 	}
-	if !summary.Complete {
+	if !summary.IsComplete {
 		return ErrBrowseIncomplete
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -61,7 +61,7 @@ func TestBrowseSearchActivationRequiresIndexedIdle(t *testing.T) {
 	m = update(t, m, press("enter"))
 	next, _ := m.Update(press("b")) // start indexing; do not run the index command
 	m = next.(Model)
-	if !m.browseLoading || m.browseIndexed {
+	if !m.isBrowseLoading || m.browseIndexed {
 		t.Fatal("precondition: should be mid-index (loading, not indexed)")
 	}
 	if mid := update(t, m, press("/")); mid.browseSearching {
@@ -396,10 +396,10 @@ func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 }
 
 // Restoring the search while the jumped-to directory listing is still in flight, then
-// cancelling, must not leave browseLoading stuck true. Enter starts an async load of
+// cancelling, must not leave isBrowseLoading stuck true. Enter starts an async load of
 // the (unlisted) parent dir; esc restores the parked search and esc cancels it, both
 // before the listing returns; the stale browseDirMsg is then dropped on its old
-// generation. Without restoreBrowseSearch dropping the in-flight listing, browseLoading
+// generation. Without restoreBrowseSearch dropping the in-flight listing, isBrowseLoading
 // would never clear and navigation would be paused forever.
 func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -417,8 +417,8 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter on a match in an unlisted dir should start an async listing")
 	}
-	if !m.browseLoading {
-		t.Fatal("precondition: the jumped-to listing should be in flight (browseLoading)")
+	if !m.isBrowseLoading {
+		t.Fatal("precondition: the jumped-to listing should be in flight (isBrowseLoading)")
 	}
 	stale := cmd().(browseDirMsg) // delivered last, after the generation has moved on
 
@@ -427,8 +427,8 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 	if !m.browseSearching {
 		t.Fatal("first esc should restore the search overlay")
 	}
-	if m.browseLoading {
-		t.Error("restoring search must drop the in-flight jump listing and clear browseLoading")
+	if m.isBrowseLoading {
+		t.Error("restoring search must drop the in-flight jump listing and clear isBrowseLoading")
 	}
 
 	// esc again cancels the restored search; the stale listing then returns and is
@@ -438,11 +438,11 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 		t.Fatal("second esc should cancel the restored search")
 	}
 	m = update(t, m, stale)
-	if m.browseLoading {
-		t.Error("browseLoading must stay cleared after the stale jump listing is dropped, not stuck true")
+	if m.isBrowseLoading {
+		t.Error("isBrowseLoading must stay cleared after the stale jump listing is dropped, not stuck true")
 	}
 
-	// Navigation is paused while browseLoading; moving the cursor proves it is not frozen.
+	// Navigation is paused while isBrowseLoading; moving the cursor proves it is not frozen.
 	m = update(t, m, press("j"))
 	if m.browseCursor != 1 {
 		t.Errorf("browse navigation should work after restore+cancel, cursor = %d want 1", m.browseCursor)
@@ -450,7 +450,7 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 }
 
 // Restoring the search while the jump listing is in flight, then typing a new query
-// (which supersedes that listing) and cancelling, must also not leave browseLoading
+// (which supersedes that listing) and cancelling, must also not leave isBrowseLoading
 // stuck — the new search never sets loading, so only restoreBrowseSearch clearing it
 // keeps navigation alive.
 func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
@@ -465,20 +465,20 @@ func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
 
 	next, cmd := m.Update(press("enter")) // jump to /home → async load, loading=true
 	m = next.(Model)
-	if cmd == nil || !m.browseLoading {
+	if cmd == nil || !m.isBrowseLoading {
 		t.Fatal("precondition: enter should start an in-flight jump listing")
 	}
 	stale := cmd().(browseDirMsg)
 
 	m = update(t, m, press("esc")) // restore (drops the jump, clears loading)
-	if !m.browseSearching || m.browseLoading {
-		t.Fatalf("restore should reopen search and clear loading: searching=%v loading=%v", m.browseSearching, m.browseLoading)
+	if !m.browseSearching || m.isBrowseLoading {
+		t.Fatalf("restore should reopen search and clear loading: searching=%v loading=%v", m.browseSearching, m.isBrowseLoading)
 	}
 
 	// Type a further character; the new search dispatches and its result lands.
 	m = typeSearch(t, m, "x") // "report" -> "reportx"
-	if m.browseLoading {
-		t.Error("a refired search must not set browseLoading")
+	if m.isBrowseLoading {
+		t.Error("a refired search must not set isBrowseLoading")
 	}
 
 	// The original jump listing finally returns and is dropped (old generation).
@@ -489,8 +489,8 @@ func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
 	if m.browseSearching {
 		t.Fatal("esc should cancel the restored search")
 	}
-	if m.browseLoading {
-		t.Error("browseLoading must be clear after restore→type→cancel, not stuck true")
+	if m.isBrowseLoading {
+		t.Error("isBrowseLoading must be clear after restore→type→cancel, not stuck true")
 	}
 	m = update(t, m, press("j"))
 	if m.browseCursor != 1 {

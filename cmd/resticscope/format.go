@@ -75,9 +75,9 @@ func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
 	for _, e := range res.Entries {
 		total += e.Size
 		action := "keep"
-		if e.Pruned {
+		if e.IsPruned {
 			action = pruneVerb
-			if e.Orphan {
+			if e.IsOrphan {
 				action += " (orphan)"
 			}
 		}

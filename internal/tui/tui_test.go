@@ -122,7 +122,7 @@ func (s stubRestic) StreamSnapshotTree(ctx context.Context, _ resticx.Target, _ 
 	if s.browseErr != nil {
 		return model.BrowseScanSummary{}, s.browseErr
 	}
-	return model.BrowseScanSummary{Entries: len(s.browseNodes), Complete: true}, nil
+	return model.BrowseScanSummary{Entries: len(s.browseNodes), IsComplete: true}, nil
 }
 
 // FindMatches returns the canned findResults / findErr, recording the host and
@@ -1200,8 +1200,8 @@ func TestDetailBKeyStartsBrowse(t *testing.T) {
 			if nm.view != browseView {
 				t.Errorf("%q should open the browse view; view = %d", k, nm.view)
 			}
-			if !nm.browseLoading || nm.browseIndexed {
-				t.Errorf("%q should mark the index in flight, not yet indexed: loading=%v indexed=%v", k, nm.browseLoading, nm.browseIndexed)
+			if !nm.isBrowseLoading || nm.browseIndexed {
+				t.Errorf("%q should mark the index in flight, not yet indexed: loading=%v indexed=%v", k, nm.isBrowseLoading, nm.browseIndexed)
 			}
 			if nm.browseRepo != "repo-a" || nm.browseSnapshot != "id-newest" {
 				t.Errorf("browse target = %q/%q, want repo-a/id-newest", nm.browseRepo, nm.browseSnapshot)

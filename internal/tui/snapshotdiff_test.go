@@ -275,7 +275,7 @@ func TestDOpensDiffViewWithTwoMarks(t *testing.T) {
 	}
 	m = drivePastDiff(t, m, cmd)
 
-	if m.diffLoading {
+	if m.isDiffLoading {
 		t.Error("after the terminal msg lands, loading should be false")
 	}
 	if len(m.diffEntries) != 2 {
@@ -351,7 +351,7 @@ func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
 	if m.view != snapshotDiffView {
 		t.Fatalf("partial-entry error: view = %d, want snapshotDiffView (no bail-to-detail)", m.view)
 	}
-	if m.diffLoading {
+	if m.isDiffLoading {
 		t.Error("partial-entry error: should clear loading")
 	}
 	if len(m.diffEntries) != 2 {
@@ -553,7 +553,7 @@ func TestSnapshotDiffSwapRerunsReversedPair(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("x should start a swapped diff command")
 	}
-	if !m.diffLoading {
+	if !m.isDiffLoading {
 		t.Error("x should put the diff view back into loading state")
 	}
 	if m.diffOlder.ID != older || m.diffNewer.ID != newer {
@@ -615,7 +615,7 @@ func TestSnapshotDiffSwapErrorKeepsPreviousDiff(t *testing.T) {
 	a.Restic = stubRestic{diffErr: errors.New("context deadline exceeded")}
 	next, cmd = m.Update(press("x"))
 	m = next.(Model)
-	if !m.diffLoading {
+	if !m.isDiffLoading {
 		t.Fatal("x should put the diff view into loading state")
 	}
 	m = drivePastDiff(t, m, cmd)
@@ -623,7 +623,7 @@ func TestSnapshotDiffSwapErrorKeepsPreviousDiff(t *testing.T) {
 	if m.view != snapshotDiffView {
 		t.Fatalf("failed swap should stay in diff view, got %d", m.view)
 	}
-	if m.diffLoading {
+	if m.isDiffLoading {
 		t.Fatal("failed swap should clear loading")
 	}
 	if m.diffOlder.ID != older || m.diffNewer.ID != newer {
@@ -1316,7 +1316,7 @@ func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
 	m = update(t, m, press("t"))
 	next, cmd := m.Update(press("d"))
 	m = next.(Model)
-	if !m.diffLoading {
+	if !m.isDiffLoading {
 		t.Fatal("precondition: diff should be loading after d")
 	}
 	if m.view != snapshotDiffView {

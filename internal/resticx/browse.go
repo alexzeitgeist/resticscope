@@ -66,11 +66,11 @@ type lsNode struct {
 //     sees bctx: with the parent ctx still live, a callback error is always a real
 //     failure, so a store error racing the deadline must not be downgraded to a
 //     retryable partial;
-//  3. a clean run (no run or decode error) → {Complete:true}, nil, including an
+//  3. a clean run (no run or decode error) → {IsComplete:true}, nil, including an
 //     empty snapshot (count 0); precedes the deadline checks so a stream that exited
 //     0 just before the index deadline elapsed is reported complete, not rolled back
 //     as a partial;
-//  4. the deadline fired after ≥1 node → {Complete:false}, nil (a partial stream
+//  4. the deadline fired after ≥1 node → {IsComplete:false}, nil (a partial stream
 //     the caller must not mark indexed; reaching here means restic was killed by the
 //     deadline with no callback error — a genuine store error is handled in (2));
 //  5. any other deadline result → KindTimeout;
@@ -116,12 +116,12 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 		// instead of being discarded as a partial. (cbErr is already handled above; the
 		// decodeErr guard keeps a parse failure that raced a clean exit from slipping
 		// through as complete.)
-		return model.BrowseScanSummary{Entries: st.count, Complete: true}, nil
+		return model.BrowseScanSummary{Entries: st.count, IsComplete: true}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded) && st.count > 0:
 		// The index deadline fired mid-stream after ≥1 node and restic was killed with
 		// no callback error (a genuine store error is returned verbatim above) — a
 		// partial tree that must be left unindexed.
-		return model.BrowseScanSummary{Entries: st.count, Complete: false}, nil
+		return model.BrowseScanSummary{Entries: st.count, IsComplete: false}, nil
 	case errors.Is(bctx.Err(), context.DeadlineExceeded):
 		return model.BrowseScanSummary{Entries: st.count}, c.classify(bctx, "ls", runErr, stderr)
 	case st.decodeErr != nil:

@@ -67,7 +67,7 @@ func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // search and clears the results synchronously, with no command. Otherwise it
 // supersedes the prior keystroke's scan (advancing the generation and cancelling
 // its context so the single connection frees immediately) and dispatches a
-// gen-tagged search. It deliberately does NOT set browseLoading: the search list
+// gen-tagged search. It deliberately does NOT set isBrowseLoading: the search list
 // must stay live and navigable as results arrive, never paused like a directory
 // load. Ranking and the result cap happen in the store, never here.
 func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
@@ -159,15 +159,15 @@ func (m Model) suspendBrowseSearch() Model {
 // search returns there. It is the esc action while a suspended search is parked (q
 // still leaves browse entirely via browseBack).
 //
-// If the jump listing acceptBrowseSearch started is still in flight (browseLoading),
+// If the jump listing acceptBrowseSearch started is still in flight (isBrowseLoading),
 // drop it first: re-entering search and then superseding it (a fresh query, or cancel)
 // would advance the generation past that listing's tag, so its browseDirMsg is dropped
-// before applyBrowseDir clears browseLoading — leaving navigation paused forever. The
+// before applyBrowseDir clears isBrowseLoading — leaving navigation paused forever. The
 // user pressed esc to return to the results, so the half-finished jump is moot anyway.
 func (m Model) restoreBrowseSearch() Model {
-	if m.browseLoading {
+	if m.isBrowseLoading {
 		m = m.supersedeBrowse()
-		m.browseLoading = false
+		m.isBrowseLoading = false
 	}
 	m.browseSearching = true
 	m.browseSearchSuspended = false

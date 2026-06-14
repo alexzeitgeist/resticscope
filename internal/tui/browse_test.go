@@ -308,8 +308,8 @@ func TestBrowseIndexesAndListsRoot(t *testing.T) {
 	if m.view != browseView {
 		t.Fatalf("view = %d, want browseView", m.view)
 	}
-	if m.browseLoading || !m.browseIndexed {
-		t.Errorf("after the first listing: loading=%v indexed=%v, want idle+indexed", m.browseLoading, m.browseIndexed)
+	if m.isBrowseLoading || !m.browseIndexed {
+		t.Errorf("after the first listing: loading=%v indexed=%v, want idle+indexed", m.isBrowseLoading, m.browseIndexed)
 	}
 	if m.browseDir != "/" {
 		t.Errorf("browseDir = %q, want /", m.browseDir)
@@ -399,7 +399,7 @@ func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 	if cmd != nil {
 		t.Error("returning to a visited directory must be served synchronously, with no query command")
 	}
-	if m.browseLoading {
+	if m.isBrowseLoading {
 		t.Error("a cache-served listing must not enter the loading state")
 	}
 	if m.browseDir != "/" {
@@ -543,7 +543,7 @@ func TestBrowseBackDuringIndexingCancelsAndClears(t *testing.T) {
 			m = update(t, m, press("enter"))
 			next, _ := m.Update(press("b"))
 			m = next.(Model)
-			if !m.browseLoading || m.browseIndexed {
+			if !m.isBrowseLoading || m.browseIndexed {
 				t.Fatal("precondition: should be indexing (loading, not indexed)")
 			}
 			genBefore := m.browseGen
@@ -557,8 +557,8 @@ func TestBrowseBackDuringIndexingCancelsAndClears(t *testing.T) {
 				t.Errorf("%q should clear session state: repo=%q snap=%q dir=%q rows=%v",
 					k, m.browseRepo, m.browseSnapshot, m.browseDir, m.browseRows)
 			}
-			if m.browseLoading || m.browseIndexed {
-				t.Errorf("%q should clear load/indexed flags: loading=%v indexed=%v", k, m.browseLoading, m.browseIndexed)
+			if m.isBrowseLoading || m.browseIndexed {
+				t.Errorf("%q should clear load/indexed flags: loading=%v indexed=%v", k, m.isBrowseLoading, m.browseIndexed)
 			}
 			if m.browseGen <= genBefore {
 				t.Errorf("%q should advance the generation to drop the cancelled index's late msgs (gen=%d)", k, m.browseGen)
@@ -717,7 +717,7 @@ func TestBrowseIndexingShowsCancelAffordance(t *testing.T) {
 	m = next.(Model)
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	if !m.browseLoading || m.browseIndexed {
+	if !m.isBrowseLoading || m.browseIndexed {
 		t.Fatal("precondition: should be mid-index (loading, not indexed)")
 	}
 	view := stripANSI(m.View().Content)
@@ -1315,7 +1315,7 @@ func TestBrowseSortIgnoredWhileLoading(t *testing.T) {
 	}
 	frozen := browseRowPaths(m.browseRows)
 
-	m.browseLoading = true
+	m.isBrowseLoading = true
 	m = update(t, m, press("o")) // ignored while loading
 	if m.browseSortMode != browseSortSize {
 		t.Errorf("o while loading should not advance the sort, got %q", m.browseSortMode.label())

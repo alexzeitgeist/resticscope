@@ -1361,8 +1361,8 @@ func TestPrivilegedCommitProbeOKStartsRun(t *testing.T) {
 	}
 
 	em, cmd, _ := dispatchKey(em, keys, "enter")
-	if em.state != extractStateReview || !em.sudoBusy {
-		t.Fatalf("state=%v sudoBusy=%v, want review+busy while probing", em.state, em.sudoBusy)
+	if em.state != extractStateReview || !em.isSudoBusy {
+		t.Fatalf("state=%v isSudoBusy=%v, want review+busy while probing", em.state, em.isSudoBusy)
 	}
 	if got := len(drv.callsSnapshot()); got != 0 {
 		t.Fatalf("Extract dispatched before the probe resolved: %d calls", got)
@@ -1377,8 +1377,8 @@ func TestPrivilegedCommitProbeOKStartsRun(t *testing.T) {
 
 	drv.push(extractResp{result: app.ExtractResult{Files: 1}})
 	runCmds := em.applySudoProbe(probe)
-	if em.state != extractStateRunning || em.sudoBusy {
-		t.Fatalf("state=%v sudoBusy=%v, want running after clean probe", em.state, em.sudoBusy)
+	if em.state != extractStateRunning || em.isSudoBusy {
+		t.Fatalf("state=%v isSudoBusy=%v, want running after clean probe", em.state, em.isSudoBusy)
 	}
 	for _, msg := range runBatchLeaves(t, runCmds) {
 		if done, ok := msg.(extractRunDoneMsg); ok {
@@ -1408,16 +1408,16 @@ func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 	if authCmd := em.applySudoProbe(probe); authCmd == nil {
 		t.Fatal("failed probe must return the sudo -v ExecProcess Cmd")
 	}
-	if em.state != extractStateReview || !em.sudoBusy {
-		t.Fatalf("state=%v sudoBusy=%v, want review+busy during auth", em.state, em.sudoBusy)
+	if em.state != extractStateReview || !em.isSudoBusy {
+		t.Fatalf("state=%v isSudoBusy=%v, want review+busy during auth", em.state, em.isSudoBusy)
 	}
 
 	// Auth failure: back to review, path-free notice, no run.
 	if c := em.applySudoAuth(extractSudoAuthMsg{gen: em.gen, err: errors.New("exit 1")}); c != nil {
 		t.Fatal("auth failure must not start the run")
 	}
-	if em.sudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
-		t.Fatalf("after auth failure: busy=%v notice=%q state=%v", em.sudoBusy, em.reviewNotice, em.state)
+	if em.isSudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
+		t.Fatalf("after auth failure: busy=%v notice=%q state=%v", em.isSudoBusy, em.reviewNotice, em.state)
 	}
 	if len(drv.callsSnapshot()) != 0 {
 		t.Fatal("Extract dispatched despite failed auth")
@@ -1494,8 +1494,8 @@ func TestPrivilegedCommitUnavailable(t *testing.T) {
 	if c := em.applySudoProbe(probe); c != nil {
 		t.Fatal("unavailable runner must not return a follow-up Cmd")
 	}
-	if em.sudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
-		t.Fatalf("busy=%v notice=%q state=%v, want idle review with notice", em.sudoBusy, em.reviewNotice, em.state)
+	if em.isSudoBusy || em.reviewNotice == "" || em.state != extractStateReview {
+		t.Fatalf("busy=%v notice=%q state=%v, want idle review with notice", em.isSudoBusy, em.reviewNotice, em.state)
 	}
 	if len(drv.callsSnapshot()) != 0 {
 		t.Fatal("Extract dispatched despite unavailable runner")
@@ -1513,12 +1513,12 @@ func TestExtractReviewBodySudoSlot(t *testing.T) {
 		t.Errorf("idle review shows the sudo-busy hint\n---\n%s", got)
 	}
 
-	m.extract.sudoBusy = true
+	m.extract.isSudoBusy = true
 	if got := stripANSI(m.extractReviewBody(100)); !strings.Contains(got, "checking sudo access") {
 		t.Errorf("busy review missing the sudo hint\n---\n%s", got)
 	}
 
-	m.extract.sudoBusy = false
+	m.extract.isSudoBusy = false
 	m.extract.reviewNotice = "sudo authentication failed — cannot extract as root"
 	if got := stripANSI(m.extractReviewBody(100)); !strings.Contains(got, "sudo authentication failed") {
 		t.Errorf("review missing the failure notice\n---\n%s", got)
@@ -1939,7 +1939,7 @@ func TestFindVersionsEnterOpensSubModel(t *testing.T) {
 // enter while a find is loading is swallowed by the loading guard, same as e.
 func TestFindVersionsEnterPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
-	m.findLoading = true
+	m.isFindLoading = true
 
 	m = update(t, m, press("enter"))
 
@@ -2020,7 +2020,7 @@ func TestFindVersionsExtractNoRowsIsNoop(t *testing.T) {
 // about to be replaced, so the selection is not actionable.
 func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
-	m.findLoading = true
+	m.isFindLoading = true
 
 	m = update(t, m, press("e"))
 
@@ -2112,7 +2112,7 @@ func TestExtractReviewTargetExistsNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
-	if em.targetBusy {
+	if em.isTargetBusy {
 		t.Fatal("fresh target plan must not start busy")
 	}
 
@@ -2131,8 +2131,8 @@ func TestExtractReviewTargetExistsNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
-	if !em2.targetBusy {
-		t.Fatal("occupied final must set targetBusy")
+	if !em2.isTargetBusy {
+		t.Fatal("occupied final must set isTargetBusy")
 	}
 	m.extract = em2
 	if body := stripANSI(m.extractBody()); !strings.Contains(body, "target already exists — choose another target or remove the existing output") {

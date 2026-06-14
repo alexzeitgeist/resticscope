@@ -27,8 +27,8 @@ var ErrBrowseDiskLimit = errors.New("browse index disk limit reached")
 // how many nodes the callback accepted and whether restic emitted the whole
 // tree (clean EOF) versus stopping early (e.g. its index timeout fired).
 type BrowseScanSummary struct {
-	Entries  int
-	Complete bool
+	Entries    int
+	IsComplete bool
 }
 
 // Node types as restic spells them in its JSON output ("dir"/"file"/"symlink"/

@@ -15,11 +15,11 @@ import (
 // restic-cache root. Name is the directory's name — a sanitized repo name, so a
 // known repo's entry matches resticx.RepoCacheName(repo.Name).
 type CacheEntry struct {
-	Name   string
-	Path   string
-	Size   int64 // bytes used by this cache directory
-	Orphan bool  // no configured repo maps to this directory
-	Pruned bool  // selected for removal (removed on disk, unless this was a dry run)
+	Name     string
+	Path     string
+	Size     int64 // bytes used by this cache directory
+	IsOrphan bool  // no configured repo maps to this directory
+	IsPruned bool  // selected for removal (removed on disk, unless this was a dry run)
 }
 
 // PruneResult summarizes a PruneCache run.
@@ -33,7 +33,7 @@ type PruneResult struct {
 func (r PruneResult) Pruned() int {
 	n := 0
 	for _, e := range r.Entries {
-		if e.Pruned {
+		if e.IsPruned {
 			n++
 		}
 	}
@@ -77,9 +77,9 @@ func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, er
 			continue
 		}
 		entry := CacheEntry{
-			Name:   de.Name(),
-			Path:   filepath.Join(root, de.Name()),
-			Orphan: !known[de.Name()],
+			Name:     de.Name(),
+			Path:     filepath.Join(root, de.Name()),
+			IsOrphan: !known[de.Name()],
 		}
 		size, err := dirSize(ctx, entry.Path)
 		if err != nil {
@@ -87,8 +87,8 @@ func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, er
 		}
 		entry.Size = size
 
-		if all || entry.Orphan {
-			entry.Pruned = true
+		if all || entry.IsOrphan {
+			entry.IsPruned = true
 			if !dryRun {
 				if err := os.RemoveAll(entry.Path); err != nil {
 					return res, fmt.Errorf("remove %s: %w", entry.Path, err)

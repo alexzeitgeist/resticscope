@@ -73,11 +73,11 @@ func TestPruneCacheOrphansOnly(t *testing.T) {
 	}
 
 	live, ok := entryByName(res, "live-repo")
-	if !ok || live.Orphan || live.Pruned {
+	if !ok || live.IsOrphan || live.IsPruned {
 		t.Errorf("live entry = %+v, want kept non-orphan", live)
 	}
 	orphan, ok := entryByName(res, "removed-repo")
-	if !ok || !orphan.Orphan || !orphan.Pruned {
+	if !ok || !orphan.IsOrphan || !orphan.IsPruned {
 		t.Errorf("orphan entry = %+v, want pruned orphan", orphan)
 	}
 }

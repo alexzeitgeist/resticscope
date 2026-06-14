@@ -27,7 +27,7 @@ func (m Model) browseBody() string {
 	w, _ := m.effSize()
 	pathLine := m.pathLine("Path", browseDirLabel(m.browseDir), w)
 	summary := clip(m.styles.meta.Render("  "+m.browseSummaryLine()), w)
-	if m.browseLoading && !m.browseIndexed {
+	if m.isBrowseLoading && !m.browseIndexed {
 		return strings.Join([]string{pathLine, summary}, "\n")
 	}
 	if m.browseSearching {
@@ -45,7 +45,7 @@ func (m Model) pathLine(label, value string, width int) string {
 // can take minutes, and the user must always see that esc/back aborts it.
 // Otherwise it reports the current directory's entry count.
 func (m Model) browseSummaryLine() string {
-	if m.browseLoading && !m.browseIndexed {
+	if m.isBrowseLoading && !m.browseIndexed {
 		parts := []string{"indexing… " + humanize.Count(m.browseIndexN, "entry", "entries")}
 		if rate := browseIndexRateLabel(m.browseRate.rate); rate != "" {
 			parts = append(parts, rate)

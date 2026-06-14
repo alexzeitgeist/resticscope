@@ -150,7 +150,7 @@ func TestStreamSnapshotTreeComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
-	if !sum.Complete {
+	if !sum.IsComplete {
 		t.Errorf("Complete = false, want true")
 	}
 	if sum.Entries != 3 || len(*nodes) != 3 {
@@ -175,8 +175,8 @@ func TestStreamSnapshotTreeEmptyIsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
-	if !sum.Complete || sum.Entries != 0 || len(*nodes) != 0 {
-		t.Errorf("empty snapshot: Complete=%v entries=%d nodes=%d, want true/0/0", sum.Complete, sum.Entries, len(*nodes))
+	if !sum.IsComplete || sum.Entries != 0 || len(*nodes) != 0 {
+		t.Errorf("empty snapshot: Complete=%v entries=%d nodes=%d, want true/0/0", sum.IsComplete, sum.Entries, len(*nodes))
 	}
 }
 
@@ -263,7 +263,7 @@ func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel verbatim", err)
 	}
-	if sum.Complete {
+	if sum.IsComplete {
 		t.Error("Complete must be false when the callback failed")
 	}
 	if fs.ctxErr == nil {
@@ -292,7 +292,7 @@ func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
 	if errors.Is(err, storeInterrupt) {
 		t.Fatalf("the store's interrupt error masked the user cancel: %v", err)
 	}
-	if sum.Complete {
+	if sum.IsComplete {
 		t.Error("Complete must be false on cancel")
 	}
 }
@@ -307,7 +307,7 @@ func TestStreamSnapshotTreeCleanExitBeatsExpiredDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a clean, complete exit must not error even if the deadline elapsed after it: %v", err)
 	}
-	if !sum.Complete {
+	if !sum.IsComplete {
 		t.Fatal("Complete = false: a fully-streamed snapshot was discarded because the deadline fired after the clean exit")
 	}
 	if sum.Entries != 3 || len(*nodes) != 3 {
@@ -339,7 +339,7 @@ func TestStreamSnapshotTreeCallbackErrorBeatsDeadline(t *testing.T) {
 	if !errors.Is(err, diskFull) {
 		t.Fatalf("a store error racing the deadline must surface verbatim, got %v", err)
 	}
-	if sum.Complete {
+	if sum.IsComplete {
 		t.Error("Complete must be false when the store failed")
 	}
 }
@@ -352,7 +352,7 @@ func TestStreamSnapshotTreeTimeoutWithNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("timeout with nodes should be a partial success, got error: %v", err)
 	}
-	if sum.Complete {
+	if sum.IsComplete {
 		t.Errorf("Complete = true, want false (timeout truncated the stream)")
 	}
 	if sum.Entries != 1 || len(*nodes) != 1 {

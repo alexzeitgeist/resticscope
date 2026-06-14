@@ -127,7 +127,7 @@ func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Mode
 func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, tea.Cmd) {
 	dctx, dcancel := context.WithCancel(m.ctx)
 	m.diffCancel = dcancel
-	m.diffLoading = true
+	m.isDiffLoading = true
 	m.diffLoadCount = 0
 	m.diffErr = ""
 
@@ -209,7 +209,7 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	if msg.gen != m.diffGen {
 		return m
 	}
-	m.diffLoading = false
+	m.isDiffLoading = false
 	m = m.cancelSnapshotDiff()
 	if msg.err != nil {
 		// Swap error: keep the previous tree on screen. statusMsg's footer
@@ -265,7 +265,7 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.statusMsg = ""
-	if m.diffLoading {
+	if m.isDiffLoading {
 		return m, nil
 	}
 
@@ -615,7 +615,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffStats = model.DiffStats{}
 	m.diffErr = ""
 	m.diffParseErrs = 0
-	m.diffLoading = false
+	m.isDiffLoading = false
 	m.diffLoadCount = 0
 	m.diffCancel = nil
 	m.diffProgress = nil

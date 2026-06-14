@@ -132,7 +132,7 @@ func (m Model) extractReviewBody(w int) string {
 	// Preflight occupancy note — the same FreshTargetCheck enter will enforce,
 	// surfaced before the run so the collision isn't a surprise refusal screen.
 	// State only: the retarget affordance lives in the footer key bar (t target).
-	if em.targetBusy {
+	if em.isTargetBusy {
 		body += "\n\n" + clip("  "+m.styles.errText.Render("target already exists — choose another target or remove the existing output"), w)
 	}
 	// Space preflight — advisory like the occupancy note: a run that outgrows
@@ -152,7 +152,7 @@ func (m Model) extractReviewBody(w int) string {
 	// that the terminal may be handed over to sudo; otherwise the path-free red
 	// notice (auth failed / privileged unavailable). Never both — every transition
 	// that sets one clears the other.
-	if em.sudoBusy {
+	if em.isSudoBusy {
 		body += "\n\n" + clip("  "+m.styles.meta.Render("checking sudo access — the terminal may switch to a sudo password prompt"), w)
 	} else if em.reviewNotice != "" {
 		body += "\n\n" + clip("  "+m.styles.errText.Render(em.reviewNotice), w)

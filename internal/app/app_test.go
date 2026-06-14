@@ -838,7 +838,7 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 		{Path: "/home/notes.txt", Name: "notes.txt", Size: 7},
 		{Path: "/etc", Name: "etc", IsDir: true},
 	}
-	a := browseApp(store, fakeRestic{browseNodes: nodes, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
+	a := browseApp(store, fakeRestic{browseNodes: nodes, browseSummary: model.BrowseScanSummary{IsComplete: true}, browseCap: bc})
 
 	var lastProgress int
 	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", func(n int) { lastProgress = n }); err != nil {
@@ -879,7 +879,7 @@ func TestIndexSnapshotIdempotent(t *testing.T) {
 	store := newFakeStore()
 	store.indexed[storeKey("repo-a", "snap123")] = true
 	bc := &browseCapture{}
-	a := browseApp(store, fakeRestic{browseNodes: []model.BrowseNode{{Path: "/x", Name: "x"}}, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
+	a := browseApp(store, fakeRestic{browseNodes: []model.BrowseNode{{Path: "/x", Name: "x"}}, browseSummary: model.BrowseScanSummary{IsComplete: true}, browseCap: bc})
 
 	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil); err != nil {
 		t.Fatalf("IndexSnapshot on already-indexed: %v", err)
@@ -896,7 +896,7 @@ func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
 	store := newFakeStore()
 	a := browseApp(store, fakeRestic{
 		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
-		browseSummary: model.BrowseScanSummary{Complete: false},
+		browseSummary: model.BrowseScanSummary{IsComplete: false},
 	})
 	var lastProgress int
 	err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", func(n int) { lastProgress = n })
@@ -923,7 +923,7 @@ func TestIndexSnapshotDiskLimitRollsBack(t *testing.T) {
 	store.addErr = fmt.Errorf("browsedb add: %w", model.ErrBrowseDiskLimit)
 	a := browseApp(store, fakeRestic{
 		browseNodes:   []model.BrowseNode{{Path: "/home/secret-passwords.txt", Name: "secret-passwords.txt"}, {Path: "/home/more-secrets.txt", Name: "more-secrets.txt"}},
-		browseSummary: model.BrowseScanSummary{Complete: true},
+		browseSummary: model.BrowseScanSummary{IsComplete: true},
 	})
 	err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil)
 	if !errors.Is(err, model.ErrBrowseDiskLimit) {
@@ -974,7 +974,7 @@ func TestIndexSnapshotSerializedBySessionOperationLock(t *testing.T) {
 	store := newFakeStore()
 	a := browseApp(store, fakeRestic{
 		browseNodes:   []model.BrowseNode{{Path: "/a", Name: "a"}, {Path: "/b", Name: "b"}},
-		browseSummary: model.BrowseScanSummary{Complete: true},
+		browseSummary: model.BrowseScanSummary{IsComplete: true},
 		browseDelay:   10 * time.Millisecond, // hold each tx open long enough to overlap if unserialized
 	})
 	var wg sync.WaitGroup

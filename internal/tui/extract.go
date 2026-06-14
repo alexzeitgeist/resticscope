@@ -132,18 +132,18 @@ type extractModel struct {
 	srcFiles, srcDirs int
 	srcCountsKnown    bool
 
-	// targetBusy notes that staging or final was already occupied when the
+	// isTargetBusy notes that staging or final was already occupied when the
 	// review opened — the same FreshTargetCheck enter will enforce, surfaced
 	// early as an advisory note so the collision isn't a surprise refusal
 	// screen. Advisory only: the run-time check stays authoritative, and a
 	// successful retarget through the filepicker clears it (planExtractOverride
 	// refuses occupied roots).
-	targetBusy bool
+	isTargetBusy bool
 
 	// targetFree / targetFreeKnown carry the review-time free-space probe of
 	// the target filesystem (ExtractFreeSpace at the planned staging path); the
 	// review warns when the source's known size exceeds it. Advisory like
-	// targetBusy — never blocks enter — and re-probed on retarget.
+	// isTargetBusy — never blocks enter — and re-probed on retarget.
 	targetFree      int64
 	targetFreeKnown bool
 
@@ -202,10 +202,10 @@ type extractModel struct {
 	pickerModeW   int
 	pickerModeDir string
 
-	// sudoBusy is true between committing a privileged extract and the sudo
+	// isSudoBusy is true between committing a privileged extract and the sudo
 	// probe / interactive auth resolving. It debounces enter on review and
 	// gen-gates the probe/auth messages alongside gen itself.
-	sudoBusy bool
+	isSudoBusy bool
 
 	// reviewNotice is a one-line, path-free notice rendered on the review
 	// screen (e.g. "sudo authentication failed"). Cleared on the next review
@@ -265,7 +265,7 @@ func newExtractModel(a *app.App, parentCtx context.Context, req app.ExtractReque
 		final:        final,
 		// A few stats, same order of cost as a filepicker selection pays in
 		// planExtractOverride.
-		targetBusy:      isExtractRefusal(app.FreshTargetCheck(staging, final)),
+		isTargetBusy:    isExtractRefusal(app.FreshTargetCheck(staging, final)),
 		targetFree:      free,
 		targetFreeKnown: freeKnown,
 	}, nil
@@ -334,7 +334,7 @@ func newExtractDiffModel(a *app.App, parentCtx context.Context, reqs []app.Extra
 		diff:            &meta,
 		staging:         staging0,
 		final:           final0,
-		targetBusy:      busy,
+		isTargetBusy:    busy,
 		targetFree:      free,
 		targetFreeKnown: freeKnown,
 	}, nil
@@ -765,7 +765,7 @@ func (m extractModel) handleKey(keys keyMap, msg tea.KeyPressMsg) (extractModel,
 func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extractModel, tea.Cmd, bool) {
 	// One debounce for the whole screen: while the sudo probe / interactive
 	// auth is in flight, only esc still acts.
-	if m.sudoBusy && !key.Matches(msg, keys.Back) {
+	if m.isSudoBusy && !key.Matches(msg, keys.Back) {
 		return m, nil, false
 	}
 	switch {
@@ -791,7 +791,7 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 			// run starts on the probe (or interactive-auth) message. The probe is
 			// a new async step, so it gets its own generation like every other.
 			m.supersede()
-			m.sudoBusy = true
+			m.isSudoBusy = true
 			return m, m.sudoProbeCmd(), false
 		}
 		// Commit straight to the live extract — a single Extract for both file and
@@ -807,7 +807,7 @@ func (m extractModel) handleReviewKey(keys keyMap, msg tea.KeyPressMsg) (extract
 // three commit paths (plain enter, clean sudo probe, interactive auth
 // success) funnel through it.
 func (m *extractModel) commitRun() tea.Cmd {
-	m.sudoBusy = false
+	m.isSudoBusy = false
 	cmd := m.startRun()
 	m.state = extractStateRunning
 	return cmd
@@ -829,7 +829,7 @@ func (m *extractModel) sudoProbeCmd() tea.Cmd {
 // `sudo -v` (the helper itself always runs with -n against the then-warm
 // credential cache, so it can never hang on a hidden prompt).
 func (m *extractModel) applySudoProbe(msg extractSudoProbeMsg) tea.Cmd {
-	if msg.gen != m.gen || m.state != extractStateReview || !m.sudoBusy {
+	if msg.gen != m.gen || m.state != extractStateReview || !m.isSudoBusy {
 		return nil
 	}
 	if msg.err == nil {
@@ -837,7 +837,7 @@ func (m *extractModel) applySudoProbe(msg extractSudoProbeMsg) tea.Cmd {
 	}
 	authCmd := m.drv.PrivilegedAuthCommand()
 	if errors.Is(msg.err, app.ErrPrivilegedExtractUnavailable) || authCmd == nil {
-		m.sudoBusy = false
+		m.isSudoBusy = false
 		m.reviewNotice = "privileged extract not available"
 		return nil
 	}
@@ -850,11 +850,11 @@ func (m *extractModel) applySudoProbe(msg extractSudoProbeMsg) tea.Cmd {
 // applySudoAuth resumes after the interactive sudo -v: success starts the run,
 // failure lands back on review with a path-free notice.
 func (m *extractModel) applySudoAuth(msg extractSudoAuthMsg) tea.Cmd {
-	if msg.gen != m.gen || m.state != extractStateReview || !m.sudoBusy {
+	if msg.gen != m.gen || m.state != extractStateReview || !m.isSudoBusy {
 		return nil
 	}
 	if msg.err != nil {
-		m.sudoBusy = false
+		m.isSudoBusy = false
 		m.reviewNotice = "sudo authentication failed — cannot extract as root"
 		return nil
 	}
@@ -975,7 +975,7 @@ func (m extractModel) handleFilePickerKey(keys keyMap, msg tea.KeyPressMsg) (ext
 			// planExtractOverride refuses occupied roots, so the new paths are
 			// fresh by construction; the space probe answers for the new
 			// filesystem.
-			m.targetBusy = false
+			m.isTargetBusy = false
 			m.targetFree, m.targetFreeKnown = app.ExtractFreeSpace(staging)
 		} else {
 			m.filepickerErr = firstLine(perr.Error())

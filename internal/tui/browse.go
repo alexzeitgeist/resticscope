@@ -66,7 +66,7 @@ func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 // in one Cmd while a second Cmd pumps progress ticks; both carry the generation.
 func (m Model) beginIndex() (Model, tea.Cmd) {
 	m, bctx, gen := m.beginBrowseOp()
-	m.browseLoading = true
+	m.isBrowseLoading = true
 	m.browseIndexed = false
 	m.browseIndexN = 0
 	m.browseRate = rateSampler{}
@@ -130,7 +130,7 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 	}
 	if msg.err != nil {
 		m = m.supersedeBrowse()
-		m.browseLoading = false
+		m.isBrowseLoading = false
 		m.statusMsg = "browse: " + firstLine(msg.err.Error())
 		m.view = detailView
 		return m.clearBrowse(), nil
@@ -150,12 +150,12 @@ func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 	// The snapshot is immutable once indexed, so a cached listing can never go
 	// stale; answering synchronously skips the async query and its loading hop, so
 	// rapid parent/back navigation stays crisp — handleBrowseKey pauses navigation
-	// while browseLoading, which would otherwise drop keystrokes during each query
+	// while isBrowseLoading, which would otherwise drop keystrokes during each query
 	// round-trip. supersedeBrowse advances the generation so any in-flight listing's
 	// late message is dropped; no new query is dispatched.
 	if rows, ok := m.browseCache[dir]; ok {
 		m = m.supersedeBrowse()
-		m.browseLoading = false
+		m.isBrowseLoading = false
 		m.browseDir = dir
 		m.browseRows = sortedBrowseRows(rows, m.browseSortMode)
 		m.browseCursor = m.indexOfBrowsePath(selectPath)
@@ -163,7 +163,7 @@ func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 	}
 
 	m, bctx, gen := m.beginBrowseOp()
-	m.browseLoading = true
+	m.isBrowseLoading = true
 
 	repo, snapshotID := m.browseRepo, m.browseSnapshot
 	cmd := func() tea.Msg {
@@ -181,7 +181,7 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 	if msg.gen != m.browseGen {
 		return m
 	}
-	m.browseLoading = false
+	m.isBrowseLoading = false
 	if msg.err != nil {
 		m.statusMsg = "browse: " + firstLine(msg.err.Error())
 		return m
@@ -250,7 +250,7 @@ func (m Model) clearBrowse() Model {
 	m.browseIndexed = false
 	m.browseIndexN = 0
 	m.browseRate = rateSampler{}
-	m.browseLoading = false
+	m.isBrowseLoading = false
 	m.browseNotice = ""
 	m.browseCancel = nil
 	m.browseProgress = nil
@@ -269,7 +269,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleBrowseImmediateKey(msg); handled {
 		return next, cmd
 	}
-	if m.browseLoading {
+	if m.isBrowseLoading {
 		return m, nil // navigation is paused while indexing or a listing is in flight
 	}
 	return m.handleIdleBrowseKey(msg)
@@ -345,7 +345,7 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 	switch {
 	case key.Matches(msg, m.keys.Sort):
 		// Cycle the display sort of the current directory listing. It sits in the
-		// idle-only switch (below the browseLoading guard) so it can't fire
+		// idle-only switch (below the isBrowseLoading guard) so it can't fire
 		// mid-index/mid-load. While the search input is open handleKey routes to
 		// handleBrowseSearchKey first, so `o` is literal query text there; while a
 		// search is suspended it sorts only the visible directory listing.
@@ -354,7 +354,7 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 	case key.Matches(msg, m.keys.Search):
 		// `/` opens the global filename search, but only once the snapshot is
 		// indexed — there is nothing to search before the one-time crawl commits.
-		// It sits in the idle-only switch (below the browseLoading guard) so it
+		// It sits in the idle-only switch (below the isBrowseLoading guard) so it
 		// can't fire mid-index.
 		return m.openBrowseSearchInput(), nil, true
 	case key.Matches(msg, m.keys.Versions):

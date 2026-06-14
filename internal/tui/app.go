@@ -76,20 +76,20 @@ type Model struct {
 	// underlying filenames live only in the session-scoped encrypted store
 	// (app.Browse), which survives until the app exits so returning to an
 	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
-	browseRows     []model.BrowseEntry // the current directory's children, or nil
-	browseRepo     string              // repo being browsed (pins the action target)
-	browseSnapshot string              // snapshot id being browsed
-	browseDir      string              // path of the directory currently listed
-	browseCursor   int                 // selected entry within the current directory
-	browseSortMode browseSortMode      // display order for the current dir listing; resets on leaving browse
-	browseIndexed  bool                // the snapshot's one-time index has committed
-	browseIndexN   int                 // running node count shown while indexing
-	browseRate     rateSampler         // recent indexed-entry rate, in entries/sec
-	browseLoading  bool                // an index or directory load is in flight (navigation paused)
-	browseNotice   string              // browse-local one-action hint rendered in the fixed summary line
-	browseCancel   context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
-	browseGen      int                 // generation token; stale browse msgs are discarded
-	browseProgress chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
+	browseRows      []model.BrowseEntry // the current directory's children, or nil
+	browseRepo      string              // repo being browsed (pins the action target)
+	browseSnapshot  string              // snapshot id being browsed
+	browseDir       string              // path of the directory currently listed
+	browseCursor    int                 // selected entry within the current directory
+	browseSortMode  browseSortMode      // display order for the current dir listing; resets on leaving browse
+	browseIndexed   bool                // the snapshot's one-time index has committed
+	browseIndexN    int                 // running node count shown while indexing
+	browseRate      rateSampler         // recent indexed-entry rate, in entries/sec
+	isBrowseLoading bool                // an index or directory load is in flight (navigation paused)
+	browseNotice    string              // browse-local one-action hint rendered in the fixed summary line
+	browseCancel    context.CancelFunc  // cancels just the in-flight browse (child of m.ctx)
+	browseGen       int                 // generation token; stale browse msgs are discarded
+	browseProgress  chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
 
 	// browseCache memoizes visited directories' listings for the current browse so
 	// back/parent navigation is served synchronously (no async query, no loading
@@ -125,7 +125,7 @@ type Model struct {
 	findOriginHost      string              // originating snapshot hostname from the live TUI row
 	findPath            string              // the path being searched (held by the model only)
 	findRequestAllHosts bool                // user toggle position, flipped by `a`
-	findLoading         bool                // a find call is in flight
+	isFindLoading       bool                // a find call is in flight
 	findResultHost      string              // host the latest response actually filtered by; "" when result.AllHosts
 	findResultAllHosts  bool                // mirrors the latest response's AllHosts so the renderer can label without inference
 	findRows            []model.FileVersion // distinct (size, mtime) versions, newest-first
@@ -188,7 +188,7 @@ type Model struct {
 	diffStats     model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
 	diffErr       string             // sticky partial-diff warning rendered with the loaded tree
 	diffParseErrs int                // tolerated malformed diff lines in the completed stream
-	diffLoading   bool               // a diff stream is in flight (navigation paused)
+	isDiffLoading bool               // a diff stream is in flight (navigation paused)
 	diffLoadCount int                // entries seen on the wire while loading (progress UX)
 	diffGen       int                // generation token; stale diff msgs are discarded
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
