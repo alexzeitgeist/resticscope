@@ -145,7 +145,7 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // state stays on the model while the modal is open (same as browse), so
 // leaving the modal lands back on the intact result table.
 func (m Model) openExtractVersion() Model {
-	if m.findCursor >= len(m.findRows) {
+	if m.findCursor < 0 || m.findCursor >= len(m.findRows) {
 		return m
 	}
 	v := m.findRows[m.findCursor]
