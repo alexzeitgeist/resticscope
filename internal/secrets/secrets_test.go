@@ -390,6 +390,22 @@ func TestRedactor(t *testing.T) {
 	}
 }
 
+func TestRedactorMasksLongerSecretBeforePrefix(t *testing.T) {
+	for _, values := range [][]string{
+		{"abc123SECRET", "abc123"},
+		{"abc123", "abc123SECRET"},
+	} {
+		r := NewRedactor(values...)
+		got := r.Redact("restic error near abc123SECRET in transit")
+		if got != "restic error near "+redactionMask+" in transit" {
+			t.Errorf("Redact(%v) = %q", values, got)
+		}
+		if strings.Contains(got, "SECRET") || strings.Contains(got, "abc123") {
+			t.Errorf("redacted text still contains secret material for %v: %q", values, got)
+		}
+	}
+}
+
 func TestNilRedactorIsSafe(t *testing.T) {
 	var r *Redactor
 	if got := r.Redact("plain text"); got != "plain text" {

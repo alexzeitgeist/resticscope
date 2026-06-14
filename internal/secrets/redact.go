@@ -1,6 +1,9 @@
 package secrets
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // redactionMask replaces any secret value found in scrubbed text.
 const redactionMask = "[REDACTED]"
@@ -16,16 +19,25 @@ type Redactor struct {
 // values are ignored.
 func NewRedactor(values ...string) *Redactor {
 	seen := make(map[string]bool, len(values))
-	var pairs []string
+	var uniq []string
 	for _, v := range values {
 		if v == "" || seen[v] {
 			continue
 		}
 		seen[v] = true
-		pairs = append(pairs, v, redactionMask)
+		uniq = append(uniq, v)
 	}
-	if len(pairs) == 0 {
+	if len(uniq) == 0 {
 		return &Redactor{}
+	}
+	// strings.Replacer prefers the first matching old value at a position, so a
+	// shorter secret must not shadow a longer secret with the same prefix.
+	slices.SortFunc(uniq, func(a, b string) int {
+		return len(b) - len(a)
+	})
+	pairs := make([]string, 0, len(uniq)*2)
+	for _, v := range uniq {
+		pairs = append(pairs, v, redactionMask)
 	}
 	return &Redactor{replacer: strings.NewReplacer(pairs...)}
 }
