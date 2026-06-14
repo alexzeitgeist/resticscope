@@ -280,7 +280,10 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 
 	env := c.buildEnv(t, creds)
 	st := &extractTreeStream{onEvent: onEvent, cancel: cancel}
-	runner := c.streamRunner()
+	runner, err := c.streamRunner()
+	if err != nil {
+		return err
+	}
 	var stderr []byte
 	var runErr error
 	if len(patterns) > 0 {

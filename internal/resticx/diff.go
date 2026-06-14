@@ -38,9 +38,14 @@ func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID,
 
 	full := prependBackendOpts(t, "--no-lock", "diff", "--json", olderID, newerID)
 
+	runner, err := c.streamRunner()
+	if err != nil {
+		return model.SnapshotDiff{}, err
+	}
+
 	env := c.buildEnv(t, creds)
 	st := &diffStream{ctx: dctx, onEntry: onEntry, onProgress: onProgress}
-	stderr, runErr := c.streamRunner().RunStream(dctx, env, creds.ResticPassword, st.consume, full...)
+	stderr, runErr := runner.RunStream(dctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):

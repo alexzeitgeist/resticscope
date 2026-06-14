@@ -49,8 +49,21 @@ type Secrets interface {
 	Resolve(repoName, credName string) (secrets.Material, error)
 }
 
-// App wires the dependencies together. Construct it directly; all fields are
-// required except Log, Browse, and Priv.
+// App wires the dependencies together. Construct it directly with a struct
+// literal; dependencies are per-method, not globally required, and each entry
+// point wires only the set it needs:
+//
+//   - Cfg backs every command-facing method; the privileged-runner probes
+//     (PrivilegedExtractProbe, PrivilegedAuthCommand) are the exception — they
+//     need only Priv and guard its nil themselves.
+//   - Cache and Clock back the status methods (Statuses, Refresh*).
+//   - Secrets and Restic back the refresh/check methods (Refresh*, Check) — and
+//     Secrets alone backs the shell session (exec).
+//   - Browse and Priv back the TUI's browse and privileged-extract paths.
+//   - Log is always optional; logger() falls back to a discard logger.
+//
+// A method invoked without the dependencies it needs nil-panics rather than
+// failing softly.
 //
 // Browse is the lazily-opened, session-scoped encrypted store backing the in-app
 // file browser. It is nil for non-TUI entry points (status/check/exec), and the

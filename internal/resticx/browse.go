@@ -82,9 +82,14 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 
 	full := prependBackendOpts(t, "--no-lock", "ls", "--json", "--recursive", snapshotID, "/")
 
+	runner, err := c.streamRunner()
+	if err != nil {
+		return model.BrowseScanSummary{}, err
+	}
+
 	env := c.buildEnv(t, creds)
 	st := &browseStream{onNode: onNode, cancel: cancel}
-	stderr, runErr := c.streamRunner().RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
+	stderr, runErr := runner.RunStream(bctx, env, creds.ResticPassword, st.consume, full...)
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -128,20 +133,25 @@ func (c *Client) StreamSnapshotTree(ctx context.Context, t Target, creds Creds, 
 	}
 }
 
-// streamRunner returns the StreamRunner to use for a browse crawl. The streaming
-// seam (Stream) is preferred; when it is unset, a Runner that also implements
-// StreamRunner is used, and finally the production ExecRunner. This lets a Client
-// wired with only Runner still browse without a separate Stream assignment.
-func (c *Client) streamRunner() StreamRunner {
+// ErrNoStreamRunner is returned by the streaming methods when a Client has no
+// stream-capable runner wired — neither Stream nor a Runner that implements
+// StreamRunner. Production wires Stream explicitly, so it signals a miswire.
+var ErrNoStreamRunner = errors.New("resticx: no stream runner configured (set Client.Stream)")
+
+// streamRunner picks the StreamRunner for a streaming call: the Stream seam if
+// set, else a Runner that also implements StreamRunner. It returns
+// ErrNoStreamRunner rather than defaulting to a real ExecRunner, so a
+// buffered-only Client fails the call instead of silently spawning restic.
+func (c *Client) streamRunner() (StreamRunner, error) {
 	if c.Stream != nil {
-		return c.Stream
+		return c.Stream, nil
 	}
 	if c.Runner != nil {
 		if sr, ok := c.Runner.(StreamRunner); ok {
-			return sr
+			return sr, nil
 		}
 	}
-	return ExecRunner{}
+	return nil, ErrNoStreamRunner
 }
 
 // browseStream decodes the NDJSON stream and forwards each node to onNode. It
