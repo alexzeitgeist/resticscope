@@ -185,14 +185,14 @@ func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw 
 	if l.showPerms {
 		perms := emDash
 		if v.Permissions != "" {
-			perms = truncate(v.Permissions, findPermsWidth)
+			perms = truncateWidth(v.Permissions, findPermsWidth)
 		}
 		cells = append(cells, fmt.Sprintf("%-*s", findPermsWidth, perms))
 	}
 	if l.showOwner {
 		owner := emDash
 		if v.OwnerKnown {
-			owner = truncate(fmt.Sprintf("%d:%d", v.UID, v.GID), findOwnerWidth)
+			owner = truncateWidth(fmt.Sprintf("%d:%d", v.UID, v.GID), findOwnerWidth)
 		}
 		cells = append(cells, fmt.Sprintf("%*s", findOwnerWidth, owner))
 	}

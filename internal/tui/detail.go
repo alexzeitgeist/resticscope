@@ -283,7 +283,7 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 // even a pane too narrow for the label itself can't wrap.
 func (m Model) field(label, value string, width int) string {
 	avail := max(width-2-labelWidth, 1)
-	return clip("  "+m.styles.label.Render(label)+truncate(value, avail), width)
+	return clip("  "+m.styles.label.Render(label)+truncateWidth(value, avail), width)
 }
 
 // snapshotsHeadingText is the heading row above the snapshot table. The bare
@@ -345,11 +345,11 @@ func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected 
 	content := strings.Join(snapCells(l, snapRow{
 		id:    idCell(s.ShortID, node.count),
 		tm:    s.Time.Format("2006-01-02 15:04"),
-		host:  truncate(s.Hostname, l.host),
+		host:  truncateWidth(s.Hostname, l.host),
 		size:  size,
 		added: snapAdded(s),
 		took:  snapTook(s),
-		tags:  truncate(strings.Join(s.Tags, ","), l.tags),
+		tags:  truncateWidth(strings.Join(s.Tags, ","), l.tags),
 	}), "  ")
 	left := " "
 	right := " "
@@ -548,7 +548,8 @@ func snapCells(l snapLayout, r snapRow) []string {
 	cells := []string{
 		fmt.Sprintf("%-*s", l.idWidth, r.id),
 		fmt.Sprintf("%-16s", r.tm),
-		fmt.Sprintf("%-*s", l.host, r.host),
+		// Hostname can hold wide runes; pad by display width, not fmt's rune count.
+		padRight(r.host, l.host),
 		fmt.Sprintf("%9s", r.size),
 	}
 	if l.showAdded {
@@ -577,7 +578,7 @@ func snapTook(s model.Snapshot) string {
 	if !ok {
 		return emDash
 	}
-	return truncate(humanize.Duration(d), snapTookWidth)
+	return truncateWidth(humanize.Duration(d), snapTookWidth)
 }
 
 // snapshotLayout sizes the snapshot table's variable columns to the total width. A
@@ -672,18 +673,4 @@ func joinOrDash(vals []string) string {
 		return emDash
 	}
 	return strings.Join(vals, ", ")
-}
-
-func truncate(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if len([]rune(s)) <= max {
-		return s
-	}
-	r := []rune(s)
-	if max == 1 {
-		return "…"
-	}
-	return string(r[:max-1]) + "…"
 }

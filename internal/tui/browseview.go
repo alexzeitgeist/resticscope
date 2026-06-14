@@ -316,11 +316,11 @@ func (m Model) browseRow(e *model.BrowseEntry, selected bool, l browseColLayout,
 	}
 	perms := emDash
 	if e.Permissions != "" {
-		perms = truncate(e.Permissions, browsePermsWidth)
+		perms = truncateWidth(e.Permissions, browsePermsWidth)
 	}
 	owner := emDash
 	if e.OwnerKnown {
-		owner = truncate(fmt.Sprintf("%d:%d", e.UID, e.GID), browseOwnerWidth)
+		owner = truncateWidth(fmt.Sprintf("%d:%d", e.UID, e.GID), browseOwnerWidth)
 	}
 
 	content := strings.Join(browseCells(l, nameCell, size, mod, perms, owner), "  ")

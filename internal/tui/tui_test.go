@@ -3182,7 +3182,7 @@ func TestInfoViewHelpHasExplicitCase(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
+func TestTruncateWidth(t *testing.T) {
 	tests := []struct {
 		s    string
 		max  int
@@ -3194,12 +3194,37 @@ func TestTruncate(t *testing.T) {
 		{"hello", 1, "…"},      // single cell is just the ellipsis
 		{"hello", 0, ""},       // non-positive width yields empty, not the input
 		{"hello", -3, ""},      // negative likewise
-		{"héllo", 3, "hé…"},    // counts runes, not bytes
+		{"héllo", 3, "hé…"},    // combining-free accent is one cell wide
+		{"中文档", 4, "中…"},       // wide runes measured by display width, not rune count
+		{"中文", 3, "中…"},        // a 4-cell value clipped into a 3-cell budget
 		{"", 5, ""},            // empty input stays empty
 	}
 	for _, tt := range tests {
-		if got := truncate(tt.s, tt.max); got != tt.want {
-			t.Errorf("truncate(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+		got := truncateWidth(tt.s, tt.max)
+		if got != tt.want {
+			t.Errorf("truncateWidth(%q, %d) = %q, want %q", tt.s, tt.max, got, tt.want)
+		}
+		if w := lipgloss.Width(got); tt.max > 0 && w > tt.max {
+			t.Errorf("truncateWidth(%q, %d) is %d cells wide, over budget", tt.s, tt.max, w)
+		}
+	}
+}
+
+// snapCells must pad the Hostname column by display width, not rune count: a
+// wide-rune hostname trimmed to <= l.host cells by truncateWidth still has fewer
+// runes than cells, so fmt's %-*s would pad it back past l.host and shove
+// Size/Added/Took/Tags out of alignment. The cell must stay exactly l.host cells
+// regardless of how many runes that is.
+func TestSnapCellsHostCellWidth(t *testing.T) {
+	l := snapLayout{idWidth: snapIDWidth, host: 10, tags: 20, showAdded: true, showTook: true}
+	for _, host := range []string{
+		"buildhost", // ASCII: rune count already equals cell width
+		"中文档中文档主机",  // wide runes: 2 cells each, trimmed below the rune count
+		"サーバー東京",    // CJK that needs truncation to fit
+	} {
+		cell := snapCells(l, snapRow{host: truncateWidth(host, l.host)})[2]
+		if w := lipgloss.Width(cell); w != l.host {
+			t.Errorf("snapCells host cell for %q is %d cells, want exactly %d", host, w, l.host)
 		}
 	}
 }

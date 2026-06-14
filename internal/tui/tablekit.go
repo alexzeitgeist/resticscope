@@ -31,11 +31,12 @@ func promoteColumns(width, baseFixed, flexMin int, cols []optionalCol) (reserved
 }
 
 // truncateWidth shortens s to at most max display cells, appending an ellipsis
-// when it has to cut. Unlike truncate (which counts runes), it measures each
-// rune's terminal width, so a filename with wide runes — CJK, emoji, or the
-// fullwidth/small colon some apps substitute for ':' — still fits its column
-// instead of shoving the metadata columns out of alignment. fmt's %-*s and
-// rune-based truncate both miscount such names.
+// when it has to cut. It measures each rune's terminal width, so a value with
+// wide runes — CJK, emoji, or the fullwidth/small colon some apps substitute
+// for ':' — still fits its column instead of shoving the metadata columns out
+// of alignment. Plain rune counting and fmt's %-*s both miscount such values,
+// so every truncated table/detail cell (names, hosts, tags, perms, owners)
+// goes through here.
 func truncateWidth(s string, max int) string {
 	if max <= 0 {
 		return ""
