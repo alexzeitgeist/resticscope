@@ -328,12 +328,19 @@ func helperErrCode(err error) string {
 // policy as App.Extract — the user owns their dirs' metadata). A negative uid
 // or gid disables the chown (unknown invoker), leaving plain MkdirAll
 // semantics.
+//
+// Each created level is chowned to the invoking user, making its parent
+// user-writable for the next — so a limited-sudo invoker could swap a fresh dir
+// for a symlink between the Mkdir and the chown. The create+chown is confined to
+// the first existing ancestor via *os.Root, and the chown is an Lchown (not
+// Chown): a swapped-in symlink is chowned in place rather than followed off-tree,
+// closing the race by construction (no dependency on the Chmod-race fix).
 func mkdirAllOwned(dir string, uid, gid int) error {
 	if uid < 0 || gid < 0 {
 		return os.MkdirAll(dir, 0o700)
 	}
-	// Walk up to the first existing ancestor, then create downward, chowning
-	// each new level.
+	// Walk up (non-following Lstat) to the first existing ancestor, collecting
+	// the missing levels below it.
 	var missing []string
 	cur := dir
 	for {
@@ -349,14 +356,29 @@ func mkdirAllOwned(dir string, uid, gid int) error {
 		}
 		cur = parent
 	}
+	if len(missing) == 0 {
+		return nil // dir already exists; nothing to create or own
+	}
+	// cur is the first existing ancestor: confine the downward create+chown to
+	// it. missing is parent-first from the back, so each rt.Mkdir's parent was
+	// created in a prior iteration.
+	rt, err := os.OpenRoot(cur)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rt.Close() }()
 	for i := len(missing) - 1; i >= 0; i-- {
-		if err := os.Mkdir(missing[i], 0o700); err != nil {
+		rel, rerr := filepath.Rel(cur, missing[i])
+		if rerr != nil {
+			return rerr
+		}
+		if err := rt.Mkdir(rel, 0o700); err != nil {
 			if errors.Is(err, os.ErrExist) {
 				continue // racing creator; ownership is theirs
 			}
 			return err
 		}
-		if err := os.Chown(missing[i], uid, gid); err != nil {
+		if err := rt.Lchown(rel, uid, gid); err != nil {
 			return err
 		}
 	}
@@ -408,27 +430,56 @@ func chownCacheForOwner(dir string, uid, gid int) {
 	})
 }
 
-// chownStagingForCleanup hands a failed run's staging tree to the invoking
-// user so the non-root TUI can honor keep-or-delete. Ownership fidelity is
-// moot for a failed extract, so directories additionally get u+rwx (RemoveAll
-// needs to descend and unlink). Lchown never follows symlinks, so a restored
-// link can't redirect the chown onto the live filesystem. Best-effort by
-// design: a node it cannot fix leaves at worst a staging dir the user must
-// sudo-remove, which the delete error will say plainly.
+// chownStagingForCleanup hands a failed run's staging tree to the invoking user
+// so the non-root TUI can honor keep-or-delete. Ownership fidelity is moot for a
+// failed extract, so directories additionally get u+rwx (RemoveAll needs to
+// descend and unlink). The chown/chmod is confined to the staging subtree via an
+// *os.Root: this runs as root over restic-restored, attacker-named content, and
+// os.Chmod follows a final symlink (Lchown does not), so without confinement a
+// swapped-in escaping symlink could redirect a root chmod off-tree. os.Root
+// rejects escapes and (go1.25.9+, GO-2026-4864) closes the dir→symlink chmod
+// race. Best-effort: a node it can't fix — or a root it can't open — leaves at
+// worst a tree the user must sudo-remove, which the delete error says plainly.
 func chownStagingForCleanup(staging string, uid, gid int) {
 	if staging == "" || uid < 0 || gid < 0 {
 		return
 	}
-	_ = filepath.WalkDir(staging, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // best-effort walk: skip the unreadable entry, keep going
-		}
-		_ = os.Lchown(p, uid, gid)
-		if d.IsDir() {
-			if info, ierr := d.Info(); ierr == nil {
-				_ = os.Chmod(p, info.Mode().Perm()|0o700)
+	rt, err := os.OpenRoot(staging)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rt.Close() }()
+	// Hand the staging root back first and ensure it carries owner rwx so its
+	// children can be listed and unlinked, then recurse into it.
+	_ = rt.Lchown(".", uid, gid)
+	if fi, lerr := rt.Lstat("."); lerr == nil {
+		_ = rt.Chmod(".", fi.Mode().Perm()|0o700)
+	}
+	chownStagingTree(rt, ".", uid, gid)
+}
+
+// chownStagingTree recurses dir (relative to rt) and hands every descendant to
+// the invoking user. It walks via rt.Open + (*os.File).ReadDir rather than
+// fs.WalkDir(rt.FS()) because io/fs rejects non-UTF-8 paths: that walk would
+// refuse to recurse into a directory whose restored name is not valid UTF-8
+// (legal in Unix backups) and strand its children. The raw-byte readdir has no
+// such limit and still opens through the root. Lchown is non-following; dirs also
+// get owner rwx. Best-effort: an unreadable or unfixable node is skipped.
+func chownStagingTree(rt *os.Root, dir string, uid, gid int) {
+	f, err := rt.Open(dir)
+	if err != nil {
+		return
+	}
+	entries, _ := f.ReadDir(-1) // best-effort: act on whatever entries we could read
+	_ = f.Close()
+	for _, e := range entries {
+		rel := filepath.Join(dir, e.Name())
+		_ = rt.Lchown(rel, uid, gid)
+		if e.IsDir() {
+			if info, ierr := e.Info(); ierr == nil {
+				_ = rt.Chmod(rel, info.Mode().Perm()|0o700)
 			}
+			chownStagingTree(rt, rel, uid, gid)
 		}
-		return nil
-	})
+	}
 }

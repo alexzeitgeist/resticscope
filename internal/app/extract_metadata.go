@@ -27,9 +27,12 @@ package app
 //   - Remove / WriteFile under the mutating skip/placeholder policies.
 //
 // So the mutating policies carry strictly more failure surface than keep. The
-// pass follows no symlink. The only filesystem mutations on the preserved path
-// are the directory temp-chmod-and-restore used to traverse a dir restic left
-// without owner rwx (see normalizeExtractDir).
+// pass follows no symlink: every path syscall runs through an *os.Root opened on
+// the staging dir, so a dir swapped for an escaping symlink mid-walk is rejected,
+// not followed (the confinement that matters under the root-run helper). The only
+// filesystem mutations on the preserved path are the directory temp-chmod-and-
+// restore used to traverse a dir restic left without owner rwx (see
+// normalizeExtractDir).
 
 import (
 	"context"
@@ -37,6 +40,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -57,11 +61,19 @@ var liveExtractSupported = true
 // children are dispatched on the ReadDir entry type (no per-node re-stat).
 func normalizeExtractTreeMetadata(ctx context.Context, root string, policy unsafeSymlinkPolicy) (extractMetaCounts, error) {
 	var counts extractMetaCounts
-	fi, err := os.Lstat(root)
+	// Confine every syscall below to the staging subtree (see the package comment):
+	// os.Root rejects any path that escapes the root, so a dir→symlink swap in
+	// attacker-named content can't redirect a mutation onto the live filesystem.
+	rt, err := os.OpenRoot(root)
 	if err != nil {
 		return counts, metaErr(err)
 	}
-	err = normalizeExtractDir(ctx, root, root, fi.Mode(), policy, true, &counts)
+	defer func() { _ = rt.Close() }()
+	fi, err := rt.Lstat(".")
+	if err != nil {
+		return counts, metaErr(err)
+	}
+	err = normalizeExtractDir(ctx, rt, root, root, fi.Mode(), policy, true, &counts)
 	return counts, err
 }
 
@@ -75,7 +87,7 @@ func normalizeExtractTreeMetadata(ctx context.Context, root string, policy unsaf
 // newUnixDirent), so the type seen here is never ambiguous. A ctx error is
 // propagated verbatim so a timeout/cancel during the walk is not misreported as
 // a metadata failure.
-func normalizeExtractChild(ctx context.Context, root, dir string, e fs.DirEntry, policy unsafeSymlinkPolicy, counts *extractMetaCounts) error {
+func normalizeExtractChild(ctx context.Context, rt *os.Root, root, dir string, e fs.DirEntry, policy unsafeSymlinkPolicy, counts *extractMetaCounts) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -85,7 +97,7 @@ func normalizeExtractChild(ctx context.Context, root, dir string, e fs.DirEntry,
 	switch {
 	case typ&fs.ModeSymlink != 0:
 		// Ordered before IsDir(): a symlink is never followed or recursed.
-		unsafe, target, err := classifyExtractSymlink(root, p)
+		unsafe, target, err := classifyExtractSymlink(rt, root, p)
 		if err != nil {
 			return err
 		}
@@ -93,14 +105,14 @@ func normalizeExtractChild(ctx context.Context, root, dir string, e fs.DirEntry,
 			return nil // safe link: leave verbatim
 		}
 		counts.UnsafeSymlinks++
-		return applyUnsafeSymlinkPolicy(p, target, policy)
+		return applyUnsafeSymlinkPolicy(rt, root, p, target, policy)
 
 	case typ.IsDir():
 		fi, err := e.Info()
 		if err != nil {
 			return metaErr(err)
 		}
-		return normalizeExtractDir(ctx, root, p, fi.Mode(), policy, false, counts)
+		return normalizeExtractDir(ctx, rt, root, p, fi.Mode(), policy, false, counts)
 
 	case typ.IsRegular():
 		// Mode, mtime, xattrs, and ownership are kept exactly as restic restored
@@ -136,25 +148,29 @@ func normalizeExtractChild(ctx context.Context, root, dir string, e fs.DirEntry,
 // tree retained for keep-or-delete inspection with restic's mode, not the
 // temporary widening. A restore failure surfaces as a path-free metaErr only when
 // nothing else already failed (the original error is the more informative one).
-func normalizeExtractDir(ctx context.Context, root, p string, origMode fs.FileMode, policy unsafeSymlinkPolicy, isRoot bool, counts *extractMetaCounts) (err error) {
+func normalizeExtractDir(ctx context.Context, rt *os.Root, root, p string, origMode fs.FileMode, policy unsafeSymlinkPolicy, isRoot bool, counts *extractMetaCounts) (err error) {
+	rel, relErr := filepath.Rel(root, p)
+	if relErr != nil {
+		return metaErr(relErr)
+	}
 	if origMode.Perm()&0o700 != 0o700 {
-		if cerr := os.Chmod(p, origMode|0o700); cerr != nil {
+		if cerr := rt.Chmod(rel, origMode|0o700); cerr != nil {
 			return metaErr(cerr)
 		}
 		defer func() {
-			if rerr := os.Chmod(p, origMode); rerr != nil && err == nil {
+			if rerr := rt.Chmod(rel, origMode); rerr != nil && err == nil {
 				err = metaErr(rerr)
 			}
 		}()
 	}
-	entries, rderr := os.ReadDir(p)
+	entries, rderr := readDirSortedIn(rt, rel)
 	if rderr != nil {
 		return metaErr(rderr)
 	}
 	// The child loop runs between the temp-chmod and the deferred restore, so
 	// unsafe-link mutations always see a writable parent.
 	for _, e := range entries {
-		if cerr := normalizeExtractChild(ctx, root, p, e, policy, counts); cerr != nil {
+		if cerr := normalizeExtractChild(ctx, rt, root, p, e, policy, counts); cerr != nil {
 			return cerr
 		}
 	}
@@ -164,12 +180,36 @@ func normalizeExtractDir(ctx context.Context, root, p string, origMode fs.FileMo
 	return nil
 }
 
+// readDirSortedIn reads directory rel within rt, sorted by name like os.ReadDir
+// but confined to the staging root. Entries come from the same (*os.File).ReadDir
+// os.ReadDir uses, so a DT_UNKNOWN readdir type is still resolved by an lstat
+// (NFS/FUSE) — which the child dispatch relies on (see normalizeExtractChild).
+func readDirSortedIn(rt *os.Root, rel string) ([]fs.DirEntry, error) {
+	f, err := rt.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
+	return entries, nil
+}
+
 // classifyExtractSymlink reads the link at p and classifies its target via the
 // pure classifySymlinkTarget. It returns whether the target is unsafe, the raw
 // target string (for the placeholder policy), and a path-free metaErr only on a
 // Readlink IO failure. The link is never followed.
-func classifyExtractSymlink(root, p string) (unsafe bool, target string, err error) {
-	target, rerr := os.Readlink(p)
+func classifyExtractSymlink(rt *os.Root, root, p string) (unsafe bool, target string, err error) {
+	rel, relErr := filepath.Rel(root, p)
+	if relErr != nil {
+		return false, "", metaErr(relErr)
+	}
+	target, rerr := rt.Readlink(rel)
 	if rerr != nil {
 		return false, "", metaErr(rerr)
 	}
@@ -202,19 +242,25 @@ func classifySymlinkTarget(root, parentDir, target string) bool {
 // keep (fail-safe, matching restic's verbatim restore). Every Remove/WriteFile
 // failure returns a path-free metaErr — a raw *os.PathError would leak p — which
 // is why the mutating policies carry more failure surface than keep.
-func applyUnsafeSymlinkPolicy(p, target string, policy unsafeSymlinkPolicy) error {
+func applyUnsafeSymlinkPolicy(rt *os.Root, root, p, target string, policy unsafeSymlinkPolicy) error {
+	rel, relErr := filepath.Rel(root, p)
+	if relErr != nil {
+		return metaErr(relErr)
+	}
 	switch policy {
 	case unsafeSymlinkSkip:
-		if err := os.Remove(p); err != nil {
+		if err := rt.Remove(rel); err != nil {
 			return metaErr(err)
 		}
 	case unsafeSymlinkPlaceholder:
-		if err := os.Remove(p); err != nil {
+		if err := rt.Remove(rel); err != nil {
 			return metaErr(err)
 		}
 		// An inert text file recording the target the link pointed at: the
-		// information survives without an alias to the live filesystem.
-		if err := os.WriteFile(p, []byte(target+"\n"), 0o600); err != nil {
+		// information survives without an alias to the live filesystem. The
+		// *os.Root write keeps the Remove→WriteFile gap from escaping staging (a
+		// re-created in-staging symlink could still redirect it, but only in-tree).
+		if err := rt.WriteFile(rel, []byte(target+"\n"), 0o600); err != nil {
 			return metaErr(err)
 		}
 	default:

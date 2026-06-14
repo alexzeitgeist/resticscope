@@ -493,6 +493,187 @@ func TestExtractTreeLoggingIsPathFree(t *testing.T) {
 	}
 }
 
+// --- os.Root confinement: nothing the pass mutates may escape staging ---
+
+// TestNormalizeExtractPlaceholderConfinedToStaging pins the boundary: an unsafe
+// symlink to an absolute path OUTSIDE staging yields an in-staging placeholder,
+// and the external target is left byte- and mode-identical — the Remove→WriteFile
+// never follows the link out of the tree (it goes through the staging *os.Root;
+// see applyUnsafeSymlinkPolicy).
+func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "staging")
+	mustSetup(t, os.Mkdir(root, 0o700))
+
+	victim := filepath.Join(base, "victim.txt")
+	mustSetup(t, os.WriteFile(victim, []byte("LIVE-SECRET\n"), 0o600))
+
+	link := filepath.Join(root, "link")
+	mustSetup(t, os.Symlink(victim, link)) // absolute → unsafe
+
+	counts, err := normalizeExtractTreeMetadata(context.Background(), root, unsafeSymlinkPlaceholder)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if counts.UnsafeSymlinks != 1 {
+		t.Errorf("UnsafeSymlinks = %d, want 1", counts.UnsafeSymlinks)
+	}
+	// The placeholder lands IN staging, recording the target, as a 0600 regular file.
+	if fi := lstat(t, link); !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Errorf("placeholder mode = %v, want a 0600 regular file", fi.Mode())
+	}
+	if data, _ := os.ReadFile(link); string(data) != victim+"\n" {
+		t.Errorf("placeholder contents = %q, want %q", string(data), victim+"\n")
+	}
+	// The external target is UNTOUCHED — same content, same mode. A followed link
+	// would have truncated it to the placeholder text.
+	if data, _ := os.ReadFile(victim); string(data) != "LIVE-SECRET\n" {
+		t.Errorf("external victim content = %q, want it unchanged", string(data))
+	}
+	if fi := lstat(t, victim); fi.Mode().Perm() != 0o600 {
+		t.Errorf("external victim mode = %v, want unchanged 0600", fi.Mode())
+	}
+}
+
+// TestChownStagingForCleanup covers the failed-extract cleanup that hands a
+// root-restored staging tree back to the invoking user. It runs as the test user
+// (chown-to-self is a no-op the kernel permits a non-root owner), so it exercises
+// the dir chmod-up and the os.Root confinement without needing real root.
+func TestChownStagingForCleanup(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+
+	t.Run("widens dirs so the user can remove the tree", func(t *testing.T) {
+		base := t.TempDir()
+		staging := filepath.Join(base, "staging")
+		mustSetup(t, os.Mkdir(staging, 0o700))
+		locked := filepath.Join(staging, "locked")
+		mustSetup(t, os.Mkdir(locked, 0o700))
+		mustSetup(t, os.WriteFile(filepath.Join(locked, "f"), []byte("x"), 0o600))
+		mustSetup(t, os.Chmod(locked, 0o500)) // r-x: traversable, not writable for unlink
+
+		chownStagingForCleanup(staging, uid, gid)
+
+		if di := lstat(t, locked); di.Mode().Perm()&0o700 != 0o700 {
+			t.Errorf("locked dir mode = %v, want owner rwx so RemoveAll can descend", di.Mode())
+		}
+	})
+
+	t.Run("never chmods through an escaping symlink", func(t *testing.T) {
+		base := t.TempDir()
+		staging := filepath.Join(base, "staging")
+		mustSetup(t, os.Mkdir(staging, 0o700))
+
+		victim := filepath.Join(base, "victim")
+		mustSetup(t, os.Mkdir(victim, 0o000)) // would be widened to 0700 if the link were followed
+		t.Cleanup(func() { _ = os.Chmod(victim, 0o700) })
+
+		// Restored content that aliases a directory outside staging.
+		mustSetup(t, os.Symlink(victim, filepath.Join(staging, "escape")))
+
+		chownStagingForCleanup(staging, uid, gid)
+
+		// The link is not a directory so it is never chmod'd, and the walk is
+		// confined to the root, so the external victim keeps its 0000 mode.
+		if di := lstat(t, victim); di.Mode().Perm() != 0o000 {
+			t.Errorf("external victim mode = %v, want unchanged 0000 (link not followed)", di.Mode())
+		}
+	})
+
+	t.Run("recurses into non-UTF-8 directory names", func(t *testing.T) {
+		base := t.TempDir()
+		staging := filepath.Join(base, "staging")
+		mustSetup(t, os.Mkdir(staging, 0o700))
+		// A restored directory whose name is not valid UTF-8 — legal on Unix and
+		// common in backup content. A fs.WalkDir over an io/fs would refuse to
+		// recurse into it (paths must be valid UTF-8), stranding its children; the
+		// raw-byte walk must descend so they are handed back too.
+		weird := filepath.Join(staging, "d\xff\xfe")
+		if err := os.Mkdir(weird, 0o700); err != nil {
+			t.Skipf("filesystem rejects non-UTF-8 names (%v); nothing to test", err)
+		}
+		inner := filepath.Join(weird, "inner")
+		mustSetup(t, os.Mkdir(inner, 0o700))
+		mustSetup(t, os.Chmod(inner, 0o500)) // widened only if the walk descended
+
+		chownStagingForCleanup(staging, uid, gid)
+
+		if di := lstat(t, inner); di.Mode().Perm()&0o700 != 0o700 {
+			t.Errorf("grandchild under a non-UTF-8 dir mode = %v, want owner rwx — the walk must descend by raw bytes", di.Mode())
+		}
+	})
+}
+
+// TestOSRootRejectsEscapingMutations pins the os.Root guarantee the extract pass
+// depends on: a Chmod or WriteFile whose path resolves through a symlink that
+// escapes the root is rejected, leaving the external target untouched. The Chmod
+// dir→symlink TOCTOU additionally needs go1.25.9+ (GO-2026-4864) but isn't
+// statically reproducible; this pins the non-racy escape rejection.
+func TestOSRootRejectsEscapingMutations(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	mustSetup(t, os.Mkdir(root, 0o700))
+
+	victim := filepath.Join(base, "victim")
+	mustSetup(t, os.WriteFile(victim, []byte("LIVE\n"), 0o600))
+
+	mustSetup(t, os.Symlink("../victim", filepath.Join(root, "rel"))) // relative escape
+	mustSetup(t, os.Symlink(victim, filepath.Join(root, "abs")))      // absolute escape
+
+	rt, err := os.OpenRoot(root)
+	mustSetup(t, err)
+	defer func() { _ = rt.Close() }()
+
+	for _, name := range []string{"rel", "abs"} {
+		if err := rt.Chmod(name, 0o777); err == nil {
+			t.Errorf("rt.Chmod(%q) escaped the root, want it rejected", name)
+		}
+		if err := rt.WriteFile(name, []byte("CLOBBER\n"), 0o600); err == nil {
+			t.Errorf("rt.WriteFile(%q) escaped the root, want it rejected", name)
+		}
+	}
+	if data, _ := os.ReadFile(victim); string(data) != "LIVE\n" {
+		t.Errorf("external victim content = %q, want unchanged \"LIVE\\n\"", string(data))
+	}
+	if fi := lstat(t, victim); fi.Mode().Perm() != 0o600 {
+		t.Errorf("external victim mode = %v, want unchanged 0600", fi.Mode())
+	}
+}
+
+// TestMkdirAllOwned covers the ownership-preserving MkdirAll: it creates the whole
+// missing chain below an existing ancestor, leaves the ancestor untouched, and is
+// idempotent. It runs as the test user (chown-to-self is permitted); the swap-race
+// it resists is closed structurally — os.Root confinement plus a non-following Lchown.
+func TestMkdirAllOwned(t *testing.T) {
+	uid, gid := os.Getuid(), os.Getgid()
+	base := t.TempDir() // the pre-existing ancestor
+	baseMode := lstat(t, base).Mode()
+
+	target := filepath.Join(base, "a", "b", "c")
+	if err := mkdirAllOwned(target, uid, gid); err != nil {
+		t.Fatalf("mkdirAllOwned: %v", err)
+	}
+	for _, p := range []string{filepath.Join(base, "a"), filepath.Join(base, "a", "b"), target} {
+		if fi := lstat(t, p); !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Errorf("created %q = %v, want a 0700 directory", p, fi.Mode())
+		}
+	}
+	if fi := lstat(t, base); fi.Mode() != baseMode {
+		t.Errorf("pre-existing ancestor mode = %v, want untouched %v", fi.Mode(), baseMode)
+	}
+	// Idempotent: the whole chain now exists, so a second call is a no-op success.
+	if err := mkdirAllOwned(target, uid, gid); err != nil {
+		t.Errorf("mkdirAllOwned (idempotent re-call): %v", err)
+	}
+	// Unknown invoker (negative ids) falls back to plain MkdirAll, still creating.
+	other := filepath.Join(base, "x", "y")
+	if err := mkdirAllOwned(other, -1, -1); err != nil {
+		t.Errorf("mkdirAllOwned with unknown invoker: %v", err)
+	}
+	if fi := lstat(t, other); !fi.IsDir() {
+		t.Errorf("unknown-invoker path %q not created", other)
+	}
+}
+
 // --- helpers ---
 
 func mustSetup(t *testing.T, err error) {
