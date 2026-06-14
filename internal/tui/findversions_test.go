@@ -411,7 +411,7 @@ func TestApplyFindVersionsMsgDropsStaleGen(t *testing.T) {
 func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 	m := Model{view: findVersionsView, findLoading: true, findCursor: 0}
 	m.keys = defaultKeys()
-	m.ctx = context.Background()
+	m.ctx = t.Context()
 	next, _ := m.handleFindVersionsKey(press("j"))
 	if next.(Model).findCursor != 0 {
 		t.Errorf("cursor moved while loading: cursor = %d, want 0", next.(Model).findCursor)
@@ -421,7 +421,7 @@ func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 func TestStartFindVersionsCancelsPriorFindBeforeClearing(t *testing.T) {
 	canceled := false
 	m := Model{
-		ctx:         context.Background(),
+		ctx:         t.Context(),
 		findGen:     7,
 		findLoading: true,
 		findCancel:  func() { canceled = true },

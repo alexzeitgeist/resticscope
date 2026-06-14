@@ -1,7 +1,6 @@
 package browsedb
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -42,7 +41,7 @@ func TestLikeSubsequence(t *testing.T) {
 // own parent directory (not a single requested parent).
 func TestSearchSubsequenceAcrossDirs(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/etc", IsDir: true},
@@ -75,7 +74,7 @@ func TestSearchSubsequenceAcrossDirs(t *testing.T) {
 // same Path (and metadata) ListDir produces for the same node.
 func TestSearchFullPathMatchesListDir(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	zone := time.FixedZone("X", 2*3600)
 	mt := time.Date(2021, 3, 4, 5, 6, 7, 0, zone)
@@ -104,7 +103,7 @@ func TestSearchFullPathMatchesListDir(t *testing.T) {
 // them literally: "a%b" matches "a%b" but not "axb"; "a_b" matches "a_b" only.
 func TestSearchLikeSpecialsLiteral(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/a%b"},
@@ -135,7 +134,7 @@ func TestSearchLikeSpecialsLiteral(t *testing.T) {
 // without it.
 func TestSearchLiteralSpaces(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/ report", Name: " report"},
@@ -156,7 +155,7 @@ func TestSearchLiteralSpaces(t *testing.T) {
 // snapshot's query never returns another's nodes.
 func TestSearchSidGatedOnIndexed(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Rolled-back index → no committed marker → invisible to search.
 	itx, _ := db.BeginIndex(ctx, "repo", "pending")
@@ -187,7 +186,7 @@ func TestSearchSidGatedOnIndexed(t *testing.T) {
 // DB ranking is identical to the pure model.RankFuzzy over the same set.
 func TestSearchResultLimitAndTotal(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	nodes := []model.BrowseNode{
 		{Path: "/apple"},
@@ -237,7 +236,7 @@ func TestSearchResultLimitAndTotal(t *testing.T) {
 // return a zero result with no error.
 func TestSearchEmptyQuery(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/file"}})
 	for _, q := range []string{"", "   ", "\t"} {
@@ -255,7 +254,7 @@ func TestSearchEmptyQuery(t *testing.T) {
 // the listing path does (mtime/perms/owner/is_dir/link_target/size).
 func TestSearchMetadataRoundTrip(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	zone := time.FixedZone("X", 2*3600)
 	mt := time.Date(2021, 3, 4, 5, 6, 7, 0, zone)
@@ -286,7 +285,7 @@ func TestSearchMetadataRoundTrip(t *testing.T) {
 // stored fold.
 func TestSearchCaseFoldParity(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/Report.TXT"}})
 	for _, q := range []string{"rpt", "RPT", "Rpt", "report", "REPORT"} {
@@ -305,7 +304,7 @@ func TestSearchCaseFoldParity(t *testing.T) {
 // query flows only as a bound LIKE parameter, which SQLite never echoes.
 func TestSearchErrorPathFree(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	const secretName = "SEARCH_secret_node_garply"
 	const secretQuery = "SEARCH_secret_query_waldo"
 	mustIndex(t, db, "repo", "snap", []model.BrowseNode{{Path: "/" + secretName, Name: secretName}})

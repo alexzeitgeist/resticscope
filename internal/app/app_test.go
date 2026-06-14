@@ -458,7 +458,7 @@ var now = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
 
 func TestStatusesColdCacheIsGrey(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
-	rows, err := a.Statuses(context.Background())
+	rows, err := a.Statuses(t.Context())
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestStatusesEvaluatesAndFlagsStale(t *testing.T) {
 		LastSnapshot: now.Add(-2 * time.Hour),
 	}
 	a := &App{Cfg: testConfig(), Cache: fc, Clock: fixedClock{now}}
-	rows, err := a.Statuses(context.Background())
+	rows, err := a.Statuses(t.Context())
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestStatusesPropagatesRealCacheError(t *testing.T) {
 	fc := newFakeCache()
 	fc.loadErr["repo-a"] = context.Canceled
 	a := &App{Cfg: testConfig(), Cache: fc, Clock: fixedClock{now}}
-	if _, err := a.Statuses(context.Background()); !errors.Is(err, context.Canceled) {
+	if _, err := a.Statuses(t.Context()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled to propagate, got %v", err)
 	}
 }
@@ -509,7 +509,7 @@ func TestRefreshSuccess(t *testing.T) {
 			},
 		},
 	}
-	state, err := a.Refresh(context.Background(), "repo-a")
+	state, err := a.Refresh(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestRefreshResticErrorRecorded(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository is locked (exit 11)")},
 	}
-	state, err := a.Refresh(context.Background(), "repo-a")
+	state, err := a.Refresh(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("Refresh should not return restic failure as error: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
 	}
-	state, err := a.Refresh(context.Background(), "repo-a")
+	state, err := a.Refresh(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -611,7 +611,7 @@ func TestRefreshFailureWithNoPriorLeavesUnrefreshed(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
 	}
-	state, err := a.Refresh(context.Background(), "repo-a")
+	state, err := a.Refresh(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestRefreshAllPreservesLastGoodOnFailure(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
 	}
-	results, err := a.RefreshAll(context.Background())
+	results, err := a.RefreshAll(t.Context())
 	if err != nil {
 		t.Fatalf("RefreshAll: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestRefreshSecretsErrorRecorded(t *testing.T) {
 		Secrets: fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")},
 		Restic:  fakeRestic{},
 	}
-	state, err := a.Refresh(context.Background(), "repo-a")
+	state, err := a.Refresh(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestRefreshAll(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snaps: []model.Snapshot{{Hostname: "h", Time: now.Add(-time.Hour)}}},
 	}
-	results, err := a.RefreshAll(context.Background())
+	results, err := a.RefreshAll(t.Context())
 	if err != nil {
 		t.Fatalf("RefreshAll: %v", err)
 	}
@@ -727,7 +727,7 @@ func TestRefreshAllSurfacesSaveFailureWithLiveState(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository is locked (exit 11)")},
 	}
-	states, err := a.RefreshAll(context.Background())
+	states, err := a.RefreshAll(t.Context())
 	if err == nil {
 		t.Fatal("expected RefreshAll to surface the cache save failure")
 	}
@@ -750,7 +750,7 @@ func TestRefreshRow(t *testing.T) {
 			snaps: []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-2 * time.Hour)}},
 		},
 	}
-	row, err := a.RefreshRow(context.Background(), "repo-a")
+	row, err := a.RefreshRow(t.Context(), "repo-a")
 	if err != nil {
 		t.Fatalf("RefreshRow: %v", err)
 	}
@@ -774,7 +774,7 @@ func TestRefreshRowSurfacesSaveFailureWithLiveRow(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snaps: []model.Snapshot{{Hostname: "homeserver", Time: now.Add(-2 * time.Hour)}}},
 	}
-	row, err := a.RefreshRow(context.Background(), "repo-a")
+	row, err := a.RefreshRow(t.Context(), "repo-a")
 	if err == nil {
 		t.Fatal("expected the save failure to be surfaced")
 	}
@@ -785,7 +785,7 @@ func TestRefreshRowSurfacesSaveFailureWithLiveRow(t *testing.T) {
 
 func TestRefreshRowUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
-	if _, err := a.RefreshRow(context.Background(), "nope"); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.RefreshRow(t.Context(), "nope"); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -806,7 +806,7 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 	}
 
 	var entries []model.DiffEntry
-	if _, err := a.SnapshotDiff(context.Background(), "repo-a", "old", "new",
+	if _, err := a.SnapshotDiff(t.Context(), "repo-a", "old", "new",
 		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil); err != nil {
 		t.Fatalf("SnapshotDiff: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 
 func TestSnapshotDiffUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, err := a.SnapshotDiff(context.Background(), "nope", "old", "new", nil, nil); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.SnapshotDiff(t.Context(), "nope", "old", "new", nil, nil); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -841,7 +841,7 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 	a := browseApp(store, fakeRestic{browseNodes: nodes, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
 
 	var lastProgress int
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", func(n int) { lastProgress = n }); err != nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", func(n int) { lastProgress = n }); err != nil {
 		t.Fatalf("IndexSnapshot: %v", err)
 	}
 	// Resolved the right snapshot, the repo's target, and the configured timeout.
@@ -881,7 +881,7 @@ func TestIndexSnapshotIdempotent(t *testing.T) {
 	bc := &browseCapture{}
 	a := browseApp(store, fakeRestic{browseNodes: []model.BrowseNode{{Path: "/x", Name: "x"}}, browseSummary: model.BrowseScanSummary{Complete: true}, browseCap: bc})
 
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err != nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil); err != nil {
 		t.Fatalf("IndexSnapshot on already-indexed: %v", err)
 	}
 	if store.beginCalls != 0 {
@@ -899,7 +899,7 @@ func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
 		browseSummary: model.BrowseScanSummary{Complete: false},
 	})
 	var lastProgress int
-	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", func(n int) { lastProgress = n })
+	err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", func(n int) { lastProgress = n })
 	if !errors.Is(err, ErrBrowseIncomplete) {
 		t.Fatalf("err = %v, want ErrBrowseIncomplete", err)
 	}
@@ -925,7 +925,7 @@ func TestIndexSnapshotDiskLimitRollsBack(t *testing.T) {
 		browseNodes:   []model.BrowseNode{{Path: "/home/secret-passwords.txt", Name: "secret-passwords.txt"}, {Path: "/home/more-secrets.txt", Name: "more-secrets.txt"}},
 		browseSummary: model.BrowseScanSummary{Complete: true},
 	})
-	err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
+	err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil)
 	if !errors.Is(err, model.ErrBrowseDiskLimit) {
 		t.Fatalf("err = %v, want it to wrap ErrBrowseDiskLimit", err)
 	}
@@ -947,7 +947,7 @@ func TestIndexSnapshotResticErrorRollsBack(t *testing.T) {
 		browseNodes: []model.BrowseNode{{Path: "/a", Name: "a"}},
 		browseErr:   errors.New("restic ls: repository is locked (exit 11)"),
 	})
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err == nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil); err == nil {
 		t.Fatal("expected the restic failure to surface")
 	}
 	if store.indexed[storeKey("repo-a", "snap123")] {
@@ -962,7 +962,7 @@ func TestIndexSnapshotSecretsErrorPropagates(t *testing.T) {
 	store := newFakeStore()
 	a := browseApp(store, fakeRestic{})
 	a.Secrets = fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")}
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil); err == nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", nil); err == nil {
 		t.Fatal("expected secrets error to propagate")
 	}
 	if store.beginCalls != 0 {
@@ -982,7 +982,7 @@ func TestIndexSnapshotSerializedBySessionOperationLock(t *testing.T) {
 		wg.Add(1)
 		go func(snap string) {
 			defer wg.Done()
-			if err := a.IndexSnapshot(context.Background(), "repo-a", snap, nil); err != nil {
+			if err := a.IndexSnapshot(t.Context(), "repo-a", snap, nil); err != nil {
 				t.Errorf("IndexSnapshot(%s): %v", snap, err)
 			}
 		}(snap)
@@ -1007,6 +1007,7 @@ func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 	// hang behind a long stream wired to a context that is never cancelled.
 	indexDone := make(chan error, 1)
 	go func() {
+		//nolint:usetesting // deliberately a never-cancelled context: this test proves Close interrupts the in-flight index without any caller- or test-scoped cancellation, which t.Context() (cancelled at cleanup) would undermine.
 		indexDone <- a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
 	}()
 
@@ -1055,7 +1056,7 @@ func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 	if !rolledBack {
 		t.Fatal("in-flight index was not rolled back before Close returned")
 	}
-	if _, err := a.ListDir(context.Background(), "repo-a", "snap123", "/"); !errors.Is(err, errBrowseSessionClosed) {
+	if _, err := a.ListDir(t.Context(), "repo-a", "snap123", "/"); !errors.Is(err, errBrowseSessionClosed) {
 		t.Fatalf("ListDir after Close err = %v, want errBrowseSessionClosed", err)
 	}
 }
@@ -1071,6 +1072,7 @@ func TestBrowseSessionCloseCancelsInFlightOpen(t *testing.T) {
 
 	indexDone := make(chan error, 1)
 	go func() {
+		//nolint:usetesting // deliberately a never-cancelled context: this test proves Close interrupts the in-flight index without any caller- or test-scoped cancellation, which t.Context() (cancelled at cleanup) would undermine.
 		indexDone <- a.IndexSnapshot(context.Background(), "repo-a", "snap123", nil)
 	}()
 
@@ -1106,14 +1108,14 @@ func TestBrowseSessionCloseCancelsInFlightOpen(t *testing.T) {
 
 func TestIndexSnapshotNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); !errors.Is(err, ErrBrowseNotEnabled) {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "s1", nil); !errors.Is(err, ErrBrowseNotEnabled) {
 		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
 	}
 }
 
 func TestIndexSnapshotUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if err := a.IndexSnapshot(context.Background(), "nope", "s1", nil); !errors.Is(err, ErrUnknownRepo) {
+	if err := a.IndexSnapshot(t.Context(), "nope", "s1", nil); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -1125,10 +1127,10 @@ func TestEnsureStoreOpenFailureNotCached(t *testing.T) {
 		calls++
 		return nil, errors.New("open failed")
 	})
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); err == nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "s1", nil); err == nil {
 		t.Fatal("expected the open failure to surface")
 	}
-	if err := a.IndexSnapshot(context.Background(), "repo-a", "s1", nil); err == nil {
+	if err := a.IndexSnapshot(t.Context(), "repo-a", "s1", nil); err == nil {
 		t.Fatal("expected the open failure to surface on retry too")
 	}
 	if calls != 2 {
@@ -1142,7 +1144,7 @@ func TestListDirDelegates(t *testing.T) {
 	store.entries[storeKey("repo-a", "snap123")+"\x00/home"] = want
 	a := browseApp(store, fakeRestic{})
 
-	got, err := a.ListDir(context.Background(), "repo-a", "snap123", "/home")
+	got, err := a.ListDir(t.Context(), "repo-a", "snap123", "/home")
 	if err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
@@ -1158,14 +1160,14 @@ func TestListDirDelegates(t *testing.T) {
 
 func TestListDirNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, err := a.ListDir(context.Background(), "repo-a", "s1", "/"); !errors.Is(err, ErrBrowseNotEnabled) {
+	if _, err := a.ListDir(t.Context(), "repo-a", "s1", "/"); !errors.Is(err, ErrBrowseNotEnabled) {
 		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
 	}
 }
 
 func TestListDirUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if _, err := a.ListDir(context.Background(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.ListDir(t.Context(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -1175,7 +1177,7 @@ func TestSubtreeCountsDelegates(t *testing.T) {
 	store.subFiles, store.subDirs, store.subKnown = 12, 3, true
 	a := browseApp(store, fakeRestic{})
 
-	files, dirs, known, err := a.SubtreeCounts(context.Background(), "repo-a", "snap123", "/home")
+	files, dirs, known, err := a.SubtreeCounts(t.Context(), "repo-a", "snap123", "/home")
 	if err != nil {
 		t.Fatalf("SubtreeCounts: %v", err)
 	}
@@ -1189,7 +1191,7 @@ func TestSubtreeCountsDelegates(t *testing.T) {
 // detail-view extract can legitimately run with browse disabled.
 func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, _, known, err := a.SubtreeCounts(context.Background(), "repo-a", "s1", "/"); err != nil || known {
+	if _, _, known, err := a.SubtreeCounts(t.Context(), "repo-a", "s1", "/"); err != nil || known {
 		t.Errorf("known=%v err=%v, want false, nil", known, err)
 	}
 }
@@ -1198,7 +1200,7 @@ func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
 // is a caller error and must surface as ErrUnknownRepo, not silently degrade.
 func TestSubtreeCountsUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if _, _, _, err := a.SubtreeCounts(context.Background(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
+	if _, _, _, err := a.SubtreeCounts(t.Context(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -1211,7 +1213,7 @@ func TestSearchSnapshotDelegates(t *testing.T) {
 	}
 	a := browseApp(store, fakeRestic{})
 
-	got, err := a.SearchSnapshot(context.Background(), "repo-a", "snap123", "rpt", 200)
+	got, err := a.SearchSnapshot(t.Context(), "repo-a", "snap123", "rpt", 200)
 	if err != nil {
 		t.Fatalf("SearchSnapshot: %v", err)
 	}
@@ -1232,14 +1234,14 @@ func TestSearchSnapshotDelegates(t *testing.T) {
 
 func TestSearchSnapshotNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, err := a.SearchSnapshot(context.Background(), "repo-a", "s1", "q", 200); !errors.Is(err, ErrBrowseNotEnabled) {
+	if _, err := a.SearchSnapshot(t.Context(), "repo-a", "s1", "q", 200); !errors.Is(err, ErrBrowseNotEnabled) {
 		t.Fatalf("err = %v, want ErrBrowseNotEnabled when Browse is nil", err)
 	}
 }
 
 func TestSearchSnapshotUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
-	if _, err := a.SearchSnapshot(context.Background(), "nope", "s1", "q", 200); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.SearchSnapshot(t.Context(), "nope", "s1", "q", 200); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -1248,7 +1250,7 @@ func TestSearchSnapshotPropagatesStoreError(t *testing.T) {
 	store := newFakeStore()
 	store.searchErr = errors.New("boom")
 	a := browseApp(store, fakeRestic{})
-	if _, err := a.SearchSnapshot(context.Background(), "repo-a", "snap123", "q", 200); err == nil {
+	if _, err := a.SearchSnapshot(t.Context(), "repo-a", "snap123", "q", 200); err == nil {
 		t.Fatal("expected the store error to propagate")
 	}
 }

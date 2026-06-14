@@ -146,7 +146,7 @@ func TestStreamSnapshotTreeComplete(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestStreamSnapshotTreeEmptyIsComplete(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine)}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestStreamSnapshotTreeParsesMetadata(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeMeta)}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+	if _, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
 	var got *model.BrowseNode
@@ -216,7 +216,7 @@ func TestStreamSnapshotTreeParsesSymlink(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeLink)}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+	if _, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
 	if len(*nodes) != 1 {
@@ -234,7 +234,7 @@ func TestStreamSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
+	if _, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode); err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
 	if len(*nodes) != 1 {
@@ -259,7 +259,7 @@ func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 		}
 		return nil
 	}
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel verbatim", err)
 	}
@@ -277,7 +277,7 @@ func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 // caller can tell it apart from a genuine store failure — which leaves the parent
 // ctx live and is surfaced verbatim (see TestStreamSnapshotTreeCallbackErrorCancels).
 func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
 	storeInterrupt := errors.New("interrupted (SQLITE_INTERRUPT)")
@@ -303,7 +303,7 @@ func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
 func TestStreamSnapshotTreeCleanExitBeatsExpiredDeadline(t *testing.T) {
 	c := &Client{Stream: cleanButExpiredStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}}
 	onNode, nodes := collect()
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
 	if err != nil {
 		t.Fatalf("a clean, complete exit must not error even if the deadline elapsed after it: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestStreamSnapshotTreeCallbackErrorBeatsDeadline(t *testing.T) {
 		}
 		return nil
 	}
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", timeout, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", timeout, onNode)
 	if !errors.Is(err, diskFull) {
 		t.Fatalf("a store error racing the deadline must surface verbatim, got %v", err)
 	}
@@ -348,7 +348,7 @@ func TestStreamSnapshotTreeTimeoutWithNodes(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome), block: true}
 	c := &Client{Stream: fs}
 	onNode, nodes := collect()
-	sum, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 60*time.Millisecond, onNode)
+	sum, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 60*time.Millisecond, onNode)
 	if err != nil {
 		t.Fatalf("timeout with nodes should be a partial success, got error: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestStreamSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
 	fs := &fakeStream{data: "", block: true} // stalls in repo-open, never a node
 	c := &Client{Stream: fs}
 	onNode, _ := collect()
-	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
+	_, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", 50*time.Millisecond, onNode)
 	if err == nil {
 		t.Fatal("timeout with zero nodes must return an error")
 	}
@@ -375,7 +375,7 @@ func TestStreamSnapshotTreeTimeoutZeroNodesIsError(t *testing.T) {
 }
 
 func TestStreamSnapshotTreeCancelBeatsDecodeError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	c := &Client{Stream: cancelingBadJSONStream{cancel: cancel}}
 	onNode, _ := collect()
 
@@ -395,7 +395,7 @@ func TestStreamSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
 	fs := &fakeStream{data: snapLine + "\nnot json at all\n"}
 	c := &Client{Stream: fs}
 	onNode, _ := collect()
-	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	_, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err == nil {
 		t.Fatal("malformed JSON must return an error")
 	}
@@ -409,7 +409,7 @@ func TestStreamSnapshotTreeResticFailureClassifies(t *testing.T) {
 	fs := &fakeStream{err: fakeExitError(10), stderr: []byte("repository does not exist")}
 	c := &Client{Stream: fs}
 	onNode, _ := collect()
-	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	_, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindRepoNotFound {
 		t.Fatalf("want KindRepoNotFound, got %v", err)
@@ -423,7 +423,7 @@ func TestStreamSnapshotTreeRedactsStderr(t *testing.T) {
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAKED-9", "[REDACTED]") },
 	}
 	onNode, _ := collect()
-	_, err := c.StreamSnapshotTree(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
+	_, err := c.StreamSnapshotTree(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -440,7 +440,7 @@ func TestStreamSnapshotTreePasswordOutOfBand(t *testing.T) {
 	c := &Client{Stream: fs}
 	creds := Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "super-secret-pw"}
 	onNode, _ := collect()
-	if _, err := c.StreamSnapshotTree(context.Background(), testTarget, creds, "abcd", browseTimeout, onNode); err != nil {
+	if _, err := c.StreamSnapshotTree(t.Context(), testTarget, creds, "abcd", browseTimeout, onNode); err != nil {
 		t.Fatalf("StreamSnapshotTree: %v", err)
 	}
 	env := strings.Join(fs.gotEnv, "\n")

@@ -9,7 +9,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -84,7 +83,7 @@ func TestRunExtractHelperTreeHappyPath(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fake))
+	err := RunExtractHelper(t.Context(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fake))
 	if err != nil {
 		t.Fatalf("RunExtractHelper: %v", err)
 	}
@@ -156,7 +155,7 @@ func TestRunExtractHelperSharedCache(t *testing.T) {
 	opts := ExtractHelperOpts{Euid: 0, OwnerUID: os.Getuid(), OwnerGID: os.Getgid(), Clock: fixedClock{now}, Restic: fake}
 
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
+	err := RunExtractHelper(t.Context(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
 	if err != nil {
 		t.Fatalf("RunExtractHelper: %v", err)
 	}
@@ -181,7 +180,7 @@ func TestRunExtractHelperUnknownInvokerForcesNoCache(t *testing.T) {
 	// helperOpts leaves OwnerUID/GID at -1: with nobody to hand root-written
 	// cache entries back to, the cache root in the payload must be ignored.
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, helperOpts(fake))
+	err := RunExtractHelper(t.Context(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, helperOpts(fake))
 	if err != nil {
 		t.Fatalf("RunExtractHelper: %v", err)
 	}
@@ -233,7 +232,7 @@ func TestRunExtractHelperCachePathNotADir(t *testing.T) {
 			opts := ExtractHelperOpts{Euid: 0, OwnerUID: os.Getuid(), OwnerGID: os.Getgid(), Clock: fixedClock{now}, Restic: fake}
 
 			var out bytes.Buffer
-			err := RunExtractHelper(context.Background(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
+			err := RunExtractHelper(t.Context(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, opts)
 			if err != nil {
 				t.Fatalf("RunExtractHelper: %v", err)
 			}
@@ -248,7 +247,7 @@ func TestRunExtractHelperRefusesNonRoot(t *testing.T) {
 	opts := helperOpts(fakeRestic{})
 	opts.Euid = 1000
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), bytes.NewReader(helperPayloadFor(t, treeReq(), t.TempDir())), &out, opts)
+	err := RunExtractHelper(t.Context(), bytes.NewReader(helperPayloadFor(t, treeReq(), t.TempDir())), &out, opts)
 	if err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("err = %v, want a must-run-as-root refusal", err)
 	}
@@ -264,7 +263,7 @@ func TestRunExtractHelperRefusesVersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	rerr := RunExtractHelper(context.Background(), bytes.NewReader(b), &out, helperOpts(fakeRestic{}))
+	rerr := RunExtractHelper(t.Context(), bytes.NewReader(b), &out, helperOpts(fakeRestic{}))
 	if rerr == nil || !strings.Contains(rerr.Error(), "version") {
 		t.Fatalf("err = %v, want a payload-version refusal", rerr)
 	}
@@ -274,7 +273,7 @@ func TestRunExtractHelperResticFailureKeepsStaging(t *testing.T) {
 	root := t.TempDir()
 	fake := fakeRestic{extractTreeErr: errors.New("restore: exit 1")}
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fake))
+	err := RunExtractHelper(t.Context(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fake))
 	if err == nil {
 		t.Fatal("RunExtractHelper: nil error for a failed restore")
 	}
@@ -305,7 +304,7 @@ func TestRunExtractHelperStdinEOFCancels(t *testing.T) {
 	}()
 
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), pr, &out, helperOpts(fake))
+	err := RunExtractHelper(t.Context(), pr, &out, helperOpts(fake))
 	if err == nil {
 		t.Fatal("RunExtractHelper: nil error after stdin EOF cancel")
 	}
@@ -323,7 +322,7 @@ func TestRunExtractHelperOccupiedFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err := RunExtractHelper(context.Background(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fakeRestic{}))
+	err := RunExtractHelper(t.Context(), openStdin(t, helperPayloadFor(t, treeReq(), root)), &out, helperOpts(fakeRestic{}))
 	if err == nil {
 		t.Fatal("RunExtractHelper: nil error for an occupied final path")
 	}

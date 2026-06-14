@@ -4,7 +4,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"os"
 	"path"
@@ -47,7 +46,7 @@ func TestNormalizeExtractTreeMetadata(t *testing.T) {
 	tvOld := unix.NsecToTimeval(old.UnixNano())
 	mustSetup(t, unix.Lutimes(link, []unix.Timeval{tvOld, tvOld}))
 
-	counts, err := normalizeExtractTreeMetadata(context.Background(), root, unsafeSymlinkKeep)
+	counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkKeep)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -104,7 +103,7 @@ func TestNormalizeExtractTreeMetadataRestrictiveDir(t *testing.T) {
 	// can't enter the dir it leaves behind without this chmod-up.
 	t.Cleanup(func() { _ = os.Chmod(child, 0o700) })
 
-	counts, err := normalizeExtractTreeMetadata(context.Background(), root, unsafeSymlinkKeep)
+	counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkKeep)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -176,7 +175,7 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 				link := filepath.Join(root, "link")
 				mustSetup(t, os.Symlink(k.target, link))
 
-				counts, err := normalizeExtractTreeMetadata(context.Background(), root, pol)
+				counts, err := normalizeExtractTreeMetadata(t.Context(), root, pol)
 				if err != nil {
 					t.Fatalf("normalize: %v", err)
 				}
@@ -205,7 +204,7 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 			mustSetup(t, os.Chmod(parent, 0o500))         // r-x: traversable, not writable
 			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
 
-			counts, err := normalizeExtractTreeMetadata(context.Background(), root, pol)
+			counts, err := normalizeExtractTreeMetadata(t.Context(), root, pol)
 			if err != nil {
 				t.Fatalf("normalize under a 0500 parent: %v", err)
 			}
@@ -231,7 +230,7 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 		if err := syscall.Mkfifo(filepath.Join(root, "pipe"), 0o644); err != nil {
 			t.Skipf("mkfifo unsupported here: %v", err)
 		}
-		counts, err := normalizeExtractTreeMetadata(context.Background(), root, unsafeSymlinkKeep)
+		counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkKeep)
 		if err != nil {
 			t.Fatalf("normalize with a fifo: %v", err)
 		}
@@ -311,7 +310,7 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	req := treeReq()
 	staging, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -390,7 +389,7 @@ func TestExtractDirectoryLeafMetadataPreserved(t *testing.T) {
 	req := treeReq()
 	_, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -437,7 +436,7 @@ func TestExtractDirectoryTreeSpecialFilePublishes(t *testing.T) {
 	req.SourceName = "special-dir"
 	staging, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -476,7 +475,7 @@ func TestExtractTreeLoggingIsPathFree(t *testing.T) {
 	req.Source = "/etc/topsecret-tree"
 	req.SourceName = "topsecret-tree"
 
-	if _, err := a.Extract(context.Background(), req, nil); err != nil {
+	if _, err := a.Extract(t.Context(), req, nil); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	logged := buf.String()
@@ -511,7 +510,7 @@ func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
 	link := filepath.Join(root, "link")
 	mustSetup(t, os.Symlink(victim, link)) // absolute → unsafe
 
-	counts, err := normalizeExtractTreeMetadata(context.Background(), root, unsafeSymlinkPlaceholder)
+	counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkPlaceholder)
 	if err != nil {
 		t.Fatalf("normalize: %v", err)
 	}

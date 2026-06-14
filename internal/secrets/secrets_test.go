@@ -267,7 +267,7 @@ func TestLoadNonZeroExit(t *testing.T) {
 		return []byte(secretStdout), []byte(secretStderr), errors.New("exit status 2")
 	}
 	secretCommand := `printf '{"repos":{"repo-a":{"restic_password":"hunter2"}}}'`
-	_, err := Load(context.Background(), run, "/bin/sh", secretCommand)
+	_, err := Load(t.Context(), run, "/bin/sh", secretCommand)
 	if err == nil {
 		t.Fatal("expected error from non-zero exit")
 	}
@@ -294,7 +294,7 @@ func TestLoadSuccess(t *testing.T) {
 	run := func(ctx context.Context, shell, command string) ([]byte, []byte, error) {
 		return []byte(validJSON), nil, nil
 	}
-	store, err := Load(context.Background(), run, "/bin/sh", "cat secrets.json")
+	store, err := Load(t.Context(), run, "/bin/sh", "cat secrets.json")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

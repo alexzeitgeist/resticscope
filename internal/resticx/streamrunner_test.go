@@ -75,7 +75,7 @@ func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 	creds := Creds{ResticPassword: "pw"}
 
 	t.Run("StreamSnapshotTree", func(t *testing.T) {
-		_, err := c.StreamSnapshotTree(context.Background(), testTarget, creds,
+		_, err := c.StreamSnapshotTree(t.Context(), testTarget, creds,
 			"abcd", browseTimeout, func(model.BrowseNode) error { return nil })
 		if !errors.Is(err, ErrNoStreamRunner) {
 			t.Fatalf("want ErrNoStreamRunner, got %v", err)
@@ -83,7 +83,7 @@ func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 	})
 
 	t.Run("StreamDiff", func(t *testing.T) {
-		_, err := c.StreamDiff(context.Background(), testTarget, creds,
+		_, err := c.StreamDiff(t.Context(), testTarget, creds,
 			"aa11bb22", "cc33dd44", time.Minute,
 			func(model.DiffEntry) error { return nil }, nil)
 		if !errors.Is(err, ErrNoStreamRunner) {
@@ -94,7 +94,7 @@ func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 	t.Run("ExtractTree", func(t *testing.T) {
 		// Valid params so arg-validation (which intentionally wins over wiring)
 		// does not short-circuit before the stream-runner check.
-		err := c.ExtractTree(context.Background(), testTarget, creds,
+		err := c.ExtractTree(t.Context(), testTarget, creds,
 			ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging"},
 			func(ExtractTreeEvent) error { return nil })
 		if !errors.Is(err, ErrNoStreamRunner) {

@@ -261,11 +261,11 @@ func testApp(states map[string]model.RepoState) *app.App {
 
 func newTestModel(t *testing.T, a *app.App) Model {
 	t.Helper()
-	rows, err := a.Statuses(context.Background())
+	rows, err := a.Statuses(t.Context())
 	if err != nil {
 		t.Fatalf("Statuses: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	return newModel(ctx, cancel, a, rows, "0.18.1")
 }
@@ -399,7 +399,7 @@ func TestQuit(t *testing.T) {
 }
 
 func TestRunQuitReturnsNil(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 
 	if err := runProgram(ctx, testApp(nil), "0.18.1",

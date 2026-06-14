@@ -71,7 +71,7 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 	a.Priv = runner
 
 	var progress []ExtractProgress
-	res, err := a.Extract(context.Background(), privReq(), func(p ExtractProgress) { progress = append(progress, p) })
+	res, err := a.Extract(t.Context(), privReq(), func(p ExtractProgress) { progress = append(progress, p) })
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestExtractPrivilegedSentinelRoundTrip(t *testing.T) {
 					Code: tt.code, Message: "extract: refused", StagingDir: "/x/staging", StagingCreated: true,
 				}}),
 			}}
-			res, err := a.Extract(context.Background(), privReq(), nil)
+			res, err := a.Extract(t.Context(), privReq(), nil)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("err = %v, want errors.Is(%v)", err, tt.want)
 			}
@@ -142,10 +142,10 @@ func TestExtractPrivilegedSentinelRoundTrip(t *testing.T) {
 
 func TestExtractPrivilegedUnavailableWithoutRunner(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{}, t.TempDir())
-	if _, err := a.Extract(context.Background(), privReq(), nil); !errors.Is(err, ErrPrivilegedExtractUnavailable) {
+	if _, err := a.Extract(t.Context(), privReq(), nil); !errors.Is(err, ErrPrivilegedExtractUnavailable) {
 		t.Fatalf("err = %v, want ErrPrivilegedExtractUnavailable", err)
 	}
-	if err := a.PrivilegedExtractProbe(context.Background()); !errors.Is(err, ErrPrivilegedExtractUnavailable) {
+	if err := a.PrivilegedExtractProbe(t.Context()); !errors.Is(err, ErrPrivilegedExtractUnavailable) {
 		t.Fatalf("probe err = %v, want ErrPrivilegedExtractUnavailable", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestExtractPrivilegedUnavailableWithoutRunner(t *testing.T) {
 func TestExtractPrivilegedRunnerFailureWithoutEvents(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{}, t.TempDir())
 	a.Priv = &fakePrivRunner{runErr: errors.New("sudo: a password is required")}
-	res, err := a.Extract(context.Background(), privReq(), nil)
+	res, err := a.Extract(t.Context(), privReq(), nil)
 	if err == nil || !strings.Contains(err.Error(), "helper") {
 		t.Fatalf("err = %v, want a helper failure", err)
 	}
@@ -169,7 +169,7 @@ func TestExtractPrivilegedValidatesBeforeLaunch(t *testing.T) {
 	a.Priv = runner
 	req := privReq()
 	req.SourceName = "wrong-slug"
-	if _, err := a.Extract(context.Background(), req, nil); !errors.Is(err, ErrExtractInvalidRequest) {
+	if _, err := a.Extract(t.Context(), req, nil); !errors.Is(err, ErrExtractInvalidRequest) {
 		t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
 	}
 	if len(runner.payloads) != 0 {

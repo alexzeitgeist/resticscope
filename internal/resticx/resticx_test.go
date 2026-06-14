@@ -57,7 +57,7 @@ var testTarget = Target{
 func TestSnapshotsParsesFixture(t *testing.T) {
 	fr := &fakeRunner{stdout: readFixture(t, "restic-0.18-snapshots.json")}
 	c := &Client{Runner: fr}
-	snaps, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+	snaps, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 	if err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 		Env:            map[string]string{"AWS_ACCESS_KEY_ID": "AK-XYZ", "AWS_SECRET_ACCESS_KEY": "SK-XYZ"},
 		ResticPassword: "super-secret-pw",
 	}
-	if _, err := c.Snapshots(context.Background(), testTarget, creds); err != nil {
+	if _, err := c.Snapshots(t.Context(), testTarget, creds); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestEnvAndPasswordHandling(t *testing.T) {
 func TestSnapshotsUsesNoLock(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
-	if _, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
+	if _, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
 	if got := strings.Join(fr.gotArgs, " "); got != "--no-lock snapshots --json" {
@@ -185,7 +185,7 @@ func TestEnvOmitsAbsentBackendVars(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
 	tgt := Target{Name: "local-repo", Repo: "/srv/restic-repo"}
-	if _, err := c.Snapshots(context.Background(), tgt, Creds{ResticPassword: "pw"}); err != nil {
+	if _, err := c.Snapshots(t.Context(), tgt, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
 	if strings.Contains(strings.Join(fr.gotEnv, "\n"), "AWS_") {
@@ -233,7 +233,7 @@ func TestBackendEnvironMergesAndFilters(t *testing.T) {
 func TestCatConfigReachable(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte(`{"version":2}`)}
 	c := &Client{Runner: fr}
-	if err := c.CatConfig(context.Background(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
+	if err := c.CatConfig(t.Context(), testTarget, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("CatConfig: %v", err)
 	}
 	if got := strings.Join(fr.gotArgs, " "); got != "--no-lock cat config" {
@@ -257,7 +257,7 @@ func TestCatConfigClassifiesFailure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fr := &fakeRunner{err: tt.exit}
 			c := &Client{Runner: fr}
-			err := c.CatConfig(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+			err := c.CatConfig(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 			var re *Error
 			if !asResticError(err, &re) {
 				t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
@@ -275,7 +275,7 @@ func TestBackendOptionsPrepended(t *testing.T) {
 	tgt := testTarget
 	// Two options prove the sorted, deterministic order.
 	tgt.Options = map[string]string{"s3.bucket-lookup": "dns", "s3.connections": "8"}
-	if _, err := c.Snapshots(context.Background(), tgt, Creds{ResticPassword: "pw"}); err != nil {
+	if _, err := c.Snapshots(t.Context(), tgt, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
 	}
 	got := strings.Join(fr.gotArgs, " ")
@@ -300,7 +300,7 @@ func TestClassifyExitCodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fr := &fakeRunner{err: tt.err, stderr: []byte(tt.stderr)}
 			c := &Client{Runner: fr}
-			_, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+			_, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 			var re *Error
 			if !asResticError(err, &re) {
 				t.Fatalf("expected *resticx.Error, got %T: %v", err, err)
@@ -315,7 +315,7 @@ func TestClassifyExitCodes(t *testing.T) {
 func TestClassifyTimeout(t *testing.T) {
 	fr := &fakeRunner{block: true}
 	c := &Client{Runner: fr, Timeout: time.Millisecond}
-	_, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+	_, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("expected timeout error, got %v", err)
@@ -334,7 +334,7 @@ func TestExecRunnerTimeoutStopsRetryingRestic(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	c := &Client{Runner: ExecRunner{}, Timeout: 100 * time.Millisecond}
-	_, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+	_, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindTimeout {
 		t.Fatalf("expected production runner timeout, got %T: %v", err, err)
@@ -348,7 +348,7 @@ func TestClassifyCanceled(t *testing.T) {
 	// on (see TestClassifyExitCodes / TestClassifyTimeout).
 	fr := &fakeRunner{block: true}
 	c := &Client{Runner: fr}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := c.Snapshots(ctx, testTarget, Creds{ResticPassword: "pw"})
 	var re *Error
@@ -369,7 +369,7 @@ func TestStderrRedactedInError(t *testing.T) {
 		Runner: fr,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAKED-123", "[REDACTED]") },
 	}
-	_, err := c.Snapshots(context.Background(), testTarget, Creds{ResticPassword: "pw"})
+	_, err := c.Snapshots(t.Context(), testTarget, Creds{ResticPassword: "pw"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

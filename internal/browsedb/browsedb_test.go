@@ -50,7 +50,7 @@ func mustAdd(t *testing.T, ctx context.Context, itx *IndexTx, n model.BrowseNode
 
 func mustIndex(t *testing.T, db *DB, repo, snap string, nodes []model.BrowseNode) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	itx, err := db.BeginIndex(ctx, repo, snap)
 	if err != nil {
 		t.Fatalf("BeginIndex: %v", err)
@@ -108,7 +108,7 @@ func assertErrPathFree(t *testing.T, err error, needles ...string) {
 func countDirs(t *testing.T, db *DB) int {
 	t.Helper()
 	var n int
-	if err := db.pool.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM dirs`).Scan(&n); err != nil {
+	if err := db.pool.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM dirs`).Scan(&n); err != nil {
 		t.Fatalf("count dirs: %v", err)
 	}
 	return n
@@ -116,7 +116,7 @@ func countDirs(t *testing.T, db *DB) int {
 
 func dirPaths(t *testing.T, db *DB, repo, snap string) []string {
 	t.Helper()
-	rows, err := db.pool.QueryContext(context.Background(),
+	rows, err := db.pool.QueryContext(t.Context(),
 		`SELECT d.path FROM dirs d JOIN snapshots s ON s.sid=d.sid WHERE s.repo=? AND s.snapshot=? ORDER BY d.path`,
 		repo, snap)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestOpenValidation(t *testing.T) {
 
 func TestListDirOrdering(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/A", IsDir: true},
@@ -182,7 +182,7 @@ func TestListDirOrdering(t *testing.T) {
 
 func TestEmptySnapshot(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, err := db.BeginIndex(ctx, repo, snap)
 	if err != nil {
@@ -210,7 +210,7 @@ func TestEmptySnapshot(t *testing.T) {
 
 func TestListDirNeverIndexed(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	entries, err := db.ListDir(context.Background(), "nope", "nope", "/")
+	entries, err := db.ListDir(t.Context(), "nope", "nope", "/")
 	if err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestListDirNeverIndexed(t *testing.T) {
 
 func TestPathCleaning(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, err := db.BeginIndex(ctx, repo, snap)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestPathCleaning(t *testing.T) {
 
 func TestNameFallback(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	// No emitted Name: BrowseName falls back to path.Base.
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/foo/bar.txt"}})
@@ -265,7 +265,7 @@ func TestNameFallback(t *testing.T) {
 
 func TestDuplicatePathsNotCollapsedWithinBatch(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
 	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/passwd", Size: 1})
@@ -291,7 +291,7 @@ func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
 	// exactly once, so the plain INSERT trusts that. Duplicates are out of contract
 	// and are NOT collapsed, even across flushes.
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
 	mustAdd(t, ctx, itx, model.BrowseNode{Path: "/etc/dup", Size: 1})
@@ -330,7 +330,7 @@ func TestSameParentPath(t *testing.T) {
 
 func TestBatchFlush(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, _ := db.BeginIndex(ctx, repo, snap)
 	for i := range batchRows {
@@ -372,7 +372,7 @@ func TestBatchFlush(t *testing.T) {
 
 func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	itx, err := db.BeginIndex(ctx, repo, snap)
 	if err != nil {
@@ -404,7 +404,7 @@ func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 
 func TestMetadataRoundTrip(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	zone := time.FixedZone("X", 2*3600) // non-UTC: +02:00
 	mt := time.Date(2021, 3, 4, 5, 6, 7, 0, zone)
@@ -450,7 +450,7 @@ func TestMetadataRoundTrip(t *testing.T) {
 
 func TestIsIndexedLifecycle(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 
 	itx, _ := db.BeginIndex(ctx, repo, snap)
@@ -477,7 +477,7 @@ func TestIsIndexedLifecycle(t *testing.T) {
 
 func TestPoisonedTx(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const secret = "POISON_secret_filename_qux"
 
@@ -514,7 +514,7 @@ func TestDiskLimit(t *testing.T) {
 	// A 1-byte ceiling: the schema alone already exceeds it, so Commit's final
 	// disk check trips ErrBrowseDiskLimit and rolls back.
 	db, _, _ := newTestDB(t, 1)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const secret = "DISKLIMIT_secret_name_thud"
 
@@ -555,7 +555,7 @@ func TestDirSizeErrorPathFree(t *testing.T) {
 
 func TestMarkerConflict(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const secret = "CONFLICT_secret_name_grault"
 
@@ -579,7 +579,7 @@ func TestMarkerConflict(t *testing.T) {
 
 func TestDirIDRootReservationRollback(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 
 	itx, err := db.BeginIndex(ctx, repo, snap)
@@ -608,7 +608,7 @@ func TestDirIDRootReservationRollback(t *testing.T) {
 
 func TestDirIDsCreateParentDirectories(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/a/b/file"}})
@@ -626,7 +626,7 @@ func TestDirIDsCreateParentDirectories(t *testing.T) {
 
 func TestDirIDsOutOfOrderParentMetadata(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
@@ -655,7 +655,7 @@ func TestDirIDsOutOfOrderParentMetadata(t *testing.T) {
 func dirSubtreeSize(t *testing.T, db *DB, repo, snap, p string) int64 {
 	t.Helper()
 	var size int64
-	if err := db.pool.QueryRowContext(context.Background(),
+	if err := db.pool.QueryRowContext(t.Context(),
 		`SELECT d.subtree_size FROM dirs d JOIN snapshots s ON s.sid=d.sid WHERE s.repo=? AND s.snapshot=? AND d.path=?`,
 		repo, snap, p).Scan(&size); err != nil {
 		t.Fatalf("dir subtree size %q: %v", p, err)
@@ -673,7 +673,7 @@ func byPath(entries []model.BrowseEntry) map[string]model.BrowseEntry {
 
 func TestSubtreeSizesRollUp(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/home", IsDir: true},
@@ -727,7 +727,7 @@ func TestSubtreeSizesRollUp(t *testing.T) {
 
 func TestSearchDirCarriesSubtreeSize(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{
 		{Path: "/home", IsDir: true},
@@ -766,7 +766,7 @@ func TestSearchDirCarriesSubtreeSize(t *testing.T) {
 // oversized INSERT. The big root listing also exercises dirSizes path chunking.
 func TestDirCommitChunkingExceedsParamCap(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const dirCount = 9000 // > 8191, and several dirBatchRows chunks
 	itx, err := db.BeginIndex(ctx, repo, snap)
@@ -840,7 +840,7 @@ func assertNoPlaintext(t *testing.T, dir string, needles ...string) {
 
 func TestEncryptionAtRest(t *testing.T) {
 	db, dir, key := newTestDB(t, 0)
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const secret1 = "TOPSECRET_alpha_marker_xyzzy"
 	const secret2 = "TOPSECRET_beta_marker_plugh"
@@ -952,7 +952,7 @@ func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open under tricky path %q: %v", dir, err)
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	repo, snap := "repo", "snap"
 	const secret = "TOPSECRET_trickypath_marker_qux"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret, Name: secret}})
@@ -1178,7 +1178,7 @@ func TestSubtreeCounts(t *testing.T) {
 		{Path: "/axb", Name: "axb", Type: "dir", IsDir: true},
 		{Path: "/axb/h", Name: "h", Type: "file"},
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	cases := []struct {
 		dir         string

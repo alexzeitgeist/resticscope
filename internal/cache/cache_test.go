@@ -14,7 +14,7 @@ import (
 
 func TestSaveThenLoad(t *testing.T) {
 	s := New(t.TempDir())
-	ctx := context.Background()
+	ctx := t.Context()
 	want := model.RepoState{
 		Name:          "homeserver-system",
 		RefreshedAt:   time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC),
@@ -40,7 +40,7 @@ func TestSaveThenLoad(t *testing.T) {
 
 func TestLoadMissingIsMiss(t *testing.T) {
 	s := New(t.TempDir())
-	_, err := s.Load(context.Background(), "nope")
+	_, err := s.Load(t.Context(), "nope")
 	if !errors.Is(err, ErrMiss) {
 		t.Fatalf("expected ErrMiss, got %v", err)
 	}
@@ -52,7 +52,7 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.Load(context.Background(), "broken")
+	_, err := s.Load(t.Context(), "broken")
 	if !errors.Is(err, ErrMiss) {
 		t.Errorf("corrupt file should be a miss, got %v", err)
 	}
@@ -64,7 +64,7 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 func TestSaveIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := s.Save(ctx, "repo", model.RepoState{Name: "repo"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSaveIsAtomic(t *testing.T) {
 func TestSaveFilePerms(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	if err := s.Save(context.Background(), "repo", model.RepoState{Name: "repo"}); err != nil {
+	if err := s.Save(t.Context(), "repo", model.RepoState{Name: "repo"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "repo.json"))
@@ -101,7 +101,7 @@ func TestSaveFilePerms(t *testing.T) {
 func TestNoCredentialKeysInCacheFile(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	if err := s.Save(context.Background(), "repo", model.RepoState{Name: "repo"}); err != nil {
+	if err := s.Save(t.Context(), "repo", model.RepoState{Name: "repo"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "repo.json"))
@@ -134,7 +134,7 @@ func TestUnknownFieldsIgnored(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "repo.json"), []byte(json), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Load(context.Background(), "repo")
+	got, err := s.Load(t.Context(), "repo")
 	if err != nil {
 		t.Fatalf("Load with unknown fields: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestUnknownFieldsIgnored(t *testing.T) {
 // and the new summary counters must all survive a Save/Load round-trip.
 func TestSnapshotInfoFieldsRoundTrip(t *testing.T) {
 	s := New(t.TempDir())
-	ctx := context.Background()
+	ctx := t.Context()
 	uid, gid := uint32(0), uint32(0) // root, which must survive distinct from "absent"
 	want := model.RepoState{
 		Name:        "repo-info",
@@ -241,7 +241,7 @@ func equalStrings(a, b []string) bool {
 
 func TestContextCancellation(t *testing.T) {
 	s := New(t.TempDir())
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := s.Save(ctx, "repo", model.RepoState{}); !errors.Is(err, context.Canceled) {
 		t.Errorf("Save with cancelled ctx = %v, want context.Canceled", err)

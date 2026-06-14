@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"slices"
 	"testing"
 
@@ -118,7 +117,7 @@ func TestRunExecExitCodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sess := &app.ShellSession{}
 			var out, errBuf bytes.Buffer
-			code := runExec(context.Background(), sess, tt.cmdArgs, &out, &errBuf)
+			code := runExec(t.Context(), sess, tt.cmdArgs, &out, &errBuf)
 			if code != tt.wantCode {
 				t.Errorf("exit = %d, want %d (stderr=%q)", code, tt.wantCode, errBuf.String())
 			}

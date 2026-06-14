@@ -278,7 +278,7 @@ func TestExtractTreeParsesProgressFixture(t *testing.T) {
 	c := &Client{Stream: fs}
 
 	var events []ExtractTreeEvent
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging"},
 		func(e ExtractTreeEvent) error { events = append(events, e); return nil })
 	if err != nil {
@@ -328,7 +328,7 @@ func TestExtractTreeUnknownMessageSkipped(t *testing.T) {
 	c := &Client{Stream: fs}
 
 	var kinds []ExtractTreeEventKind
-	if err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	if err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"},
 		func(e ExtractTreeEvent) error { kinds = append(kinds, e.Kind); return nil }); err != nil {
 		t.Fatalf("ExtractTree: %v", err)
@@ -344,7 +344,7 @@ func TestExtractTreeMalformedJSONIsParseError(t *testing.T) {
 		`not json at all`,
 	}, "\n") + "\n"}
 	c := &Client{Stream: fs}
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindParse {
@@ -370,7 +370,7 @@ func TestExtractTreeClassifiesExitCodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fs := &extractTreeStreamFake{err: tt.exit, stderr: []byte(tt.stderr)}
 			c := &Client{Stream: fs}
-			err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+			err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 				ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil)
 			var re *Error
 			if !asResticError(err, &re) {
@@ -393,7 +393,7 @@ func TestExtractTreePartialFromSummaryThenExit1(t *testing.T) {
 		err:  fakeExitError(1),
 	}
 	c := &Client{Stream: fs}
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil)
 	var re *Error
 	if !asResticError(err, &re) || re.Kind != KindPartial {
@@ -414,7 +414,7 @@ func TestExtractTreeErrorEventMapsToPartial(t *testing.T) {
 	c := &Client{Stream: fs}
 
 	var sawErr bool
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"},
 		func(e ExtractTreeEvent) error {
 			if e.Kind == ExtractTreeError {
@@ -450,7 +450,7 @@ func TestExtractTreeScrubsPathsKeepsSecretMask(t *testing.T) {
 		Stream: fs,
 		Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAK-123", "[REDACTED]") },
 	}
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: source, Target: target}, nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -475,7 +475,7 @@ func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 		stderr: []byte("Fatal: error reading /var/lib/other/unrelated/file: permission denied"),
 	}
 	c := &Client{Stream: fs}
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs/staging"}, nil)
 	var re *Error
 	if !asResticError(err, &re) {
@@ -517,7 +517,7 @@ func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 				Stream: fs,
 				Redact: func(s string) string { return strings.ReplaceAll(s, "AK-LEAK-123", "[REDACTED]") },
 			}
-			err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+			err := cl.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 				ExtractTreeParams{SnapshotID: testSnapID, Source: c.source, IncludePaths: []string{c.includePath}, Target: target}, nil)
 			if err == nil {
 				t.Fatal("expected error")
@@ -544,7 +544,7 @@ func TestExtractTreeOnEventErrorAborts(t *testing.T) {
 	}, "\n") + "\n"}
 	c := &Client{Stream: fs}
 	sentinel := errors.New("ui closed")
-	err := c.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := c.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"},
 		func(ExtractTreeEvent) error { return sentinel })
 	if !errors.Is(err, sentinel) {
@@ -555,7 +555,7 @@ func TestExtractTreeOnEventErrorAborts(t *testing.T) {
 func TestExtractTreeCanceledBeatsClassification(t *testing.T) {
 	fs := &extractTreeStreamFake{block: true}
 	c := &Client{Stream: fs}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	err := c.ExtractTree(ctx, testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil)
@@ -569,7 +569,7 @@ func TestExtractTreePasswordOutOfBandAndBucketLookup(t *testing.T) {
 	c := &Client{Stream: fs}
 	tgt := testTarget
 	tgt.Options = map[string]string{"s3.bucket-lookup": "dns"}
-	if err := c.ExtractTree(context.Background(), tgt,
+	if err := c.ExtractTree(t.Context(), tgt,
 		Creds{Env: map[string]string{"AWS_ACCESS_KEY_ID": "AK", "AWS_SECRET_ACCESS_KEY": "SK"}, ResticPassword: "super-secret-pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "/abs"}, nil); err != nil {
 		t.Fatalf("ExtractTree: %v", err)
@@ -719,7 +719,7 @@ func TestFileSafePattern(t *testing.T) {
 func TestExtractTreeDeliversPatternsToRunner(t *testing.T) {
 	fs := &extractTreeStreamFake{data: `{"message_type":"summary","files_restored":2}` + "\n"}
 	cl := &Client{Stream: fs}
-	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := cl.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{
 			SnapshotID:   testSnapID,
 			Source:       "/home/alex",
@@ -744,7 +744,7 @@ func TestExtractTreeDeliversPatternsToRunner(t *testing.T) {
 // capability cannot silently drop the include selection — the run is refused.
 func TestExtractTreePatternsRequireCapableRunner(t *testing.T) {
 	cl := &Client{Stream: plainStreamFake{}}
-	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := cl.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{
 			SnapshotID:   testSnapID,
 			Source:       "/home/alex",
@@ -772,7 +772,7 @@ func TestExtractTreeScrubsEveryIncludePath(t *testing.T) {
 	stderr := "Fatal: restoring " + incs[0] + " and " + incs[1] + " (item secret-two.dat) failed"
 	fs := &extractTreeStreamFake{err: fakeExitError(1), stderr: []byte(stderr)}
 	cl := &Client{Stream: fs}
-	err := cl.ExtractTree(context.Background(), testTarget, Creds{ResticPassword: "pw"},
+	err := cl.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
 		ExtractTreeParams{SnapshotID: testSnapID, Source: "/home/alex", IncludePaths: incs, Target: target}, nil)
 	if err == nil {
 		t.Fatal("expected error")

@@ -198,7 +198,7 @@ func fileReq() app.ExtractRequest {
 func newExtractFixture(t *testing.T, req app.ExtractRequest) (extractModel, *fakeExtractDriver) {
 	t.Helper()
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), req, 0)
+	em, err := newExtractModel(a, t.Context(), req, 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "subdir"), 0o700); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestExtractPickerModeWidthAsync(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(a.Cfg.Extract.TargetRoot, "subdir"), 0o700); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestExtractRequestFromBrowseEntry(t *testing.T) {
 // modal is stranded in extractStateRunning after a finished extract.
 func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -875,7 +875,7 @@ func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 // link name (only the count).
 func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -911,7 +911,7 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 // the user must not lose. Regression for the truncated done screen.
 func TestExtractSuccessUnsafeSymlinkWarningReflowsWhenNarrow(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -962,7 +962,7 @@ func TestWrapWords(t *testing.T) {
 // "1 files". Regression for the phase-4 pluralization pass.
 func TestExtractSuccessSummarySingularCounts(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -1008,7 +1008,7 @@ func TestExtractUnsafeSymlinkWarningNumberAgreement(t *testing.T) {
 // body lines.
 func TestExtractDoneBodiesCarryNoKeyHints(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -1123,7 +1123,7 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	a := extractApp(t)
 	a.Cfg.Global.Shell = shellPath // LocalShellSession resolves this shell
 
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -1160,7 +1160,7 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 // and the staging path appears only alongside the keep/delete prompt.
 func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -1270,7 +1270,7 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 // clearTransient directly.
 func TestExtractEscFromReviewClears(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2048,7 +2048,7 @@ func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
 // lookups rather than showing a misleading zero.
 func TestExtractReviewContainsRow(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2079,7 +2079,7 @@ func TestExtractReviewContainsRow(t *testing.T) {
 // dropped without filling the row.
 func TestExtractReviewContainsRowGuards(t *testing.T) {
 	a := extractApp(t)
-	fm, err := newExtractModel(a, context.Background(), fileReq(), 0)
+	fm, err := newExtractModel(a, t.Context(), fileReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2088,7 +2088,7 @@ func TestExtractReviewContainsRowGuards(t *testing.T) {
 		t.Error("countsCmd should be nil for a file source")
 	}
 
-	dm, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	dm, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2108,7 +2108,7 @@ func TestExtractReviewContainsRowGuards(t *testing.T) {
 // footer bar.
 func TestExtractReviewTargetExistsNote(t *testing.T) {
 	a := extractApp(t)
-	em, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2127,7 +2127,7 @@ func TestExtractReviewTargetExistsNote(t *testing.T) {
 	if err := os.MkdirAll(em.final, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	em2, err := newExtractModel(a, context.Background(), dirReq(), 0)
+	em2, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}
@@ -2165,7 +2165,7 @@ func TestExtractReviewSpaceWarning(t *testing.T) {
 	a := extractApp(t)
 	// An impossibly large source: no real test filesystem holds 2^62 bytes,
 	// so the natural probe result trips the warning.
-	em, err := newExtractModel(a, context.Background(), dirReq(), 1<<62)
+	em, err := newExtractModel(a, t.Context(), dirReq(), 1<<62)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
 	}

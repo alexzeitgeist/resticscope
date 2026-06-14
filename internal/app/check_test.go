@@ -63,7 +63,7 @@ func TestCheckAllReachable(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{}, // CatConfig returns nil
 	}
-	checks, err := a.Check(context.Background())
+	checks, err := a.Check(t.Context())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCheckRecordsResticFailure(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{catErr: errors.New("restic cat config: wrong password (exit 12)")},
 	}
-	checks, err := a.Check(context.Background())
+	checks, err := a.Check(t.Context())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestCheckRecordsSecretsFailure(t *testing.T) {
 		Secrets: fakeSecrets{err: errors.New("secrets: no repo \"repo-a\"")},
 		Restic:  fakeRestic{},
 	}
-	checks, err := a.Check(context.Background())
+	checks, err := a.Check(t.Context())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCheckPreservesOrder(t *testing.T) {
 		Secrets: fakeSecrets{},
 		Restic:  restic,
 	}
-	checks, err := a.Check(context.Background())
+	checks, err := a.Check(t.Context())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestCheckPreservesOrder(t *testing.T) {
 }
 
 func TestCheckCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	a := &App{
 		Cfg:     testConfig(),

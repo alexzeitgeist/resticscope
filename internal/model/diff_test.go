@@ -175,7 +175,7 @@ func TestScanDiffNDJSONContextCancellation(t *testing.T) {
 		`{"message_type":"change","path":"/b","modifier":"+"}`,
 		`{"message_type":"change","path":"/c","modifier":"+"}`,
 	)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	var got []DiffEntry
 	out, err := ScanDiffNDJSON(ctx, bytes.NewReader(in), func(e DiffEntry) error {
 		got = append(got, e)
@@ -200,7 +200,7 @@ func TestScanDiffNDJSONProgressCadence(t *testing.T) {
 	}
 	in := ndjsonLines(lines...)
 	var ticks []int
-	if _, err := ScanDiffNDJSON(context.Background(), bytes.NewReader(in), nil,
+	if _, err := ScanDiffNDJSON(t.Context(), bytes.NewReader(in), nil,
 		func(seen int) { ticks = append(ticks, seen) }); err != nil {
 		t.Fatalf("ScanDiffNDJSON: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestScanDiffNDJSONOnEntryErrorAborts(t *testing.T) {
 		`{"message_type":"change","path":"/b","modifier":"+"}`,
 	)
 	sentinel := errors.New("disk full")
-	_, err := ScanDiffNDJSON(context.Background(), bytes.NewReader(in), func(DiffEntry) error {
+	_, err := ScanDiffNDJSON(t.Context(), bytes.NewReader(in), func(DiffEntry) error {
 		return sentinel
 	}, nil)
 	if !errors.Is(err, sentinel) {

@@ -300,7 +300,7 @@ func TestExtractFileRequiresRegularFile(t *testing.T) {
 	req.Source = "/etc/topsecret"
 	req.SourceName = "topsecret"
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractInvalidRequest) {
 		t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
 	}
@@ -314,7 +314,7 @@ func TestExtractDirectoryTreeRejectsRegularFile(t *testing.T) {
 	req := treeReq()
 	req.WasRegularFile = true // a regular file may not route through restore
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractInvalidRequest) {
 		t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
 	}
@@ -331,7 +331,7 @@ func TestExtractFileRejectsNonRegularTypes(t *testing.T) {
 			a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 			req := fileReq()
 			req.WasRegularFile = false
-			if _, err := a.Extract(context.Background(), req, nil); !errors.Is(err, ErrExtractInvalidRequest) {
+			if _, err := a.Extract(t.Context(), req, nil); !errors.Is(err, ErrExtractInvalidRequest) {
 				t.Fatalf("%s: err = %v, want ErrExtractInvalidRequest", kind, err)
 			}
 			assertNoSpawnNoMkdir(t, cap, root, nil, "")
@@ -366,7 +366,7 @@ func TestExtractFinalExists(t *testing.T) {
 	_, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 	mustMkdirAll(t, final)
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
@@ -389,7 +389,7 @@ func TestExtractStagingExists(t *testing.T) {
 	staging, _, _ := PlanExtractPaths(a.Cfg.Extract, req)
 	mustMkdirAll(t, staging)
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractStagingExists) {
 		t.Fatalf("err = %v, want ErrExtractStagingExists", err)
 	}
@@ -434,7 +434,7 @@ func TestExtractFileFlattened(t *testing.T) {
 				t.Fatalf("PlanExtractPaths: %v", perr)
 			}
 
-			result, err := a.Extract(context.Background(), req, nil)
+			result, err := a.Extract(t.Context(), req, nil)
 			if err != nil {
 				t.Fatalf("Extract: %v", err)
 			}
@@ -526,7 +526,7 @@ func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 	}
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
@@ -561,7 +561,7 @@ func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	req := fileReq()
 	_, final, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	if _, err := a.Extract(context.Background(), req, nil); err != nil {
+	if _, err := a.Extract(t.Context(), req, nil); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	if got := modeOf(t, root); got != 0o755 {
@@ -589,7 +589,7 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 
 	hosts := fileReq() // /etc/hosts
 	_, hostsFinal, _ := PlanExtractPaths(a.Cfg.Extract, hosts)
-	res1, err := a.Extract(context.Background(), hosts, nil)
+	res1, err := a.Extract(t.Context(), hosts, nil)
 	if err != nil {
 		t.Fatalf("extract /etc/hosts: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 	passwd.Source = "/etc/passwd"
 	passwd.SourceName = "passwd"
 	_, passwdFinal, _ := PlanExtractPaths(a.Cfg.Extract, passwd)
-	res2, err := a.Extract(context.Background(), passwd, nil)
+	res2, err := a.Extract(t.Context(), passwd, nil)
 	if err != nil {
 		t.Fatalf("extract /etc/passwd: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestExtractRefusesParentOfExistingChild(t *testing.T) {
 
 	hosts := fileReq() // /etc/hosts
 	_, hostsFinal, _ := PlanExtractPaths(a.Cfg.Extract, hosts)
-	if _, err := a.Extract(context.Background(), hosts, nil); err != nil {
+	if _, err := a.Extract(t.Context(), hosts, nil); err != nil {
 		t.Fatalf("extract /etc/hosts: %v", err)
 	}
 	before, rerr := os.ReadFile(hostsFinal)
@@ -659,7 +659,7 @@ func TestExtractRefusesParentOfExistingChild(t *testing.T) {
 	dir := treeReq()
 	dir.Source = "/etc"
 	dir.SourceName = "etc"
-	if _, err := a.Extract(context.Background(), dir, nil); !errors.Is(err, ErrExtractFinalExists) {
+	if _, err := a.Extract(t.Context(), dir, nil); !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
 	after, rerr := os.ReadFile(hostsFinal)
@@ -691,7 +691,7 @@ func TestExtractRefusesChildOfExistingParent(t *testing.T) {
 	dir.Source = "/etc"
 	dir.SourceName = "etc"
 	_, dirFinal, _ := PlanExtractPaths(a.Cfg.Extract, dir)
-	if _, err := a.Extract(context.Background(), dir, nil); err != nil {
+	if _, err := a.Extract(t.Context(), dir, nil); err != nil {
 		t.Fatalf("extract /etc: %v", err)
 	}
 	childPath := filepath.Join(dirFinal, "hosts") // <short>/etc/hosts
@@ -706,7 +706,7 @@ func TestExtractRefusesChildOfExistingParent(t *testing.T) {
 	if fileFinal != childPath {
 		t.Fatalf("file final %q != dir child %q (mirror paths should coincide)", fileFinal, childPath)
 	}
-	if _, err := a.Extract(context.Background(), file, nil); !errors.Is(err, ErrExtractFinalExists) {
+	if _, err := a.Extract(t.Context(), file, nil); !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
 	body, rerr := os.ReadFile(childPath)
@@ -726,7 +726,7 @@ func TestExtractCancel(t *testing.T) {
 	req := fileReq()
 	staging, _, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // pre-cancel: the blocking fake returns ctx.Err() immediately
 
 	result, err := a.Extract(ctx, req, nil)
@@ -743,7 +743,7 @@ func TestExtractTimeout(t *testing.T) {
 	req := fileReq()
 	staging, _, _ := PlanExtractPaths(a.Cfg.Extract, req)
 
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
@@ -784,7 +784,7 @@ func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
@@ -815,7 +815,7 @@ func TestExtractUncleanSourceRefusedBeforeStaging(t *testing.T) {
 	req.Source = "/etc/../secret"
 	req.SourceName = "secret"
 
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractInvalidRequest) {
 		t.Fatalf("err = %v, want ErrExtractInvalidRequest", err)
 	}
@@ -833,7 +833,7 @@ func TestExtractLoggingIsPathFree(t *testing.T) {
 	req.Source = "/etc/topsecret"
 	req.SourceName = "topsecret"
 
-	if _, err := a.Extract(context.Background(), req, nil); err != nil {
+	if _, err := a.Extract(t.Context(), req, nil); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	logged := buf.String()
@@ -853,7 +853,7 @@ func TestExtractUnknownRepo(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{}, t.TempDir())
 	req := fileReq()
 	req.Repo = "nope"
-	if _, err := a.Extract(context.Background(), req, nil); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.Extract(t.Context(), req, nil); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo (wrapped under extract:)", err)
 	}
 }
@@ -863,7 +863,7 @@ func TestExtractSecretsFailurePropagates(t *testing.T) {
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 	a.Secrets = fakeSecrets{err: errors.New("secrets: no repo")}
-	if _, err := a.Extract(context.Background(), fileReq(), nil); err == nil {
+	if _, err := a.Extract(t.Context(), fileReq(), nil); err == nil {
 		t.Fatal("expected the secrets failure to propagate")
 	}
 	cap.mu.Lock()
@@ -889,7 +889,7 @@ func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 
 	// A file extract is refused before restic / staging, path-free.
-	_, err := a.Extract(context.Background(), fileReq(), nil)
+	_, err := a.Extract(t.Context(), fileReq(), nil)
 	if err == nil {
 		t.Fatal("expected a refusal on an unsupported platform")
 	}
@@ -1138,7 +1138,7 @@ func TestExtractDiffSingleFilePublishesViaLink(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("PlanExtractPaths: %v", perr)
 	}
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -1190,7 +1190,7 @@ func TestExtractDiffSingleFileRefusesOccupiedFinal(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("PlanExtractPaths: %v", perr)
 	}
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
@@ -1238,7 +1238,7 @@ func TestExtractDiffSymlinkLeafPublishes(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("PlanExtractPaths: %v", perr)
 	}
-	result, err := a.Extract(context.Background(), req, nil)
+	result, err := a.Extract(t.Context(), req, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -1283,7 +1283,7 @@ func TestExtractDiffSymlinkLeafRefusesOccupiedFinal(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("PlanExtractPaths: %v", perr)
 	}
-	_, err := a.Extract(context.Background(), req, nil)
+	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}

@@ -29,7 +29,7 @@ func setup(t *testing.T, states map[string]model.RepoState) string {
 	c := cache.New(cacheDir)
 	for name, st := range states {
 		st.Name = name
-		if err := c.Save(context.Background(), name, st); err != nil {
+		if err := c.Save(t.Context(), name, st); err != nil {
 			t.Fatalf("seed cache: %v", err)
 		}
 		fmt.Fprintf(&repos, "\n[repos.%s]\ncredential=\"cred-a\"\nendpoint=\"https://fsn1.example.com\"\nregion=\"fsn1\"\nbucket=%q\nexpected_frequency=\"24h\"\n", name, name+"-bucket")
@@ -51,7 +51,7 @@ cache_dir = %q
 func runStatus(t *testing.T, cfgPath string) (int, string, string) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"status", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"status", "--config", cfgPath}, &out, &errBuf)
 	return code, out.String(), errBuf.String()
 }
 
@@ -161,7 +161,7 @@ func TestCachePruneRemovesOrphans(t *testing.T) {
 	orphanDir := seedResticCache(t, cacheDir, "removed-repo")
 
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"cache", "prune", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"cache", "prune", "--config", cfgPath}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("cache prune exit = %d, want 0 (stderr=%q)", code, errBuf.String())
 	}
@@ -189,7 +189,7 @@ func TestCachePruneDryRun(t *testing.T) {
 	orphanDir := seedResticCache(t, cacheDir, "removed-repo")
 
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"cache", "prune", "--dry-run", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"cache", "prune", "--dry-run", "--config", cfgPath}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("cache prune --dry-run exit = %d, want 0 (stderr=%q)", code, errBuf.String())
 	}
@@ -203,7 +203,7 @@ func TestCachePruneDryRun(t *testing.T) {
 
 func TestCacheUnknownSubcommand(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(context.Background(), []string{"cache", "frobnicate"}, &out, &errBuf); code != 2 {
+	if code := run(t.Context(), []string{"cache", "frobnicate"}, &out, &errBuf); code != 2 {
 		t.Errorf("unknown cache subcommand exit = %d, want 2", code)
 	}
 	if !strings.Contains(errBuf.String(), "unknown cache subcommand") {
@@ -301,7 +301,7 @@ func TestSecretsTemplate(t *testing.T) {
 		"repo-b": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
 	})
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("secrets template exit = %d, want 0 (stderr=%q)", code, errBuf.String())
 	}
@@ -360,7 +360,7 @@ expected_frequency = "24h"
 		t.Fatal(err)
 	}
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"secrets", "template", "--config", cfgPath}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("secrets template exit = %d, want 0 (stderr=%q)", code, errBuf.String())
 	}
@@ -387,7 +387,7 @@ expected_frequency = "24h"
 
 func TestSecretsTemplateBadConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"secrets", "template", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
+	code := run(t.Context(), []string{"secrets", "template", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
 	if code != 2 {
 		t.Errorf("bad config exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
 	}
@@ -398,7 +398,7 @@ func TestSecretsTemplateRejectsArgs(t *testing.T) {
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
 	})
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"secrets", "template", "--config", cfgPath, "extra"}, &out, &errBuf)
+	code := run(t.Context(), []string{"secrets", "template", "--config", cfgPath, "extra"}, &out, &errBuf)
 	if code != 2 {
 		t.Errorf("extra arg exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
 	}
@@ -412,7 +412,7 @@ func TestSecretsTemplateRejectsArgs(t *testing.T) {
 
 func TestSecretsUnknownSubcommand(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(context.Background(), []string{"secrets", "frobnicate"}, &out, &errBuf); code != 2 {
+	if code := run(t.Context(), []string{"secrets", "frobnicate"}, &out, &errBuf); code != 2 {
 		t.Errorf("unknown secrets subcommand exit = %d, want 2", code)
 	}
 	if !strings.Contains(errBuf.String(), "unknown secrets subcommand") {
@@ -422,7 +422,7 @@ func TestSecretsUnknownSubcommand(t *testing.T) {
 
 func TestUnknownCommand(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(context.Background(), []string{"frobnicate"}, &out, &errBuf); code != 2 {
+	if code := run(t.Context(), []string{"frobnicate"}, &out, &errBuf); code != 2 {
 		t.Errorf("unknown command exit = %d, want 2", code)
 	}
 	if !strings.Contains(errBuf.String(), "unknown command") {
@@ -432,7 +432,7 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestHelpShowsUsage(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(context.Background(), []string{"help"}, &out, &errBuf); code != 0 {
+	if code := run(t.Context(), []string{"help"}, &out, &errBuf); code != 0 {
 		t.Errorf("help exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "Usage:") {
@@ -450,7 +450,7 @@ func TestTUIFailsFastWhenSecretsUnavailable(t *testing.T) {
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
 	})
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"tui", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"tui", "--config", cfgPath}, &out, &errBuf)
 	if code != 2 {
 		t.Errorf("tui exit = %d, want 2 (stderr=%q)", code, errBuf.String())
 	}
@@ -461,7 +461,7 @@ func TestTUIFailsFastWhenSecretsUnavailable(t *testing.T) {
 
 func TestCheckBadConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"check", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
+	code := run(t.Context(), []string{"check", "--config", filepath.Join(t.TempDir(), "nope.toml")}, &out, &errBuf)
 	if code != 2 {
 		t.Fatalf("check exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
 	}
@@ -479,7 +479,7 @@ func TestCheckFailsAtSecretsStage(t *testing.T) {
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
 	})
 	var out, errBuf bytes.Buffer
-	code := run(context.Background(), []string{"check", "--config", cfgPath}, &out, &errBuf)
+	code := run(t.Context(), []string{"check", "--config", cfgPath}, &out, &errBuf)
 	if code != 2 {
 		t.Fatalf("check exit = %d, want 2 (stdout=%q stderr=%q)", code, out.String(), errBuf.String())
 	}
@@ -513,7 +513,7 @@ func TestCheckResticGateSkipsProbes(t *testing.T) {
 			probe := func(context.Context) ([]app.RepoCheck, error) { probed = true; return nil, nil }
 
 			var out, errBuf bytes.Buffer
-			code := checkRestic(context.Background(), &out, &errBuf, version, probe)
+			code := checkRestic(t.Context(), &out, &errBuf, version, probe)
 			if code != tt.want {
 				t.Errorf("exit = %d, want %d (stdout=%q stderr=%q)", code, tt.want, out.String(), errBuf.String())
 			}
@@ -536,7 +536,7 @@ func TestCheckResticCancelledProbeIsExit2(t *testing.T) {
 		return []app.RepoCheck{{Name: "repo-a"}}, context.Canceled
 	}
 	var out, errBuf bytes.Buffer
-	code := checkRestic(context.Background(), &out, &errBuf, version, probe)
+	code := checkRestic(t.Context(), &out, &errBuf, version, probe)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (stdout=%q)", code, out.String())
 	}
@@ -552,7 +552,7 @@ func TestCheckResticVerdicts(t *testing.T) {
 		return []app.RepoCheck{{Name: "repo-a"}, {Name: "repo-b"}}, nil
 	}
 	var out, errBuf bytes.Buffer
-	if code := checkRestic(context.Background(), &out, &errBuf, version, allOK); code != 0 {
+	if code := checkRestic(t.Context(), &out, &errBuf, version, allOK); code != 0 {
 		t.Fatalf("all reachable: exit = %d, want 0 (stderr=%q)", code, errBuf.String())
 	}
 	if !strings.Contains(out.String(), "all checks passed") {
@@ -567,7 +567,7 @@ func TestCheckResticVerdicts(t *testing.T) {
 	}
 	out.Reset()
 	errBuf.Reset()
-	if code := checkRestic(context.Background(), &out, &errBuf, version, oneFails); code != 1 {
+	if code := checkRestic(t.Context(), &out, &errBuf, version, oneFails); code != 1 {
 		t.Errorf("one unreachable: exit = %d, want 1", code)
 	}
 }

@@ -1,7 +1,6 @@
 package resticx
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -27,7 +26,7 @@ func TestResticFindLiteralPattern(t *testing.T) {
 func TestFindMatchesParses017(t *testing.T) {
 	fr := &fakeRunner{stdout: readFixture(t, "find-0.17.json")}
 	c := &Client{Runner: fr}
-	rs, err := c.FindMatches(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "homeserver", "/etc/hostname")
+	rs, err := c.FindMatches(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "homeserver", "/etc/hostname")
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestFindMatchesParses017(t *testing.T) {
 func TestFindMatchesParses018WithUnknownFields(t *testing.T) {
 	fr := &fakeRunner{stdout: readFixture(t, "find-0.18.json")}
 	c := &Client{Runner: fr}
-	rs, err := c.FindMatches(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "", "/etc/hostname")
+	rs, err := c.FindMatches(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "", "/etc/hostname")
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}
@@ -69,7 +68,7 @@ func TestFindMatchesParses018WithUnknownFields(t *testing.T) {
 func TestFindMatchesArgsWithHost(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
-	_, err := c.FindMatches(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "homeserver", "/etc/hostname")
+	_, err := c.FindMatches(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "homeserver", "/etc/hostname")
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestFindMatchesArgsWithHost(t *testing.T) {
 func TestFindMatchesArgsWithoutHost(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
-	_, err := c.FindMatches(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "", "/etc/hostname")
+	_, err := c.FindMatches(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "", "/etc/hostname")
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestFindMatchesArgsWithoutHost(t *testing.T) {
 func TestFindMatchesEscapesGlobInArgs(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
-	_, err := c.FindMatches(context.Background(), testTarget, Creds{ResticPassword: "pw"}, "", "/data/a[1].txt")
+	_, err := c.FindMatches(t.Context(), testTarget, Creds{ResticPassword: "pw"}, "", "/data/a[1].txt")
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}

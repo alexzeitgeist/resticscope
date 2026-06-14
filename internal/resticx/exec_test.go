@@ -4,7 +4,6 @@ package resticx
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func TestExecRunnerDeliversPatternsOnFD4(t *testing.T) {
 	patterns := bytes.Repeat([]byte("/some/include/pattern/line\n"), 5000) // ~130 KiB > pipe buffer
 
 	var got []byte
-	stderr, err := ExecRunner{}.RunStreamPatterns(context.Background(),
+	stderr, err := ExecRunner{}.RunStreamPatterns(t.Context(),
 		[]string{"PATH=" + os.Getenv("PATH")}, "secret-pw", patterns,
 		func(r io.Reader) error {
 			b, readErr := io.ReadAll(r)

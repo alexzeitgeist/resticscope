@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,7 +54,7 @@ func TestPruneCacheOrphansOnly(t *testing.T) {
 	orphanDir := seedCache(t, cacheDir, "removed-repo", 250)
 
 	a := pruneApp(cacheDir, "live-repo")
-	res, err := a.PruneCache(context.Background(), false, false)
+	res, err := a.PruneCache(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}
@@ -90,7 +89,7 @@ func TestPruneCacheAll(t *testing.T) {
 	orphanDir := seedCache(t, cacheDir, "removed-repo", 250)
 
 	a := pruneApp(cacheDir, "live-repo")
-	res, err := a.PruneCache(context.Background(), true, false)
+	res, err := a.PruneCache(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestPruneCacheDryRun(t *testing.T) {
 	seedCache(t, cacheDir, "live-repo", 100)
 
 	a := pruneApp(cacheDir, "live-repo")
-	res, err := a.PruneCache(context.Background(), false, true)
+	res, err := a.PruneCache(t.Context(), false, true)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}
@@ -130,7 +129,7 @@ func TestPruneCacheMatchesSanitizedNames(t *testing.T) {
 	dir := seedCache(t, cacheDir, "home/server:1", 100) // dir is "home_server_1"
 
 	a := pruneApp(cacheDir, "home/server:1")
-	res, err := a.PruneCache(context.Background(), false, false)
+	res, err := a.PruneCache(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}
@@ -156,7 +155,7 @@ func TestPruneCacheIgnoresStrayFiles(t *testing.T) {
 	}
 
 	a := pruneApp(cacheDir) // no repos -> everything would be an orphan
-	res, err := a.PruneCache(context.Background(), true, false)
+	res, err := a.PruneCache(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}
@@ -171,7 +170,7 @@ func TestPruneCacheIgnoresStrayFiles(t *testing.T) {
 // A missing restic-cache directory (never refreshed) is not an error.
 func TestPruneCacheMissingDir(t *testing.T) {
 	a := pruneApp(t.TempDir(), "repo-a")
-	res, err := a.PruneCache(context.Background(), false, false)
+	res, err := a.PruneCache(t.Context(), false, false)
 	if err != nil {
 		t.Fatalf("PruneCache over missing dir: %v", err)
 	}
@@ -183,7 +182,7 @@ func TestPruneCacheMissingDir(t *testing.T) {
 // With no cache_dir configured there is nothing to scan.
 func TestPruneCacheNoCacheDir(t *testing.T) {
 	a := pruneApp("")
-	res, err := a.PruneCache(context.Background(), true, false)
+	res, err := a.PruneCache(t.Context(), true, false)
 	if err != nil {
 		t.Fatalf("PruneCache: %v", err)
 	}

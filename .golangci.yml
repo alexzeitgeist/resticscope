@@ -147,6 +147,12 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    usetesting:
+      # Prefer t.Context() over context.Background()/TODO() in tests: it is
+      # cancelled at test cleanup, so a hung call under test cannot outlive the
+      # test. Deliberate never-cancel / pre-cancel cases carry a scoped nolint.
+      context-background: true
+      context-todo: true
 
 formatters:
   enable:

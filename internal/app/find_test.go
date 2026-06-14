@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -47,7 +46,7 @@ func TestFindFileVersionsHostFilter(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", "homeserver", "/etc/hostname", false)
+	got, err := a.FindFileVersions(t.Context(), "repo-a", "homeserver", "/etc/hostname", false)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
@@ -82,7 +81,7 @@ func TestFindFileVersionsAllHosts(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", "homeserver", "/etc/hostname", true)
+	got, err := a.FindFileVersions(t.Context(), "repo-a", "homeserver", "/etc/hostname", true)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
@@ -102,7 +101,7 @@ func TestFindFileVersionsErrFindUnknownHost(t *testing.T) {
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})
 
-	_, err := a.FindFileVersions(context.Background(), "repo-a", "", "/etc/hostname", false)
+	_, err := a.FindFileVersions(t.Context(), "repo-a", "", "/etc/hostname", false)
 	if !errors.Is(err, ErrFindUnknownHost) {
 		t.Fatalf("expected ErrFindUnknownHost, got %v", err)
 	}
@@ -125,7 +124,7 @@ func TestFindFileVersionsUsesLiveOriginHostWhenCacheMisses(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results, findCap: cap})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", "live-host", "/etc/hostname", false)
+	got, err := a.FindFileVersions(t.Context(), "repo-a", "live-host", "/etc/hostname", false)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
@@ -144,7 +143,7 @@ func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})
 
-	_, err := a.FindFileVersions(context.Background(), "repo-a", "", "/etc/hostname", true)
+	_, err := a.FindFileVersions(t.Context(), "repo-a", "", "/etc/hostname", true)
 	if err != nil {
 		t.Fatalf("FindFileVersions (all-hosts recovery): %v", err)
 	}
@@ -159,7 +158,7 @@ func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
 func TestFindFileVersionsUnknownRepo(t *testing.T) {
 	fc := newFakeCache()
 	a := findTestApp(fc, fakeRestic{})
-	if _, err := a.FindFileVersions(context.Background(), "no-such-repo", "host", "/etc", false); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.FindFileVersions(t.Context(), "no-such-repo", "host", "/etc", false); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }
@@ -170,7 +169,7 @@ func TestFindFileVersionsSurfacesResticError(t *testing.T) {
 	seedSnapshot(fc, "repo-a", snapID, "homeserver", now.Add(-time.Hour))
 	a := findTestApp(fc, fakeRestic{findErr: errors.New("restic find: boom")})
 
-	if _, err := a.FindFileVersions(context.Background(), "repo-a", "homeserver", "/x", false); err == nil {
+	if _, err := a.FindFileVersions(t.Context(), "repo-a", "homeserver", "/x", false); err == nil {
 		t.Fatal("expected restic error to surface")
 	}
 }
@@ -195,7 +194,7 @@ func TestFindFileVersionsGroupsRowsAcrossSnapshots(t *testing.T) {
 	}
 	a := findTestApp(fc, fakeRestic{findResults: results})
 
-	got, err := a.FindFileVersions(context.Background(), "repo-a", "homeserver", "/etc/x", false)
+	got, err := a.FindFileVersions(t.Context(), "repo-a", "homeserver", "/etc/x", false)
 	if err != nil {
 		t.Fatalf("FindFileVersions: %v", err)
 	}
