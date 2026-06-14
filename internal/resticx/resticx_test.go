@@ -381,6 +381,24 @@ func TestStderrRedactedInError(t *testing.T) {
 	}
 }
 
+func TestBufferedMethodsRequireRunner(t *testing.T) {
+	c := &Client{}
+	creds := Creds{ResticPassword: "pw"}
+
+	if _, err := c.Version(t.Context()); !errors.Is(err, ErrNoRunner) {
+		t.Fatalf("Version error = %v, want ErrNoRunner", err)
+	}
+	if _, err := c.Snapshots(t.Context(), testTarget, creds); !errors.Is(err, ErrNoRunner) {
+		t.Fatalf("Snapshots error = %v, want ErrNoRunner", err)
+	}
+	if err := c.CatConfig(t.Context(), testTarget, creds); !errors.Is(err, ErrNoRunner) {
+		t.Fatalf("CatConfig error = %v, want ErrNoRunner", err)
+	}
+	if _, err := c.FindMatches(t.Context(), testTarget, creds, "homeserver", "/etc/hostname"); !errors.Is(err, ErrNoRunner) {
+		t.Fatalf("FindMatches error = %v, want ErrNoRunner", err)
+	}
+}
+
 // The exported cache-layout helpers must agree with the RESTIC_CACHE_DIR that
 // real runs set, so `cache prune` maps configured repos to the right directory.
 func TestCacheLayoutHelpers(t *testing.T) {

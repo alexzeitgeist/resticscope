@@ -11,6 +11,7 @@ package resticx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"maps"
 	"os"
@@ -82,6 +83,10 @@ type Client struct {
 	Redact   func(string) string // optional; scrubs stderr before it enters an error
 }
 
+// ErrNoRunner is returned by buffered methods when a Client has no Runner
+// wired. Production wires Runner explicitly, so it signals a miswire.
+var ErrNoRunner = errors.New("resticx: no runner configured (set Client.Runner)")
+
 // Snapshots lists the repository's snapshots.
 func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.Snapshot, error) {
 	// snapshots is read-only. Running it lockless keeps resticscope usable for
@@ -113,6 +118,9 @@ func (c *Client) CatConfig(ctx context.Context, t Target, creds Creds) error {
 // Version returns restic's version string (e.g. "0.18.1"). It parses the plain
 // `restic version` output, which is stable across the supported range.
 func (c *Client) Version(ctx context.Context) (string, error) {
+	if c.Runner == nil {
+		return "", ErrNoRunner
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 	out, stderr, err := c.Runner.Run(ctx, minimalEnv(), "", "version")
@@ -128,6 +136,9 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 }
 
 func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, args ...string) ([]byte, error) {
+	if c.Runner == nil {
+		return nil, ErrNoRunner
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 
