@@ -133,12 +133,20 @@ func (s *BrowseSession) ensureStore(ctx context.Context) (BrowseStore, error) {
 	return store, nil
 }
 
+// noopRelease is the release func beginOp hands back on its error paths, so a
+// caller may defer release() before checking err without risking a nil-func call.
+// The op cleanup already ran inline on those paths, so this deliberately does
+// nothing — calling the real release there would double-unlock opMu.
+func noopRelease() {}
+
 // beginOp acquires the session operation lock and returns the store together with
 // a context Close can cancel. The returned context is a child of ctx, so the op
 // still observes the caller's cancellation; registering it as the session's
 // in-flight op additionally lets Close interrupt the op without depending on the
 // caller. The returned release func unregisters the op and releases the lock, and
-// MUST be deferred. A closed session returns errBrowseSessionClosed.
+// MUST be deferred; it is always non-nil and safe to call (a no-op on the error
+// paths), but ctx and store are only valid when err is nil. A closed session
+// returns errBrowseSessionClosed.
 func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseStore, func(), error) {
 	s.opMu.Lock()
 	opCtx, cancel := context.WithCancel(ctx)
@@ -147,7 +155,7 @@ func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseSto
 		s.mu.Unlock()
 		cancel()
 		s.opMu.Unlock()
-		return nil, nil, nil, errBrowseSessionClosed
+		return nil, nil, noopRelease, errBrowseSessionClosed
 	}
 	s.inflight = cancel
 	s.mu.Unlock()
@@ -159,7 +167,7 @@ func (s *BrowseSession) beginOp(ctx context.Context) (context.Context, BrowseSto
 		s.mu.Unlock()
 		cancel()
 		s.opMu.Unlock()
-		return nil, nil, nil, err
+		return nil, nil, noopRelease, err
 	}
 
 	release := func() {

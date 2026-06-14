@@ -1106,6 +1106,42 @@ func TestBrowseSessionCloseCancelsInFlightOpen(t *testing.T) {
 	}
 }
 
+func TestBeginOpReturnsCallableReleaseOnError(t *testing.T) {
+	// Both error paths must hand back a non-nil, safe-to-call release so a future
+	// caller that defers release() before checking err never hits a nil-func call.
+	// The real op cleanup already ran inline on these paths, so the returned release
+	// must be the no-op (the real release would double-unlock opMu).
+
+	closed := NewBrowseSession(func(context.Context) (BrowseStore, error) {
+		t.Fatal("open must not run on a closed session")
+		return nil, nil
+	})
+	if err := closed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, _, release, err := closed.beginOp(t.Context())
+	if !errors.Is(err, errBrowseSessionClosed) {
+		t.Fatalf("closed-session err = %v, want errBrowseSessionClosed", err)
+	}
+	if release == nil {
+		t.Fatal("release is nil on the closed-session path")
+	}
+	release() // must not panic
+
+	openErr := errors.New("open failed")
+	broken := NewBrowseSession(func(context.Context) (BrowseStore, error) {
+		return nil, openErr
+	})
+	_, _, release, err = broken.beginOp(t.Context())
+	if !errors.Is(err, openErr) {
+		t.Fatalf("open-failure err = %v, want openErr", err)
+	}
+	if release == nil {
+		t.Fatal("release is nil on the open-failure path")
+	}
+	release() // must not panic
+}
+
 func TestIndexSnapshotNilBrowseGuard(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
 	if err := a.IndexSnapshot(t.Context(), "repo-a", "s1", nil); !errors.Is(err, ErrBrowseNotEnabled) {
