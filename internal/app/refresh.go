@@ -58,11 +58,8 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 		saveErrs []error
 	)
 
-	for i := range a.Cfg.Repos {
-		wg.Add(1)
-		go func(i int, r config.Repo) {
-			defer wg.Done()
-
+	for i, r := range a.Cfg.Repos {
+		wg.Go(func() {
 			// Respect the parallelism limit, but never block past cancellation.
 			select {
 			case sem <- struct{}{}:
@@ -80,7 +77,7 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 				mu.Unlock()
 			}
 			results[i] = state
-		}(i, a.Cfg.Repos[i])
+		})
 	}
 	wg.Wait()
 

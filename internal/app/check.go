@@ -33,11 +33,8 @@ func (a *App) Check(ctx context.Context) ([]RepoCheck, error) {
 	sem := make(chan struct{}, a.parallelism())
 	var wg sync.WaitGroup
 
-	for i := range a.Cfg.Repos {
-		wg.Add(1)
-		go func(i int, r config.Repo) {
-			defer wg.Done()
-
+	for i, r := range a.Cfg.Repos {
+		wg.Go(func() {
 			// Respect the parallelism limit, but never block past cancellation.
 			select {
 			case sem <- struct{}{}:
@@ -48,7 +45,7 @@ func (a *App) Check(ctx context.Context) ([]RepoCheck, error) {
 			}
 
 			results[i] = RepoCheck{Name: r.Name, Err: a.checkOne(ctx, r)}
-		}(i, a.Cfg.Repos[i])
+		})
 	}
 	wg.Wait()
 

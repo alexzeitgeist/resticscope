@@ -2,7 +2,7 @@ package tui
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -67,7 +67,7 @@ func buildMeta(cfg *config.Config) map[string]rowMeta {
 			keys = append(keys, k)
 			rm.byKey[k] = v
 		}
-		sort.Strings(keys)
+		slices.Sort(keys)
 		rm.labelKeys = keys
 		for _, k := range keys {
 			rm.labels = append(rm.labels, r.Labels[k])

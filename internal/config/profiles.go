@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 )
@@ -105,7 +105,7 @@ func repoOrder(md toml.MetaData, byName map[string]Repo) []string {
 				rest = append(rest, name)
 			}
 		}
-		sort.Strings(rest)
+		slices.Sort(rest)
 		out = append(out, rest...)
 	}
 	return out

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -169,10 +171,7 @@ func snapSectionsBy(snaps []model.Snapshot, mode snapGroupMode) []snapSection {
 		b.snaps = append(b.snaps, s)
 	}
 
-	keys := make([]string, 0, len(byKey))
-	for k := range byKey {
-		keys = append(keys, k)
-	}
+	keys := slices.Collect(maps.Keys(byKey))
 	sort.SliceStable(keys, func(i, j int) bool {
 		li, lj := strings.ToLower(keys[i]), strings.ToLower(keys[j])
 		if li != lj {
@@ -234,9 +233,8 @@ func sectionKeyTitle(s model.Snapshot, mode snapGroupMode) (key, title string, m
 }
 
 func sortedCopy(in []string) []string {
-	out := make([]string, len(in))
-	copy(out, in)
-	sort.Strings(out)
+	out := slices.Clone(in)
+	slices.Sort(out)
 	return out
 }
 

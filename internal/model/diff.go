@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -583,8 +584,8 @@ func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) 
 			}
 		}
 	}
-	sort.Strings(out.First)
-	sort.Strings(out.Second)
+	slices.Sort(out.First)
+	slices.Sort(out.Second)
 	return out
 }
 

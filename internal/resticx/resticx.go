@@ -12,9 +12,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -206,12 +207,7 @@ func BackendEnviron(t Target, creds Creds) []string {
 // sortedKeys returns m's keys sorted, so env and argv assembly stay
 // deterministic across runs (maps iterate in random order).
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 func minimalEnv() []string {

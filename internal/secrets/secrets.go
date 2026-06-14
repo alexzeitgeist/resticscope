@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 
 	"resticscope/internal/model"
 )
@@ -192,7 +192,7 @@ func (s *Store) Validate(wantCreds, wantRepos []string) (warnings []string, err 
 	}
 	// Both loops above range over maps, so sort for a deterministic warning
 	// order (these are logged; reordering between runs is confusing).
-	sort.Strings(warnings)
+	slices.Sort(warnings)
 
 	return warnings, errors.Join(errs...)
 }
@@ -226,12 +226,7 @@ func validateCredEntry(name string, c credEntry) []error {
 }
 
 func sortedEnvNames(m map[string]string) []string {
-	names := make([]string, 0, len(m))
-	for k := range m {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(m))
 }
 
 // Resolve returns the material for repoName using credName's backend env vars.

@@ -3,9 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"resticscope/internal/model"
@@ -176,12 +177,7 @@ func validateEnvOptions(label string, env, options map[string]string) []error {
 
 // sortedKeys returns m's keys sorted, for deterministic multi-error output.
 func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // validateTheme checks the [theme] block: the name must be a built-in theme
