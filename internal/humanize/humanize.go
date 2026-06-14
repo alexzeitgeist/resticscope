@@ -20,11 +20,11 @@ func Ago(now, t time.Time) string {
 	case d < time.Minute:
 		return "just now"
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+		return fmt.Sprintf("%dm ago", d/time.Minute)
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return fmt.Sprintf("%dh ago", d/time.Hour)
 	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
+		return fmt.Sprintf("%dd ago", d/(24*time.Hour))
 	}
 }
 
@@ -40,11 +40,11 @@ func Duration(d time.Duration) string {
 	case d < time.Second:
 		return "<1s"
 	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%ds", d/time.Second)
 	case d < time.Hour:
-		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+		return fmt.Sprintf("%dm%02ds", d/time.Minute, d%time.Minute/time.Second)
 	default:
-		return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
+		return fmt.Sprintf("%dh%02dm", d/time.Hour, d%time.Hour/time.Minute)
 	}
 }
 
@@ -61,10 +61,17 @@ func Count[N ~int | ~int64 | ~uint64](n N, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, plural)
 }
 
+// byteSuffixes are the IEC unit suffixes indexed by Bytes's division exponent.
+var byteSuffixes = [...]string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+
 // Bytes formats a byte count in IEC units (GiB, MiB, …), with one decimal place
-// below 10 of a unit.
+// below 10 of a unit. A negative count renders as an em-dash because it is
+// invalid.
 func Bytes(n int64) string {
 	const unit = 1024
+	if n < 0 {
+		return "—"
+	}
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
@@ -76,7 +83,7 @@ func Bytes(n int64) string {
 	value := float64(n) / float64(div)
 	// exp counts 1024-divisions of an int64: the max (~8 EiB) gives exp == 5,
 	// the last of six suffixes, so the index can never run off the end.
-	suffix := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}[exp] //nolint:gosec // exp is bounded to [0,5] by int64's range
+	suffix := byteSuffixes[exp]
 	if value >= 10 {
 		return fmt.Sprintf("%.0f %s", value, suffix)
 	}

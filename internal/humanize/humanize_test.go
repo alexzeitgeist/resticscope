@@ -11,6 +11,7 @@ func TestBytes(t *testing.T) {
 		n    int64
 		want string
 	}{
+		{-1, "—"},
 		{0, "0 B"},
 		{512, "512 B"},
 		{442000000000, "412 GiB"},
