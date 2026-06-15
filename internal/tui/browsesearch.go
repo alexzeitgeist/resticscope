@@ -21,9 +21,7 @@ import (
 func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
-		m.quitting = true
-		m.cancel()
-		return m, tea.Quit
+		return m.quitModel(), tea.Quit
 	case key.Matches(msg, m.keys.SearchAccept):
 		return m.acceptBrowseSearch()
 	case key.Matches(msg, m.keys.SearchCancel):

@@ -51,7 +51,10 @@ func (m Model) detailRow() (app.RepoStatus, bool) {
 // order the detail view and snapCursor both use). It copies before sorting so
 // the cached state's slice order is left untouched.
 func (m Model) detailSnapshots() []model.Snapshot {
-	row, _ := m.detailRow()
+	row, ok := m.detailRow()
+	if !ok {
+		return nil
+	}
 	return model.SortedSnapshotsNewestFirst(row.State.Snapshots)
 }
 

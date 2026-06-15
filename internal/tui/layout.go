@@ -110,6 +110,9 @@ func clampCursor(i, total int) int {
 // Every scrolling list (repos, snapshots, browse rows, diff rows, versions)
 // windows through it.
 func scrollWindow(cursor, total, visible int) (start, end int) {
+	if visible < 1 {
+		visible = 1
+	}
 	if total <= visible {
 		return 0, total
 	}

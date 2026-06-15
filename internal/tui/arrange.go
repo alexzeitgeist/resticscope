@@ -99,7 +99,8 @@ func (s browseSortMode) label() string {
 // reorder, so browseRows aliases the cached slice in name mode (it is never mutated
 // in place), mirroring sortRows leaving sortConfig untouched. size/modified sort a
 // COPY (sort.SliceStable) so the canonical cached slice (browseCache) is never
-// mutated. Net: the cache is never mutated in any mode.
+// mutated. Net: the cache is never mutated in any mode. Callers must not mutate
+// the returned slice.
 func sortedBrowseRows(canonical []model.BrowseEntry, mode browseSortMode) []model.BrowseEntry {
 	if mode == browseSortName {
 		return canonical

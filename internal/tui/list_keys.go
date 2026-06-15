@@ -56,9 +56,7 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
-		m.quitting = true
-		m.cancel()
-		return m, tea.Quit
+		return m.quitModel(), tea.Quit
 	case key.Matches(msg, m.keys.FilterAccept):
 		m.filtering = false
 	case key.Matches(msg, m.keys.FilterCancel):

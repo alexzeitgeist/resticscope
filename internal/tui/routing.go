@@ -59,7 +59,9 @@ func (m Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 
 func (m Model) quitModel() Model {
 	m.quitting = true
-	m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
+	if m.cancel != nil {
+		m.cancel() // stop any in-flight refresh so restic doesn't outlive the UI
+	}
 	return m
 }
 

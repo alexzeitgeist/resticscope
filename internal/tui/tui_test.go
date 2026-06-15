@@ -1268,6 +1268,34 @@ func TestQuitKeyStepsBackFromNestedViews(t *testing.T) {
 	})
 }
 
+func TestQuitWithNilCancelDoesNotPanic(t *testing.T) {
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	for _, tc := range []struct {
+		name string
+		m    Model
+		msg  tea.KeyPressMsg
+	}{
+		{name: "global ctrl+c", m: Model{keys: defaultKeys()}, msg: ctrlC},
+		{name: "list q", m: Model{keys: defaultKeys()}, msg: press("q")},
+		{name: "filter ctrl+c", m: Model{keys: defaultKeys(), filtering: true}, msg: ctrlC},
+		{name: "browse search ctrl+c", m: Model{keys: defaultKeys(), browseSearching: true}, msg: ctrlC},
+		{name: "diff search ctrl+c", m: Model{keys: defaultKeys(), diffSearching: true}, msg: ctrlC},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next, cmd := tc.m.Update(tc.msg)
+			if !next.(Model).quitting {
+				t.Error("quit key should set quitting even when cancel is nil")
+			}
+			if cmd == nil {
+				t.Fatal("expected a quit command")
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Errorf("quit key did not produce tea.QuitMsg")
+			}
+		})
+	}
+}
+
 func TestDetailSnapshotCursorNavigatesAndClamps(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m = update(t, m, press("enter"))

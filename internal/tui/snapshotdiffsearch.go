@@ -31,9 +31,7 @@ func (m Model) openDiffSearch() Model {
 func (m Model) handleDiffSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
-		m.quitting = true
-		m.cancel()
-		return m, tea.Quit
+		return m.quitModel(), tea.Quit
 	case key.Matches(msg, m.keys.SearchAccept):
 		return m.acceptDiffSearch(), nil
 	case key.Matches(msg, m.keys.SearchCancel):
