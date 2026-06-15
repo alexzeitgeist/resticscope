@@ -31,6 +31,53 @@ func TestParseAndResolve(t *testing.T) {
 	}
 }
 
+func TestParseNormalizesNilMaps(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "absent", json: `{}`},
+		{name: "null", json: `{"credentials":null,"repos":null}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := Parse([]byte(tt.json))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if store.credentials == nil {
+				t.Fatal("credentials map is nil")
+			}
+			if store.repos == nil {
+				t.Fatal("repos map is nil")
+			}
+		})
+	}
+}
+
+func TestValidateEmptyStoreNoop(t *testing.T) {
+	store, err := Parse([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if warnings, err := store.Validate(nil, nil); err != nil || len(warnings) != 0 {
+		t.Fatalf("Validate empty parsed store = warnings %v, err %v; want none", warnings, err)
+	}
+}
+
+func TestNilStoreMethodsDoNotPanic(t *testing.T) {
+	var store *Store
+	if warnings, err := store.Validate(nil, nil); !errors.Is(err, errNilStore) || warnings != nil {
+		t.Fatalf("Validate on nil Store = warnings %v, err %v; want errNilStore", warnings, err)
+	}
+	if _, err := store.Resolve("repo-a", "cred-a"); !errors.Is(err, errNilStore) {
+		t.Fatalf("Resolve on nil Store = %v, want errNilStore", err)
+	}
+	if got := store.Redactor().Redact("plain text"); got != "plain text" {
+		t.Fatalf("Redactor on nil Store changed text: %q", got)
+	}
+}
+
 // TestParseAndResolveEnvCredential covers the generic credential shape: env
 // vars reach Material verbatim, so any restic backend's secrets can ride.
 func TestParseAndResolveEnvCredential(t *testing.T) {
