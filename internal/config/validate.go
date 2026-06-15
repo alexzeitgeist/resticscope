@@ -13,7 +13,10 @@ import (
 	"resticscope/internal/theme"
 )
 
-var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
+var (
+	validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
+	errNilConfig      = errors.New("config: nil Config")
+)
 
 // validRepoName restricts repo names to characters that survive unchanged
 // through cache-file and restic-cache-dir sanitization. Without this, distinct
@@ -25,6 +28,9 @@ var validRepoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // required fields, duplicate or dangling names, and bad enum values. It does
 // not contact the backend, restic, or the secrets_command.
 func (c *Config) Validate() error {
+	if c == nil {
+		return errNilConfig
+	}
 	var errs []error
 
 	if c.Global.SecretsCommand == "" {
