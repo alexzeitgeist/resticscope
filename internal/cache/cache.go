@@ -23,8 +23,9 @@ import (
 // was present but unparseable; it wraps ErrMiss, so a single errors.Is check
 // for ErrMiss covers both, while callers that want to warn can test ErrCorrupt.
 var (
-	ErrMiss    = errors.New("cache miss")
-	ErrCorrupt = fmt.Errorf("cache file corrupt: %w", ErrMiss)
+	ErrMiss     = errors.New("cache miss")
+	ErrCorrupt  = fmt.Errorf("cache file corrupt: %w", ErrMiss)
+	errNilStore = errors.New("cache: nil Store")
 )
 
 // Store reads and writes per-repo cache files under Dir.
@@ -35,17 +36,24 @@ type Store struct {
 // New returns a Store rooted at dir. The directory is created on first Save.
 func New(dir string) *Store { return &Store{dir: dir} }
 
-func (s *Store) path(name string) string {
-	return filepath.Join(s.dir, sanitize(name)+".json")
+func (s *Store) path(name string) (string, error) {
+	if s == nil {
+		return "", errNilStore
+	}
+	return filepath.Join(s.dir, sanitize(name)+".json"), nil
 }
 
 // Load reads the cached state for name. A missing file returns ErrMiss; a
 // present-but-unparseable file returns ErrCorrupt (which is also ErrMiss).
 func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) {
+	path, err := s.path(name)
+	if err != nil {
+		return model.RepoState{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return model.RepoState{}, err
 	}
-	data, err := os.ReadFile(s.path(name))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return model.RepoState{}, ErrMiss
@@ -63,6 +71,10 @@ func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) 
 // Save atomically writes state for name: marshal, write a temp file in the same
 // directory, fsync, then rename over the target.
 func (s *Store) Save(ctx context.Context, name string, state model.RepoState) error {
+	path, err := s.path(name)
+	if err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -96,7 +108,7 @@ func (s *Store) Save(ctx context.Context, name string, state model.RepoState) er
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp cache file: %w", err)
 	}
-	if err := os.Rename(tmpName, s.path(name)); err != nil {
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("rename cache file: %w", err)
 	}
 	return nil
