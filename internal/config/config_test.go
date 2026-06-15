@@ -449,6 +449,50 @@ expected_frequency = "168h"
 	}
 }
 
+func TestMergeRepoProfileDoesNotAliasMaps(t *testing.T) {
+	profile := Repo{
+		Env:     map[string]string{"BASE_ENV": "profile"},
+		Options: map[string]string{"base.option": "profile"},
+		Labels:  map[string]string{"base": "profile", "shared": "profile"},
+	}
+	repo := Repo{
+		Name:    "repo-a",
+		Profile: "base",
+		Env:     map[string]string{"REPO_ENV": "repo"},
+		Options: map[string]string{"repo.option": "repo"},
+		Labels:  map[string]string{"repo": "repo", "shared": "repo"},
+	}
+
+	out := mergeRepoProfile(profile, repo)
+	if !mapsEqual(out.Env, map[string]string{"BASE_ENV": "profile", "REPO_ENV": "repo"}) {
+		t.Fatalf("merged env = %v", out.Env)
+	}
+	if !mapsEqual(out.Options, map[string]string{"base.option": "profile", "repo.option": "repo"}) {
+		t.Fatalf("merged options = %v", out.Options)
+	}
+	if !mapsEqual(out.Labels, map[string]string{"base": "profile", "repo": "repo", "shared": "repo"}) {
+		t.Fatalf("merged labels = %v", out.Labels)
+	}
+
+	out.Env["BASE_ENV"] = "changed"
+	out.Env["REPO_ENV"] = "changed"
+	out.Options["base.option"] = "changed"
+	out.Options["repo.option"] = "changed"
+	out.Labels["base"] = "changed"
+	out.Labels["repo"] = "changed"
+	out.Labels["shared"] = "changed"
+
+	if profile.Env["BASE_ENV"] != "profile" || repo.Env["REPO_ENV"] != "repo" {
+		t.Fatalf("merged env aliases inputs: profile=%v repo=%v out=%v", profile.Env, repo.Env, out.Env)
+	}
+	if profile.Options["base.option"] != "profile" || repo.Options["repo.option"] != "repo" {
+		t.Fatalf("merged options alias inputs: profile=%v repo=%v out=%v", profile.Options, repo.Options, out.Options)
+	}
+	if profile.Labels["base"] != "profile" || repo.Labels["repo"] != "repo" || profile.Labels["shared"] != "profile" || repo.Labels["shared"] != "repo" {
+		t.Fatalf("merged labels alias inputs: profile=%v repo=%v out=%v", profile.Labels, repo.Labels, out.Labels)
+	}
+}
+
 func TestRejectsBadRepoConfig(t *testing.T) {
 	tests := []struct {
 		name    string
