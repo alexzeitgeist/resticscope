@@ -36,24 +36,20 @@ type Store struct {
 // New returns a Store rooted at dir. The directory is created on first Save.
 func New(dir string) *Store { return &Store{dir: dir} }
 
-func (s *Store) path(name string) (string, error) {
-	if s == nil {
-		return "", errNilStore
-	}
-	return filepath.Join(s.dir, sanitize(name)+".json"), nil
+func (s *Store) path(name string) string {
+	return filepath.Join(s.dir, sanitize(name)+".json")
 }
 
 // Load reads the cached state for name. A missing file returns ErrMiss; a
 // present-but-unparseable file returns ErrCorrupt (which is also ErrMiss).
 func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) {
-	path, err := s.path(name)
-	if err != nil {
-		return model.RepoState{}, err
+	if s == nil {
+		return model.RepoState{}, errNilStore
 	}
 	if err := ctx.Err(); err != nil {
 		return model.RepoState{}, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(s.path(name))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return model.RepoState{}, ErrMiss
@@ -71,9 +67,8 @@ func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) 
 // Save atomically writes state for name: marshal, write a temp file in the same
 // directory, fsync, then rename over the target.
 func (s *Store) Save(ctx context.Context, name string, state model.RepoState) error {
-	path, err := s.path(name)
-	if err != nil {
-		return err
+	if s == nil {
+		return errNilStore
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -108,7 +103,7 @@ func (s *Store) Save(ctx context.Context, name string, state model.RepoState) er
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp cache file: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, s.path(name)); err != nil {
 		return fmt.Errorf("rename cache file: %w", err)
 	}
 	return nil

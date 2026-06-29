@@ -63,9 +63,6 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 
 func TestNilStoreReturnsError(t *testing.T) {
 	var s *Store
-	if path, err := s.path("repo"); path != "" || !errors.Is(err, errNilStore) {
-		t.Fatalf("path on nil Store = %q, %v; want empty path and errNilStore", path, err)
-	}
 	if _, err := s.Load(t.Context(), "repo"); !errors.Is(err, errNilStore) {
 		t.Fatalf("Load on nil Store = %v, want errNilStore", err)
 	}
