@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -43,17 +42,6 @@ func TestParsesMinimalConfig(t *testing.T) {
 	}
 	if cfg.Repos[0].ExpectedFrequency.Std() != 24*time.Hour {
 		t.Errorf("expected_frequency = %v, want 24h", cfg.Repos[0].ExpectedFrequency.Std())
-	}
-}
-
-func TestNilConfigMethodsDoNotPanic(t *testing.T) {
-	var cfg *Config
-	if got := cfg.CredentialNames(); got != nil {
-		t.Fatalf("CredentialNames on nil Config = %v, want nil", got)
-	}
-	cfg.Normalize("/home/tester")
-	if err := cfg.Validate(); !errors.Is(err, errNilConfig) {
-		t.Fatalf("Validate on nil Config = %v, want errNilConfig", err)
 	}
 }
 

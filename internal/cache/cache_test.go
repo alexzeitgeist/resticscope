@@ -61,16 +61,6 @@ func TestLoadCorruptIsMiss(t *testing.T) {
 	}
 }
 
-func TestNilStoreReturnsError(t *testing.T) {
-	var s *Store
-	if _, err := s.Load(t.Context(), "repo"); !errors.Is(err, errNilStore) {
-		t.Fatalf("Load on nil Store = %v, want errNilStore", err)
-	}
-	if err := s.Save(t.Context(), "repo", model.RepoState{Name: "repo"}); !errors.Is(err, errNilStore) {
-		t.Fatalf("Save on nil Store = %v, want errNilStore", err)
-	}
-}
-
 func TestSaveIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)

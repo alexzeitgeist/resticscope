@@ -19,8 +19,6 @@ import (
 	"resticscope/internal/model"
 )
 
-var errNilStore = errors.New("secrets: nil store")
-
 // Material is the resolved secret bundle for a single repo: the backend env
 // vars from its credential (nil when the repo has no credential — local or
 // sftp backends) plus the repo's own restic password.
@@ -104,12 +102,6 @@ func Parse(data []byte) (*Store, error) {
 		// Never include data in the error: it is the secret payload.
 		return nil, fmt.Errorf("parse secrets JSON: %w", err)
 	}
-	if doc.Credentials == nil {
-		doc.Credentials = map[string]credEntry{}
-	}
-	if doc.Repos == nil {
-		doc.Repos = map[string]repoEntry{}
-	}
 	return &Store{credentials: doc.Credentials, repos: doc.Repos}, nil
 }
 
@@ -163,10 +155,6 @@ func Template(creds []TemplateCred, repoNames []string) ([]byte, error) {
 // missing or incomplete wanted entries are fatal. No secret value ever appears
 // in the returned error or warnings.
 func (s *Store) Validate(wantCreds, wantRepos []string) (warnings []string, err error) {
-	if s == nil {
-		return nil, errNilStore
-	}
-
 	var errs []error
 
 	wantCredSet := make(map[string]bool, len(wantCreds))
@@ -246,10 +234,6 @@ func sortedEnvNames(m map[string]string) []string {
 // resolves to the password alone. It errors (without leaking values) if a
 // named credential or the repo is missing.
 func (s *Store) Resolve(repoName, credName string) (Material, error) {
-	if s == nil {
-		return Material{}, errNilStore
-	}
-
 	var env map[string]string
 	if credName != "" {
 		c, ok := s.credentials[credName]

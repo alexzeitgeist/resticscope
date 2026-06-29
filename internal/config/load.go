@@ -130,9 +130,6 @@ func Decode(data []byte) (*Config, error) {
 // Normalize fills in defaults and expands ~ in paths against home. It is split
 // from Load so tests can exercise it with an explicit home directory.
 func (c *Config) Normalize(home string) {
-	if c == nil {
-		return
-	}
 	g := &c.Global
 	if g.Parallelism <= 0 {
 		g.Parallelism = defaultParallelism

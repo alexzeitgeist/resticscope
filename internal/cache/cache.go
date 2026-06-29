@@ -23,9 +23,8 @@ import (
 // was present but unparseable; it wraps ErrMiss, so a single errors.Is check
 // for ErrMiss covers both, while callers that want to warn can test ErrCorrupt.
 var (
-	ErrMiss     = errors.New("cache miss")
-	ErrCorrupt  = fmt.Errorf("cache file corrupt: %w", ErrMiss)
-	errNilStore = errors.New("cache: nil Store")
+	ErrMiss    = errors.New("cache miss")
+	ErrCorrupt = fmt.Errorf("cache file corrupt: %w", ErrMiss)
 )
 
 // Store reads and writes per-repo cache files under Dir.
@@ -43,9 +42,6 @@ func (s *Store) path(name string) string {
 // Load reads the cached state for name. A missing file returns ErrMiss; a
 // present-but-unparseable file returns ErrCorrupt (which is also ErrMiss).
 func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) {
-	if s == nil {
-		return model.RepoState{}, errNilStore
-	}
 	if err := ctx.Err(); err != nil {
 		return model.RepoState{}, err
 	}
@@ -67,9 +63,6 @@ func (s *Store) Load(ctx context.Context, name string) (model.RepoState, error) 
 // Save atomically writes state for name: marshal, write a temp file in the same
 // directory, fsync, then rename over the target.
 func (s *Store) Save(ctx context.Context, name string, state model.RepoState) error {
-	if s == nil {
-		return errNilStore
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}

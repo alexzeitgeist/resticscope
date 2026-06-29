@@ -312,9 +312,6 @@ func (r Repo) BackendEnv() map[string]string {
 // secrets completeness check, where each name must resolve to material the
 // secrets_command provides.
 func (c *Config) CredentialNames() []string {
-	if c == nil {
-		return nil
-	}
 	seen := make(map[string]bool)
 	var names []string
 	for _, r := range c.Repos {

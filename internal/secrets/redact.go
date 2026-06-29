@@ -53,10 +53,6 @@ func (r *Redactor) Redact(text string) string {
 
 // Redactor returns a Redactor covering every secret value in the store.
 func (s *Store) Redactor() *Redactor {
-	if s == nil {
-		return NewRedactor()
-	}
-
 	var values []string
 	for _, c := range s.credentials {
 		values = append(values, c.AccessKey, c.SecretKey)
