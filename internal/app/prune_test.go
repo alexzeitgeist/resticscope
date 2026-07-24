@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"resticscope/internal/config"
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 // pruneApp builds an App whose config declares the named repos and points the

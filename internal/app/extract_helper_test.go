@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 // helperPayloadFor builds a valid stdin payload for req against root.

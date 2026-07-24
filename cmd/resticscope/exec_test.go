@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
 func TestParseExecArgs(t *testing.T) {

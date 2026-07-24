@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"resticscope/internal/humanize"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/humanize"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // findversionsview.go renders findVersionsView: a title naming the repo and

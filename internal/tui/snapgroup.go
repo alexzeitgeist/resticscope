@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // snapgroup.go owns the detail view's optional snapshot grouping (by host,

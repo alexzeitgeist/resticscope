@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // diffStreamFake feeds canned NDJSON to onStdout once, optionally returning a

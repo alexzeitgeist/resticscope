@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 
 	"github.com/BurntSushi/toml"
 )

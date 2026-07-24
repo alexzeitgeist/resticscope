@@ -1,4 +1,4 @@
-module resticscope
+module github.com/alexzeitgeist/resticscope
 
 go 1.25.9
 

@@ -23,9 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 // ExtractMode selects the underlying restic shape. It is source-driven — the TUI

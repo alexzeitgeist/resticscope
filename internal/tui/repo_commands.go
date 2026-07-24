@@ -3,8 +3,8 @@ package tui
 import (
 	"os/exec"
 
-	"resticscope/internal/app"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 
 	tea "charm.land/bubbletea/v2"
 )

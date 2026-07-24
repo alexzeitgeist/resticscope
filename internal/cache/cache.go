@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // ErrMiss means there is no usable cached state for a repo: either no file

@@ -4,9 +4,9 @@ import (
 	"image/color"
 	"strings"
 
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 
 	"charm.land/bubbles/v2/filepicker"
 	helpbubble "charm.land/bubbles/v2/help"

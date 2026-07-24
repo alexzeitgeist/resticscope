@@ -53,9 +53,9 @@ import (
 	"syscall"
 	"time"
 
-	"resticscope/internal/config"
-	"resticscope/internal/resticx"
-	"resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
 
 	json "github.com/goccy/go-json"
 )

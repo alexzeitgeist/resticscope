@@ -7,9 +7,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"resticscope/internal/app"
-	"resticscope/internal/humanize"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/humanize"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // formatStatusTable writes one plain-text line per repo, columns aligned. It

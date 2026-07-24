@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 )
 
 // Config is the fully parsed, normalized, validated configuration.

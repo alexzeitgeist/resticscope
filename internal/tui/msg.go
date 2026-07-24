@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"resticscope/internal/app"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // browseIndexProgressMsg carries a running node count from an in-flight snapshot

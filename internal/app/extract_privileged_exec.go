@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 const (

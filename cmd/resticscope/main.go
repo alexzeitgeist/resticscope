@@ -13,7 +13,7 @@ import (
 	"os"
 	"time"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
 func main() {
@@ -71,8 +71,6 @@ Usage:
   resticscope cache prune --all                    remove every repo's restic cache (restic rebuilds it)
   resticscope secrets template [--config PATH]     print a blank secrets JSON skeleton for your config
   resticscope version                              print resticscope and restic versions
-  resticscope extract-helper                       internal: root side of a privileged extract
-                                                   (launched by the TUI via sudo; request on stdin)
 
 status exit codes: 0 all green, 1 any amber, 2 any red/error/grey (or a failure).
 check  exit codes: 0 all passed, 1 problems found, 2 could not run the check.

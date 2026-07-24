@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"resticscope/internal/model"
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 // ShellSession is everything needed to launch an interactive shell scoped to one

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/lipgloss/v2"

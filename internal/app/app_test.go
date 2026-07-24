@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/cache"
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/resticx"
-	"resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
 )
 
 // --- fakes ---

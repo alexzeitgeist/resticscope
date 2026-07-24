@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 func TestSaveThenLoad(t *testing.T) {

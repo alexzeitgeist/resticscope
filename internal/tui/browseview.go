@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"resticscope/internal/humanize"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/humanize"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // Shared view literals used across multiple TUI views.

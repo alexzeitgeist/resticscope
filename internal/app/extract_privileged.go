@@ -22,8 +22,8 @@ import (
 	"os"
 	"os/exec"
 
-	"resticscope/internal/config"
-	"resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
 
 	json "github.com/goccy/go-json"
 )

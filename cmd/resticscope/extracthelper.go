@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
 // cmdExtractHelper is the hidden subcommand behind the TUI's privileged

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 )
 
 func TestThemeDefaultsToGruvboxDark(t *testing.T) {

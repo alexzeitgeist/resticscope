@@ -162,12 +162,12 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - resticscope
+        - github.com/alexzeitgeist/resticscope
     gofumpt:
-      # The module path has no dot in its first segment, so without this gofumpt
-      # misclassifies resticscope/* imports as stdlib and merges them into the
-      # std group. With it, gofumpt groups them locally — matching goimports.
-      module-path: resticscope
+      # Tells gofumpt which imports belong to this module so it keeps them in
+      # their own group rather than folding them in with third-party ones —
+      # matching the goimports local-prefixes above.
+      module-path: github.com/alexzeitgeist/resticscope
       extra-rules: true
   exclusions:
     generated: lax

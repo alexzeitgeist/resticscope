@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/app"
-	"resticscope/internal/cache"
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/resticx"
-	"resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"

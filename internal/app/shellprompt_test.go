@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
 )
 
 func TestPromptTag(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
 // group.go owns the list view's optional grouping by a configured repo label

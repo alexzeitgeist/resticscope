@@ -10,15 +10,15 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"resticscope/internal/app"
-	"resticscope/internal/browsedb"
-	"resticscope/internal/cache"
-	"resticscope/internal/config"
-	"resticscope/internal/humanize"
-	"resticscope/internal/resticx"
-	"resticscope/internal/secrets"
-	"resticscope/internal/tui"
-	"resticscope/internal/version"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/browsedb"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/humanize"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/secrets"
+	"github.com/alexzeitgeist/resticscope/internal/tui"
+	"github.com/alexzeitgeist/resticscope/internal/version"
 )
 
 func cmdVersion(ctx context.Context, args []string, stdout, stderr io.Writer) int {

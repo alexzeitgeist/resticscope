@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"resticscope/internal/app"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // sortMode orders the list view. The `o` key cycles config → urgency → name →

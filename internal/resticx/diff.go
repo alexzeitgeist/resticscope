@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // diff.go is the streaming restic boundary for the snapshot-diff feature. It

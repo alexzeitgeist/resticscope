@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"

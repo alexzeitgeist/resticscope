@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/app"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // snapshotdiffextract_test.go covers the diff view's `e` extract: the opener

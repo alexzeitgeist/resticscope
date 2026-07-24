@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"resticscope/internal/humanize"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/humanize"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // info.go renders the full-screen snapshot-info modal (key `i` from detail): a

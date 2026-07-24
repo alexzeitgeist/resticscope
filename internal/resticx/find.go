@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // find.go runs `restic find --json --long [--host H] <pattern>` and parses the

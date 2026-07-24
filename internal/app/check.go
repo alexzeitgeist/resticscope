@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/config"
 )
 
 // RepoCheck is the reachability verdict for one configured repo. Err is nil

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // browsesession.go orchestrates the in-app snapshot file browser on top of a

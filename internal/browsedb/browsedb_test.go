@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // newTestDB opens an encrypted browse DB in a temp dir with a fresh random key.

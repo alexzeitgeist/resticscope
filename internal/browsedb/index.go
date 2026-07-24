@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // diskCheckRows is the coarse cadence (in accepted Add calls) at which the disk

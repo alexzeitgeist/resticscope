@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // find.go is the headless orchestration behind the "show me other versions of

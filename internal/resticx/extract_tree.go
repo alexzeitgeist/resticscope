@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 
 	json "github.com/goccy/go-json"
 )

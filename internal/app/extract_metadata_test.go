@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 
 	"golang.org/x/sys/unix"
 )

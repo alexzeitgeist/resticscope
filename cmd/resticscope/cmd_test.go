@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/app"
-	"resticscope/internal/browsedb"
-	"resticscope/internal/cache"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/browsedb"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // setup writes a config file and a cache dir, seeds the given repo states, and

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"resticscope/internal/cache"
-	"resticscope/internal/config"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // RepoStatus is one repo's evaluated status plus the cached state it was

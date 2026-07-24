@@ -16,7 +16,7 @@ import (
 	"maps"
 	"slices"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // Material is the resolved secret bundle for a single repo: the backend env

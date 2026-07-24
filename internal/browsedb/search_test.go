@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // entriesFromNodes projects index nodes to the (Name, Path) pairs the pure model

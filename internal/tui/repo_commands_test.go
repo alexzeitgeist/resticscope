@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
 // applyShellExit surfaces a shell-out's outcome in the footer. A failed Cleanup

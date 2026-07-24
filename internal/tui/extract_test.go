@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/app"
-	"resticscope/internal/config"
-	"resticscope/internal/model"
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 
 	tea "charm.land/bubbletea/v2"
 )

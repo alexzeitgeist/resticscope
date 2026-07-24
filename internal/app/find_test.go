@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 func findTestApp(fc *fakeCache, fr fakeRestic) *App {

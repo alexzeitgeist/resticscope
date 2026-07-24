@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"resticscope/internal/resticx"
+	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
 // CacheEntry is one repository's restic cache directory found on disk under the

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // testSnapID is a concrete 64-char lowercase-hex snapshot ID (16 hex chars × 4).

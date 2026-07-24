@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"resticscope/internal/model"
-	"resticscope/internal/theme"
+	"github.com/alexzeitgeist/resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/theme"
 )
 
 var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}

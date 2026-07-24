@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // combinedRunner implements both Runner and StreamRunner, modeling a single

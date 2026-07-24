@@ -5,8 +5,8 @@ import (
 	"path"
 	"sort"
 
-	"resticscope/internal/app"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"

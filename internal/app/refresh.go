@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	"resticscope/internal/config"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // Refresh refreshes a single repo by name, persists the result, and returns the

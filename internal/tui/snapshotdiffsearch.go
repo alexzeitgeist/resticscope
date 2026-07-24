@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"

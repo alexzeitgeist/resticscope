@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // NDJSON fixtures: a leading snapshot record (struct_type != "node") followed by

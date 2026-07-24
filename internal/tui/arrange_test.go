@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // arrange_test.go covers the pure browse sorter (sortedBrowseRows/browseLess). The

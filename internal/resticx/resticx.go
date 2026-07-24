@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 const defaultTimeout = 2 * time.Minute

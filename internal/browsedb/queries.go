@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // listDirDIDQuery resolves a requested committed directory path to its did. A

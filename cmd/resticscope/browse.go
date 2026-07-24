@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"resticscope/internal/app"
-	"resticscope/internal/browsedb"
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/browsedb"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // browseStore adapts *browsedb.DB to app.BrowseStore. It bridges BeginIndex's

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"resticscope/internal/config"
+	"github.com/alexzeitgeist/resticscope/internal/config"
 )
 
 // longSnapID is a concrete 64-hex snapshot ID for requests. Its first 8 chars are

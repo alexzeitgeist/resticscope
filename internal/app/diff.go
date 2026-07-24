@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"resticscope/internal/model"
+	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
 // diff.go is the headless orchestration behind the snapshot-diff view. One

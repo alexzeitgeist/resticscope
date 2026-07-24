@@ -12,8 +12,8 @@ import (
 	"slices"
 	"strings"
 
-	"resticscope/internal/app"
-	"resticscope/internal/cache"
+	"github.com/alexzeitgeist/resticscope/internal/app"
+	"github.com/alexzeitgeist/resticscope/internal/cache"
 )
 
 // cmdExec resolves a repo's credentials and either drops the user into an
