@@ -6,10 +6,8 @@ import (
 )
 
 func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Any list-view key dismisses a prior transient footer notice (e.g.
-	// "grouping not configured") so it can't persist past the user's next
-	// interaction. Handlers that want to surface a new notice (cycleGrouping
-	// on a missing config) set m.statusMsg after this clear runs.
+	// Dismiss prior notices before handlers optionally set a new one for this
+	// interaction.
 	m.statusMsg = ""
 	switch {
 	case key.Matches(msg, m.keys.Up):
@@ -31,11 +29,8 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.detailName = row.Name
 			m.view = detailView
 			m.snapCursor = 0
-			// Reset transient group/collapse state every detail entry. goBack
-			// also resets them on exit, but be explicit so a future code path
-			// that lands on detail without going through goBack can't inherit
-			// stale values. Collapse is opt-in (rare to help in the flat
-			// newest-first stream); group cycles via `g`.
+			// Reset transient detail state here as well as in goBack so alternate
+			// entry paths cannot inherit it.
 			m.snapGroupMode = snapGroupOff
 			m.snapCollapseTree = false
 		}
@@ -49,10 +44,8 @@ func (m Model) handleListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleFilterKey consumes keys while the filter input is open. Apply keeps the
-// query and returns to normal navigation; clear (esc) drops the query entirely;
-// ctrl+c still quits. Every other key edits the query text. The cursor resets to
-// the top whenever the query changes so it never points past the matches.
+// handleFilterKey consumes input until apply or cancel; ctrl+c still quits.
+// Query changes reset the cursor so it cannot point beyond the filtered rows.
 func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
@@ -69,8 +62,7 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		}
 	default:
-		// Text is non-empty only for printable keys, so this ignores stray
-		// control keys (arrows, etc.) rather than inserting garbage.
+		// Key text excludes control keys, so only printable input is appended.
 		if msg.Text != "" {
 			m.filter += msg.Text
 			m.cursor = 0
@@ -79,9 +71,8 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cycleSort advances to the next sort mode, keeping the cursor on the same repo
-// across the reorder. Clearing a stale statusMsg is handled centrally by
-// handleListKey, so this body only owns the sort + cursor reanchor.
+// cycleSort advances the sort mode and reanchors the cursor by repository name.
+// handleListKey clears transient notices.
 func (m Model) cycleSort() Model {
 	var sel string
 	if row, ok := m.currentRow(); ok {
@@ -92,12 +83,9 @@ func (m Model) cycleSort() Model {
 	return m
 }
 
-// cycleGrouping advances the grouping cycle: each press steps to the next
-// configured key, then to the flat view, then wraps. The cursor stays on the
-// same repo across the reorder by anchoring on its name. When no keys are
-// configured it is a no-op that surfaces a transient footer notice so the
-// user understands why nothing happened — set after handleListKey's central
-// clear runs so the new notice survives this turn.
+// cycleGrouping advances through configured keys and the flat view while
+// reanchoring the cursor by repository name. With no keys it reports a
+// transient notice after handleListKey's central clear.
 func (m Model) cycleGrouping() Model {
 	if !m.groupingConfigured() {
 		m.statusMsg = "grouping not configured"

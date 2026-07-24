@@ -16,11 +16,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// list.go renders the main repo-list screen: a column-aligned table that
-// mirrors the detail snapshot table's polish (a dim header row above
-// right/left-aligned cells, graceful promotion as width shrinks). The 5-cell
-// prefix in every row — gutter(2) · status cell(2) · status/name gap(1) — sets
-// up the Name column's left edge so headers line up with values.
+// The main repository list is a column-aligned table whose optional columns
+// disappear as the terminal narrows.
 
 const (
 	listGutterWidth   = 2
@@ -30,23 +27,17 @@ const (
 	listSnapsWidth    = 5
 	listTookWidth     = 7
 
-	// listLabelsMin keeps Labels promotion (and any Took promotion) from
-	// shoving the Labels column below a single readable cell.
+	// listLabelsMin keeps the promoted Labels column readable.
 	listLabelsMin = 1
 )
 
-// rowMeta is the per-repo descriptive data the list view needs: the searchable
-// region (no longer shown as a column but still matched by matchRepo), the
-// ordered label values for the Labels column, and a key→value map so the
-// grouper can resolve a label value by key without re-walking config.
-// labelKeys runs parallel to labels (same length, same order) so the Labels
-// column can skip the value whose key matches the active group key without
-// re-sorting the map per render.
+// rowMeta contains searchable repository metadata plus ordered and keyed label
+// representations for display and grouping.
 type rowMeta struct {
 	region    string
-	labels    []string          // label values, ordered by key for deterministic Labels-column output
-	labelKeys []string          // label keys in the same order as labels
-	byKey     map[string]string // label key -> value, for grouping lookup
+	labels    []string          // Values ordered by key for stable display.
+	labelKeys []string          // Keys corresponding to labels.
+	byKey     map[string]string // Values keyed for grouping.
 }
 
 // labelByKey resolves a repo's label value for the given key, or "" when the
@@ -77,9 +68,7 @@ func buildMeta(cfg *config.Config) map[string]rowMeta {
 	return out
 }
 
-// View implements tea.Model: it renders the current screen (list, detail,
-// browse, find versions, snapshot diff, extract, help, or info) plus the
-// shared chrome.
+// View implements tea.Model by rendering the active screen and shared chrome.
 func (m Model) View() tea.View {
 	if m.quitting {
 		return tea.NewView("")
@@ -107,11 +96,7 @@ func (m Model) View() tea.View {
 	v := tea.NewView(m.frame(title, body))
 	v.AltScreen = true
 	v.WindowTitle = m.windowTitle()
-	// Paint the terminal's default background/foreground with the theme's —
-	// without this only the styled foregrounds change and e.g. a light theme
-	// sits on the terminal's dark background. nil fields are a no-op, and the
-	// renderer resets both on quit (the quitting branch above returns a view
-	// with neither set) and re-asserts them when a shell-out resumes.
+	// Set terminal colors so light themes do not inherit a dark background.
 	if m.colorOK {
 		v.BackgroundColor = m.termBg
 		v.ForegroundColor = m.termFg
@@ -119,12 +104,8 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// windowTitle is the terminal-tab/window title: the app name, plus the active
-// repo when a view is pinned to one — a plain-text echo of the in-app
-// `view: repo` title row. Declaring it on every view keeps the title owned by
-// resticscope for the whole session: the renderer re-asserts it after a
-// shell-out resumes, so whatever the child shell left in the title (its last
-// command line and directory) cannot linger over the TUI.
+// windowTitle includes the repository for pinned views. Reasserting it on every
+// render replaces any title left by a child shell.
 func (m Model) windowTitle() string {
 	if repo := m.windowTitleRepo(m.view); repo != "" {
 		return "resticscope · " + repo
@@ -132,11 +113,8 @@ func (m Model) windowTitle() string {
 	return "resticscope"
 }
 
-// windowTitleRepo names the repo the given view is pinned to, or "" for the
-// repo-less list view. detailName is read only for the detail view and its
-// info overlay — it deliberately survives a return to the list (it keys the
-// cached detail context), so the list arm must not fall back to it. The help
-// overlay defers to the view beneath it.
+// windowTitleRepo returns the repository pinned to v. It does not use the
+// cached detailName for the repository-free list view.
 func (m Model) windowTitleRepo(v view) string {
 	switch v {
 	case browseView:
@@ -157,12 +135,8 @@ func (m Model) windowTitleRepo(v view) string {
 	return ""
 }
 
-// titleRow is the shared top line of every view: the view title left, the
-// persistent `? help` affordance right. The chip is suppressed while a text
-// input owns the keyboard (handleInputKey gives inputs first claim, so `?`
-// would be literal query text and the chip a false affordance). The left title
-// is clipped into the remaining width so the chip survives long find/diff
-// titles — a plain clip of the spread would cut the chip first.
+// titleRow places the view title beside the persistent help chip. Text input
+// suppresses the chip because ? becomes query text.
 func (m Model) titleRow(left string) string {
 	w, _ := m.effSize()
 	if m.filtering || m.browseSearching || m.diffSearching {
@@ -171,19 +145,14 @@ func (m Model) titleRow(left string) string {
 	right := m.styles.dim.Render("? help")
 	gap := 2
 	if w <= lipgloss.Width(right)+gap {
-		return clip(left, w) // too narrow for the chip: title wins
+		return clip(left, w)
 	}
 	left = clip(left, w-lipgloss.Width(right)-gap)
 	return clip(m.spread(left, right), w)
 }
 
-// frame composes the full screen for a view: title row, gap, body, then blank
-// padding so the footer sits on the bottom terminal row regardless of how
-// short the body is. Padding uses bare newlines, not lipgloss.Place, so the
-// body's lines stay byte-identical (Place pads every line to full width). A
-// body that overflows its budget keeps the minimum 1-line gap and the total
-// exceeds the terminal height — the terminal clips, same as the pre-pinning
-// join did on undersized terminals.
+// frame pins the footer below the title and body. Bare newline padding preserves
+// body bytes; the terminal clips any overflow.
 func (m Model) frame(titleLeft, body string) string {
 	_, h := m.effSize()
 	footer := m.footerView()
@@ -192,13 +161,8 @@ func (m Model) frame(titleLeft, body string) string {
 	return content + strings.Repeat("\n", blanks+1) + footer
 }
 
-// listTitle is the list view's title content: the app name, the repo count,
-// the restic version, and (when active) the filter, sort, and group
-// indicators. Status stays row-local so the title remains readable without
-// relying on color-coded aggregate badges. The filter indicator is suppressed
-// while the filter input is open — the footer's live "/<query>" prompt already
-// shows the query there, and an applied filter is the state that's easy to
-// forget once the prompt is gone.
+// listTitle summarizes repository count, restic version, and active controls.
+// The live footer prompt replaces the filter indicator during input.
 func (m Model) listTitle() string {
 	parts := []string{m.styles.title.Render("resticscope")}
 	parts = append(parts, m.countLabel())
@@ -217,10 +181,8 @@ func (m Model) listTitle() string {
 	return strings.Join(parts, " · ")
 }
 
-// spread lays left and right on one line, padding the gap so right sits flush
-// against the right edge once the width is known. It expects already styled
-// strings: lipgloss.Width discounts the styling escapes. titleRow uses it to
-// push the help chip flush right on every view's title row.
+// spread places styled strings at opposite ends of one line, using visible
+// widths to ignore ANSI escapes.
 func (m Model) spread(left, right string) string {
 	w, _ := m.effSize()
 	gap := "  "
@@ -230,21 +192,14 @@ func (m Model) spread(left, right string) string {
 	return left + gap + right
 }
 
-// listLayout sizes the list table's variable geometry for a given width. The
-// header row and every data row share this layout so columns line up at every
-// width; listView computes it once and threads it through both renderers,
-// mirroring how snapshotLayout is threaded through detail rendering.
+// listLayout is the shared variable-column geometry for list headers and rows.
 type listLayout struct {
 	last, snaps, took, labels int
 	showTook, showLabels      bool
 }
 
-// computeListLayout sizes the list table to width. Name/Last/Snaps are always
-// present. Took then Labels promote in strict priority order: Took appears
-// first (and may appear alone), and Labels only after Took, taking any flex
-// that remains. Strict priority means Labels never appears without Took, so a
-// shrinking terminal drops Labels first and then Took, never the other way
-// round — and the column identity at a given width is stable as width grows.
+// computeListLayout always includes Name, Last, and Snaps, then adds Took and
+// Labels in that order as space permits.
 func computeListLayout(width int) listLayout {
 	l := listLayout{last: listLastWidth, snaps: listSnapsWidth, took: listTookWidth}
 	baseFixed := listGutterWidth + listStatusWidth + listStatusNameGap +
@@ -267,12 +222,8 @@ type listRow struct {
 	name, last, snaps, took, labels string
 }
 
-// listCells formats one row's worth of columns into the shared column order so
-// the header and data rows always align: Name(24,left) · Last(10,right) ·
-// Snaps(5,right) · [Took(7,right)] · [Labels(flex,left)]. Every fixed-width
-// value is truncated to its column width before padding so a long value cannot
-// widen the row and shove later columns out of alignment. Callers join the
-// result with two spaces.
+// listCells formats and truncates columns in their shared header/data order.
+// Callers join the cells with two spaces.
 func listCells(l listLayout, r listRow) []string {
 	cells := []string{
 		padRight(truncateWidth(r.name, nameWidth), nameWidth),
@@ -288,14 +239,8 @@ func listCells(l listLayout, r listRow) []string {
 	return cells
 }
 
-// listHeader is the dim column-label row, built from the same listCells layout
-// as the data rows plus the 5-cell prefix the rows get from gutter+status+gap,
-// so labels line up over their values at every width. When the sort maps to a
-// labeled column (sortName → Name) the header flags it with the same arrow
-// browse uses (markSortColumn); sortConfig and sortUrgency order by things that
-// aren't labeled columns (config position, the status glyph), so they show no
-// arrow — the title's `sort:` part names them, mirroring browse's fallback for
-// a collapsed sort column.
+// listHeader uses the row layout and marks name sorting. Config and urgency
+// sorting have no matching column, so only the title identifies them.
 func listHeader(l listLayout, sort sortMode) string {
 	name := "Name"
 	if sort == sortName {
@@ -307,30 +252,24 @@ func listHeader(l listLayout, sort sortMode) string {
 	}), "  ")
 }
 
-// listSection is one group of repos rendered together under a heading. Counts
-// derive from len(rows) so there is no duplicate state to keep in sync. noKey
-// marks the fallback bucket for repos missing the active group key so the
-// renderer can style it distinctly from a real label value (and so a value
-// that happens to match the fallback title can't visually merge with it).
+// listSection groups repositories under a heading. noKey distinguishes the
+// missing-label bucket from real label values.
 type listSection struct {
 	title string
 	rows  []app.RepoStatus
 	noKey bool
 }
 
-// listDisplay is the canonical render-and-action order for the list view. rows
-// is the flattened selectable order the cursor indexes; sections is non-empty
-// only when grouping is active. Rendering and every list-view action resolve
-// selection through this single order so the highlighted repo and the acted-on
-// repo can never diverge.
+// listDisplay is the canonical render and action order. rows is the flattened
+// cursor order; sections is populated only for grouping, ensuring selection and
+// rendering cannot diverge.
 type listDisplay struct {
 	rows     []app.RepoStatus
 	sections []listSection
 }
 
-// displayList applies the filter, then either flat sorting or grouped
-// partitioning. m.cursor indexes display.rows, so cursor navigation in grouped
-// mode steps between data rows in the exact order they render on screen.
+// displayList filters and then sorts or groups rows. Its flattened row order is
+// also the cursor order.
 func (m Model) displayList() listDisplay {
 	q := normalizedFilter(m.filter)
 	filtered := make([]app.RepoStatus, 0, len(m.rows))
@@ -368,9 +307,8 @@ func (m Model) listView() string {
 	return header + "\n" + m.renderFlatList(d.rows, l, w)
 }
 
-// renderFlatList paints the windowed slice of rows in flat (non-grouped) mode.
-// The cursor is clamped here so a filter that shrinks the set can never index
-// past the last row.
+// renderFlatList renders the visible flat-list window and clamps the cursor
+// after filtering shrinks the rows.
 func (m Model) renderFlatList(rows []app.RepoStatus, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(rows))
 	start, end := scrollWindow(cursor, len(rows), m.visibleRepos())
@@ -384,10 +322,8 @@ func (m Model) renderFlatList(rows []app.RepoStatus, l listLayout, width int) st
 	return strings.Join(lines, "\n")
 }
 
-// countLabel describes how many repos the list is showing: the total normally,
-// or "N of M" while a filter narrows the set. The filtered branch counts in
-// place instead of going through displayList so we don't sort/copy on every
-// header render — the body's displayList does the canonical sort+group pass.
+// countLabel returns the total or the filtered "N of M" count. It avoids the
+// sort and copy performed by displayList.
 func (m Model) countLabel() string {
 	total := len(m.rows)
 	q := normalizedFilter(m.filter)
@@ -403,12 +339,8 @@ func (m Model) countLabel() string {
 	return fmt.Sprintf("%d of %s", n, repoCount(total))
 }
 
-// renderRow renders one repo as a single-line table row. Healthy rows use the
-// shared Name/Last/Snaps/Took/Labels cells. Error and grey rows intentionally
-// give the post-name space to the actionable status text instead of squeezing in
-// labels, so a refresh failure has as much room as the one-row layout allows.
-// Every line is clipped to width so a long name or refresh error can never wrap
-// and break the one-row-per-repo budget.
+// renderRow renders one clipped table row. Error and unrefreshed rows replace
+// data columns with status text.
 func (m Model) renderRow(row app.RepoStatus, l listLayout, selected bool, width int) string {
 	gutter := "  "
 	nameStyle := m.styles.name
@@ -435,16 +367,9 @@ func (m Model) renderRow(row app.RepoStatus, l listLayout, selected bool, width 
 	return clip(prefix+strings.Join(cells, "  "), width)
 }
 
-// statusCell renders the 2-cell status area: a colored glyph (or the spinner
-// while a refresh is pending) plus a one-cell marker that calls out an active
-// lock (`L`) or a stale cache (`*`). Lock wins over stale because it's the more
-// actionable signal, and the stale marker is suppressed in two cases where it
-// would only be noise: while a refresh is pending — the spinner already conveys
-// "data is being updated right now" — and on an error row, where the `×` glyph
-// and the "refresh failed: …" text already tell the freshness story (a failed
-// refresh carries over the last successful RefreshedAt, which often reads as
-// stale, so without this guard the cell renders the jammed-together `×*`). The
-// cell width is invariant so column alignment never breaks.
+// statusCell renders a glyph plus a lock or stale marker. Locks take priority;
+// stale is hidden during refresh and on errors, where the spinner or failure
+// already communicates the repository state.
 func (m Model) statusCell(row app.RepoStatus) string {
 	var glyph string
 	if m.pending[row.Name] {
@@ -462,10 +387,8 @@ func (m Model) statusCell(row app.RepoStatus) string {
 	return glyph + marker
 }
 
-// listRowFor builds a listRow with the raw cell values for a healthy repo: the
-// humanized "ago" string, snap count, last backup duration, and joined labels.
-// Region is excluded — region is still searchable through matchRepo but no
-// longer appears as a column.
+// listRowFor builds display values for a healthy repository; region remains
+// searchable but is not displayed.
 func (m Model) listRowFor(row app.RepoStatus) listRow {
 	return listRow{
 		name:   row.Name,
@@ -476,12 +399,8 @@ func (m Model) listRowFor(row app.RepoStatus) listRow {
 	}
 }
 
-// listLabelsValue joins a repo's label values for the Labels column with " · "
-// separators, matching the rendering style of the old meta sub-line. When
-// skipKey is non-empty it omits the value for that key — used so the active
-// group key's value (already shown as the section heading) doesn't repeat in
-// every row's Labels cell. The fast path keeps the previous behavior when no
-// key is skipped or the test fixture sets labels without parallel labelKeys.
+// listLabelsValue joins label values, omitting skipKey when its value already
+// appears as the group heading.
 func listLabelsValue(rm rowMeta, skipKey string) string {
 	if skipKey == "" || len(rm.labelKeys) != len(rm.labels) {
 		return strings.Join(rm.labels, " · ")
@@ -507,10 +426,8 @@ func tookDuration(snaps []model.Snapshot) string {
 func (m Model) footerView() string {
 	w, _ := m.effSize()
 	if m.view == extractView {
-		// Extract owns a per-state footer driven by its sub-model state machine
-		// (review/running/terminal each advertise different keys); the sub-model
-		// supplies the bindings, the shared help model renders them. No status /
-		// input line: the modal surfaces its outcomes in its own body.
+		// The extract model supplies per-state bindings and renders status in its
+		// body rather than the shared footer.
 		return clip(m.help.View(viewHelp{keys: m.keys, view: m.view, extractBindings: m.extract.shortHelp(m.keys)}), w)
 	}
 	searching := m.browseSearching || m.diffSearching
@@ -526,8 +443,7 @@ func (m Model) footerView() string {
 	}), w)
 	switch {
 	case m.filtering:
-		// Show the live query (vim-style) with a block cursor so the input mode
-		// is obvious. The "/<query>" stays unstyled so it reads as one token.
+		// Keep / and the live query unstyled so they read as one input token.
 		return clip("/"+m.filter+m.styles.dim.Render("▏"), w) + "\n" + help
 	case m.browseSearching:
 		prompt := "/" + m.browseSearchQuery + m.styles.dim.Render("▏")

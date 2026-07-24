@@ -10,31 +10,21 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// help.go renders the full-screen help overlay (key `?`): a complete keybinding
-// reference grouped by the context each key acts in, plus a legend for the list
-// status glyphs. The layout is responsive: two balanced columns on a wide
-// terminal, a single scrollable column when the width can't fit both. It is
-// reached via the helpView value and closed with `?`, `q`,
-// or `esc`; the View() switch and handleKey route to it. The title row keeps
-// the shared `? help` chip even here — `?` is a toggle, so the affordance stays
-// truthful, and dismissal is also advertised in the key bar.
+// The help overlay groups keybindings by context and includes the list status
+// glyphs. It uses two columns when they fit and a scrollable column otherwise.
 
-// helpEntry is one row of the reference: a key label and what it does.
 type helpEntry struct {
 	keys string
 	desc string
 }
 
-// helpSection groups the entries that apply in a single context.
 type helpSection struct {
 	title   string
 	entries []helpEntry
 }
 
-// keyLabel renders a binding's keys for the overlay, mapping the raw key names
-// to the arrow/symbol forms used elsewhere in the UI and joining alternates with
-// "/". Deriving the label from the binding (rather than hardcoding it) keeps the
-// overlay in step with the keys the handlers actually match.
+// keyLabel renders a binding with the UI's symbols and derives its alternatives
+// from the binding so the overlay stays in sync with the handlers.
 func keyLabel(b key.Binding) string {
 	repl := map[string]string{
 		"up": "↑", "down": "↓", "left": "←", "right": "→", "backspace": "⌫",
@@ -50,15 +40,8 @@ func keyLabel(b key.Binding) string {
 	return strings.Join(parts, "/")
 }
 
-// helpSections returns the full reference in single-column reading order:
-// the global keys, then each context by navigation depth (list → detail →
-// browse → versions/diff), then the extract modal and the text-input keys.
-// helpColumns re-splits this list for the wide two-column layout, so the two
-// layouts can never drift apart. Entries here use deliberately verbose
-// descriptions (e.g. "refresh this repo", "cycle sort order",
-// "cycle group key") to disambiguate keys that share a compact footer label
-// like "r" or "o"; the binding's WithHelp text drives the one-line footer
-// help instead, so the two are not expected to match verbatim.
+// helpSections returns the reference in single-column reading order.
+// Descriptions disambiguate keys that share compact footer labels.
 func (m Model) helpSections() []helpSection {
 	k := m.keys
 	move := keyLabel(k.Up) + " " + keyLabel(k.Down)
@@ -69,11 +52,7 @@ func (m Model) helpSections() []helpSection {
 		keyLabel(k.DiffFilterMetadata) + " " +
 		keyLabel(k.DiffFilterTypeChanged) + " " +
 		keyLabel(k.DiffFilterBitrot)
-	// Global means shared by the normal list/detail screens; the help overlay is
-	// modal and swallows action keys behind it. Cursor movement is not global
-	// because it carries view-specific meaning, so it lives under List/Detail.
-	// q is not global either: it quits only on the list and steps back from nested
-	// views, so it belongs to List, not Global; ctrl+c is the one unconditional quit.
+	// Global excludes view-specific movement and q; ctrl+c is unconditional.
 	return []helpSection{
 		{"Global", []helpEntry{
 			{keyLabel(k.RefreshAll), "refresh all repos"},
@@ -152,10 +131,8 @@ func (m Model) helpSections() []helpSection {
 	}
 }
 
-// helpColumns splits the reference into the two hand-balanced columns the wide
-// layout shows side by side: the contexts entered from the list plus the input
-// keys on the left, the drill-down views on the right. The glyph legend joins
-// the left column in helpBodyLines.
+// helpColumns hand-balances the reference for the wide layout. helpBodyLines
+// adds the glyph legend to the left column.
 func (m Model) helpColumns() (left, right []helpSection) {
 	onLeft := map[string]bool{
 		"Global": true, "List": true, "Extract": true, "Filter & search input": true,
@@ -174,11 +151,8 @@ func (m Model) helpTitle() string {
 	return m.styles.title.Render("help: keybindings")
 }
 
-// helpBody renders the reference responsively: two balanced columns when the
-// terminal is wide enough, one stacked column when it is not. Either layout is
-// windowed around m.helpScroll with a "showing lines" hint when it is taller
-// than the pane (the stacked column always is), mirroring infoBody so the two
-// modals scroll identically.
+// helpBody renders the responsive reference window around m.helpScroll.
+// Overflowing content gets the same line-range hint as the info modal.
 func (m Model) helpBody() string {
 	w, _ := m.effSize()
 	lines := m.helpBodyLines(w)
@@ -202,15 +176,11 @@ func (m Model) helpBody() string {
 	return strings.Join(out, "\n")
 }
 
-// helpBodyLines builds the overlay body as a flat line list so helpBody can
-// window it. The two-column layout is used whenever it fits the width; below
-// that the sections stack into one column in helpSections' reading order with
-// the glyph legend last, every line clipped so a narrow pane truncates a row
-// instead of letting the terminal wrap or clip the whole layout.
+// helpBodyLines builds a flat, windowable body. It uses two columns when they
+// fit; otherwise it stacks and clips sections to prevent terminal wrapping.
 func (m Model) helpBodyLines(width int) []string {
 	left, right := m.helpColumns()
 
-	// One key column width across both columns keeps the descriptions aligned.
 	w := helpKeyWidth(append(append([]helpSection{}, left...), right...))
 
 	leftBlocks := make([]string, 0, len(left)+1)
@@ -248,9 +218,8 @@ func (m Model) helpBodyLines(width int) []string {
 	return lines
 }
 
-// scrollHelp adjusts the overlay scroll offset by delta lines and clamps the
-// result against the actual body extent so the model state always matches what
-// the renderer will show. A no-op when the body already fits on screen.
+// scrollHelp adjusts and clamps the overlay scroll offset. It resets the offset
+// when the body fits on screen.
 func (m Model) scrollHelp(delta int) Model {
 	w, _ := m.effSize()
 	lines := m.helpBodyLines(w)
@@ -264,12 +233,9 @@ func (m Model) scrollHelp(delta int) Model {
 	return m
 }
 
-// helpScrollable reports whether the help overlay's body overflows the visible
-// pane and therefore needs to advertise scroll keys in the footer. Like
-// infoScrollable it is deliberately independent of m.footerRows() to avoid a
-// cycle (footerRows builds viewHelp, which calls this). The overlay cannot have
-// an active filter/search prompt, but an async status message can add one
-// footer row.
+// helpScrollable reports whether the help body overflows the pane. It avoids
+// m.footerRows because that builds viewHelp and calls this method; an async
+// status message adds a second footer row.
 func (m Model) helpScrollable() bool {
 	if m.view != helpView {
 		return false
@@ -304,10 +270,8 @@ func (m Model) renderHelpSection(s helpSection, keyWidth int) string {
 	return strings.Join(lines, "\n")
 }
 
-// glyphLegend explains the list view's status glyphs and the trailing marker
-// cell, rendered in their own colors so the legend matches what the list shows.
-// The marker entries mirror statusCell's render logic so the user can decode
-// the `L` and `*` they see in the second status column.
+// glyphLegend renders the list status glyphs and trailing markers in their
+// display colors. Its marker entries mirror statusCell.
 func (m Model) glyphLegend() string {
 	items := []struct {
 		status model.Status

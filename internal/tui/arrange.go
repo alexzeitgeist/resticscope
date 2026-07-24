@@ -8,14 +8,13 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// sortMode orders the list view. The `o` key cycles config → urgency → name →
-// config; sortConfig is the natural config order.
+// sortMode orders the list view; `o` cycles config, urgency, and name.
 type sortMode int
 
 const (
 	sortConfig    sortMode = iota // config order (default)
-	sortUrgency                   // most urgent first (error → red → amber → green → grey)
-	sortName                      // repo name, case-insensitive A→Z
+	sortUrgency                   // most urgent first (error -> red -> amber -> green -> grey)
+	sortName                      // repo name, case-insensitive A-Z
 	sortModeCount                 // sentinel: number of modes, for cycling
 )
 
@@ -31,10 +30,8 @@ func (s sortMode) label() string {
 	}
 }
 
-// urgencyRank maps an evaluated status to its sort position for sortUrgency.
-// Grey (never refreshed) is least urgent — it carries no failed freshness
-// evidence yet, so it sorts after green. This is a product-ordering choice and
-// is deliberately distinct from EvaluateStatus's internal precedence.
+// urgencyRank maps status to display urgency. Grey follows green because an
+// unrefreshed repository has no failed-freshness evidence.
 func urgencyRank(s model.Status) int {
 	switch s {
 	case model.StatusError:
@@ -67,11 +64,8 @@ func sortRows(rows []app.RepoStatus, mode sortMode) {
 	}
 }
 
-// browseSortMode orders the snapshot browser's current directory listing. It is a
-// transient TUI display mode for the active browse session, kept distinct from the
-// list view's sortMode so the two sort idioms never get mixed. browseSortName is
-// the canonical store order browsedb.ListDir returns (dirs first, case-insensitive
-// name); size and modified reorder within the dirs/files groups.
+// browseSortMode orders a browser directory without changing list-view order.
+// Every mode keeps directories before files.
 type browseSortMode int
 
 const (
@@ -81,8 +75,7 @@ const (
 	browseSortModeCount                       // sentinel: number of modes, for cycling
 )
 
-// label is the human name shown in the browse summary when a non-default sort is
-// active.
+// label names a non-default browse sort in the summary.
 func (s browseSortMode) label() string {
 	switch s {
 	case browseSortSize:
@@ -94,13 +87,9 @@ func (s browseSortMode) label() string {
 	}
 }
 
-// sortedBrowseRows returns the rows in display order for mode. browseSortName is
-// the canonical ListDir order, so it returns canonical unchanged — no copy, no
-// reorder, so browseRows aliases the cached slice in name mode (it is never mutated
-// in place), mirroring sortRows leaving sortConfig untouched. size/modified sort a
-// COPY (sort.SliceStable) so the canonical cached slice (browseCache) is never
-// mutated. Net: the cache is never mutated in any mode. Callers must not mutate
-// the returned slice.
+// sortedBrowseRows returns canonical directly in name mode and a sorted copy in
+// other modes. It never mutates browseCache, and callers must not mutate the
+// returned slice.
 func sortedBrowseRows(canonical []model.BrowseEntry, mode browseSortMode) []model.BrowseEntry {
 	if mode == browseSortName {
 		return canonical
@@ -111,23 +100,19 @@ func sortedBrowseRows(canonical []model.BrowseEntry, mode browseSortMode) []mode
 	return rows
 }
 
-// browseLess is the comparator used with sort.SliceStable (matching arrange.go's
-// sortRows): dirs first; then by the mode's key; tie-break ToLower(name) → name →
-// Path. The name tie-break is byte-identical to the DB's name_ci, name ordering
-// (name_ci = strings.ToLower(name), and Go string < matches SQLite BINARY), so it
-// reproduces canonical order for equal keys. The unique Path final tie-break makes
-// the order total for a directory listing (paths are unique), so cycling is
-// deterministic; SliceStable keeps any exact tie in canonical order.
+// browseLess orders directories first, then the selected key, lowercase name,
+// exact name, and unique path. Its name ordering matches the database's
+// lowercase-name SQLite BINARY collation, making sort cycling deterministic.
 func browseLess(rows []model.BrowseEntry, mode browseSortMode) func(i, j int) bool {
 	return func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if a.IsDir != b.IsDir {
-			return a.IsDir // dirs first in every mode
+			return a.IsDir
 		}
 		switch mode {
 		case browseSortSize:
 			if a.Size != b.Size {
-				return a.Size > b.Size // largest first
+				return a.Size > b.Size
 			}
 		case browseSortModified:
 			// Unknown (zero) mtimes sort last: a known time orders before an unknown
@@ -136,7 +121,7 @@ func browseLess(rows []model.BrowseEntry, mode browseSortMode) func(i, j int) bo
 				return !a.ModTime.IsZero()
 			}
 			if !a.ModTime.IsZero() && !a.ModTime.Equal(b.ModTime) {
-				return a.ModTime.After(b.ModTime) // newest first
+				return a.ModTime.After(b.ModTime)
 			}
 		}
 		if la, lb := strings.ToLower(a.Name), strings.ToLower(b.Name); la != lb {
@@ -153,12 +138,9 @@ func normalizedFilter(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
-// matchRepo reports whether a repo matches the normalized filter query q. An
-// empty query matches everything. The query is tested as a case-insensitive
-// substring of the repo name, credential region, and each label value —
-// covering both the Name column and the Labels column that healthy list rows
-// surface. Region is matched even though it is no longer a column so a
-// region-based filter keeps working.
+// matchRepo reports whether q occurs in a repository name, credential region,
+// or label. Empty queries match everything; region remains searchable despite
+// no longer being displayed as a column.
 func matchRepo(name string, meta rowMeta, q string) bool {
 	if q == "" {
 		return true
@@ -177,11 +159,9 @@ func matchRepo(name string, meta rowMeta, q string) bool {
 	return false
 }
 
-// currentRow returns the row under the list cursor in the canonical display
-// order — the same flattened slice rendering uses, so the highlighted repo and
-// the acted-on repo can never diverge. ok is false when the filter matches
-// nothing. The cursor is clamped on read so a filter that shrinks the list can
-// never index out of range.
+// currentRow returns the displayed row under the clamped cursor. ok is false
+// when filtering hides every row, and display ordering keeps the highlighted
+// and acted-on repositories aligned.
 func (m Model) currentRow() (app.RepoStatus, bool) {
 	rows := m.displayList().rows
 	if len(rows) == 0 {
@@ -190,9 +170,8 @@ func (m Model) currentRow() (app.RepoStatus, bool) {
 	return rows[clampCursor(m.cursor, len(rows))], true
 }
 
-// indexOf returns the display-order index of the named repo, or 0 if it is not
-// currently visible. It is used to keep the cursor on the same repo across a
-// sort change, a grouping toggle, or a background refresh that reorders rows.
+// indexOf returns a repository's display index, or zero when it is hidden. This
+// keeps the cursor on the same repository when display ordering changes.
 func (m Model) indexOf(name string) int {
 	for i, r := range m.displayList().rows {
 		if r.Name == name {

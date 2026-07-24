@@ -7,38 +7,25 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// find.go is the headless orchestration behind the "show me other versions of
-// this file" view. One restic call per open: `restic find --json --long
-// [--host H] <path>`. The host filter narrows by the originating snapshot's
-// hostname by default because absolute paths collide across machines; the TUI
-// offers a one-key toggle to widen to all hosts. No per-snapshot ls/dump call
-// is made; metadata is joined in from the cached snapshot list.
+// File-version lookup uses one restic find call, narrowed to the originating
+// host by default to avoid cross-machine path collisions. Snapshot metadata is
+// joined from cache without per-snapshot restic calls.
 
-// ErrFindUnknownHost is returned when the originating snapshot's hostname is
-// unknown AND the caller did not explicitly opt into all-hosts. Returning this
-// rather than silently widening preserves the host-narrowing safety property: a
-// default-narrow query never decays into a default-broad one (which would
-// surface absolute-path collisions across machines as fake "versions" — exactly
-// the failure mode the host filter exists to prevent).
+// ErrFindUnknownHost prevents a host-scoped query from silently widening when
+// the originating host is unknown.
 var ErrFindUnknownHost = errors.New("find: originating snapshot host unknown")
 
-// FindFileVersionsResult bundles the rows with the host the app actually
-// filtered by, so the renderer has one authoritative source for "what filter
-// was used" — never two parallel computations that could drift. Host is ""
-// exactly when AllHosts is true.
+// FindFileVersionsResult contains grouped versions and the applied host scope.
+// Host is empty exactly when AllHosts is true.
 type FindFileVersionsResult struct {
-	Host     string // hostname applied as --host, or "" when AllHosts
-	AllHosts bool   // mirrors the request flag so the renderer can label "all hosts" without inference
+	Host     string
+	AllHosts bool
 	Rows     []model.FileVersion
 }
 
-// FindFileVersions runs the find call and groups the result into distinct
-// (size,mtime) versions of the file. Exactly one restic invocation per call:
-// no per-snapshot ls and no fresh snapshot fetch (the snapshot map is taken
-// from the cached state). originHost is the hostname of the snapshot the user
-// selected in the caller's live state; passing it in avoids rediscovering the
-// filter from a persisted cache entry that may lag a successful in-session
-// refresh.
+// FindFileVersions groups one restic find result by size and modification time.
+// originHost comes from the caller's live selected snapshot rather than possibly
+// stale cache; allHosts explicitly disables host narrowing.
 func (a *App) FindFileVersions(ctx context.Context, repoName, originHost, p string, allHosts bool) (FindFileVersionsResult, error) {
 	r, ok := a.repo(repoName)
 	if !ok {
@@ -69,11 +56,9 @@ func (a *App) FindFileVersions(ctx context.Context, repoName, originHost, p stri
 	}, nil
 }
 
-// snapshotsByID returns a map of full snapshot id to the cached snapshot
-// record for the given repo. A missing or corrupt cache yields a nil map,
-// which collaborates with model.GroupFileVersions' tolerant "unknown id →
-// occurrence with empty metadata" behavior — the version view still renders,
-// just without short ids/times for the unknown ids.
+// snapshotsByID maps cached full IDs to metadata. Missing cache returns nil;
+// GroupFileVersions then retains occurrences with empty metadata so the view
+// still renders.
 func (a *App) snapshotsByID(ctx context.Context, repoName string) map[string]model.Snapshot {
 	state, err := a.Cache.Load(ctx, repoName)
 	if err != nil {

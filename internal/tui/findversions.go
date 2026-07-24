@@ -10,20 +10,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// findversions.go is the controller for the read-only "show me other versions
-// of this file across snapshots" view. One restic call per open (FindMatches),
-// grouped by (Size, ModTime) into distinct versions. The result rows hold
-// filenames and snapshot ids only for the lifetime of the model — clearFindVersions
-// zeroes them on leaving the view, so no path data lingers past the user's exit
-// (non-negotiable #1, same discipline as browse rows).
+// Find versions groups one restic query per request by size and modification
+// time. Result filenames and snapshot IDs remain in the model only until the
+// view closes.
 
-// startFindVersions enters the find-versions view for the file currently
-// selected in browse. It pins the (repo, origin host, path) on the model so a
-// later `a` toggle re-runs the same logical query, then kicks off the first
-// find with the default host filter (the originating snapshot's hostname).
-// clearFindVersions is the single source of truth for the find-* zero state;
-// supersede first so a prior in-flight find is canceled before clear drops its
-// cancel function.
+// startFindVersions pins the browse query and starts with its originating host.
+// It supersedes prior work before clearing the old cancellation handle.
 func (m Model) startFindVersions(repo, originHost, p string) (Model, tea.Cmd) {
 	m = m.supersedeFind()
 	m = m.clearFindVersions()
@@ -35,11 +27,8 @@ func (m Model) startFindVersions(repo, originHost, p string) (Model, tea.Cmd) {
 	return m.dispatchFind()
 }
 
-// beginFind supersedes any prior find (advancing the generation and cancelling
-// any in-flight restic call) and dispatches the find. The new context is a
-// child of m.ctx so a program-level quit still cascades, but back/toggle can
-// cancel just the find. The dispatched Cmd carries the generation so a late
-// result from a superseded request is dropped by applyFindVersionsMsg.
+// beginFind supersedes prior work and dispatches a generation-tagged child of
+// the program context.
 func (m Model) beginFind() (Model, tea.Cmd) {
 	m = m.supersedeFind()
 	return m.dispatchFind()
@@ -60,15 +49,9 @@ func (m Model) dispatchFind() (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// applyFindVersionsMsg installs the result of a find call. A message whose
-// generation no longer matches m.findGen is from a superseded or cancelled
-// request and is dropped without touching state. On ErrFindUnknownHost the
-// recovery affordance (press `a` to widen) is surfaced in the status string.
-// On any other error the path-free first line is surfaced. Either error
-// clears the result-of-record fields so the header label never reflects the
-// prior successful filter while showing the error message for the new one.
-// On success the result-of-record fields are written here exactly once per
-// response, so the renderer reads what the app actually used.
+// applyFindVersionsMsg drops stale results and installs the latest filter record.
+// Errors clear prior rows; unknown hosts offer widening, while other errors show
+// their first line.
 func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 	if msg.gen != m.findGen {
 		return m
@@ -94,11 +77,8 @@ func (m Model) applyFindVersionsMsg(msg findVersionsMsg) Model {
 	return m
 }
 
-// handleFindVersionsKey routes keys in the find-versions view. Back (esc) and
-// the contextual q (handled in handleKey's Quit branch) both return to browse.
-// `a` toggles the request-intent flag and re-runs the find, which is also how
-// the ErrFindUnknownHost case recovers. Cursor moves are paused while a find
-// is loading because the row set is about to be replaced.
+// handleFindVersionsKey routes navigation, host widening, and extraction. Row
+// actions pause while results are pending replacement.
 func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
@@ -126,22 +106,14 @@ func (m Model) handleFindVersionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.PageDown):
 		m.findCursor = clampCursor(m.findCursor+m.findVisible(), len(m.findRows))
 	case key.Matches(msg, m.keys.Extract), key.Matches(msg, m.keys.Enter):
-		// enter (the primary action; e stays as an alias) extracts the queried
-		// file from the selected version's newest occurrence snapshot, through
-		// the shared extract modal. Sits below the find-loading guard so it
-		// can't fire against a row set being replaced.
+		// Extract the selected version's newest occurrence through the shared modal.
 		m = m.openExtractVersion()
 	}
 	return m, nil
 }
 
-// openExtractVersion launches the extract modal for the version row under the
-// cursor, extracting the queried file from the version's newest occurrence —
-// the snapshot the Latest column shows, so the output lands under that
-// snapshot's mirror dir. Errors surface on the status line and stay in
-// find-versions; only a clean construction switches to extractView. The find
-// state stays on the model while the modal is open (same as browse), so
-// leaving the modal lands back on the intact result table.
+// openExtractVersion opens the selected version's newest occurrence. Setup
+// errors remain on the intact versions table.
 func (m Model) openExtractVersion() Model {
 	if m.findCursor < 0 || m.findCursor >= len(m.findRows) {
 		return m
@@ -157,8 +129,7 @@ func (m Model) openExtractVersion() Model {
 	}
 	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), v.Size)
 	if err != nil {
-		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
-		// offending field, so the notice carries no path either.
+		// Planning errors identify fields without including paths.
 		m.statusMsg = "extract: " + firstLine(err.Error())
 		return m
 	}
@@ -169,13 +140,8 @@ func (m Model) openExtractVersion() Model {
 	return m
 }
 
-// findVersionsBack leaves the find-versions view and returns to browse with
-// the prior browse state intact. The order is load-bearing: bump the
-// generation first so any racing findVersionsMsg is rejected on arrival;
-// then cancel the in-flight restic call so it does not outlive the user's
-// exit; only then switch the view and clear the find-state fields. If the
-// clear ran before the gen bump, a racing message could repopulate the just-
-// cleared rows.
+// findVersionsBack supersedes before clearing so a racing result cannot
+// repopulate filename-bearing state after return to browse.
 func (m Model) findVersionsBack() Model {
 	m.statusMsg = ""
 	m = m.supersedeFind()
@@ -183,9 +149,7 @@ func (m Model) findVersionsBack() Model {
 	return m.clearFindVersions()
 }
 
-// supersedeFind advances the find generation and cancels any in-flight find.
-// Mirrors supersedeBrowse — used by every entry point that starts or ends a
-// find so a late response cannot resurrect stale state.
+// supersedeFind advances generation and cancels in-flight work.
 func (m Model) supersedeFind() Model {
 	m.findGen++
 	return m.cancelFind()
@@ -203,9 +167,7 @@ func (m Model) findLoading() bool {
 	return m.findCancel != nil
 }
 
-// clearFindVersions zeroes all find-versions state. Called on every exit from
-// the view so no repo, path, or host string lingers in the model past the
-// user's leave (non-negotiable #1: paths do not persist).
+// clearFindVersions removes all repository, path, host, and result state on exit.
 func (m Model) clearFindVersions() Model {
 	m.findRepo = ""
 	m.findOriginHost = ""

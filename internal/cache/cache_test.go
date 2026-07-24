@@ -68,7 +68,6 @@ func TestSaveIsAtomic(t *testing.T) {
 	if err := s.Save(ctx, "repo", model.RepoState{Name: "repo"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	// No leftover temp files should remain in the directory.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -118,12 +117,8 @@ func TestNoCredentialKeysInCacheFile(t *testing.T) {
 func TestUnknownFieldsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	// A pre-cleanup cache file still carries fields RepoState/Snapshot no longer
-	// represent (total_size, pack_count, partial_err, the top-level paths list,
-	// and a nested future_paths list). The decoder must ignore them and still
-	// load the supported fields rather than failing. Note: snapshot "paths" is
-	// now a supported field on Snapshot, so the placeholder unknown nested key
-	// is future_paths instead.
+	// Simulate obsolete and future fields, including a nested unknown key.
+	// Snapshot.paths is supported, so future_paths represents the unknown field.
 	json := `{
 		"name":"repo","status":"green",
 		"total_size":442000000000,"pack_count":31204,"partial_err":"stats timed out",
@@ -146,9 +141,8 @@ func TestUnknownFieldsIgnored(t *testing.T) {
 	}
 }
 
-// TestSnapshotInfoFieldsRoundTrip locks the cache-schema additions backing the
-// snapshot-info modal: paths, excludes, parent, tree, uid (incl. root 0), gid,
-// and the new summary counters must all survive a Save/Load round-trip.
+// TestSnapshotInfoFieldsRoundTrip covers snapshot metadata, presence-sensitive
+// root IDs, and summary counters in the cache schema.
 func TestSnapshotInfoFieldsRoundTrip(t *testing.T) {
 	s := New(t.TempDir())
 	ctx := t.Context()

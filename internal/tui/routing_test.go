@@ -11,15 +11,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// envHas reports whether env contains an exact "KEY=value" entry.
 func envHas(env []string, kv string) bool {
 	return slices.Contains(env, kv)
 }
 
-// TestRepoCommandKeysAreIgnoredByHelpOverlay locks that the help overlay is modal:
-// while it is showing, the repo command keys (shell, refresh, refresh-all) do
-// nothing — handleKey short-circuits in helpView before the repo command handler
-// is reached — and only Back closes the overlay.
 func TestRepoCommandKeysAreIgnoredByHelpOverlay(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	m = update(t, m, press("?"))
@@ -47,9 +42,6 @@ func TestRepoCommandKeysAreIgnoredByHelpOverlay(t *testing.T) {
 	}
 }
 
-// TestBrowseKeysBypassRepoCommandHandler locks that browse view is dispatched
-// before the repo command keys, so the shared refresh/shell handlers cannot steal
-// browse keys.
 func TestBrowseKeysBypassRepoCommandHandler(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a.txt", "a.txt", false, 5))))
 	if m.view != browseView {
@@ -59,15 +51,10 @@ func TestBrowseKeysBypassRepoCommandHandler(t *testing.T) {
 		t.Fatal("browseSnapshotPtr() = nil, want the browsed snapshot to scope the shell to")
 	}
 
-	// `s` in browse view launches the browse shell (scoped to the snapshot), not a
-	// no-op: a non-nil command proves the browse handler ran.
 	if _, cmd := m.Update(press("s")); cmd == nil {
 		t.Error("s in browse view produced no command, want the browse shell to launch")
 	}
 
-	// `r`/`R` are repo command keys; in browse view they reach handleBrowseKey,
-	// which ignores them. If the dispatch order regressed they would start a
-	// refresh, observable as a pending entry.
 	for _, k := range []string{"r", "R"} {
 		next, _ := m.Update(press(k))
 		nm := next.(Model)
@@ -77,9 +64,6 @@ func TestBrowseKeysBypassRepoCommandHandler(t *testing.T) {
 	}
 }
 
-// TestBrowseShellSessionIncludesSnapshot proves the browse shell scopes to the
-// browsed snapshot, observed at the exported App.ShellSession boundary (the exec
-// command itself is opaque).
 func TestBrowseShellSessionIncludesSnapshot(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a.txt", "a.txt", false, 5))))
 
@@ -87,7 +71,7 @@ func TestBrowseShellSessionIncludesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
-	defer func() { _ = sess.Cleanup() }() // no-op in env mode (browseApp sets ShellPasswordMode="env")
+	defer func() { _ = sess.Cleanup() }()
 
 	want := "RESTICSCOPE_SNAPSHOT_ID=" + m.browseSnapshot
 	if !envHas(sess.Env, want) {
@@ -95,8 +79,6 @@ func TestBrowseShellSessionIncludesSnapshot(t *testing.T) {
 	}
 }
 
-// TestRepoCommandKeysWorkFromDetailView locks that shell, refresh, and refresh-all
-// all act on the detail view's pinned repo (and every repo, for refresh-all).
 func TestRepoCommandKeysWorkFromDetailView(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m = update(t, m, press("enter"))
@@ -107,17 +89,14 @@ func TestRepoCommandKeysWorkFromDetailView(t *testing.T) {
 		t.Fatalf("detailName = %q, want repo-a", m.detailName)
 	}
 
-	// `s` opens the detail shell.
 	if _, cmd := m.Update(press("s")); cmd == nil {
 		t.Error("s in detail view produced no command, want the detail shell to launch")
 	}
 
-	// `r` refreshes the detail repo.
 	if next, _ := m.Update(press("r")); !next.(Model).pending["repo-a"] {
 		t.Error("r in detail view did not start a refresh for repo-a")
 	}
 
-	// `R` refreshes every repo, from a fresh detail model.
 	next, _ := m.Update(press("R"))
 	nm := next.(Model)
 	for _, r := range m.rows {
@@ -127,13 +106,8 @@ func TestRepoCommandKeysWorkFromDetailView(t *testing.T) {
 	}
 }
 
-// TestShellSnapByView locks the seam that decides what snapshot the `s` key
-// scopes to: nil on the list (repo-only shell), the highlighted snapshot in the
-// detail view, and nil for an empty detail view (fallback to repo-only shell).
-// The detail case asserts identity by ID rather than pointer because
-// detailSnapshots() copies into a sorted slice, so successive
-// selectedSnapshot() calls can return equivalent snapshots at different
-// addresses.
+// Compare snapshot IDs because detailSnapshots returns copies, so successive
+// selections may have different addresses.
 func TestShellSnapByView(t *testing.T) {
 	t.Run("list view", func(t *testing.T) {
 		m := newTestModel(t, detailApp(t))
@@ -147,8 +121,8 @@ func TestShellSnapByView(t *testing.T) {
 
 	t.Run("detail view with snapshots", func(t *testing.T) {
 		m := newTestModel(t, detailApp(t))
-		m = update(t, m, press("enter")) // → detail view
-		m = update(t, m, press("j"))     // move cursor onto the middle snapshot
+		m = update(t, m, press("enter"))
+		m = update(t, m, press("j"))
 		want := m.selectedSnapshot()
 		if want == nil {
 			t.Fatal("selectedSnapshot() = nil, want a snapshot after enter+j")
@@ -172,7 +146,7 @@ func TestShellSnapByView(t *testing.T) {
 		cache.states["repo-a"] = st
 
 		m := newTestModel(t, a)
-		m = update(t, m, press("enter")) // → detail view
+		m = update(t, m, press("enter"))
 		if m.view != detailView {
 			t.Fatalf("view = %d, want detailView", m.view)
 		}
@@ -182,12 +156,9 @@ func TestShellSnapByView(t *testing.T) {
 	})
 }
 
-// TestDetailShellSessionIncludesSnapshot mirrors TestBrowseShellSessionIncludesSnapshot
-// for the detail view: it proves the App/ShellSession boundary scopes to the
-// highlighted snapshot when shellSnap() resolves one.
 func TestDetailShellSessionIncludesSnapshot(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
-	m = update(t, m, press("enter")) // → detail view
+	m = update(t, m, press("enter"))
 	snap := m.shellSnap()
 	if snap == nil {
 		t.Fatal("shellSnap() = nil, want the highlighted snapshot")
@@ -197,7 +168,7 @@ func TestDetailShellSessionIncludesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShellSession: %v", err)
 	}
-	defer func() { _ = sess.Cleanup() }() // no-op in env mode (detailApp sets ShellPasswordMode="env")
+	defer func() { _ = sess.Cleanup() }()
 
 	want := "RESTICSCOPE_SNAPSHOT_ID=" + snap.ID
 	if !envHas(sess.Env, want) {
@@ -205,11 +176,8 @@ func TestDetailShellSessionIncludesSnapshot(t *testing.T) {
 	}
 }
 
-// TestDetailShellKeyRoutePassesSnapshot drives the real `s` route end-to-end —
-// not just shellSnap() or ShellSession() in isolation — by running the returned
-// command through a tiny fake shell that records $RESTICSCOPE_SNAPSHOT_ID. This
-// closes the gap where the seam and the boundary could both be correct while
-// the route layer accidentally still calls openShellCmd(nil).
+// Exercise the real s route with a fake shell so correct helper behavior cannot
+// mask openShellCmd receiving the wrong snapshot.
 func TestDetailShellKeyRoutePassesSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "snapshot-id")
@@ -223,8 +191,8 @@ func TestDetailShellKeyRoutePassesSnapshot(t *testing.T) {
 	a.Cfg.Global.Shell = shellPath
 
 	m := newTestModel(t, a)
-	m = update(t, m, press("enter")) // → detail view
-	m = update(t, m, press("j"))     // move cursor to a known non-default snapshot
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("j"))
 	want := m.selectedSnapshot()
 	if want == nil {
 		t.Fatal("selectedSnapshot() = nil, want a snapshot after enter+j")
@@ -238,10 +206,8 @@ func TestDetailShellKeyRoutePassesSnapshot(t *testing.T) {
 		t.Fatal("s in detail view produced no command, want the shell to launch")
 	}
 
-	// The returned command is tea.ExecProcess's wrapper: invoking it yields the
-	// internal execMsg holding an ExecCommand. The real tea.Program runs that
-	// command on the main thread; here we extract it and Run() it directly so
-	// the fake shell actually executes and records $RESTICSCOPE_SNAPSHOT_ID.
+	// Invoke tea.ExecProcess's wrapper and run its internal command directly so
+	// the fake shell records RESTICSCOPE_SNAPSHOT_ID.
 	ec := extractExecCommand(t, cmd())
 	if err := ec.Run(); err != nil {
 		t.Fatalf("ExecCommand.Run: %v", err)
@@ -256,11 +222,8 @@ func TestDetailShellKeyRoutePassesSnapshot(t *testing.T) {
 	}
 }
 
-// extractExecCommand unwraps the unexported `cmd` field from a bubbletea
-// execMsg via reflection so a test can Run() the wrapped command directly,
-// without driving a real tea.Program. This is the only way to observe what
-// openShellCmd actually exec'd, because tea.ExecProcess returns an opaque
-// success-path command and execMsg's fields are package-private.
+// extractExecCommand unwraps Bubble Tea's private execMsg command for direct
+// execution. tea.ExecProcess otherwise exposes no successful command details.
 func extractExecCommand(t *testing.T, msg tea.Msg) tea.ExecCommand {
 	t.Helper()
 	if msg, ok := msg.(shellExitedMsg); ok {
@@ -270,8 +233,7 @@ func extractExecCommand(t *testing.T, msg tea.Msg) tea.ExecCommand {
 	if v.Kind() != reflect.Struct {
 		t.Fatalf("execMsg is %T, want a struct", msg)
 	}
-	// reflect.ValueOf returns a non-addressable Value, so copy into a fresh
-	// addressable cell before grabbing the unexported field's address.
+	// Copy into an addressable value before accessing the private field.
 	addr := reflect.New(v.Type()).Elem()
 	addr.Set(v)
 	f := addr.FieldByName("cmd")

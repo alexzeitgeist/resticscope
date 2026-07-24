@@ -79,12 +79,10 @@ func TestBuildShellEnvEnvMode(t *testing.T) {
 }
 
 func TestBuildShellEnvBackendVars(t *testing.T) {
-	// The target's non-secret backend env is exported for the shell's tooling...
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if v, _ := envLookup(env, "AWS_DEFAULT_REGION"); v != "fsn1" {
 		t.Errorf("AWS_DEFAULT_REGION = %q, want fsn1", v)
 	}
-	// ...and a target without it exports nothing extra.
 	bare := resticx.Target{Name: "local-repo", Repo: "/srv/restic-repo"}
 	env = buildShellEnv(nil, shellEnvOpts{target: bare, creds: resticx.Creds{ResticPassword: "pw"}, mode: "file", pwFile: "/tmp/pw"})
 	if _, ok := envLookup(env, "AWS_DEFAULT_REGION"); ok {
@@ -92,9 +90,7 @@ func TestBuildShellEnvBackendVars(t *testing.T) {
 	}
 }
 
-// Whatever backend vars the session itself exports are also stripped from the
-// inherited base, even when they are outside the static AWS family — the
-// dynamic half of the owned-vars contract.
+// Session-owned backend variables replace inherited values outside static families.
 func TestBuildShellEnvStripsInheritedBackendVars(t *testing.T) {
 	target := resticx.Target{Name: "nas-b2", Repo: "b2:bucket:repo"}
 	creds := resticx.Creds{
@@ -116,16 +112,14 @@ func TestBuildShellEnvStripsInheritedBackendVars(t *testing.T) {
 }
 
 func TestBuildShellEnvSetsCacheDir(t *testing.T) {
-	// With a cache dir configured, the shell must export the exact per-repo path
-	// the refresh runner warms, so a manual restic reuses that cache.
+	// Use the same per-repository cache path as refresh.
 	env := buildShellEnv(nil, shellEnvOpts{target: shellTarget, cacheDir: "/home/me/.cache/resticscope", creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	want := resticx.RepoCacheDir("/home/me/.cache/resticscope", shellTarget.Name)
 	if v, _ := envLookup(env, "RESTIC_CACHE_DIR"); v != want {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want %q", v, want)
 	}
 
-	// With no cache dir configured, the var is omitted so restic falls back to
-	// its own default rather than seeing an empty RESTIC_CACHE_DIR.
+	// Omit unset cache configuration to preserve restic's default.
 	env = buildShellEnv(nil, shellEnvOpts{target: shellTarget, creds: shellCreds, mode: "file", pwFile: "/tmp/pw"})
 	if _, ok := envLookup(env, "RESTIC_CACHE_DIR"); ok {
 		t.Error("unconfigured cache dir must not export RESTIC_CACHE_DIR")
@@ -175,28 +169,23 @@ func TestBuildShellEnvStripsInheritedOwnedVars(t *testing.T) {
 	if _, ok := envLookup(env, "AWS_SESSION_TOKEN"); ok {
 		t.Error("inherited AWS_SESSION_TOKEN must be stripped: pairing it with our static keys breaks S3 auth")
 	}
-	// Exactly one RESTIC_REPOSITORY / AWS_ACCESS_KEY_ID, holding our value.
 	if n := strings.Count(joined, "RESTIC_REPOSITORY="); n != 1 {
 		t.Errorf("RESTIC_REPOSITORY appears %d times, want 1", n)
 	}
 	if v, _ := envLookup(env, "AWS_ACCESS_KEY_ID"); v != "AK-XYZ" {
 		t.Errorf("AWS_ACCESS_KEY_ID = %q, want our value", v)
 	}
-	// Credentials of OTHER backends are stripped too, not just the families
-	// this repo sets — the repo shell starts from the same credential-free
-	// floor as the local shell.
+	// Strip unrelated backend families from the same credential-free base.
 	if strings.Contains(joined, "unrelated-b2-secret") {
 		t.Error("inherited B2_ACCOUNT_KEY must be stripped from an s3 repo's shell")
 	}
 	if _, ok := envLookup(env, "GOOGLE_APPLICATION_CREDENTIALS"); ok {
 		t.Error("inherited GOOGLE_APPLICATION_CREDENTIALS must be stripped")
 	}
-	// ...except the documented AWS profile pointers, which explicit env keys
-	// always beat and the user may want for other tooling.
+	// Keep AWS profile pointers that explicit repository keys override.
 	if v, _ := envLookup(env, "AWS_PROFILE"); v != "other-tooling" {
 		t.Errorf("AWS_PROFILE = %q, want the inherited value kept", v)
 	}
-	// The user's general environment is preserved.
 	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/me", "TERM=xterm"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("env dropped inherited %q", want)
@@ -218,14 +207,12 @@ func TestShellBanner(t *testing.T) {
 		t.Error("banner mentions a snapshot id when none was selected")
 	}
 
-	// A short id (tests, prefixes) is echoed verbatim.
 	withSnap := shellBanner("homeserver-system", url, &model.Snapshot{ID: "deadbeef"})
 	if !strings.Contains(withSnap, "RESTICSCOPE_SNAPSHOT_ID=deadbeef") {
 		t.Errorf("banner missing snapshot id:\n%s", withSnap)
 	}
 
-	// A real 64-char id is shown as its 8-char prefix — the full value would
-	// run to the terminal edge; the environment variable still carries it.
+	// Display long IDs by prefix while retaining the full environment value.
 	longID := strings.Repeat("ab", 32)
 	withLong := shellBanner("homeserver-system", url, &model.Snapshot{ID: longID})
 	if strings.Contains(withLong, longID) {
@@ -250,9 +237,7 @@ func TestInteractiveArgs(t *testing.T) {
 	}
 }
 
-// An empty banner (the local "shell here" session) must emit only the exec
-// wrapper, with no leading printf line that would print a blank line before the
-// prompt.
+// An empty banner emits only the exec wrapper without a blank line.
 func TestInteractiveArgsEmptyBanner(t *testing.T) {
 	s := &ShellSession{Shell: "/bin/zsh"}
 	args := s.InteractiveArgs()
@@ -266,8 +251,6 @@ func TestInteractiveArgsEmptyBanner(t *testing.T) {
 		t.Errorf("script = %q, want bare exec wrapper", args[2])
 	}
 }
-
-// --- LocalShellSession ---
 
 func localShellApp(shell string) *App {
 	return &App{Cfg: &config.Config{Global: config.Global{Shell: shell}}}
@@ -298,7 +281,6 @@ func TestLocalShellSessionHappyPath(t *testing.T) {
 	if sess.Cleanup == nil {
 		t.Fatal("Cleanup must be a callable func, not nil")
 	}
-	// No password file exists here; Cleanup only removes prompt-tag scaffolding.
 	if err := sess.Cleanup(); err != nil {
 		t.Errorf("Cleanup: %v", err)
 	}
@@ -313,7 +295,6 @@ func TestLocalShellSessionHappyPath(t *testing.T) {
 			t.Errorf("local shell env still carries %s", key)
 		}
 	}
-	// The user's general environment is preserved.
 	if _, ok := envLookup(sess.Env, "PATH"); !ok {
 		t.Error("local shell dropped PATH; the shell would be unusable")
 	}
@@ -338,9 +319,7 @@ func TestLocalShellSessionUnenterableDirFallsBack(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root can enter anything; the fallback never triggers")
 	}
-	// Models a privileged extract's target: the extracted node itself is
-	// enterable only by its (root) owner while the parent scaffolding belongs
-	// to the user. Chmod 0 on an own dir denies ourselves the same way.
+	// Mode zero models a root-only extracted node beneath user-owned scaffolding.
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "rootowned")
 	if err := os.Mkdir(dir, 0o700); err != nil {
@@ -359,7 +338,6 @@ func TestLocalShellSessionUnenterableDirFallsBack(t *testing.T) {
 	if sess.Dir != parent {
 		t.Errorf("Dir = %q, want the enterable parent %q", sess.Dir, parent)
 	}
-	// The relocation must explain itself; a silent parent drop reads as a bug.
 	if !strings.Contains(sess.Banner, "sudo") {
 		t.Errorf("Banner = %q, want a fallback explanation mentioning sudo", sess.Banner)
 	}
@@ -394,7 +372,6 @@ func TestLocalShellSessionInvalidDir(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.wantReason) {
 				t.Errorf("error %q does not name the failed check %q", err, tt.wantReason)
 			}
-			// The dir value must never appear in the error (privacy contract §3).
 			if tt.dir != "" && strings.Contains(err.Error(), tt.dir) {
 				t.Errorf("error %q leaked the dir value", err)
 			}
@@ -443,8 +420,6 @@ func TestPosixQuoteEscapesQuotes(t *testing.T) {
 	}
 }
 
-// --- ShellSession integration: real temp file, fake secrets ---
-
 type shellSecrets struct {
 	mat secrets.Material
 	err error
@@ -476,8 +451,7 @@ func TestShellSessionFileModeWritesAndCleansUp(t *testing.T) {
 		t.Fatal("file mode did not set RESTIC_PASSWORD_FILE")
 	}
 
-	// The session must export the same per-repo cache dir the refresh runner
-	// uses, wired through from Global.CacheDir.
+	// Session cache must match refresh cache wiring.
 	if v, _ := envLookup(sess.Env, "RESTIC_CACHE_DIR"); v != resticx.RepoCacheDir("/test-cache", "repo-a") {
 		t.Errorf("RESTIC_CACHE_DIR = %q, want the per-repo cache path", v)
 	}
@@ -528,7 +502,6 @@ func TestShellSessionUnknownRepo(t *testing.T) {
 	}
 }
 
-// A secrets failure must surface before any password file is created.
 func TestShellSessionSecretsError(t *testing.T) {
 	a := shellApp("file", shellSecrets{err: errResolve})
 	if _, err := a.ShellSession("repo-a", nil); err == nil {

@@ -10,37 +10,28 @@ import (
 )
 
 // SessionPrefix names the per-session browse directories under the cache dir.
-// The lifecycle (lazy create on first browse, RemoveAll on clean exit) and the
-// stale-cleanup convention both key off this single source of truth.
+// They are created lazily, removed on clean shutdown, and scavenged by
+// CleanStaleSessions.
 const SessionPrefix = "browse-session-"
 
-// lockName is the marker/lock file created in every session directory. On
-// supported platforms it carries a real advisory lock for the session's lifetime;
-// elsewhere it is only a marker so the directory shape stays consistent.
+// lockName is every session's advisory lock file or unsupported-platform marker.
 const lockName = "active.lock"
 
-// staleThreshold is how long a session directory must be untouched before
-// cleanup will even consider removing it. It is deliberately generous to defend
-// against surprising filesystem/lock semantics: a live session that is merely
-// idle should never be reclaimed out from under a running TUI.
+// staleThreshold is the minimum inactivity before cleanup considers a session.
 const staleThreshold = 3 * time.Hour
 
 var errSessionLockUnavailable = errors.New("session lock unavailable")
 
-// SessionLock holds the open lock file for a live session. On supported
-// platforms it owns a non-blocking exclusive advisory lock; on unsupported
-// platforms it is only a marker file. Close releases the lock and closes the file.
+// SessionLock owns a live session's advisory lock or unsupported-platform marker.
+// Close releases the lock and closes the file.
 type SessionLock struct {
 	f *os.File
 }
 
-// LockSession creates (or opens) the lock file in dir and, on supported
-// platforms, takes a non-blocking exclusive lock held for the session lifetime.
-// The file is created unconditionally for a consistent session-dir shape; on
-// unsupported platforms no real lock is held, which only weakens stale-cleanup
-// liveness detection (a documented disk leak, never a privacy bug since the key
-// is gone). On platforms where locking is supported, acquisition failure is fatal
-// because stale cleanup relies on that lock to identify live sessions.
+// LockSession opens the session marker and, where supported, holds a non-blocking
+// exclusive lock until Close. Unsupported locking may leak unreadable stale
+// directories. A supported platform must acquire the lock because cleanup uses it
+// to distinguish live sessions.
 func LockSession(dir string) (*SessionLock, error) {
 	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // path is an internal session dir joined with a constant lock filename
 	if err != nil {
@@ -69,13 +60,9 @@ func (l *SessionLock) Close() error {
 	return nil
 }
 
-// CleanStaleSessions removes leftover browse-session-* directories under
-// cacheDir, but only when they are demonstrably stale: untouched past
-// staleThreshold AND not currently locked by a live session. If advisory locking
-// is unsupported on this platform, every candidate is skipped rather than risk
-// deleting a live sibling — so unsupported-platform builds accumulate stale
-// (unreadable) session dirs, a documented disk leak. Best-effort: a removal error
-// on one directory does not abort the sweep.
+// CleanStaleSessions removes old, unlocked session directories under cacheDir.
+// Unsupported locking retains candidates with a lock marker. Removal is
+// best-effort and returns only the first error.
 func CleanStaleSessions(cacheDir string) error {
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
@@ -101,11 +88,8 @@ func CleanStaleSessions(cacheDir string) error {
 	return firstErr
 }
 
-// sessionIsStale decides whether a session directory can be safely removed. It
-// requires the directory to be untouched past staleThreshold and, on platforms
-// that support locking, the session lock to be free. Any ambiguity (recent
-// mtime, unsupported locking, lock held, lock file unreadable) is resolved as
-// "not stale" so a live or uncertain session is never deleted.
+// sessionIsStale reports whether a directory is old enough and demonstrably
+// unlocked. Recent, locked, unreadable, or unsupported cases are not stale.
 func sessionIsStale(dir string, now time.Time) bool {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -116,8 +100,7 @@ func sessionIsStale(dir string, now time.Time) bool {
 	}
 	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR, 0) //nolint:gosec // path is an internal session dir joined with a constant lock filename
 	if err != nil {
-		// A sufficiently old session dir with no lock file at all is a crash
-		// leftover from before the lock was created; anything else is ambiguous.
+		// An old directory without a lock file predates successful lock creation.
 		return errors.Is(err, os.ErrNotExist)
 	}
 	defer func() { _ = f.Close() }()

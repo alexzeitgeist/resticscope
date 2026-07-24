@@ -16,8 +16,7 @@ func TestDefaultThemeExists(t *testing.T) {
 }
 
 func TestDefaultIsOriginalGruvbox(t *testing.T) {
-	// The default must stay the exact palette the TUI shipped with, so users
-	// who never configure a theme see no change.
+	// Preserve colors for users without explicit theme configuration.
 	p := Default()
 	if p.Bg != "#282828" || p.Fg != "#ebdbb2" || p.Orange != "#fe8019" {
 		t.Errorf("default palette drifted from gruvbox dark: %+v", p)
@@ -39,10 +38,8 @@ func TestNamesSortedAndComplete(t *testing.T) {
 	}
 }
 
-// TestTerminalThemeDefersToTerminal pins the no-theming escape hatch: the
-// "terminal" theme must not carry a single concrete color — fg/bg are the
-// terminal defaults and every accent is an ANSI-16 slot — so the TUI follows
-// whatever scheme the terminal itself uses.
+// The terminal theme uses default foreground/background and ANSI-16 accents so
+// it follows the active terminal scheme.
 func TestTerminalThemeDefersToTerminal(t *testing.T) {
 	p, ok := Lookup("terminal")
 	if !ok {
@@ -70,8 +67,7 @@ func TestLookupUnknown(t *testing.T) {
 	}
 }
 
-// TestAllPalettesComplete guards every built-in: a role left empty or
-// mistyped would render as no-color at runtime, so it must fail here instead.
+// Every role must be non-empty and use a config-supported color form.
 func TestAllPalettesComplete(t *testing.T) {
 	for name, p := range builtin {
 		roles := map[string]string{

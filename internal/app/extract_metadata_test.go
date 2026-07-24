@@ -20,22 +20,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// --- direct normalizer unit test: everything intrinsic is PRESERVED ---
-
 func TestNormalizeExtractTreeMetadata(t *testing.T) {
 	root := t.TempDir()
 	old := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
 
 	file := filepath.Join(root, "file")
 	mustSetup(t, os.WriteFile(file, []byte("hello"), 0o666))
-	mustSetup(t, os.Chmod(file, 0o666|os.ModeSetuid)) // permissive + suid → must be PRESERVED
+	mustSetup(t, os.Chmod(file, 0o666|os.ModeSetuid)) // permissive + suid -> must be PRESERVED
 	sub := filepath.Join(root, "sub")
 	mustSetup(t, os.Mkdir(sub, 0o777))
-	mustSetup(t, os.Chmod(sub, 0o777|os.ModeSticky)) // permissive + sticky → PRESERVED
+	mustSetup(t, os.Chmod(sub, 0o777|os.ModeSticky)) // permissive + sticky -> PRESERVED
 	nested := filepath.Join(sub, "nested")
 	mustSetup(t, os.WriteFile(nested, []byte("x"), 0o644))
 	link := filepath.Join(root, "link")
-	mustSetup(t, os.Symlink("sub/nested", link)) // relative, non-escaping → safe
+	mustSetup(t, os.Symlink("sub/nested", link)) // relative, non-escaping -> safe
 
 	xattrSet := trySetXattr(t, file)
 
@@ -90,9 +88,8 @@ func TestNormalizeExtractTreeMetadata(t *testing.T) {
 	}
 }
 
-// A directory restored without owner r/w/x (e.g. mode 0000) must still be walked:
-// the pass forces it owner-rwx before reading its children, then RESTORES the
-// original mode. Without the pre-read chmod, ReadDir would fail with EACCES.
+// Restrictive directories require temporary owner rwx for traversal, followed
+// by restoration of the original mode.
 func TestNormalizeExtractTreeMetadataRestrictiveDir(t *testing.T) {
 	root := t.TempDir()
 
@@ -100,8 +97,7 @@ func TestNormalizeExtractTreeMetadataRestrictiveDir(t *testing.T) {
 	mustSetup(t, os.Mkdir(child, 0o700))
 	mustSetup(t, os.WriteFile(filepath.Join(child, "inner"), []byte("x"), 0o600))
 	mustSetup(t, os.Chmod(child, 0o000)) // no owner r/w/x
-	// Load-bearing now: the normalizer RESTORES 0000, so t.TempDir's RemoveAll
-	// can't enter the dir it leaves behind without this chmod-up.
+	// TempDir cleanup needs access after the normalizer restores mode 0000.
 	t.Cleanup(func() { _ = os.Chmod(child, 0o700) })
 
 	counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkKeep)
@@ -121,11 +117,8 @@ func TestNormalizeExtractTreeMetadataRestrictiveDir(t *testing.T) {
 	}
 }
 
-// --- pure classifier: the empty/NUL/absolute/escaping/safe rule ---
-
-// TestClassifySymlinkTarget exercises classifySymlinkTarget directly: it needs no
-// on-disk link, which is the only way to cover the empty/NUL guards (os.Symlink
-// cannot create those targets).
+// TestClassifySymlinkTarget calls the pure classifier because os.Symlink cannot
+// create empty or NUL-bearing targets.
 func TestClassifySymlinkTarget(t *testing.T) {
 	const root = "/stage/root"
 	const parent = "/stage/root/sub"
@@ -152,11 +145,8 @@ func TestClassifySymlinkTarget(t *testing.T) {
 	}
 }
 
-// --- on-disk unsafe-symlink policy matrix ---
-
-// TestNormalizeExtractTreeUnsafeSymlinks drives every policy against absolute,
-// escaping, and safe links, plus a restricted (0500) parent and a fifo, asserting
-// the normalizer never aborts and produces the right on-disk outcome and counts.
+// TestNormalizeExtractTreeUnsafeSymlinks covers every policy, restricted parent
+// mutation, and special-node preservation.
 func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 	kinds := []struct {
 		name   string
@@ -192,16 +182,14 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 		}
 	}
 
-	// A 0500 parent holding an unsafe symlink: skip/placeholder mutate a CHILD, so
-	// the pass must temp-chmod the parent writable (0o700, not 0o500) and restore
-	// its 0500 mode afterward. No EACCES.
+	// Link mutation requires temporary parent write permission, then mode restoration.
 	for _, pol := range []unsafeSymlinkPolicy{unsafeSymlinkSkip, unsafeSymlinkPlaceholder} {
 		t.Run("restricted-parent/"+string(pol), func(t *testing.T) {
 			root := t.TempDir()
 			parent := filepath.Join(root, "ro")
 			mustSetup(t, os.Mkdir(parent, 0o700))
 			link := filepath.Join(parent, "link")
-			mustSetup(t, os.Symlink("/etc/passwd", link)) // absolute → unsafe
+			mustSetup(t, os.Symlink("/etc/passwd", link)) // absolute -> unsafe
 			mustSetup(t, os.Chmod(parent, 0o500))         // r-x: traversable, not writable
 			t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
 
@@ -225,7 +213,6 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 		})
 	}
 
-	// A fifo is a special node: counted under Other, left in place, never an abort.
 	t.Run("fifo special node", func(t *testing.T) {
 		root := t.TempDir()
 		if err := syscall.Mkfifo(filepath.Join(root, "pipe"), 0o644); err != nil {
@@ -244,9 +231,7 @@ func TestNormalizeExtractTreeUnsafeSymlinks(t *testing.T) {
 	})
 }
 
-// assertSymlinkOutcome checks the on-disk state of a link after a policy ran. A
-// safe link, and any link under keep, is left verbatim; skip removes it;
-// placeholder replaces it with a 0600 regular file recording the target.
+// assertSymlinkOutcome checks the persisted result of each link policy.
 func assertSymlinkOutcome(t *testing.T, link, target string, unsafe bool, pol unsafeSymlinkPolicy) {
 	t.Helper()
 	if !unsafe || pol == unsafeSymlinkKeep {
@@ -285,14 +270,11 @@ func assertSymlinkOutcome(t *testing.T, link, target string, unsafe bool, pol un
 	}
 }
 
-// --- live tree extract (real run drives the normalizer before rename) ---
-
 func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
 	old := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
-	// restic reconstructs the leaf dir "nginx" at staging/nginx and puts the file
-	// inside it (treeReq source is /etc/nginx).
+	// Restic reconstructs the selected leaf and its contents under staging.
 	setup := dirStagingSetup("nginx", func(node string) error {
 		conf := filepath.Join(node, "nginx.conf")
 		if err := os.WriteFile(conf, []byte("server {}"), 0o666); err != nil {
@@ -316,9 +298,7 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	// Both modes now use the rebase-parent + --include shape so restic reconstructs
-	// the leaf node (and applies its metadata): Source is the parent, the single
-	// include the leaf.
+	// Rebase plus include makes restic create the leaf and apply its metadata.
 	cap.mu.Lock()
 	tp := cap.treeParams
 	cap.mu.Unlock()
@@ -330,13 +310,10 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	if result.FinalDir != final {
 		t.Errorf("FinalDir = %q, want %q", result.FinalDir, final)
 	}
-	// For a directory extract FinalPath coincides with FinalDir (the mirrored tree
-	// root).
 	if result.FinalPath != final {
 		t.Errorf("FinalPath = %q, want %q", result.FinalPath, final)
 	}
-	// The normalizer ran before the rename and PRESERVED the restored metadata: the
-	// file is still 0666 with its setgid bit and original mtime, under the final dir.
+	// Normalization precedes publish and preserves restored metadata.
 	fi := lstat(t, filepath.Join(final, "nginx.conf"))
 	if fi.Mode().Perm() != 0o666 || fi.Mode()&os.ModeSetgid == 0 {
 		t.Errorf("file mode = %v, want 0666 with setgid preserved", fi.Mode())
@@ -344,7 +321,6 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	if !fi.ModTime().Equal(old) {
 		t.Errorf("file mtime = %v, want preserved %v", fi.ModTime(), old)
 	}
-	// The walk counts the reconstructed leaf dir "nginx" (Dirs=1) plus its file.
 	if result.Files != 1 || result.Dirs != 1 {
 		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1} from the normalizer walk", result.Files, result.Dirs)
 	}
@@ -359,20 +335,13 @@ func TestExtractDirectoryTreeRealRun(t *testing.T) {
 	}
 }
 
-// TestExtractDirectoryLeafMetadataPreserved pins the fix for the directory leaf
-// losing its own metadata. In the mirror tree the extracted directory node IS the
-// user's real directory, so it must carry its snapshot mode/mtime — restic
-// reconstructs the leaf at staging/<base> via --include (it CREATES the node
-// rather than restoring contents into resticscope's pre-made 0700 staging root),
-// so the published leaf keeps its (wider) restic mode while the SCAFFOLDING
-// ancestor resticscope synthesizes to place it at its mirror path stays private
-// 0700. A regression to the contents-rebase shape (the old bug) would publish the
-// leaf at 0700 and trip this.
+// TestExtractDirectoryLeafMetadataPreserved guards against restoring only a
+// directory's contents into a pre-made 0700 root. Restic must create the leaf
+// with snapshot metadata while synthesized ancestors remain private.
 func TestExtractDirectoryLeafMetadataPreserved(t *testing.T) {
 	root := t.TempDir()
 	old := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
-	// restic reconstructs the leaf dir "nginx" (treeReq source /etc/nginx) WITH its
-	// snapshot metadata: wider-than-0700 mode, setgid, and an old mtime.
+	// Model a reconstructed leaf with snapshot mode and mtime.
 	setup := func(target string) error {
 		node := filepath.Join(target, "nginx")
 		if err := os.Mkdir(node, 0o750); err != nil {
@@ -394,7 +363,6 @@ func TestExtractDirectoryLeafMetadataPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	// The published leaf dir keeps its snapshot metadata — NOT resticscope's 0700.
 	di := lstat(t, final)
 	if di.Mode().Perm() != 0o750 || di.Mode()&os.ModeSetgid == 0 {
 		t.Errorf("leaf dir mode = %v, want 0750 with setgid preserved (not 0700)", di.Mode())
@@ -402,21 +370,16 @@ func TestExtractDirectoryLeafMetadataPreserved(t *testing.T) {
 	if !di.ModTime().Equal(old) {
 		t.Errorf("leaf dir mtime = %v, want preserved %v (not extract time)", di.ModTime(), old)
 	}
-	// The synthesized scaffolding ancestor stays resticscope's private 0700.
 	if pd := lstat(t, filepath.Dir(final)); pd.Mode().Perm() != 0o700 {
 		t.Errorf("scaffolding ancestor mode = %v, want 0700 (private)", pd.Mode())
 	}
-	// The leaf dir itself is counted now: Files=1 (site), Dirs=1 (nginx).
 	if result.Files != 1 || result.Dirs != 1 {
 		t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 1}", result.Files, result.Dirs)
 	}
 }
 
-// TestExtractDirectoryTreeSpecialFilePublishes proves the rewritten normalizer no
-// longer aborts on special files or unsafe symlinks: a fifo and an absolute
-// (unsafe) symlink are counted, left in place, and the staging dir is published.
-// "Leaves staging on an interruption" stays covered by the cancel/timeout tests;
-// the only remaining normalizer hard-failure is a genuine lstat/readdir IO error.
+// TestExtractDirectoryTreeSpecialFilePublishes verifies that special files and
+// unsafe links are counted and published rather than treated as fatal.
 func TestExtractDirectoryTreeSpecialFilePublishes(t *testing.T) {
 	root := t.TempDir()
 	probe := filepath.Join(root, ".probe")
@@ -468,7 +431,7 @@ func TestExtractTreeLoggingIsPathFree(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(node, "f"), []byte("x"), 0o600); err != nil {
 			return err
 		}
-		return os.Symlink("/etc/shadow", filepath.Join(node, "leak-link")) // unsafe → counted
+		return os.Symlink("/etc/shadow", filepath.Join(node, "leak-link")) // unsafe -> counted
 	})
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: setup}, root)
 	a.Log = slog.New(slog.NewTextHandler(&buf, nil))
@@ -493,13 +456,8 @@ func TestExtractTreeLoggingIsPathFree(t *testing.T) {
 	}
 }
 
-// --- os.Root confinement: nothing the pass mutates may escape staging ---
-
-// TestNormalizeExtractPlaceholderConfinedToStaging pins the boundary: an unsafe
-// symlink to an absolute path OUTSIDE staging yields an in-staging placeholder,
-// and the external target is left byte- and mode-identical — the Remove→WriteFile
-// never follows the link out of the tree (it goes through the staging *os.Root;
-// see applyUnsafeSymlinkPolicy).
+// TestNormalizeExtractPlaceholderConfinedToStaging verifies that replacement
+// through os.Root cannot modify an absolute external target.
 func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "staging")
@@ -509,7 +467,7 @@ func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
 	mustSetup(t, os.WriteFile(victim, []byte("LIVE-SECRET\n"), 0o600))
 
 	link := filepath.Join(root, "link")
-	mustSetup(t, os.Symlink(victim, link)) // absolute → unsafe
+	mustSetup(t, os.Symlink(victim, link)) // absolute -> unsafe
 
 	counts, err := normalizeExtractTreeMetadata(t.Context(), root, unsafeSymlinkPlaceholder)
 	if err != nil {
@@ -518,15 +476,13 @@ func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
 	if counts.UnsafeSymlinks != 1 {
 		t.Errorf("UnsafeSymlinks = %d, want 1", counts.UnsafeSymlinks)
 	}
-	// The placeholder lands IN staging, recording the target, as a 0600 regular file.
 	if fi := lstat(t, link); !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
 		t.Errorf("placeholder mode = %v, want a 0600 regular file", fi.Mode())
 	}
 	if data, _ := os.ReadFile(link); string(data) != victim+"\n" {
 		t.Errorf("placeholder contents = %q, want %q", string(data), victim+"\n")
 	}
-	// The external target is UNTOUCHED — same content, same mode. A followed link
-	// would have truncated it to the placeholder text.
+	// A followed link would have replaced the external content.
 	if data, _ := os.ReadFile(victim); string(data) != "LIVE-SECRET\n" {
 		t.Errorf("external victim content = %q, want it unchanged", string(data))
 	}
@@ -535,10 +491,8 @@ func TestNormalizeExtractPlaceholderConfinedToStaging(t *testing.T) {
 	}
 }
 
-// TestChownStagingForCleanup covers the failed-extract cleanup that hands a
-// root-restored staging tree back to the invoking user. It runs as the test user
-// (chown-to-self is a no-op the kernel permits a non-root owner), so it exercises
-// the dir chmod-up and the os.Root confinement without needing real root.
+// TestChownStagingForCleanup uses chown-to-self to exercise permission widening
+// and os.Root confinement without root.
 func TestChownStagingForCleanup(t *testing.T) {
 	uid, gid := os.Getuid(), os.Getgid()
 
@@ -567,13 +521,11 @@ func TestChownStagingForCleanup(t *testing.T) {
 		mustSetup(t, os.Mkdir(victim, 0o000)) // would be widened to 0700 if the link were followed
 		t.Cleanup(func() { _ = os.Chmod(victim, 0o700) })
 
-		// Restored content that aliases a directory outside staging.
 		mustSetup(t, os.Symlink(victim, filepath.Join(staging, "escape")))
 
 		chownStagingForCleanup(staging, uid, gid)
 
-		// The link is not a directory so it is never chmod'd, and the walk is
-		// confined to the root, so the external victim keeps its 0000 mode.
+		// Root confinement must leave the external victim untouched.
 		if di := lstat(t, victim); di.Mode().Perm() != 0o000 {
 			t.Errorf("external victim mode = %v, want unchanged 0000 (link not followed)", di.Mode())
 		}
@@ -583,10 +535,7 @@ func TestChownStagingForCleanup(t *testing.T) {
 		base := t.TempDir()
 		staging := filepath.Join(base, "staging")
 		mustSetup(t, os.Mkdir(staging, 0o700))
-		// A restored directory whose name is not valid UTF-8 — legal on Unix and
-		// common in backup content. A fs.WalkDir over an io/fs would refuse to
-		// recurse into it (paths must be valid UTF-8), stranding its children; the
-		// raw-byte walk must descend so they are handed back too.
+		// Raw ReadDir must traverse non-UTF-8 Unix names that io/fs rejects.
 		weird := filepath.Join(staging, "d\xff\xfe")
 		if err := os.Mkdir(weird, 0o700); err != nil {
 			t.Skipf("filesystem rejects non-UTF-8 names (%v); nothing to test", err)
@@ -603,11 +552,10 @@ func TestChownStagingForCleanup(t *testing.T) {
 	})
 }
 
-// TestOSRootRejectsEscapingMutations pins the os.Root guarantee the extract pass
-// depends on: a Chmod or WriteFile whose path resolves through a symlink that
-// escapes the root is rejected, leaving the external target untouched. The Chmod
-// dir→symlink TOCTOU additionally needs go1.25.9+ (GO-2026-4864) but isn't
-// statically reproducible; this pins the non-racy escape rejection.
+// TestOSRootRejectsEscapingMutations pins non-racy symlink escape rejection for
+// Chmod and WriteFile. GO-2026-4864's Linux Root.Chmod target-symlink race is
+// outside this test and requires at least Go 1.25.9 on the 1.25 release line or
+// Go 1.26.2 on the 1.26 release line.
 func TestOSRootRejectsEscapingMutations(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "root")
@@ -639,10 +587,8 @@ func TestOSRootRejectsEscapingMutations(t *testing.T) {
 	}
 }
 
-// TestMkdirAllOwned covers the ownership-preserving MkdirAll: it creates the whole
-// missing chain below an existing ancestor, leaves the ancestor untouched, and is
-// idempotent. It runs as the test user (chown-to-self is permitted); the swap-race
-// it resists is closed structurally — os.Root confinement plus a non-following Lchown.
+// TestMkdirAllOwned uses chown-to-self to verify confined, non-following creation
+// without modifying existing ancestors.
 func TestMkdirAllOwned(t *testing.T) {
 	uid, gid := os.Getuid(), os.Getgid()
 	base := t.TempDir() // the pre-existing ancestor
@@ -689,8 +635,6 @@ func TestMkdirAllOwned(t *testing.T) {
 	}
 }
 
-// --- helpers ---
-
 func mustSetup(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -707,8 +651,7 @@ func lstat(t *testing.T, p string) os.FileInfo {
 	return fi
 }
 
-// trySetXattr sets a user xattr, returning false (so the caller skips the
-// xattr-preservation assertion) when the filesystem does not support it.
+// trySetXattr reports whether the filesystem supports the test user attribute.
 func trySetXattr(t *testing.T, p string) bool {
 	t.Helper()
 	if err := unix.Lsetxattr(p, "user.resticscope_test", []byte("1"), 0); err != nil {

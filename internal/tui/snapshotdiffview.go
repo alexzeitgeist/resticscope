@@ -11,39 +11,28 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// snapshotdiffview.go renders snapshotDiffView: a header naming the
-// directional first → second snapshot pair, a fixed meta block with the
-// breadcrumb and the summary line, and a browse-style table of the current
-// dir's children. The on-screen rows hold paths only for the lifetime of the
-// model — clearSnapshotDiff zeros every diff* field on leaving the view
-// (non-negotiable #1: no filenames linger).
+// The diff view renders a directional pair, summary, and directory table.
+// clearSnapshotDiff removes its path rows when the view closes.
 
 const (
-	// diffMetaRows is the number of fixed lines the diff body renders above the
-	// scrolling window (the path line and the summary line); diffVisible
-	// subtracts it to size the table window.
+	// diffMetaRows reserves the path and summary lines above the table.
 	diffMetaRows = 2
-	// diffAuxRows is the worst-case auxiliary line budget around the table: a
-	// column header plus a "showing N–M of T" scroll note. diffVisible reserves
-	// both so the footer is never overlapped.
+	// diffAuxRows reserves the table header and optional scroll note.
 	diffAuxRows = 2
 
-	diffMarkerWidth = 14 // change marker / rollup cell: enough for "+999 -999 M999" before truncation
-	diffNameMin     = 16 // minimum readable Name flex width
+	diffMarkerWidth = 14 // Fits "+999 -999 M999" before truncation.
+	diffNameMin     = 16 // Minimum readable name width.
 )
 
-// diffTitle renders the repo + directional snapshot pair. Both ids are restic
-// short ids so the line stays stable at narrow widths; the times use the same
-// compact format browse and detail use elsewhere. The search-state back hints
-// that used to sit top-right live in the footer key bar (viewHelp.ShortHelp).
+// diffTitle renders the repository and directional pair with compact snapshot
+// labels.
 func (m Model) diffTitle() string {
 	return m.styles.title.Render("diff: " + m.diffRepo + " · " +
 		diffSnapshotLabel(m.diffOlder) + " → " + diffSnapshotLabel(m.diffNewer))
 }
 
-// diffSnapshotLabel renders one half of the directional pair: the snapshot's
-// short id (preferring the canonical ShortID field, falling back to a
-// truncated full ID when the cache only carries that) and the backup time.
+// diffSnapshotLabel renders a short ID and backup time, falling back to the
+// truncated full ID.
 func diffSnapshotLabel(s model.Snapshot) string {
 	id := s.ShortID
 	if id == "" {
@@ -62,9 +51,7 @@ func (m Model) snapshotDiffBody() string {
 	}
 	summary := clip(m.styles.meta.Render("  "+summaryText), w)
 	if m.diffLoading() {
-		// While the stream is in flight the body area shows only the meta block;
-		// the table will appear once entries land and BuildDiffTree runs on the
-		// terminal msg.
+		// Build and show the table only after the stream completes.
 		return strings.Join([]string{pathLine, summary}, "\n")
 	}
 	if m.diffSearching {
@@ -75,10 +62,7 @@ func (m Model) snapshotDiffBody() string {
 
 func (m Model) diffSearchSummary() string {
 	body := diffSearchSummaryBody(m.diffSearchQuery, m.diffSearchTotal, len(m.diffSearchRows))
-	// While search replaces the regular summary line, the partial-stream
-	// warning must still be visible — a user searching a truncated diff and
-	// hitting "(no matches)" needs to know the data is incomplete, otherwise
-	// they'll assume the file isn't there.
+	// Keep partial-stream warnings visible when search replaces the summary.
 	if m.diffErr != "" {
 		return m.diffErr + " · " + body
 	}
@@ -98,18 +82,9 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 	return humanize.Count(total, "match", "matches")
 }
 
-// diffSummaryLine is the status sub-line above the table. While loading it
-// shows the running entry count plus the cancel affordance; otherwise it
-// reports the top-level totals from diffStats, the directional +/− meaning,
-// and the current filter mask. It carries state only — the filter-toggle key
-// hint lives in the footer key bar (diffFiltersHelp). The filter mask is the
-// LAST part so toggling a filter appends it without shifting anything already
-// on the line. When the stream failed mid-way and only delivered partial
-// entries, diffErr carries a sticky "partial: …" warning that is *prepended*
-// to the line (not replacing the stats) so the user always sees both the data
-// they have and the fact that it is incomplete. diffSearchSummary, which
-// replaces this line while search is open, prefixes the same warning for the
-// same reason.
+// diffSummaryLine reports progress or statistics, direction, and filters. The
+// filter stays last, while a partial warning is prepended without replacing
+// useful statistics.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading() {
 		return fmt.Sprintf("loading… %s seen · esc/back cancels", humanize.Count(m.diffLoadCount, "change", "changes"))
@@ -129,18 +104,14 @@ func (m Model) diffSummaryLine() string {
 	return strings.Join(parts, " · ")
 }
 
-// diffDirectionLegend explains the +/− sign convention against the directional
-// arrow rendered in the header. We anchor it on "second snapshot" — the
-// position relative to the arrow — rather than "right" or "newer", because
-// after the `x` swap the right-hand snapshot is the chronologically older
-// one and "right = later in time" would mislead.
+// diffDirectionLegend uses pair position rather than age because swapping may
+// place the older snapshot second.
 func diffDirectionLegend() []string {
 	return []string{"+ in second snapshot", "- in first snapshot"}
 }
 
-// diffStatsLabel renders the top-level totals as a compact, colored summary.
-// Disabled-kind counters are dimmed so the user can see they are excluded
-// without losing the count.
+// diffStatsLabel renders colored totals and dims excluded kinds without hiding
+// their counts.
 func diffStatsLabel(s model.DiffStats, filter model.ModifierKind, st styles) string {
 	cells := []struct {
 		bit   model.ModifierKind
@@ -173,9 +144,7 @@ func diffStatsLabel(s model.DiffStats, filter model.ModifierKind, st styles) str
 	return strings.Join(parts, " ")
 }
 
-// diffFilterLabel renders the mask as a sequence of enabled-marker chars, in
-// canonical order, so a glance at the summary tells the user which kinds are
-// in scope when not all are on.
+// diffFilterLabel renders enabled markers in canonical order.
 func diffFilterLabel(k model.ModifierKind) string {
 	var b strings.Builder
 	if k&model.KindAdded != 0 {
@@ -206,8 +175,7 @@ func diffParseErrorLabel(n int) string {
 	return humanize.Count(n, "malformed line", "malformed lines") + " ignored"
 }
 
-// diffList renders the table window for the current directory: a dim column
-// header, the visible rows, and a "showing N–M of T" note when scrolled.
+// diffList renders the current directory's windowed table.
 func (m Model) diffList(w int) string {
 	tw := browseTableWidth(w)
 	l := diffLayout(tw)
@@ -229,8 +197,7 @@ func (m Model) diffList(w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// diffColLayout describes the table's variable geometry for a given width.
-// Only the Name flex is variable; the marker column is fixed.
+// diffColLayout keeps the marker fixed while the name column flexes.
 type diffColLayout struct {
 	marker int
 	name   int
@@ -272,14 +239,9 @@ func (m Model) diffSearchList(w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// diffRowView renders one row. The marker cell shows the row's primary glyph
-// (or, for dir rows, a compact `+a -r Mm` rollup) and is colored by the
-// primary change type. The name cell shows the last path component, prefixing
-// dirs with the same disclosure marker browse uses and keeping the trailing
-// slash. An overlong name (or the search list's full path) is truncated by
-// truncatePathWidth so the basename and extension survive the cut. The whole
-// line is clipped to width so a long name can't wrap and break the row budget;
-// the cursor row is highlighted with the accent gutter and the selected style.
+// diffRowView renders a colored marker or directory rollup beside a truncated
+// name. Selected rows get the accent gutter; clipping preserves one row per
+// entry.
 func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw int) string {
 	name := r.Name
 	if r.IsDir {
@@ -299,11 +261,8 @@ func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw 
 	return clip(indicator+content, tw)
 }
 
-// diffRowMarker chooses what to show in the change-marker cell and which style
-// to render it in. Files get the row's raw multi-char `Modifier` so the user
-// always sees the full restic vocabulary (e.g. `MU`, `MT`); dirs whose own
-// modifier is set behave the same. Synthetic ancestor dirs (Modifier=="",
-// Type=ChangeUnknown) fall back to a rollup of their subtree's aggregate.
+// diffRowMarker uses raw modifiers for explicit changes and aggregate rollups
+// for synthetic ancestor directories.
 func diffRowMarker(r *model.DiffRow, st styles) (string, lipgloss.Style) {
 	style := diffTypeStyle(r.Type, st)
 	if r.Modifier != "" {
@@ -315,12 +274,8 @@ func diffRowMarker(r *model.DiffRow, st styles) (string, lipgloss.Style) {
 	return "?", st.dim
 }
 
-// diffRollup is the compact rollup badge for a synthetic ancestor dir: a
-// sequence of `<glyph><count>` pairs in canonical order. The glyphs are the
-// same restic letters the summary line (diffStatsLabel), the filter mask
-// (diffFilterLabel), and the raw file-row modifiers use — one symbol set for
-// the whole view. Only non-zero kinds appear; the result is truncated at the
-// marker cell width by the caller.
+// diffRollup renders non-zero aggregate counts with the same canonical markers
+// used by summaries, filters, and changed rows.
 func diffRollup(s model.DiffStats) string {
 	pairs := []struct {
 		n     int
@@ -345,9 +300,8 @@ func diffRollup(s model.DiffStats) string {
 	return strings.Join(parts, " ")
 }
 
-// diffTypeStyle returns the change-type style for the row's primary Type.
-// ChangeUnknown (synthetic ancestor dirs) falls back to the dim style so a
-// navigation-only row never competes with real changes for the user's eye.
+// diffTypeStyle dims synthetic ancestors so navigation rows do not compete with
+// explicit changes.
 func diffTypeStyle(t model.ChangeType, st styles) lipgloss.Style {
 	switch t {
 	case model.ChangeAdded:

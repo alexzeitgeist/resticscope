@@ -8,31 +8,23 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// findversionsview.go renders findVersionsView: a title naming the repo and
-// origin snapshot, a Path line carrying the queried path, a fixed-shape table
-// of distinct file versions, and a status line carrying the host-filter label. The host label
-// is driven by findResultHost/findResultAllHosts (the filter that produced the
-// rows on screen), never by the user-toggle findRequestAllHosts, so a
-// mid-toggle re-run can never relabel the visible rows until the new response
-// actually lands.
+// Version rendering labels rows from the result's host filter, never an in-flight
+// request toggle.
 
 const (
-	findModWidth   = 16 // "2006-01-02 15:04" — file mtime, the dedup key
-	findSizeWidth  = 10 // right-aligned humanize.Bytes
-	findSnapsWidth = 5  // right-aligned snapshot count
-	findLatestMin  = 18 // "YYYY-MM-DD HH:MM xxxxxxxx"; trimmed when host promotes
-	findHostMin    = 8  // shortest host fragment shown when promoted (truncated by truncateWidth)
+	findModWidth   = 16
+	findSizeWidth  = 10
+	findSnapsWidth = 5
+	findLatestMin  = 18
+	findHostMin    = 8
 	findPermsWidth = 10
-	findOwnerWidth = 11 // "uid:gid"; matches browseOwnerWidth so both views feel consistent
-	findMetaRows   = 2  // path + summary
-	findAuxRows    = 2  // column header + the "showing N–M of T" scroll note
+	findOwnerWidth = 11
+	findMetaRows   = 2
+	findAuxRows    = 2
 )
 
-// findTitle names the find context: the repo and the snapshot the search was
-// launched from (find is reached only from browse, so browseSnapshot is the
-// origin) — the same `view: repo · id` shape as browseTitle. The queried path
-// is NOT repeated here: it lives in the body's Path row, where it can render
-// unclipped.
+// findTitle names the repository and origin snapshot; the queried path remains
+// in the body.
 func (m Model) findTitle() string {
 	label := "versions: " + m.findRepo
 	if id := shortID(m.browseSnapshot); id != "" {
@@ -41,11 +33,8 @@ func (m Model) findTitle() string {
 	return m.styles.title.Render(label)
 }
 
-// findHostLabel renders the host-filter description from the result-of-record
-// fields, so a mid-toggle reload cannot relabel the visible rows until the new
-// response arrives. The label is "all hosts" when the response's AllHosts is
-// true, the hostname the response actually filtered by otherwise, and "…"
-// before any successful response has landed (initial load or after an error).
+// findHostLabel describes the installed result filter, using an ellipsis before
+// any successful response.
 func (m Model) findHostLabel() string {
 	if m.findResultAllHosts {
 		return "all hosts"
@@ -71,8 +60,7 @@ func (m Model) findSummaryLine() string {
 		return "loading…"
 	}
 	if len(m.findRows) == 0 {
-		// The host filter explains an empty result, so it must stay visible
-		// here even though the populated branch below also carries it.
+		// Keep the host filter visible when no rows match.
 		return "(no matches) · host: " + m.findHostLabel()
 	}
 	snaps := 0
@@ -85,11 +73,8 @@ func (m Model) findSummaryLine() string {
 		m.findHostLabel())
 }
 
-// findColLayout describes the find-versions table's columns for a given
-// width. Modified / Size / Snaps are always present. Latest, Permissions,
-// and Owner promote in priority order — Latest first (so the user can see
-// when the most recent backup carrying the version ran), then Permissions
-// and Owner together for parity with the browse table.
+// findColLayout always includes Modified, Size, and Snaps, then promotes Latest,
+// Permissions, and Owner in that order.
 type findColLayout struct {
 	latest     int
 	showLatest bool
@@ -105,9 +90,7 @@ func findLayout(width int) findColLayout {
 	rest := width - baseFixed
 	if rest >= findLatestMin+gap {
 		l.showLatest = true
-		// Take as much as needed for "YYYY-MM-DD HH:MM xxxxxxxx" plus a small
-		// host suffix when there is room. The flex is bounded so a wide
-		// terminal does not strand the column.
+		// Add bounded room for a host suffix when available.
 		l.latest = findLatestMin
 		rest -= findLatestMin + gap
 		if rest >= findHostMin+gap {
@@ -131,8 +114,7 @@ func (m Model) findList(w int) string {
 	header := clip(m.styles.dim.Render(findHeaderRow(l)), tw)
 
 	if m.findLoading() || m.findErr != "" || len(m.findRows) == 0 {
-		// The summary line already explains the empty state ("loading…",
-		// "(no matches)", or the error), so render just the column header here.
+		// The summary owns loading, empty, and error text.
 		return header
 	}
 
@@ -206,9 +188,7 @@ func (m Model) findRow(v *model.FileVersion, selected bool, l findColLayout, tw 
 	return clip(indicator+content, tw)
 }
 
-// findLatestText formats the newest occurrence in a group: "YYYY-MM-DD HH:MM <shortid>",
-// with the host appended when the result is across all hosts (so the user can
-// disambiguate which machine the most recent copy lives on).
+// findLatestText formats the newest occurrence and appends its host for all-host results.
 func findLatestText(v *model.FileVersion, allHosts bool) string {
 	if len(v.Occurrences) == 0 {
 		return emDash
@@ -229,9 +209,7 @@ func findLatestText(v *model.FileVersion, allHosts bool) string {
 	return out
 }
 
-// findVisible is the number of version rows the table shows at once: the height
-// minus the app header, gaps, footer, the two meta rows (path + summary), and
-// the two table auxiliary lines. Floored at 1.
+// findVisible returns row capacity after fixed UI rows, floored at one.
 func (m Model) findVisible() int {
 	_, h := m.effSize()
 	overhead := headerRows + 2*gapRows + m.footerRows() + findMetaRows + findAuxRows

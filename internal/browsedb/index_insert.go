@@ -7,52 +7,38 @@ import (
 	"strings"
 )
 
-// insertBindParams is the number of bound parameters per inserted node row — one
-// per column of the nodes table (sid + 14 node fields). It is fixed by the schema
-// below.
+// insertBindParams is the number of columns bound for each node row.
 const insertBindParams = 15
 
 const dirInsertBindParams = 4
 
-// batchRows is how many node rows accumulate before a single multi-row INSERT is
-// flushed inside the index transaction. The pinned driver's
-// LIMIT_VARIABLE_NUMBER = 32766 caps a batch at floor(32766/15) = 2184 rows; 1000
-// binds 15000 params/batch, ~4× fewer ExecContext round-trips than the old 250
-// with comfortable headroom under that cap.
+// batchRows limits each INSERT to 15,000 parameters, below the driver's 32,766
+// variable limit.
 const batchRows = 1000
 
 const dirBatchRows = 1000
 
-// insertColumns lists the nodes columns in bind order, sid first, no path. The
-// upsert is gone: restic emits each tree path once, so a plain INSERT is correct.
+// insertColumns lists the nodes columns in bind order, sid first, no path. No
+// upsert: restic emits each tree path once, so a plain INSERT is correct.
 const insertColumns = `(sid,parent_did,name,type,is_dir,size,mtime_unix,mtime_offset_sec,mtime_known,perms,uid,gid,owner_known,link_target,name_ci)`
 
-// dirInsertColumns lists the dirs columns in bind order. It is a const beside
-// insertColumns (rather than inline in the SQL builder) so the two families read
-// the same way and the column list cannot drift from dirInsertBindParams.
+// dirInsertColumns lists directory columns in bind order.
 const dirInsertColumns = "(did,sid,path,subtree_size)"
 
-// rowPlaceholder is the "(?,?,...)" group bound for one node row, built once so
-// the bind count cannot drift from insertBindParams.
+// rowPlaceholder derives one row's bind markers from insertBindParams.
 var rowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", insertBindParams), ",") + ")"
 
 var dirRowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?,", dirInsertBindParams), ",") + ")"
 
-// batchInsertSpec carries everything the shared batch-insert path needs that
-// differs between the node and dir families: the table name and column list, the
-// one-row placeholder group, the error-message prefix, the full-batch row count,
-// and the full-batch INSERT SQL (precomputed once by newBatchInsertSpec). Two
-// values exist (nodeInsertSpec, dirInsertSpec); the shared code never switches on
-// which — all table-specific detail rides in the spec.
+// batchInsertSpec configures the shared node and directory batch-insert path.
+// fullSQL is precomputed for the reusable full-batch statement.
 type batchInsertSpec struct {
 	table, columns, placeholder, errPrefix string
 	batchRows                              int
 	fullSQL                                string
 }
 
-// newBatchInsertSpec builds a spec and precomputes its full-batch INSERT SQL once
-// at package init, so cachedFullStmt prepares from a ready string rather than
-// rebuilding it on the first full batch of every transaction.
+// newBatchInsertSpec precomputes a full-batch INSERT specification.
 func newBatchInsertSpec(table, columns, placeholder, errPrefix string, batchRows int) batchInsertSpec {
 	s := batchInsertSpec{table: table, columns: columns, placeholder: placeholder, errPrefix: errPrefix, batchRows: batchRows}
 	s.fullSQL = buildBatchInsertSQL(s, batchRows)
@@ -64,11 +50,9 @@ var (
 	dirInsertSpec  = newBatchInsertSpec("dirs", dirInsertColumns, dirRowPlaceholder, "dir", dirBatchRows)
 )
 
-// flush writes the buffered rows as one multi-row plain INSERT. Full batches
-// reuse a tx-scoped prepared statement; the final partial batch keeps its
-// dynamically-sized SQL. restic emits each tree path once, so duplicate-path
-// collapse is deliberately out of the hot path (there is no unique constraint to
-// upsert against).
+// flush inserts buffered nodes. Full batches reuse a transaction-scoped
+// statement; partial batches use size-specific SQL. Because nodes have no unique
+// constraint, out-of-contract duplicate paths remain distinct.
 func (itx *IndexTx) flush(ctx context.Context) error {
 	if itx.failed != nil {
 		return itx.failed
@@ -87,11 +71,8 @@ func (itx *IndexTx) flush(ctx context.Context) error {
 	return nil
 }
 
-// flushDirs writes every buffered dir row in chunks of at most dirBatchRows.
-// Because all dir rows are held until Commit (so their subtree sizes can be
-// folded), the buffer can far exceed one INSERT's parameter budget; chunking
-// keeps each statement at most dirBatchRows*dirInsertBindParams params, well
-// under the driver's LIMIT_VARIABLE_NUMBER.
+// flushDirs writes buffered directories in parameter-safe chunks. Directories
+// remain buffered until Commit computes their subtree sizes.
 func (itx *IndexTx) flushDirs(ctx context.Context) error {
 	if itx.failed != nil {
 		return itx.failed
@@ -108,17 +89,14 @@ func (itx *IndexTx) flushDirs(ctx context.Context) error {
 	return nil
 }
 
-// flushDirRows writes exactly one chunk of dir rows. A full dirBatchRows chunk
-// reuses the tx-scoped prepared statement; a shorter final chunk builds a partial
-// INSERT sized to its row count.
+// flushDirRows writes one directory chunk, reusing the full-batch statement when
+// possible.
 func (itx *IndexTx) flushDirRows(ctx context.Context, rows []dirRow) error {
 	args := buildDirInsertArgs(itx.sid, rows)
 	return itx.execBatch(ctx, dirInsertSpec, &itx.dirInsertStmt, len(rows), args)
 }
 
-// buildBatchInsertSQL builds the multi-row INSERT for spec sized to n rows:
-// "INSERT INTO <table> <columns> VALUES (…),(…),…". It collapses the two former
-// per-table builders, which differed only in table/columns/placeholder.
+// buildBatchInsertSQL builds an n-row INSERT for spec.
 func buildBatchInsertSQL(spec batchInsertSpec, n int) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO ")
@@ -135,11 +113,8 @@ func buildBatchInsertSQL(spec batchInsertSpec, n int) string {
 	return b.String()
 }
 
-// cachedFullStmt lazily prepares spec's full-batch INSERT (spec.fullSQL, built
-// once at package init) through *cache and reuses it on later calls within the
-// transaction, so the statement is prepared at most once per tx, not per batch.
-// On prepare failure it sets the sticky itx.failed = "browsedb prepare
-// <errPrefix>: %w" and returns it.
+// cachedFullStmt prepares at most one full-batch statement per transaction.
+// Preparation failures become the transaction's sticky error.
 func (itx *IndexTx) cachedFullStmt(ctx context.Context, spec batchInsertSpec, cache **sql.Stmt) (*sql.Stmt, error) {
 	if *cache != nil {
 		return *cache, nil
@@ -153,20 +128,13 @@ func (itx *IndexTx) cachedFullStmt(ctx context.Context, spec batchInsertSpec, ca
 	return stmt, nil
 }
 
-// execBatch runs one batch of rowCount rows (already materialized into args) for
-// spec. A full batch (rowCount == spec.batchRows) reuses the tx-scoped prepared
-// statement via cachedFullStmt; a shorter batch builds a partial INSERT sized to
-// its row count. ExecContext failures set the sticky itx.failed = "browsedb
-// <errPrefix>: %w"; cachedFullStmt errors propagate unchanged (so a prepare
-// failure stays "browsedb prepare <errPrefix>: %w" and is never double-wrapped).
-// rowCount is passed explicitly (callers pass len(rows)) so bind-param counts stay
-// out of the shared path. It owns neither the insertedRows counter nor any
-// chunking — callers keep those.
+// execBatch inserts materialized arguments for rowCount rows. Full batches reuse
+// a prepared statement; partial batches build size-specific SQL. Execution
+// failures become sticky, while preparation failures propagate unchanged.
+// Callers retain responsibility for chunking and insertedRows accounting.
 func (itx *IndexTx) execBatch(ctx context.Context, spec batchInsertSpec, cache **sql.Stmt, rowCount int, args []any) error {
 	if rowCount == spec.batchRows {
-		// stmt is a tx-scoped prepared statement cached in *cache for reuse across
-		// batches; database/sql closes it automatically when itx.tx commits or rolls
-		// back, so it must not be closed per call.
+		// database/sql closes the cached statement when the transaction finishes.
 		stmt, err := itx.cachedFullStmt(ctx, spec, cache) //nolint:sqlclosecheck // tx-scoped cached stmt, auto-closed on tx finalize
 		if err != nil {
 			return err

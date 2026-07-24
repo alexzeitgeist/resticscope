@@ -11,9 +11,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
-// CacheEntry is one repository's restic cache directory found on disk under the
-// restic-cache root. Name is the directory's name — a sanitized repo name, so a
-// known repo's entry matches resticx.RepoCacheName(repo.Name).
+// CacheEntry describes one repository cache directory. Name is its sanitized
+// directory name as produced by resticx.RepoCacheName.
 type CacheEntry struct {
 	Name     string
 	Path     string
@@ -40,17 +39,10 @@ func (r PruneResult) Pruned() int {
 	return n
 }
 
-// PruneCache reclaims space from restic's own per-repo cache directories, which
-// resticscope keeps under <cache_dir>/restic-cache/. This is distinct from the
-// per-repo state JSON, which is resticscope's own cache and is never touched
-// here.
-//
-// By default only orphaned caches are removed — directories with no matching
-// configured repo, left behind by a removed or renamed repo — so the caches
-// backing live repos are preserved. When all is true every cache is removed
-// (restic transparently rebuilds it on next access). When dryRun is true nothing
-// is deleted; the result reports what would be removed. A missing or unset cache
-// directory is not an error: the result is simply empty.
+// PruneCache removes restic's per-repository caches without touching resticscope
+// state JSON. By default it selects only caches without a configured repository;
+// all selects every cache, and dryRun reports without deleting. Restic rebuilds
+// removed caches on demand. Missing or unset cache storage returns an empty result.
 func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, error) {
 	root := resticx.CacheRoot(a.Cfg.Global.CacheDir)
 	res := PruneResult{Root: root}
@@ -61,7 +53,7 @@ func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, er
 	dirEntries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return res, nil // never refreshed yet; nothing to prune
+			return res, nil
 		}
 		return res, fmt.Errorf("read restic cache dir: %w", err)
 	}
@@ -71,8 +63,7 @@ func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, er
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		// restic keeps each repo's cache in its own subdirectory; ignore any
-		// stray files at the root rather than deleting things we did not create.
+		// Ignore root files rather than deleting entries we did not create.
 		if !de.IsDir() {
 			continue
 		}
@@ -105,8 +96,7 @@ func (a *App) PruneCache(ctx context.Context, all, dryRun bool) (PruneResult, er
 	return res, nil
 }
 
-// knownCacheNames is the set of cache directory names that back a configured
-// repo, keyed exactly as the directories are named on disk.
+// knownCacheNames returns configured repository cache directory names.
 func (a *App) knownCacheNames() map[string]bool {
 	known := make(map[string]bool, len(a.Cfg.Repos))
 	for _, r := range a.Cfg.Repos {
@@ -115,8 +105,7 @@ func (a *App) knownCacheNames() map[string]bool {
 	return known
 }
 
-// dirSize sums the sizes of all regular files under path, honoring ctx so a
-// prune over a huge cache stays cancellable.
+// dirSize sums regular files while honoring cancellation.
 func dirSize(ctx context.Context, path string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {

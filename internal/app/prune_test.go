@@ -9,8 +9,7 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
-// pruneApp builds an App whose config declares the named repos and points the
-// cache dir at root. PruneCache needs only Cfg (and an optional logger).
+// pruneApp configures repositories and cache storage for prune tests.
 func pruneApp(root string, repoNames ...string) *App {
 	repos := make([]config.Repo, len(repoNames))
 	for i, n := range repoNames {
@@ -22,9 +21,8 @@ func pruneApp(root string, repoNames ...string) *App {
 	}}
 }
 
-// seedCache writes a restic-cache subdirectory for name containing a single file
-// of the given size, and returns the directory path. The name is sanitized the
-// same way restic's RESTIC_CACHE_DIR is, so it matches what PruneCache scans.
+// seedCache creates a named repository cache with one sized file and returns its
+// sanitized directory path.
 func seedCache(t *testing.T, cacheDir, name string, size int) string {
 	t.Helper()
 	dir := filepath.Join(resticx.CacheRoot(cacheDir), resticx.RepoCacheName(name))
@@ -46,8 +44,7 @@ func entryByName(res PruneResult, name string) (CacheEntry, bool) {
 	return CacheEntry{}, false
 }
 
-// By default prune removes only orphaned caches — those with no configured repo
-// — and leaves the caches backing live repos in place.
+// Default pruning removes orphaned caches and keeps configured repositories.
 func TestPruneCacheOrphansOnly(t *testing.T) {
 	cacheDir := t.TempDir()
 	keepDir := seedCache(t, cacheDir, "live-repo", 100)
@@ -122,8 +119,7 @@ func TestPruneCacheDryRun(t *testing.T) {
 	}
 }
 
-// Orphan detection uses the same sanitization as RESTIC_CACHE_DIR, so a repo
-// whose name needs sanitizing is still matched to its on-disk cache and kept.
+// Orphan detection must use the same name sanitization as RESTIC_CACHE_DIR.
 func TestPruneCacheMatchesSanitizedNames(t *testing.T) {
 	cacheDir := t.TempDir()
 	dir := seedCache(t, cacheDir, "home/server:1", 100) // dir is "home_server_1"
@@ -141,8 +137,7 @@ func TestPruneCacheMatchesSanitizedNames(t *testing.T) {
 	}
 }
 
-// A stray file directly under the restic-cache root is left untouched: prune
-// only ever removes per-repo subdirectories it expects restic to have created.
+// Root files are not treated as removable repository caches.
 func TestPruneCacheIgnoresStrayFiles(t *testing.T) {
 	cacheDir := t.TempDir()
 	root := resticx.CacheRoot(cacheDir)

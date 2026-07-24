@@ -7,10 +7,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/config"
 )
 
-// RepoCheck is the reachability verdict for one configured repo. Err is nil
-// when the repo was reached; otherwise it is a secret-resolution failure or a
-// classified restic error. Both are already free of secret values, so a
-// RepoCheck is always safe to print.
+// RepoCheck is a repository reachability verdict. Err is nil on success;
+// otherwise it contains a printable, secret-free resolution or restic error.
 type RepoCheck struct {
 	Name string
 	Err  error
@@ -19,15 +17,10 @@ type RepoCheck struct {
 // OK reports whether the repo was reachable.
 func (r RepoCheck) OK() bool { return r.Err == nil }
 
-// Check reaches every configured repo concurrently — bounded by
-// global.parallelism — by resolving its secrets and running `restic cat
-// config`. Results come back in config order, one per repo. A per-repo failure
-// is recorded in its RepoCheck.Err, never returned as the top-level error; the
-// top-level error is non-nil only when the context is cancelled.
-//
-// Check makes no assumptions about restic's version (the caller gates that with
-// resticx.AtLeastMinVersion) and never touches the cache: it is a liveness
-// probe for `resticscope check`, not a refresh.
+// Check probes every configured repository with bounded concurrency and returns
+// results in config order. Repository failures populate RepoCheck.Err; the
+// top-level error reports only context cancellation. Check does not inspect the
+// restic version or update the cache.
 func (a *App) Check(ctx context.Context) ([]RepoCheck, error) {
 	results := make([]RepoCheck, len(a.Cfg.Repos))
 	sem := make(chan struct{}, a.parallelism())
@@ -52,11 +45,9 @@ func (a *App) Check(ctx context.Context) ([]RepoCheck, error) {
 	return results, ctx.Err()
 }
 
-// checkOne resolves a repo's secrets and probes it with `restic cat config`.
-// Any returned error already excludes secret values (secrets.Resolve and
-// resticx both guarantee this), so it is safe to surface to the user.
+// checkOne resolves repository secrets and returns only errors safe to display.
 func (a *App) checkOne(ctx context.Context, r config.Repo) error {
-	// credential is optional (local/sftp backends); when set it must resolve.
+	// Credential is optional for local and SFTP backends; when set, it must resolve.
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
 		return err

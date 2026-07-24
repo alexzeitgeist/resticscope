@@ -17,9 +17,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// newTestDB opens an encrypted browse DB in a temp dir with a fresh random key.
-// The pool is closed on cleanup; the temp dir (and DB file) is removed by the
-// testing framework. maxDisk==0 means unlimited.
+// newTestDB opens an encrypted database under t.TempDir with a fresh key.
+// Cleanup closes the pool; a zero maxDisk is unlimited.
 func newTestDB(t *testing.T, maxDisk int64) (*DB, string, []byte) {
 	t.Helper()
 	dir := t.TempDir()
@@ -166,7 +165,7 @@ func TestListDirOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDir(/): %v", err)
 	}
-	// Dirs first (case-insensitive, A before a by binary tie-break), then files.
+	// Directories sort first, case-insensitively, with a binary tie-break.
 	if want := []string{"A", "a", "etc", "var", "b", "Z"}; !eqStrings(names(root), want) {
 		t.Errorf("ListDir(/) = %v, want %v", names(root), want)
 	}
@@ -287,9 +286,8 @@ func TestDuplicatePathsNotCollapsedWithinBatch(t *testing.T) {
 }
 
 func TestCrossFlushDuplicatesNotCollapsed(t *testing.T) {
-	// The unique constraint and the upsert are gone: restic emits each tree path
-	// exactly once, so the plain INSERT trusts that. Duplicates are out of contract
-	// and are NOT collapsed, even across flushes.
+	// Restic emits each tree path once, so duplicates are outside the contract and
+	// remain distinct even across flushes.
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
 	repo, snap := "repo", "snap"
@@ -378,9 +376,7 @@ func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginIndex: %v", err)
 	}
-	// Dirs are now held until Commit (so their subtree sizes can be folded), so the
-	// buffer is never trimmed mid-stream: reserving a full dirBatchRows worth leaves
-	// root + dirBatchRows rows buffered.
+	// Directories remain buffered until Commit so subtree sizes can be folded.
 	for i := range dirBatchRows {
 		if _, err := itx.ensureCleanDir(ctx, fmt.Sprintf("/d%05d", i)); err != nil {
 			t.Fatalf("ensureCleanDir: %v", err)
@@ -392,8 +388,7 @@ func TestDirBatchFlushUsesPreparedStatement(t *testing.T) {
 	if err := itx.Commit(ctx); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// The first commit-time chunk is a full dirBatchRows batch, so it prepares and
-	// reuses the statement.
+	// A full first chunk prepares the reusable statement.
 	if itx.dirInsertStmt == nil {
 		t.Error("full dir batch did not prepare the reusable insert statement")
 	}
@@ -463,12 +458,10 @@ func TestIsIndexedLifecycle(t *testing.T) {
 	if ok, _ := db.IsIndexed(ctx, repo, snap); ok {
 		t.Error("IsIndexed true after rollback")
 	}
-	// Idempotent rollback.
 	if err := itx.Rollback(); err != nil {
 		t.Errorf("second Rollback: %v", err)
 	}
 
-	// Re-index after rollback succeeds.
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/x"}})
 	if ok, _ := db.IsIndexed(ctx, repo, snap); !ok {
 		t.Error("IsIndexed false after commit")
@@ -485,8 +478,7 @@ func TestPoisonedTx(t *testing.T) {
 	if err := itx.Add(ctx, model.BrowseNode{Path: "/" + secret, Name: secret}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	// Poison: roll back the underlying tx out from under the IndexTx so the next
-	// flush hits a dead transaction.
+	// Roll back underneath IndexTx so the next flush poisons the wrapper.
 	if err := itx.tx.Rollback(); err != nil {
 		t.Fatalf("inner Rollback: %v", err)
 	}
@@ -511,8 +503,7 @@ func TestPoisonedTx(t *testing.T) {
 }
 
 func TestDiskLimit(t *testing.T) {
-	// A 1-byte ceiling: the schema alone already exceeds it, so Commit's final
-	// disk check trips ErrBrowseDiskLimit and rolls back.
+	// The schema exceeds a one-byte ceiling, forcing Commit to roll back.
 	db, _, _ := newTestDB(t, 1)
 	ctx := t.Context()
 	repo, snap := "repo", "snap"
@@ -561,9 +552,8 @@ func TestMarkerConflict(t *testing.T) {
 
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret, Name: secret}})
 
-	// A caller that bypasses IsIndexed and re-indexes an already-committed key is
-	// turned away at BeginIndex with a path-free errAlreadyIndexed — not a silent
-	// replace. The original index is untouched (the second run never opens a tx).
+	// BeginIndex rejects an already committed key without replacing its index or
+	// exposing a path.
 	itx, err := db.BeginIndex(ctx, repo, snap)
 	assertErrPathFree(t, err, secret)
 	if !errors.Is(err, errAlreadyIndexed) {
@@ -586,8 +576,7 @@ func TestDirIDRootReservationRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginIndex: %v", err)
 	}
-	// The root dir is reserved in memory (its did + dirBuf row) but not written to
-	// the DB until Commit, so check the in-memory reservation rather than the table.
+	// The root is reserved in memory but is not persisted until Commit.
 	did := itx.dirs["/"]
 	if did == 0 {
 		t.Fatal("root did was not allocated")
@@ -649,9 +638,8 @@ func TestDirIDsOutOfOrderParentMetadata(t *testing.T) {
 	}
 }
 
-// dirSubtreeSize reads the persisted recursive subtree size for an interned
-// directory path. The path always exists for a committed snapshot (including the
-// root, which ListDir never returns), so any query error is fatal.
+// dirSubtreeSize returns the persisted recursive size of an interned path.
+// Committed snapshots always contain the requested path, including the root.
 func dirSubtreeSize(t *testing.T, db *DB, repo, snap, p string) int64 {
 	t.Helper()
 	var size int64
@@ -718,8 +706,7 @@ func TestSubtreeSizesRollUp(t *testing.T) {
 	if got := dirSubtreeSize(t, db, repo, snap, "/home"); got != 150 {
 		t.Errorf("/home subtree = %d, want 150", got)
 	}
-	// The root is not returned by ListDir (root nodes are skipped at index time), so
-	// assert its total directly. It equals the whole tree's file bytes.
+	// ListDir omits the root, so query its whole-tree total directly.
 	if got := dirSubtreeSize(t, db, repo, snap, "/"); got != 150 {
 		t.Errorf("/ subtree = %d, want 150", got)
 	}
@@ -760,10 +747,8 @@ func TestSearchDirCarriesSubtreeSize(t *testing.T) {
 	}
 }
 
-// TestDirCommitChunkingExceedsParamCap indexes more unique directories than a
-// single 4-column dir INSERT could bind (floor(32766/4) = 8191), pinning the
-// commit-time flushDirs chunking so Option A can never silently become one
-// oversized INSERT. The big root listing also exercises dirSizes path chunking.
+// TestDirCommitChunkingExceedsParamCap exceeds one four-column INSERT's 32,766
+// parameter limit. It covers both flushDirs and dirSizes chunking.
 func TestDirCommitChunkingExceedsParamCap(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -776,9 +761,7 @@ func TestDirCommitChunkingExceedsParamCap(t *testing.T) {
 	if err := itx.Add(ctx, model.BrowseNode{Path: "/base", IsDir: true}); err != nil {
 		t.Fatalf("Add(/base): %v", err)
 	}
-	// Each subdirectory is a real node (so it lists under /base) holding one file,
-	// so /base has dirCount children and ListDir(/base) drives dirSizes path
-	// chunking past dirSizePathChunk.
+	// Real directory nodes make ListDir drive dirSizes beyond dirSizePathChunk.
 	for i := range dirCount {
 		if err := itx.Add(ctx, model.BrowseNode{Path: fmt.Sprintf("/base/d%05d", i), IsDir: true}); err != nil {
 			t.Fatalf("Add(dir): %v", err)
@@ -846,11 +829,10 @@ func TestEncryptionAtRest(t *testing.T) {
 	const secret2 = "TOPSECRET_beta_marker_plugh"
 
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret1, Name: secret1}})
-	// Committed: the filename lives only in the encrypted db.sqlite.
+	// A committed filename must appear only as ciphertext.
 	assertNoPlaintext(t, dir, secret1)
 
-	// secret1's sid and root did back the manual node inserts below (the stored
-	// path column is gone; a node row references its parent directory by did).
+	// Reuse the committed snapshot and root IDs for manual node inserts.
 	var sid, rootDID int64
 	if err := db.pool.QueryRowContext(ctx,
 		`SELECT sid FROM snapshots WHERE repo=? AND snapshot=?`, repo, snap).Scan(&sid); err != nil {
@@ -860,11 +842,8 @@ func TestEncryptionAtRest(t *testing.T) {
 		`SELECT did FROM dirs WHERE sid=? AND path='/'`, sid).Scan(&rootDID); err != nil {
 		t.Fatalf("root did lookup: %v", err)
 	}
-	// Force a rollback journal to exist while we grep, so the encryption proof is
-	// not a vacuous "no journal existed" pass. journal_mode=DELETE keeps the journal
-	// on disk (and encrypted by the adiantum VFS); the manual INSERT adds a fresh
-	// node and the UPDATE touches secret1's committed page, forcing its original
-	// (ciphertext) content into the journal.
+	// Force an on-disk rollback journal so the encryption check cannot pass merely
+	// because no journal exists. The update copies a committed page into it.
 	tx, err := db.pool.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("manual BeginTx: %v", err)
@@ -887,8 +866,7 @@ func TestEncryptionAtRest(t *testing.T) {
 		t.Fatalf("manual Rollback: %v", err)
 	}
 
-	// Close only the pool so the file persists for the reopen below, then prove a
-	// different key cannot read it.
+	// Keep the file for a wrong-key reopen by closing only the pool.
 	if err := db.pool.Close(); err != nil {
 		t.Fatalf("pool close: %v", err)
 	}
@@ -900,7 +878,6 @@ func TestEncryptionAtRest(t *testing.T) {
 		_ = wdb.pool.Close()
 	}
 
-	// The correct key reopens and reads.
 	rdb, err := Open(filepath.Join(dir, "db.sqlite"), key, 0)
 	if err != nil {
 		t.Fatalf("reopen with correct key: %v", err)
@@ -909,8 +886,7 @@ func TestEncryptionAtRest(t *testing.T) {
 		t.Errorf("reopened IsIndexed = %v, %v; want true, nil", ok, err)
 	}
 
-	// Close closes the pool only; whole-directory teardown is the session
-	// wrapper's job (covered by cmd's TestBrowseStoreCloseRemovesSessionDir).
+	// Close leaves whole-directory teardown to the session wrapper.
 	if err := rdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -932,10 +908,8 @@ func TestSQLiteURIPathEscaping(t *testing.T) {
 	}
 }
 
-// TestEncryptionAtRestTrickyCacheDirPath proves the adiantum VFS is NOT dropped
-// when the DB path contains characters SQLite treats specially in a "file:" URI.
-// A dropped VFS would silently open the DB on the plaintext VFS, writing browsed
-// filenames to disk in the clear (privacy-contract breach).
+// TestEncryptionAtRestTrickyCacheDirPath ensures SQLite URI metacharacters do
+// not drop the Adiantum VFS and expose browsed filenames as plaintext.
 func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
 	// '#' and '%' are valid filename chars on every supported OS; '?' is valid on
 	// POSIX but not on Windows, so only add it off-Windows.
@@ -957,14 +931,12 @@ func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
 	const secret = "TOPSECRET_trickypath_marker_qux"
 	mustIndex(t, db, repo, snap, []model.BrowseNode{{Path: "/" + secret, Name: secret}})
 
-	// The DB must actually live where we asked (the '%'/'?'/'#' must round-trip,
-	// not redirect the open elsewhere) and must be ciphertext on disk.
+	// Metacharacters must round-trip without redirecting the encrypted database.
 	if _, err := os.Stat(filepath.Join(dir, "db.sqlite")); err != nil {
 		t.Fatalf("db.sqlite not created under tricky path: %v", err)
 	}
 	assertNoPlaintext(t, dir, secret)
 
-	// Prove it is genuinely keyed: a different key cannot read it.
 	if err := db.pool.Close(); err != nil {
 		t.Fatalf("pool close: %v", err)
 	}
@@ -976,10 +948,8 @@ func TestEncryptionAtRestTrickyCacheDirPath(t *testing.T) {
 	}
 }
 
-// TestPathFreeFSError is the durable anchor for the path-free invariant that both
-// browsedb and the cmd-level session wrapper now route through (a filesystem error
-// must never carry a filename). It is privilege-independent, unlike a forced
-// RemoveAll/Remove failure, so it always exercises the stripping logic.
+// TestPathFreeFSError covers the shared path-stripping invariant without relying
+// on privileges to force RemoveAll or Remove failures.
 func TestPathFreeFSError(t *testing.T) {
 	if got := PathFreeFSError(nil); got != nil {
 		t.Errorf("PathFreeFSError(nil) = %v, want nil", got)
@@ -998,8 +968,7 @@ func TestPathFreeFSError(t *testing.T) {
 		t.Errorf("PathFreeFSError(*os.PathError) lost the inner errno: %v", got)
 	}
 
-	// A non-PathError (or a PathError whose inner Err is nil) collapses to the
-	// path-free ErrFilesystem sentinel rather than echoing the original string.
+	// Errors without a usable PathError cause collapse to ErrFilesystem.
 	if got := PathFreeFSError(errors.New("boom /cache/" + secret)); !errors.Is(got, ErrFilesystem) {
 		t.Errorf("PathFreeFSError(generic) = %v, want ErrFilesystem", got)
 	}
@@ -1155,11 +1124,9 @@ func mkSession(t *testing.T, dir string) {
 	}
 }
 
-// SubtreeCounts walks by parent-directory path prefix: recursive totals under
-// the requested dir with the dir itself excluded, symlinks in neither bucket,
-// byte-exact prefix matching (a "_" sibling must not bleed in as a single-char
-// wildcard, and case-variant siblings like /A must not match /a — SQLite LIKE
-// would do both), and known=false for a never-indexed snapshot.
+// SubtreeCounts excludes the requested directory and symlinks from recursive
+// totals. Prefix matching is byte-exact rather than SQLite LIKE semantics, and
+// never-indexed snapshots report known=false.
 func TestSubtreeCounts(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	mustIndex(t, db, "repo-a", "snap1", []model.BrowseNode{

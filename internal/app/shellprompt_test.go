@@ -21,8 +21,7 @@ func TestPromptTag(t *testing.T) {
 func TestBashPromptRC(t *testing.T) {
 	rc := bashPromptRC("(resticscope·repo-a)")
 
-	// The user's own startup must run first — the rcfile replaces ~/.bashrc for
-	// this launch, so skipping it would silently drop aliases/PATH/etc.
+	// The replacement rcfile must preserve the user's startup first.
 	if !strings.Contains(rc, `[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"`) {
 		t.Errorf("rcfile does not source the user's ~/.bashrc:\n%s", rc)
 	}
@@ -33,13 +32,11 @@ func TestBashPromptRC(t *testing.T) {
 	if !strings.Contains(rc, `"$_resticscope_ps1_tag"*) ;;`) {
 		t.Errorf("rcfile missing the already-tagged guard:\n%s", rc)
 	}
-	// The hook must append to PROMPT_COMMAND (after framework hooks), never
-	// replace it.
+	// Append after framework hooks without replacing PROMPT_COMMAND.
 	if !strings.Contains(rc, "${PROMPT_COMMAND:+$PROMPT_COMMAND; }_resticscope_tag_prompt") {
 		t.Errorf("rcfile does not append to PROMPT_COMMAND:\n%s", rc)
 	}
-	// SGR escapes must be wrapped in \[ \] so bash line editing measures the
-	// prompt width correctly.
+	// Mark SGR escapes zero-width for line editing.
 	if !strings.Contains(rc, `\[\e[1;33m\](resticscope·repo-a)\[\e[0m\] `) {
 		t.Errorf("rcfile prefix not zero-width-wrapped:\n%s", rc)
 	}
@@ -50,16 +47,14 @@ func TestZshPromptFiles(t *testing.T) {
 	if !strings.Contains(env, `[ -f "$HOME"/.zshenv ] && . "$HOME"/.zshenv`) {
 		t.Errorf(".zshenv does not forward to the user's zshenv:\n%s", env)
 	}
-	// A user zshenv that reassigns ZDOTDIR (export ZDOTDIR=$HOME/.zsh) must not
-	// skip the tag rc: the choice is remembered and ZDOTDIR re-pointed here.
+	// Preserve user ZDOTDIR reassignment while still reaching the tag rc.
 	if !strings.Contains(env, `_resticscope_user_zdotdir="$ZDOTDIR"`) ||
 		!strings.Contains(env, "ZDOTDIR='/tmp/zdot-x'") {
 		t.Errorf(".zshenv does not capture a user ZDOTDIR reassignment:\n%s", env)
 	}
 
 	rc := zshPromptZshrc("(resticscope·repo-a)", `"$HOME"`, false)
-	// Launched without a ZDOTDIR, the temp value must be unset again before the
-	// user rc runs, so nothing the rc reads sees the throwaway directory.
+	// Hide temporary ZDOTDIR from a user rc launched without one.
 	if !strings.Contains(rc, "unset ZDOTDIR") {
 		t.Errorf(".zshrc does not unset the temp ZDOTDIR:\n%s", rc)
 	}
@@ -73,8 +68,7 @@ func TestZshPromptFiles(t *testing.T) {
 	if !strings.Contains(rc, "%B%F{yellow}(resticscope·repo-a)%f%b ") {
 		t.Errorf(".zshrc missing the zsh-styled tag:\n%s", rc)
 	}
-	// The tag is a precmd appended last, so it survives frameworks that rewrite
-	// PROMPT each cycle; the guard prevents accumulation on static prompts.
+	// Append after framework rewrites and guard against accumulation.
 	if !strings.Contains(rc, "precmd_functions+=(_resticscope_tag_prompt)") {
 		t.Errorf(".zshrc missing the precmd hook:\n%s", rc)
 	}
@@ -91,28 +85,22 @@ func TestZshPromptFiles(t *testing.T) {
 
 func TestFishPromptInit(t *testing.T) {
 	init := fishPromptInit("(resticscope·repo-a)")
-	// -C runs after config.fish, so copying fish_prompt wraps whatever the user
-	// or a framework installed there.
+	// Copy the prompt installed by config.fish before wrapping it.
 	if !strings.Contains(init, "functions -c fish_prompt _resticscope_orig_prompt") {
 		t.Errorf("init does not preserve the original prompt:\n%s", init)
 	}
 	if !strings.Contains(init, "'(resticscope·repo-a) '") {
 		t.Errorf("init missing the quoted tag:\n%s", init)
 	}
-	// If the original prompt could not be copied, a minimal fallback must keep
-	// the shell usable rather than showing the tag alone.
+	// Keep a usable fallback when no original prompt exists.
 	if !strings.Contains(init, "prompt_pwd") {
 		t.Errorf("init missing the fallback prompt:\n%s", init)
 	}
-	// _resticscope_orig_prompt must appear three times: the `functions -c` copy,
-	// the `if functions -q` guard, and the then-body that actually invokes it.
-	// A dropped then-body (only two occurrences) leaves the wrapper a no-op.
+	// Require copy, guard, and invocation references so the wrapper is not a no-op.
 	if got := strings.Count(init, "_resticscope_orig_prompt"); got != 3 {
 		t.Errorf("expected 3 _resticscope_orig_prompt references, got %d:\n%s", got, init)
 	}
-	// fish blocks are closed with `end`: the function plus its inner `if` need
-	// exactly two. A malformed body (e.g. a dropped `end`) makes fish abort with
-	// "Missing end to balance this function definition", so guard the balance.
+	// The function and nested if each require a balanced end.
 	ends := 0
 	for line := range strings.SplitSeq(init, "\n") {
 		if strings.TrimSpace(line) == "end" {
@@ -169,9 +157,7 @@ func TestApplyPromptTagZsh(t *testing.T) {
 	if len(sess.execArgv) != 0 {
 		t.Errorf("zsh needs no execArgv override, got %v", sess.execArgv)
 	}
-	// The plain env keeps the user's own ZDOTDIR untouched: `exec repo -- cmd`
-	// reuses sess.Env for non-interactive commands, which must never see the
-	// interactive prompt scaffolding.
+	// Non-interactive Env must retain user ZDOTDIR without prompt scaffolding.
 	if v, _ := envLookup(sess.Env, "ZDOTDIR"); v != "/custom/zdot" {
 		t.Errorf("sess.Env ZDOTDIR = %q, want the user's untouched value", v)
 	}
@@ -234,8 +220,7 @@ func TestApplyPromptTagUnknownShellNoop(t *testing.T) {
 	}
 }
 
-// The full session path: a bash repo shell launches via the generated rcfile,
-// and one Cleanup removes both the password file and the rcfile.
+// Full-session cleanup removes both password and prompt files.
 func TestShellSessionBashPromptTag(t *testing.T) {
 	a := shellApp("file", shellSecrets{mat: secrets.Material{ResticPassword: "pw"}})
 	a.Cfg.Global.Shell = "/usr/bin/bash"
@@ -267,8 +252,7 @@ func TestShellSessionBashPromptTag(t *testing.T) {
 	}
 }
 
-// The local "shell here" session is tagged with the bare app name — no repo is
-// in scope, but the user must still see it is resticscope's shell.
+// A local shell uses the bare application tag because no repository is in scope.
 func TestLocalShellSessionPromptTag(t *testing.T) {
 	t.Setenv("SHELL", "/usr/bin/bash")
 	a := localShellApp("")

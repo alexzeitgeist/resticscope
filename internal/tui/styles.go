@@ -13,10 +13,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// styles holds the Lip Gloss styles for the TUI. Colors come from the
-// configured theme.Palette (gruvbox dark by default; see the [theme] config
-// block); Lip Gloss degrades gracefully on limited terminals and honors
-// NO_COLOR for free.
+// styles contains theme-derived Lip Gloss styles. Lip Gloss adapts them to
+// limited-color and NO_COLOR terminals.
 type styles struct {
 	title        lipgloss.Style
 	dim          lipgloss.Style
@@ -36,9 +34,8 @@ type styles struct {
 	help         helpbubble.Styles
 	glyph        map[model.Status]lipgloss.Style
 
-	// Snapshot-diff change-type styles. Each color is a documented palette role:
-	// green=added, red=removed, yellow=modified, blue/dim=metadata-only,
-	// aqua=type-changed, orange+bold=bitrot (loud — it is a corruption signal).
+	// Diff colors follow palette roles; bitrot is orange and bold to signal
+	// corruption.
 	chgAdded       lipgloss.Style
 	chgRemoved     lipgloss.Style
 	chgModified    lipgloss.Style
@@ -47,11 +44,8 @@ type styles struct {
 	chgBitrot      lipgloss.Style
 }
 
-// paletteColor turns one palette value into a lipgloss color. The keyword
-// "default" maps to NoColor — lipgloss then draws no color at all, so the text
-// keeps the terminal's own default — which is what lets the built-in
-// "terminal" theme (and any per-role "default" override) defer to the
-// terminal scheme.
+// paletteColor maps "default" to NoColor so terminal themes and per-role
+// overrides can retain the terminal's own color.
 func paletteColor(s string) color.Color {
 	if s == "default" {
 		return lipgloss.NoColor{}
@@ -120,14 +114,8 @@ func newStyles(p theme.Palette) styles {
 	}
 }
 
-// filepickerStyles maps the embedded bubbles filepicker (the extract
-// target-root overlay) onto the same palette roles the rest of the TUI uses:
-// orange accent for the cursor row, grey for metadata (permissions, sizes),
-// dim for the disabled/empty cases. Directories are blue — the navigable,
-// selectable rows — while plain files are grey, since this picker only ever
-// selects directories. Starting from DefaultStyles keeps the layout-bearing
-// bits (the right-aligned size column width, which the picker's cursor-row
-// renderer reads back via GetWidth) intact.
+// filepickerStyles maps the directory-only target picker to the TUI palette.
+// DefaultStyles preserves layout values consumed by its renderer.
 func filepickerStyles(p theme.Palette) filepicker.Styles {
 	var (
 		grey   = paletteColor(p.Grey)
@@ -151,17 +139,9 @@ func filepickerStyles(p theme.Palette) filepicker.Styles {
 	return s
 }
 
-// themeTerminalColors resolves the [theme] block to the terminal default
-// background/foreground View paints each frame (OSC 11/10). Both are nil —
-// paint nothing, keep the terminal's own scheme — when the user opted out via
-// `background = false`. A non-hex bg/fg — an ANSI-256 code or the keyword
-// "default" (the "terminal" theme) — also skips painting its channel: OSC
-// 10/11 take a concrete color, not a palette index, so Bubble Tea would
-// flatten an ANSI value to the fixed xterm RGB table instead of the
-// terminal's own slot — and for "the terminal's slot N" or "the terminal
-// default" the terminal's existing default already is that color, so leaving
-// it untouched is the faithful rendering. Every other built-in theme uses hex
-// bg/fg and paints normally.
+// themeTerminalColors returns concrete OSC 10/11 colors, or nil when background
+// painting is disabled. Non-hex values also remain nil because translating an
+// ANSI index or "default" would replace the terminal's own palette slot.
 func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
 	if !t.Background {
 		return nil, nil
@@ -176,29 +156,26 @@ func themeTerminalColors(t config.Theme) (bg, fg color.Color) {
 	return bg, fg
 }
 
-// nameWidth is the fixed column width for repo names in the list; labelWidth is
-// the fixed column width for field labels in the detail view — sized to its
-// longest label, "Repository", plus one separating space.
+// nameWidth sizes repository names; labelWidth fits "Repository" plus a space.
 const (
 	nameWidth  = 24
 	labelWidth = 11
 )
 
-// Glyph vocabulary — one glyph per role across every surface (UX plan phase 4):
-//
+// Glyph vocabulary: one glyph per role across every surface.
+
 //	·  separates inline values (titles, summaries, status lines, the shell banner)
 //	•  separates key chips in the footer bar (the bubbles/help default), and
 //	   marks the green/healthy repo in the list status column — two surfaces
 //	   that never share a line, so the reuse reads cleanly
+
 //	—  "no value" in table cells; also the prose dash inside sentences
 //	×  the failure cross (status glyph, extract error headline)
 //	…  truncation and "still loading"
-//
+
 // New text should pick from this table rather than introduce a lookalike.
 
-// statusWord maps a status to the semantic phrase the detail title shows next
-// to the glyph — what the status means, not the literal color name. The help
-// legend and list-row texts have their own phrasings and stay independent.
+// statusWord returns the detail title's phrase for a status.
 func statusWord(s model.Status) string {
 	switch s {
 	case model.StatusGreen:
@@ -214,13 +191,9 @@ func statusWord(s model.Status) string {
 	}
 }
 
-// statusGlyph maps a status to its one-cell list glyph (plan §5). Every glyph
-// here must share one terminal-display-width class so the status column lines up
-// row to row: the green/amber/grey glyphs are East-Asian "ambiguous" width, so
-// the red glyph is `×` (U+00D7, also ambiguous) rather than the heavier Dingbat
-// `✕` (U+2715). go-runewidth — and so lipgloss.Width, which sizes the column —
-// calls `✕` one cell, but some fonts/terminals draw that Dingbat double-width,
-// which shoved every error row one column right of the healthy rows.
+// statusGlyph returns one-cell status symbols from the same display-width
+// class. The U+00D7 multiplication sign avoids fonts that draw the U+2715
+// Dingbat cross double-width.
 func statusGlyph(s model.Status) string {
 	switch s {
 	case model.StatusGreen:

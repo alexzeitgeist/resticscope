@@ -21,8 +21,7 @@ func TestThemeTerminalColors(t *testing.T) {
 		t.Errorf("terminal colors = %v/%v, want the gruvbox-light bg/fg", bg, fg)
 	}
 
-	// background = false opts out of painting entirely: the terminal keeps its
-	// own scheme (transparency etc.) and only styled foregrounds are themed.
+	// Disabling background painting preserves the terminal's own scheme.
 	bg, fg = themeTerminalColors(config.Theme{Name: "gruvbox-light", Background: false})
 	if bg != nil || fg != nil {
 		t.Errorf("background=false must yield nil terminal colors, got %v/%v", bg, fg)
@@ -30,9 +29,7 @@ func TestThemeTerminalColors(t *testing.T) {
 }
 
 func TestTerminalThemeIsUnthemed(t *testing.T) {
-	// The "terminal" theme is the no-theming escape hatch: nothing painted,
-	// and "default" roles styled with NoColor so lipgloss draws no color and
-	// the terminal's own defaults show through.
+	// The terminal theme paints nothing and maps default roles to NoColor.
 	if c := paletteColor("default"); c != (lipgloss.NoColor{}) {
 		t.Errorf(`paletteColor("default") = %v, want lipgloss.NoColor{}`, c)
 	}
@@ -42,18 +39,15 @@ func TestTerminalThemeIsUnthemed(t *testing.T) {
 	}
 	term, _ := theme.Lookup("terminal")
 	st := newStyles(term)
-	// name is the fg-role style (fixed-width, hence the trim); with
-	// fg=default it must emit no escape codes at all.
+	// The fixed-width foreground role must emit no color escapes.
 	if got := st.name.Render("x"); strings.Contains(got, "\x1b") || strings.TrimRight(got, " ") != "x" {
 		t.Errorf("fg=default must render uncolored, got %q", got)
 	}
 }
 
 func TestThemeTerminalColorsSkipANSI(t *testing.T) {
-	// OSC 10/11 take a concrete color, not a palette index, so an ANSI-256
-	// bg/fg must not be painted (Bubble Tea would flatten it to the fixed
-	// xterm table instead of the terminal's own slot). Each channel skips
-	// independently; the hex one still paints.
+	// OSC 10/11 require concrete colors; painting ANSI indices would flatten the
+	// terminal palette. Hex channels still paint independently.
 	th := config.Theme{
 		Name:       "gruvbox-dark",
 		Background: true,
@@ -82,8 +76,7 @@ func TestViewPaintsThemeBackground(t *testing.T) {
 	a.Cfg.Theme = config.Theme{Name: "gruvbox-light", Background: true}
 	m := newTestModel(t, a)
 
-	// Before the terminal reports a color profile nothing is painted; a
-	// NO_COLOR / dumb terminal must never have its background forced.
+	// Do not force colors before the terminal reports its capabilities.
 	if v := m.View(); v.BackgroundColor != nil || v.ForegroundColor != nil {
 		t.Fatal("background painted before the color profile is known")
 	}
@@ -106,8 +99,7 @@ func TestViewPaintsThemeBackground(t *testing.T) {
 		t.Error("background still painted under an Ascii color profile")
 	}
 
-	// Quitting returns a bare view: no colors set, so the renderer resets the
-	// terminal to its own defaults on the way out.
+	// A bare quitting view lets the renderer restore terminal defaults.
 	m.colorOK = true
 	m.quitting = true
 	if v := m.View(); v.BackgroundColor != nil || v.ForegroundColor != nil {
@@ -115,23 +107,13 @@ func TestViewPaintsThemeBackground(t *testing.T) {
 	}
 }
 
-// TestStatusGlyphsShareWidthClass pins statusGlyph's real contract: every status
-// glyph must occupy the same terminal display width so the status column lines up
-// row to row. That holds only when the glyphs share one East-Asian-width class.
-//
-// This guards the 89b4088 fix directly, without pinning literals (which would
-// just restate statusGlyph and churn on every intentional aesthetic tweak). Red
-// used to be the Dingbat `✕` (U+2715), which go-runewidth — and so lipgloss.Width,
-// which sizes the column — measures as one cell like the ambiguous-width
-// `•`/`△`/`…`, yet some fonts/terminals draw it double-width, shoving every error
-// row one column right of the healthy rows. `✕` has the width profile (1,1) under
-// (ambiguous=1, ambiguous=2) while the shipped set is (1,2), so reintroducing it
-// for red/error trips this test. An intentional in-class swap, or moving the whole
-// set to a different shared class, still passes.
+// Status glyphs must share an East Asian width class to keep columns aligned.
+// U+2715 has profile (1,1) for narrow/wide ambiguous settings while the shipped
+// set is (1,2), so this rejects that regression without pinning glyph literals.
 func TestStatusGlyphsShareWidthClass(t *testing.T) {
-	narrow := runewidth.NewCondition() // ambiguous counts as 1 cell — lipgloss's default
+	narrow := runewidth.NewCondition() // ambiguous counts as 1 cell, lipgloss's default
 	wide := runewidth.NewCondition()
-	wide.EastAsianWidth = true // ambiguous counts as 2 cells — a CJK-configured terminal
+	wide.EastAsianWidth = true // ambiguous counts as 2 cells, a CJK-configured terminal
 
 	statuses := []model.Status{
 		model.StatusGreen, model.StatusAmber, model.StatusRed,
@@ -146,8 +128,7 @@ func TestStatusGlyphsShareWidthClass(t *testing.T) {
 			t.Fatalf("statusGlyph(%s) = %q, want a single rune", s, g)
 		}
 		got := widthProfile{narrow.RuneWidth(runes[0]), wide.RuneWidth(runes[0])}
-		// The layout reserves exactly one cell for the glyph, so its default width
-		// must be 1 regardless of class.
+		// The layout reserves one cell under the default width setting.
 		if got.narrow != 1 {
 			t.Errorf("statusGlyph(%s) = %q spans %d cells (ambiguous=1); status glyphs must be one cell", s, g, got.narrow)
 		}

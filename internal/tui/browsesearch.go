@@ -10,14 +10,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// handleBrowseSearchKey consumes keys while the global filename search input is
-// open. It mirrors handleFilterKey, but the arrows (plus ctrl+k/ctrl+j) move the
-// result cursor instead of editing text. Result navigation deliberately avoids the
-// plain Up/Down letters (j/k) and there is no Parent/Open binding, so j/k/h/l stay
-// literal query characters (json, java, kernel, …). HardQuit is matched first
-// because the m.browseSearching guard in handleKey sits above the global quit.
-// Accept jumps to the selected match; cancel restores the prior listing untouched;
-// every other printable key edits the query and refires the live search.
+// handleBrowseSearchKey routes search input. Arrow bindings move results while
+// j/k/h/l remain query text; accepting jumps to a match, cancelling restores the
+// listing, and other printable input reruns the search.
 func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
@@ -49,8 +44,7 @@ func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		// Text is non-empty only for printable keys, so this ignores stray control
-		// keys (arrows handled above, etc.) rather than inserting garbage.
+		// Empty text keeps unhandled control keys out of the query.
 		if msg.Text != "" {
 			m.browseSearchQuery += msg.Text
 			return m.fireBrowseSearch()
@@ -59,15 +53,9 @@ func (m Model) handleBrowseSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// fireBrowseSearch runs the current query against the session store. The cursor
-// resets to the top on every query change so it never points past the matches. An
-// empty/whitespace-only query has nothing to scan: it supersedes any in-flight
-// search and clears the results synchronously, with no command. Otherwise it
-// supersedes the prior keystroke's scan (advancing the generation and cancelling
-// its context so the single connection frees immediately) and dispatches a
-// gen-tagged search. It deliberately does NOT set isBrowseLoading: the search list
-// must stay live and navigable as results arrive, never paused like a directory
-// load. Ranking and the result cap happen in the store, never here.
+// fireBrowseSearch resets the cursor and searches the session store. Empty
+// queries clear synchronously; other queries supersede the prior scan without
+// marking browse as loading, so existing results remain navigable.
 func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 	m.browseSearchCursor = 0
 	if strings.TrimSpace(m.browseSearchQuery) == "" {
@@ -86,21 +74,15 @@ func (m Model) fireBrowseSearch() (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// applyBrowseSearch installs one search result. It is dropped unless it matches
-// the current generation, search is still open, and the query is exactly the one
-// the model now holds — so a superseded keystroke's late result, or one the user
-// has since edited past, never overwrites fresher state. On error the path-free
-// store message is shown in the footer and the rows are cleared, but search stays
-// open so the error is visible. On success the ranked rows and true total replace
-// the prior result and the cursor is clamped into range.
+// applyBrowseSearch installs results only for the open query's current
+// generation. Errors remain visible as footer text with rows cleared;
+// success installs ranked rows and the uncapped total.
 func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 	if msg.gen != m.browseGen || !m.browseSearching || msg.query != m.browseSearchQuery {
 		return m
 	}
-	// Record the query these rows belong to in both branches: acceptBrowseSearch
-	// gates on it so Enter can never act on rows from a query the user has since
-	// edited past (the search list stays visible between keystrokes by design, so
-	// without this gate a stale row would remain selectable mid-edit).
+	// Associate visible rows with their query so Enter cannot select stale rows
+	// while an edited query is in flight.
 	m.browseSearchShownQuery = msg.query
 	if msg.err != nil {
 		m = m.clearBrowseSearchResults()
@@ -114,18 +96,11 @@ func (m Model) applyBrowseSearch(msg browseSearchMsg) Model {
 	return m
 }
 
-// acceptBrowseSearch jumps to the selected match in its own folder. It SUSPENDS
-// the search rather than exiting it (suspendBrowseSearch keeps the query/rows/cursor
-// parked), closes the input, and lists the match's parent directory with the file
-// preselected — a cache hit serves it instantly, and indexOfBrowsePath lands the
-// cursor on the file. esc from that listing restores the parked search so the user
-// can pick another match (restoreBrowseSearch). With no selection (empty results) it
-// just cancels, fully clearing search.
+// acceptBrowseSearch opens a match's parent with that match selected. It parks
+// search state so escape can restore the results; accepting without a selection
+// cancels and clears search.
 func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
-	// The visible rows are kept between keystrokes (no per-edit flicker), so an
-	// Enter pressed after editing the query but before the new scan returns would
-	// otherwise act on the previous query's rows. Gate on the query that actually
-	// produced the visible rows: while it lags the live query, Enter is a no-op.
+	// Ignore Enter while visible rows belong to an older query.
 	if m.browseSearchShownQuery != m.browseSearchQuery {
 		return m, nil
 	}
@@ -138,30 +113,18 @@ func (m Model) acceptBrowseSearch() (Model, tea.Cmd) {
 	return m.beginListDir(path.Dir(target), target)
 }
 
-// suspendBrowseSearch parks the open search: it closes the input but KEEPS the
-// query, ranked rows, and cursor so esc can later restore them (restoreBrowseSearch).
-// This is the deliberate relaxation of "no filenames linger after leaving search" —
-// Enter suspends rather than exits, so the result set stays in the model while the
-// user inspects the jumped-to directory. The broader invariant still holds: leaving
-// browse (q/back) calls clearBrowse, which wipes every search field, so no filename
-// lingers once the user leaves browse.
+// suspendBrowseSearch parks query, rows, and cursor behind a jumped-to listing.
+// Filenames intentionally outlive the overlay but never browse itself because
+// clearBrowse clears all search fields.
 func (m Model) suspendBrowseSearch() Model {
 	m.browseSearching = false
 	m.browseSearchSuspended = true
 	return m
 }
 
-// restoreBrowseSearch reopens the search overlay that Enter suspended, bringing back
-// the previous query, ranked rows, and cursor so the user can pick another match. The
-// directory listing underneath is wherever they navigated to; cancelling the restored
-// search returns there. It is the esc action while a suspended search is parked (q
-// still leaves browse entirely via browseBack).
-//
-// If the jump listing acceptBrowseSearch started is still in flight (isBrowseLoading),
-// drop it first: re-entering search and then superseding it (a fresh query, or cancel)
-// would advance the generation past that listing's tag, so its browseDirMsg is dropped
-// before applyBrowseDir clears isBrowseLoading — leaving navigation paused forever. The
-// user pressed esc to return to the results, so the half-finished jump is moot anyway.
+// restoreBrowseSearch reopens the parked query, rows, and cursor. It first
+// supersedes an in-flight jump listing so a later generation change cannot drop
+// that result while leaving browse permanently marked as loading.
 func (m Model) restoreBrowseSearch() Model {
 	if m.isBrowseLoading {
 		m = m.supersedeBrowse()
@@ -172,21 +135,16 @@ func (m Model) restoreBrowseSearch() Model {
 	return m
 }
 
-// cancelBrowseSearch closes the search with no navigation, leaving the underlying
-// directory listing exactly as it was. It supersedes any in-flight search (so a
-// late result is dropped and its scan is cancelled) and then clears only the
-// search state.
+// cancelBrowseSearch preserves the directory listing while cancelling in-flight
+// search and clearing its state.
 func (m Model) cancelBrowseSearch() Model {
 	m = m.supersedeBrowse()
 	return m.exitBrowseSearch()
 }
 
-// exitBrowseSearch clears only the search overlay state, leaving the directory
-// listing (browseRows/browseDir/browseCursor) untouched so Esc returns the user
-// exactly where they were. It also drops any parked (suspended) result set. It does
-// not bump the generation or cancel anything — callers that need to drop an in-flight
-// scan supersede first. The filenames the search held are zeroed here so none linger
-// past the overlay.
+// exitBrowseSearch clears active and suspended search state, including all
+// filenames, without touching the directory listing. Callers must supersede
+// separately when an in-flight scan needs cancellation.
 func (m Model) exitBrowseSearch() Model {
 	m.browseSearching = false
 	m.browseSearchSuspended = false
@@ -196,10 +154,7 @@ func (m Model) exitBrowseSearch() Model {
 	return m.clearBrowseSearchResults()
 }
 
-// clearBrowseSearchResults zeros the result-bearing search fields — the ranked
-// rows, the match total, and the path-free error. It is shared by the
-// empty-query reset, the store-error branch, and the full overlay teardown so a
-// future result field can't leak by being cleared in only some of them.
+// clearBrowseSearchResults centralizes clearing every result-bearing field.
 func (m Model) clearBrowseSearchResults() Model {
 	m.browseSearchRows = nil
 	m.browseSearchTotal = 0
@@ -207,8 +162,7 @@ func (m Model) clearBrowseSearchResults() Model {
 	return m
 }
 
-// selectedBrowseSearchEntry returns the match under the search cursor, or nil when
-// the cursor is out of range (e.g. no matches yet).
+// selectedBrowseSearchEntry returns the cursor match, or nil when out of range.
 func (m Model) selectedBrowseSearchEntry() *model.BrowseEntry {
 	if m.browseSearchCursor < 0 || m.browseSearchCursor >= len(m.browseSearchRows) {
 		return nil

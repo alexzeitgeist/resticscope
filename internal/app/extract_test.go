@@ -16,9 +16,7 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/config"
 )
 
-// longSnapID is a concrete 64-hex snapshot ID for requests. Its first 8 chars are
-// "abcd1234" so it binds to the SnapshotShort the builders use (the app layer
-// asserts SnapshotShort == SnapshotID[:8]).
+// longSnapID is a full ID whose prefix matches the request builders' short ID.
 const longSnapID = "abcd12340123456789abcdef0123456789abcdef0123456789abcdef01234567"
 
 // treeReq / fileReq are valid baseline requests; tests mutate one field at a time.
@@ -45,12 +43,8 @@ func fileReq() ExtractRequest {
 	}
 }
 
-// fileStagingSetup returns an extractTreeSetup that materializes one regular file
-// at staging/<leaf> with a distinctive mode+mtime, the way restic restore would
-// land a single-file extract. leaf is relative (e.g. "hosts" flattened, or
-// "etc/hosts" nested); parent dirs are created as needed. The mode (0640) and
-// mtime are deliberately not 0600/now so the test proves restic's metadata is
-// preserved rather than re-stamped.
+// fileStagingSetup models a restored file at staging/leaf with distinctive mode
+// and mtime so tests detect metadata restamping.
 var fileSetupMtime = time.Date(2009, 1, 2, 3, 4, 5, 0, time.UTC)
 
 func fileStagingSetup(leaf string) func(target string) error {
@@ -62,10 +56,7 @@ func fileStagingSetup(leaf string) func(target string) error {
 		if err := os.WriteFile(full, []byte("file-body"), 0o640); err != nil {
 			return err
 		}
-		// Defeat the process umask so the exact mode bits hold under any umask
-		// (a hardened umask 077 would otherwise create 0600, which the normalizer
-		// faithfully preserves — failing the 0640 assertion for the wrong reason).
-		// Mirrors TestExtractDirectoryTreeRealRun's explicit Chmod.
+		// Defeat umask so metadata assertions test normalization, not process policy.
 		if err := os.Chmod(full, 0o640); err != nil {
 			return err
 		}
@@ -73,11 +64,8 @@ func fileStagingSetup(leaf string) func(target string) error {
 	}
 }
 
-// dirStagingSetup returns an extractTreeSetup that materializes the restored
-// directory node at staging/<base> — the way restic reconstructs a rebased subdir
-// via --include (it CREATES the leaf node, so its metadata is preserved) — then
-// runs build(node) to populate it. base is the RAW source basename. A nil build
-// leaves the leaf dir empty.
+// dirStagingSetup models restic creating a rebased directory leaf and optionally
+// populating it.
 func dirStagingSetup(base string, build func(node string) error) func(target string) error {
 	return func(target string) error {
 		node := filepath.Join(target, base)
@@ -91,8 +79,7 @@ func dirStagingSetup(base string, build func(node string) error) func(target str
 	}
 }
 
-// newExtractApp wires an App over a temp target root and returns the cache so a
-// test can assert nothing was persisted.
+// newExtractApp returns an extraction app and its observable cache.
 func newExtractApp(r fakeRestic, root string) (*App, *fakeCache) {
 	fc := newFakeCache()
 	cfg := testConfig()
@@ -101,19 +88,14 @@ func newExtractApp(r fakeRestic, root string) (*App, *fakeCache) {
 	return a, fc
 }
 
-// --- plan tests ---
-
 func TestPlanExtractPaths(t *testing.T) {
 	cfg := config.Extract{TargetRoot: "/srv/restore"}
 	staging, final, err := PlanExtractPaths(cfg, treeReq())
 	if err != nil {
 		t.Fatalf("PlanExtractPaths: %v", err)
 	}
-	// Pure mirror tree: the source's true path under the per-snapshot dir.
 	wantFinal := "/srv/restore/repo-a/abcd1234/etc/nginx"
-	// Staging is repo-level (a sibling of the <short>/ snapshot dirs), carrying the
-	// short id in its name; the hash is the first 16 hex chars of SHA-256 over the
-	// raw source path.
+	// Staging is repo-level and hashes the raw source path.
 	wantStaging := "/srv/restore/repo-a/.resticscope-staging-abcd1234-nginx-2bbac1448fc84276"
 	if final != wantFinal {
 		t.Errorf("final = %q, want %q", final, wantFinal)
@@ -121,7 +103,6 @@ func TestPlanExtractPaths(t *testing.T) {
 	if staging != wantStaging {
 		t.Errorf("staging = %q, want %q", staging, wantStaging)
 	}
-	// Staging lives at the repo level, NOT under the <short>/ mirror subtree.
 	if dir := filepath.Dir(staging); dir != "/srv/restore/repo-a" {
 		t.Errorf("filepath.Dir(staging) = %q, want the repo dir /srv/restore/repo-a", dir)
 	}
@@ -140,8 +121,7 @@ func TestPlanExtractPathsTargetRootOverride(t *testing.T) {
 	}
 }
 
-// A slash-bearing repo name (defense-in-depth; loaded config rejects these) must
-// slugify in the path while the raw name is untouched for display.
+// Repository names are slugged for paths even when upstream validation is bypassed.
 func TestPlanExtractPathsRepoSlug(t *testing.T) {
 	cfg := config.Extract{TargetRoot: "/srv/restore"}
 	req := treeReq()
@@ -166,20 +146,17 @@ func TestPlanExtractPathsHashDeterminismAndCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Same source is deterministic in both staging and final.
 	if sa != sb || fa != fb {
 		t.Errorf("same source produced different paths: staging %q vs %q, final %q vs %q", sa, sb, fa, fb)
 	}
-	// The hash now lives only on the (repo-level) staging name; finals are
-	// path-distinct by the mirror layout.
+	// Only staging needs a source hash; mirror finals are path-distinct.
 	if !strings.HasSuffix(sa, "-4a666ea3a3b04a24") {
 		t.Errorf("unexpected staging hash for /etc/hosts: %q", sa)
 	}
 	if fa != "/srv/restore/repo-a/abcd1234/etc/hosts" {
 		t.Errorf("final = %q, want the mirror path .../abcd1234/etc/hosts", fa)
 	}
-	// A different source with the same basename hashes differently (staging) and is
-	// path-distinct (final).
+	// Equal basenames at different paths must remain distinct.
 	r2 := fileReq()
 	r2.Source = "/var/backups/hosts"
 	sc, fc, err := PlanExtractPaths(cfg, r2)
@@ -200,12 +177,8 @@ func TestPlanExtractPathsHashDeterminismAndCollision(t *testing.T) {
 	}
 }
 
-// TestPlanExtractStagingOutsideMirrorTree is the regression for the namespace
-// finding: staging dirs live at the repo level, never inside the <short>/ mirror
-// subtree, so a real snapshot path that mimics a staging name can never collide
-// with a future staging path. A source named like a staging dir mirrors under
-// <short>/etc/…; the staging computed for a real sibling stays a direct child of
-// the repo dir.
+// TestPlanExtractStagingOutsideMirrorTree prevents snapshot content that resembles
+// a staging name from colliding with repo-level staging.
 func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 	cfg := config.Extract{TargetRoot: "/srv/restore"}
 	const repoDir = "/srv/restore/repo-a"
@@ -221,12 +194,10 @@ func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanExtractPaths(mimic): %v", err)
 	}
-	// The mimicking source mirrors under <short>/, not at the repo level.
 	if want := repoDir + "/abcd1234/etc/.resticscope-staging-hosts-4a666ea3a3b04a24"; mimicFinal != want {
 		t.Errorf("mimic final = %q, want %q (under <short>/)", mimicFinal, want)
 	}
 
-	// The staging dir computed for the real /etc/hosts.
 	hostsStaging, _, err := PlanExtractPaths(cfg, fileReq())
 	if err != nil {
 		t.Fatalf("PlanExtractPaths(hosts): %v", err)
@@ -235,14 +206,12 @@ func TestPlanExtractStagingOutsideMirrorTree(t *testing.T) {
 		t.Errorf("hosts staging = %q, want %q (repo level)", hostsStaging, want)
 	}
 
-	// The mimic's mirror final and the real source's repo-level staging are
-	// disjoint: no ErrExtractStagingExists cross-collision is possible.
+	// Mirrored content and real staging must be disjoint.
 	if mimicFinal == hostsStaging {
 		t.Errorf("mimic final collided with hosts staging: %q", mimicFinal)
 	}
 
-	// Equivalent invariant: every staging is a direct child of repoDir and never
-	// carries <short> as a path component below repoDir.
+	// Every staging path remains a direct repository child.
 	for _, st := range []string{mimicStaging, hostsStaging} {
 		if dir := filepath.Dir(st); dir != repoDir {
 			t.Errorf("staging %q is not a direct child of repoDir %q", st, repoDir)
@@ -289,14 +258,12 @@ func TestPlanExtractPathsMissingTargetRoot(t *testing.T) {
 	}
 }
 
-// --- file-type gate (defense in depth) ---
-
 func TestExtractFileRequiresRegularFile(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 	req := fileReq()
-	req.WasRegularFile = false // upstream said this is a symlink/device/fifo/socket
+	req.WasRegularFile = false
 	req.Source = "/etc/topsecret"
 	req.SourceName = "topsecret"
 
@@ -312,7 +279,7 @@ func TestExtractDirectoryTreeRejectsRegularFile(t *testing.T) {
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 	req := treeReq()
-	req.WasRegularFile = true // a regular file may not route through restore
+	req.WasRegularFile = true
 
 	_, err := a.Extract(t.Context(), req, nil)
 	if !errors.Is(err, ErrExtractInvalidRequest) {
@@ -321,8 +288,7 @@ func TestExtractDirectoryTreeRejectsRegularFile(t *testing.T) {
 	assertNoSpawnNoMkdir(t, cap, root, err, "nginx")
 }
 
-// Every non-regular upstream type lands as WasRegularFile=false on an ExtractFile
-// request and is rejected identically.
+// All non-regular upstream types share the same file-mode rejection.
 func TestExtractFileRejectsNonRegularTypes(t *testing.T) {
 	for _, kind := range []string{"symlink", "device", "fifo", "socket"} {
 		t.Run(kind, func(t *testing.T) {
@@ -339,8 +305,7 @@ func TestExtractFileRejectsNonRegularTypes(t *testing.T) {
 	}
 }
 
-// assertNoSpawnNoMkdir verifies a boundary rejection spawned no restic, created
-// no target subdir, and (when err is supplied) leaked no path.
+// assertNoSpawnNoMkdir checks that boundary rejection has no side effects or leak.
 func assertNoSpawnNoMkdir(t *testing.T, cap *extractCapture, root string, err error, leak string) {
 	t.Helper()
 	cap.mu.Lock()
@@ -355,8 +320,6 @@ func assertNoSpawnNoMkdir(t *testing.T, cap *extractCapture, root string, err er
 		t.Errorf("error leaked %q: %q", leak, err.Error())
 	}
 }
-
-// --- fresh-target check ---
 
 func TestExtractFinalExists(t *testing.T) {
 	root := t.TempDir()
@@ -400,12 +363,8 @@ func TestExtractStagingExists(t *testing.T) {
 	}
 }
 
-// --- single-file extract via restore ---
-
-// TestExtractFileFlattened drives the default (flattened) file extract: restic
-// restore is called with the parent rebased onto Source and a rebase-relative
-// --include, the file lands directly under final named for its RAW basename, and
-// the normalizer preserves restic's restored metadata (not the old 0600/now).
+// TestExtractFileFlattened checks parent rebasing, raw leaf naming, and restored
+// metadata preservation.
 func TestExtractFileFlattened(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -413,8 +372,7 @@ func TestExtractFileFlattened(t *testing.T) {
 		sourceName string
 	}{
 		{"plain basename", "/etc/hosts", "hosts"},
-		// A basename whose sanitized slug differs from the raw name: the restored
-		// file leaf must be the RAW basename ("a*.conf"), never the slug.
+		// Distinguish the raw leaf from its sanitized staging slug.
 		{"sanitized container slug", "/etc/a*.conf", "a-.conf"},
 	}
 	for _, tc := range cases {
@@ -452,8 +410,6 @@ func TestExtractFileFlattened(t *testing.T) {
 				t.Errorf("treeParams.Target = %q, want %q", tp.Target, staging)
 			}
 
-			// The file lands AT its mirror path: FinalPath is the node itself,
-			// FinalDir its containing mirror dir.
 			if result.FinalPath != final {
 				t.Errorf("FinalPath = %q, want %q", result.FinalPath, final)
 			}
@@ -464,8 +420,7 @@ func TestExtractFileFlattened(t *testing.T) {
 				t.Errorf("result counts = {Files:%d Dirs:%d}, want {1 0}", result.Files, result.Dirs)
 			}
 
-			// The file lands AT final (the mirror path, named for the RAW basename),
-			// with restic's restored metadata (0640, original mtime) preserved.
+			// Publish the raw leaf with restored metadata.
 			fi, serr := os.Lstat(final)
 			if serr != nil {
 				t.Fatalf("file not present at its mirror path: %v", serr)
@@ -476,15 +431,12 @@ func TestExtractFileFlattened(t *testing.T) {
 			if !fi.ModTime().Equal(fileSetupMtime) {
 				t.Errorf("published mtime = %v, want preserved %v (not now)", fi.ModTime(), fileSetupMtime)
 			}
-			// The mirror path uses the RAW basename, never the sanitized slug.
 			if got := filepath.Base(final); got != leaf {
 				t.Errorf("final basename = %q, want the raw basename %q", got, leaf)
 			}
 			if tc.sourceName != leaf && filepath.Base(final) == tc.sourceName {
 				t.Errorf("final used the sanitized slug %q as its basename rather than the raw basename %q", tc.sourceName, leaf)
 			}
-			// The hidden staging dir is gone after a successful publish
-			// (link + unlink + rmdir).
 			if _, serr := os.Stat(staging); serr == nil {
 				t.Error("staging dir still present after a successful publish")
 			}
@@ -495,14 +447,8 @@ func TestExtractFileFlattened(t *testing.T) {
 	}
 }
 
-// TestExtractFileRefusesOccupiedTargetWithoutOverwrite proves the os.Link
-// no-replace guard — not freshTargetCheck or a publish-time Lstat — protects an
-// existing file at the target. The custom setup runs inside ExtractTree (after
-// freshTargetCheck, before publish): it both materializes the staging file AND
-// writes sentinel bytes to final, simulating a concurrent writer that wins the
-// TOCTOU race. Because deep mirror ancestors are created lazily in publishExtract,
-// the setup must MkdirAll(filepath.Dir(final)) before writing the sentinel so the
-// run reaches the os.Link guard rather than failing during setup.
+// TestExtractFileRefusesOccupiedTargetWithoutOverwrite simulates a writer winning
+// after FreshTargetCheck and verifies the link publish cannot replace it.
 func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Extract{TargetRoot: root, ExtractTimeout: config.Duration(2 * time.Minute)}
@@ -517,8 +463,7 @@ func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 		if err := fileStagingSetup("hosts")(target); err != nil {
 			return err
 		}
-		// publishExtract builds the deep mirror ancestors lazily, so create them
-		// here before planting the sentinel at final.
+		// Create lazy publish ancestors before planting the racing occupant.
 		if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
 			return err
 		}
@@ -530,7 +475,6 @@ func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 	if !errors.Is(err, ErrExtractFinalExists) {
 		t.Fatalf("err = %v, want ErrExtractFinalExists", err)
 	}
-	// The existing bytes are untouched: os.Link never replaces.
 	got, rerr := os.ReadFile(final)
 	if rerr != nil {
 		t.Fatalf("sentinel file gone after a refused publish: %v", rerr)
@@ -538,7 +482,6 @@ func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 	if string(got) != string(sentinel) {
 		t.Errorf("sentinel overwritten: got %q, want %q", got, sentinel)
 	}
-	// Staging is retained for keep/delete.
 	if !result.StagingCreated || result.StagingDir != staging {
 		t.Errorf("result = {StagingCreated:%v StagingDir:%q}, want {true %q}", result.StagingCreated, result.StagingDir, staging)
 	}
@@ -546,8 +489,6 @@ func TestExtractFileRefusesOccupiedTargetWithoutOverwrite(t *testing.T) {
 		t.Errorf("staging not retained after a refused publish: %v", serr)
 	}
 }
-
-// --- target_root is never chmod'd ---
 
 func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	base := t.TempDir()
@@ -570,19 +511,14 @@ func TestExtractDoesNotChmodTargetRoot(t *testing.T) {
 	if got := modeOf(t, repoDir); got != 0o755 {
 		t.Errorf("repo dir mode = %o, want 0755 (pre-existing, never chmod'd)", got)
 	}
-	// final is now a 0640 file (the mirror leaf), so check its containing per-op
-	// mirror dir instead — that is the new dir publishExtract creates at 0700.
+	// Check the new containing directory because final is the restored file.
 	if got := modeOf(t, filepath.Dir(final)); got != 0o700 {
 		t.Errorf("per-op mirror dir mode = %o, want 0700 (new dir)", got)
 	}
 }
 
-// --- merge / overlap behavior (the headline of the mirror-tree change) ---
-
-// TestExtractMergeSharesSnapshotAncestor: two files from one snapshot under the
-// same parent merge into a shared <short>/etc/ ancestor — the merge fills empty
-// space, reuses the ancestor (never re-chmod'ing it), and leaves the first file
-// untouched.
+// TestExtractMergeSharesSnapshotAncestor verifies sibling extracts reuse an
+// ancestor without changing it or the first file.
 func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 	root := t.TempDir()
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}, root)
@@ -594,7 +530,6 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 		t.Fatalf("extract /etc/hosts: %v", err)
 	}
 
-	// A sibling file under the same /etc — its own staging materializer.
 	a.Restic = fakeRestic{extractTreeSetup: fileStagingSetup("passwd")}
 	passwd := fileReq()
 	passwd.Source = "/etc/passwd"
@@ -605,8 +540,6 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 		t.Fatalf("extract /etc/passwd: %v", err)
 	}
 
-	// Both land under the same <short>/etc/ ancestor (mode 0700), reused not
-	// recreated.
 	shared := filepath.Dir(hostsFinal)
 	if filepath.Dir(passwdFinal) != shared {
 		t.Errorf("passwd parent = %q, want shared ancestor %q", filepath.Dir(passwdFinal), shared)
@@ -620,7 +553,6 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 	if res1.FinalPath != hostsFinal || res2.FinalPath != passwdFinal {
 		t.Errorf("FinalPath mismatch: got %q/%q, want %q/%q", res1.FinalPath, res2.FinalPath, hostsFinal, passwdFinal)
 	}
-	// The first file is present and untouched by the second extract.
 	body, rerr := os.ReadFile(hostsFinal)
 	if rerr != nil {
 		t.Fatalf("first file gone after the second extract: %v", rerr)
@@ -633,9 +565,8 @@ func TestExtractMergeSharesSnapshotAncestor(t *testing.T) {
 	}
 }
 
-// TestExtractRefusesParentOfExistingChild: a file extract creates <short>/etc/hosts,
-// then extracting the whole /etc directory is refused — its leaf <short>/etc is
-// occupied by the partial extract — and the existing child is untouched.
+// TestExtractRefusesParentOfExistingChild verifies a later parent extract cannot
+// replace a partial mirror tree.
 func TestExtractRefusesParentOfExistingChild(t *testing.T) {
 	root := t.TempDir()
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}, root)
@@ -651,8 +582,7 @@ func TestExtractRefusesParentOfExistingChild(t *testing.T) {
 	}
 	modeBefore := modeOf(t, hostsFinal)
 
-	// Now the whole /etc directory: <short>/etc is occupied. restic reconstructs
-	// the leaf at staging/etc.
+	// Reconstruct the parent after its mirror path became occupied.
 	a.Restic = fakeRestic{extractTreeSetup: dirStagingSetup("etc", func(node string) error {
 		return os.WriteFile(filepath.Join(node, "newfile"), []byte("x"), 0o644)
 	})}
@@ -674,15 +604,11 @@ func TestExtractRefusesParentOfExistingChild(t *testing.T) {
 	}
 }
 
-// TestExtractRefusesChildOfExistingParent: a directory extract creates <short>/etc
-// (restic reconstructs the leaf at staging/etc, so staging/etc/hosts becomes
-// <short>/etc/hosts after the rename), then extracting the file /etc/hosts is
-// refused — its mirror leaf already exists in the tree — and the existing file is
-// untouched.
+// TestExtractRefusesChildOfExistingParent verifies a later child extract cannot
+// replace content from an existing parent tree.
 func TestExtractRefusesChildOfExistingParent(t *testing.T) {
 	root := t.TempDir()
-	// restic reconstructs /etc's node at staging/etc, so staging/etc/hosts becomes
-	// <short>/etc/hosts after the rename.
+	// Model restic reconstructing the parent leaf and its child.
 	a, _ := newExtractApp(fakeRestic{extractTreeSetup: dirStagingSetup("etc", func(node string) error {
 		return os.WriteFile(filepath.Join(node, "hosts"), []byte("dir-hosts"), 0o644)
 	})}, root)
@@ -699,7 +625,6 @@ func TestExtractRefusesChildOfExistingParent(t *testing.T) {
 		t.Fatalf("dir extract did not place the child: %v", err)
 	}
 
-	// Now the file /etc/hosts: its mirror leaf == the dir's child, already present.
 	a.Restic = fakeRestic{extractTreeSetup: fileStagingSetup("hosts")}
 	file := fileReq() // /etc/hosts
 	_, fileFinal, _ := PlanExtractPaths(a.Cfg.Extract, file)
@@ -717,8 +642,6 @@ func TestExtractRefusesChildOfExistingParent(t *testing.T) {
 		t.Errorf("existing child changed to %q, want dir-hosts", string(body))
 	}
 }
-
-// --- cancel / timeout (file mode, now via restore) ---
 
 func TestExtractCancel(t *testing.T) {
 	root := t.TempDir()
@@ -750,8 +673,7 @@ func TestExtractTimeout(t *testing.T) {
 	assertPartialStaging(t, result, staging)
 }
 
-// assertPartialStaging checks the result/disk state shared by cancel and timeout:
-// staging created and left on disk, no final.
+// assertPartialStaging checks interrupted output remains owned and unpublished.
 func assertPartialStaging(t *testing.T, result ExtractResult, staging string) {
 	t.Helper()
 	if !result.StagingCreated || result.StagingDir != staging {
@@ -765,12 +687,8 @@ func assertPartialStaging(t *testing.T, result ExtractResult, staging string) {
 	}
 }
 
-// --- fresh-target: a dangling symlink is an occupant ---
-
-// A dangling symlink at the final path is an occupant: the fresh-target check
-// Lstats (it must not follow the link down to ENOENT), so the extract is refused
-// before any staging dir or restic spawn — not discovered later as a rename
-// failure. The error is the path-free ErrExtractFinalExists.
+// A dangling target symlink must count as occupied before staging or restic work
+// and return the path-free ErrExtractFinalExists.
 func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
@@ -801,12 +719,7 @@ func TestExtractDanglingSymlinkAtFinalIsRefused(t *testing.T) {
 	}
 }
 
-// --- boundary: malformed request dies before side effects ---
-
-// An unclean source (resolves elsewhere after cleaning) is refused at the app
-// boundary with ErrExtractInvalidRequest — before credentials, staging, or a
-// restic spawn — so a malformed request never leaves staging behind nor leans on
-// resticx to reject it after filesystem side effects.
+// Unclean sources must fail at the application boundary before any side effect.
 func TestExtractUncleanSourceRefusedBeforeStaging(t *testing.T) {
 	root := t.TempDir()
 	cap := &extractCapture{}
@@ -821,8 +734,6 @@ func TestExtractUncleanSourceRefusedBeforeStaging(t *testing.T) {
 	}
 	assertNoSpawnNoMkdir(t, cap, root, err, "secret")
 }
-
-// --- privacy: logging is path-free ---
 
 func TestExtractLoggingIsPathFree(t *testing.T) {
 	root := t.TempDir()
@@ -846,8 +757,6 @@ func TestExtractLoggingIsPathFree(t *testing.T) {
 		t.Errorf("expected count-only finish line, got:\n%s", logged)
 	}
 }
-
-// --- unknown repo / secrets failure ---
 
 func TestExtractUnknownRepo(t *testing.T) {
 	a, _ := newExtractApp(fakeRestic{}, t.TempDir())
@@ -873,12 +782,7 @@ func TestExtractSecretsFailurePropagates(t *testing.T) {
 	}
 }
 
-// --- unsupported-platform preflight ---
-
-// On a platform where the extract cannot publish (normalizer unvalidated /
-// non-Windows-safe include escaping), App.Extract refuses BEFORE any restic
-// spawn or staging mkdir, with a path-free error. The test flips the
-// linux/darwin liveExtractSupported var to simulate the unsupported case.
+// Unsupported platforms must fail path-free before staging or restic execution.
 func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 	orig := liveExtractSupported
 	liveExtractSupported = false
@@ -888,7 +792,6 @@ func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 	cap := &extractCapture{}
 	a, _ := newExtractApp(fakeRestic{extractCap: cap}, root)
 
-	// A file extract is refused before restic / staging, path-free.
 	_, err := a.Extract(t.Context(), fileReq(), nil)
 	if err == nil {
 		t.Fatal("expected a refusal on an unsupported platform")
@@ -905,8 +808,6 @@ func TestExtractUnsupportedPlatformRefusesBeforeSpawn(t *testing.T) {
 		t.Errorf("staging created on an unsupported platform: %d entries", len(ents))
 	}
 }
-
-// --- helpers ---
 
 func mustMkdirAll(t *testing.T, dir string) {
 	t.Helper()
@@ -934,9 +835,7 @@ func modeOf(t *testing.T, p string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// ExtractFreeSpace probes the filesystem through the planned staging path even
-// though nothing along it exists yet — it walks up to the nearest existing
-// ancestor and answers from there.
+// TestExtractFreeSpaceWalksUp probes through a nonexistent staging path.
 func TestExtractFreeSpaceWalksUp(t *testing.T) {
 	staging := filepath.Join(t.TempDir(), "no", "such", "dirs", ".resticscope-staging-x")
 	free, known := ExtractFreeSpace(staging)
@@ -948,9 +847,6 @@ func TestExtractFreeSpaceWalksUp(t *testing.T) {
 	}
 }
 
-// --- diff extract: container layout, include validation, params, publish ----
-
-// diffTreeReq is treeReq as one side of a diff pair, with a changed-paths list.
 func diffTreeReq() ExtractRequest {
 	r := treeReq()
 	r.DiffContainer = "diff-abcd1234-00112233"
@@ -964,14 +860,11 @@ func TestPlanExtractPathsDiffContainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanExtractPaths: %v", err)
 	}
-	// The pair container sits between the repo dir and the per-snapshot root, so
-	// the two sides publish as sibling snapshot-id roots inside it.
+	// Pair sides publish as sibling snapshot roots inside the container.
 	if want := "/srv/restore/repo-a/diff-abcd1234-00112233/abcd1234/etc/nginx"; final != want {
 		t.Errorf("final = %q, want %q", final, want)
 	}
-	// Staging stays repo-level, and its hash input folds the container in so a
-	// kept staging from a plain extract of the same (snapshot, source) never
-	// collides with the diff twin.
+	// Diff and plain operations use distinct repo-level staging names.
 	if dir := filepath.Dir(staging); dir != "/srv/restore/repo-a" {
 		t.Errorf("filepath.Dir(staging) = %q, want the repo dir", dir)
 	}
@@ -1009,7 +902,6 @@ func TestPlanExtractPathsDiffContainerInvalid(t *testing.T) {
 func TestPlanExtractPathsIncludeValidation(t *testing.T) {
 	cfg := config.Extract{TargetRoot: "/srv/restore"}
 
-	// A list inside Source — including Source itself — is accepted.
 	ok := diffTreeReq()
 	ok.IncludePaths = append(ok.IncludePaths, "/etc/nginx")
 	if _, _, err := PlanExtractPaths(cfg, ok); err != nil {
@@ -1057,8 +949,7 @@ func TestPlanExtractPathsIncludeValidation(t *testing.T) {
 	})
 }
 
-// The file mode's contract is one regular file; a changed-paths list is the
-// directory-tree shape and must be refused at the gate.
+// File mode accepts one regular file, not a changed-path list.
 func TestExtractFileModeRejectsIncludePaths(t *testing.T) {
 	req := fileReq()
 	req.IncludePaths = []string{"/etc/hosts"}
@@ -1067,9 +958,8 @@ func TestExtractFileModeRejectsIncludePaths(t *testing.T) {
 	}
 }
 
-// TestExtractTreeParamsDiffIncludes pins the rebase: Source becomes the
-// parent, and each include re-roots from req.Source onto "/"+base — req.Source
-// itself maps to exactly "/"+base (the whole-leaf include).
+// TestExtractTreeParamsDiffIncludes verifies include rebasing beneath the
+// reconstructed leaf.
 func TestExtractTreeParamsDiffIncludes(t *testing.T) {
 	req := diffTreeReq()
 	req.IncludePaths = []string{"/etc/nginx", "/etc/nginx/conf.d/a.conf"}
@@ -1082,7 +972,7 @@ func TestExtractTreeParamsDiffIncludes(t *testing.T) {
 		t.Errorf("IncludePaths = %q, want %q", p.IncludePaths, want)
 	}
 
-	// Root source: bare restore, includes pass through verbatim.
+	// Root includes remain rooted and unchanged.
 	rootReq := treeReq()
 	rootReq.Source = "/"
 	rootReq.SourceName = "abcd1234"
@@ -1115,10 +1005,8 @@ func TestExtractDiffTargetDir(t *testing.T) {
 	}
 }
 
-// TestExtractDiffSingleFilePublishesViaLink drives the full pipeline for a diff
-// extract whose reconstructed node is a regular FILE (a single changed path):
-// the tree-mode publish must route through the link primitive — final holds the
-// file, staging is gone, and FinalDir is the containing dir, not the file.
+// TestExtractDiffSingleFilePublishesViaLink verifies tree-mode publication of a
+// single file and its containing FinalDir.
 func TestExtractDiffSingleFilePublishesViaLink(t *testing.T) {
 	root := t.TempDir()
 	a, _ := newExtractApp(fakeRestic{
@@ -1157,9 +1045,7 @@ func TestExtractDiffSingleFilePublishesViaLink(t *testing.T) {
 	}
 }
 
-// TestExtractDiffSingleFileRefusesOccupiedFinal pins the no-clobber guarantee
-// for the file-through-tree-mode publish: an occupant at final (appearing after
-// the fresh-target check, i.e. mid-run) is refused, never overwritten.
+// TestExtractDiffSingleFileRefusesOccupiedFinal checks a mid-run occupant wins.
 func TestExtractDiffSingleFileRefusesOccupiedFinal(t *testing.T) {
 	root := t.TempDir()
 	var final string
@@ -1200,17 +1086,14 @@ func TestExtractDiffSingleFileRefusesOccupiedFinal(t *testing.T) {
 	}
 }
 
-// symlinkStagingSetup materializes a symlink node at staging/<leaf>, the way
-// restic restores a changed symlink selected as a diff row. The relative,
-// non-escaping target keeps the unsafe-symlink normalizer out of the picture.
+// symlinkStagingSetup models a safe restored symlink selected by a diff row.
 func symlinkStagingSetup(leaf, target string) func(staging string) error {
 	return func(staging string) error {
 		return os.Symlink(target, filepath.Join(staging, leaf))
 	}
 }
 
-// diffSymlinkReq is the diff shape for a selected symlink row: tree mode (diff
-// entries attest no node type) with the row itself as the only include.
+// diffSymlinkReq uses tree mode because diff entries do not attest node type.
 func diffSymlinkReq() ExtractRequest {
 	return ExtractRequest{
 		Repo:          "repo-a",
@@ -1224,10 +1107,8 @@ func diffSymlinkReq() ExtractRequest {
 	}
 }
 
-// TestExtractDiffSymlinkLeafPublishes drives the pipeline for a diff extract
-// whose reconstructed leaf is a SYMLINK: the publish must keep it a symlink
-// (linkNoFollow links the node itself, never the target) with its target
-// intact, and FinalDir must be the containing dir.
+// TestExtractDiffSymlinkLeafPublishes verifies a symlink leaf remains a link and
+// uses its containing directory as FinalDir.
 func TestExtractDiffSymlinkLeafPublishes(t *testing.T) {
 	root := t.TempDir()
 	a, _ := newExtractApp(fakeRestic{
@@ -1257,11 +1138,8 @@ func TestExtractDiffSymlinkLeafPublishes(t *testing.T) {
 	}
 }
 
-// TestExtractDiffSymlinkLeafRefusesOccupiedFinal is the no-clobber regression
-// for the non-regular leaf publish: an occupant created AFTER the fresh-target
-// check (mid-run) must be refused, never replaced — rename(2) of a symlink
-// over a file would silently replace it, which is exactly why every
-// non-directory leaf publishes via the EEXIST-failing link primitive.
+// TestExtractDiffSymlinkLeafRefusesOccupiedFinal verifies link publication cannot
+// replace a mid-run occupant, unlike rename of a symlink.
 func TestExtractDiffSymlinkLeafRefusesOccupiedFinal(t *testing.T) {
 	root := t.TempDir()
 	var final string

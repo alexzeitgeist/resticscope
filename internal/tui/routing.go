@@ -5,11 +5,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// handleKey dispatches a keypress. The keys that mean the same thing everywhere
-// (the hard quit, help, shell, refresh) are handled first; anything else is
-// routed to the active view's handler, where ↑/↓ and enter carry view-specific
-// meaning. q is dual-role: it quits from the main list but steps back one screen
-// from any nested view, so repeated q walks home and then exits.
+// handleKey gives text input, global keys, and modal views priority before
+// routing to the active view. Repeated q backs out of nested views and then
+// quits from the list.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleInputKey(msg); handled {
 		return next, cmd
@@ -23,9 +21,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleViewKey(msg)
 }
 
-// handleInputKey gives active text inputs first claim on every key so printable
-// globals like q/r/s/? are literal query text until the input is accepted,
-// cancelled, or hard-quit.
+// handleInputKey gives active text inputs priority so printable global keys
+// remain query text until input ends.
 func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case m.filtering:
@@ -41,9 +38,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	return m, nil, false
 }
 
-// handleGlobalKey matches keys that are valid from every view, including modal
-// overlays. Context-aware q is delegated because nested views need their own
-// cancel-aware back paths before the generic goBack path is safe.
+// handleGlobalKey handles universal keys, delegating q to cancel-aware nested
+// back paths.
 func (m Model) handleGlobalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.HardQuit):
@@ -70,8 +66,7 @@ func (m Model) quitModel() Model {
 func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 	switch m.view {
 	case extractView:
-		// q routes through the sub-model's per-state Back so cancel-running,
-		// close-filepicker, and back-to-browse all stay in one place.
+		// Delegate q to the extract model's state-specific Back behavior.
 		next, cmd, _ := m.extract.back()
 		m.extract = next
 		return m, cmd
@@ -80,8 +75,7 @@ func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 	case findVersionsView:
 		return m.findVersionsBack(), nil
 	case snapshotDiffView:
-		// Mirror esc: after a search jump, q first reverses the jump rather than
-		// leaving the view, so q and esc remain interchangeable as "step back one".
+		// After a search jump, q mirrors esc by reversing the jump first.
 		if m.diffSearchJumped {
 			return m.cancelDiffSearch(), nil
 		}
@@ -103,9 +97,8 @@ func (m Model) handleModalViewKey(msg tea.KeyPressMsg) (Model, bool) {
 	return m, false
 }
 
-// handleHelpViewKey keeps the help overlay modal while still allowing its
-// scroll keys (the body overflows the pane on narrow or short terminals). The
-// global ctrl+c/q/? path has already had first claim in handleGlobalKey.
+// handleHelpViewKey handles modal scrolling after global keys have had first
+// claim.
 func (m Model) handleHelpViewKey(msg tea.KeyPressMsg) Model {
 	switch {
 	case key.Matches(msg, m.keys.Back):
@@ -122,8 +115,8 @@ func (m Model) handleHelpViewKey(msg tea.KeyPressMsg) Model {
 	return m
 }
 
-// handleInfoViewKey keeps the info modal while still allowing its scroll
-// keys. The global ctrl+c/q/? path has already had first claim in handleGlobalKey.
+// handleInfoViewKey handles modal scrolling after global keys have had first
+// claim.
 func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
 	switch {
 	case key.Matches(msg, m.keys.Back), key.Matches(msg, m.keys.Info):
@@ -143,35 +136,25 @@ func (m Model) handleInfoViewKey(msg tea.KeyPressMsg) Model {
 func (m Model) handleViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case extractView:
-		// Extract is a self-contained sub-model with per-state key handling. It
-		// owns every printable key inside the modal (e.g. t/d/k/s collide with
-		// list/detail bindings), so it must run before the shared refresh/shell
-		// handlers would steal them. Sync the current height first so a target key
-		// that lazily builds the filepicker sizes from the live terminal.
+		// Extract owns colliding printable keys, so route it before shared commands.
+		// Sync height before a target key can lazily build the file picker.
 		m.extract.setHeight(m.height)
 		next, cmd, _ := m.extract.handleKey(m.keys, msg)
 		m.extract = next
 		return m, cmd
 	case browseView:
-		// Browse owns all its non-global keys (including s=shell), so it is routed
-		// before the shared refresh/shell handlers below would steal s.
+		// Browse owns s and all other non-global keys.
 		return m.handleBrowseKey(msg)
 	case findVersionsView:
-		// Find-versions is its own modal view; it owns all its non-global keys so
-		// it must be routed ahead of the shared refresh/shell handlers (which
-		// would otherwise steal `r` or `s` on this view).
+		// Find-versions owns its non-global keys, including r and s.
 		return m.handleFindVersionsKey(msg)
 	case snapshotDiffView:
-		// Snapshot-diff also owns all its non-global keys (including the +/-MUTb
-		// filter toggles, which would collide with literal text in the filter/search
-		// input paths above). Route here before handleRepoCommandKey so `r`/`s` are
-		// not stolen on the diff view.
+		// Snapshot diff owns its filters plus r and s; text input was routed first.
 		return m.handleSnapshotDiffKey(msg)
 	}
 
-	// Refresh-all, shell, and per-repo refresh act on repos regardless of view, so
-	// they are matched here, after browse (which owns s) but before the list/detail
-	// handlers.
+	// Match shared repository commands after views that own the same keys but
+	// before list and detail handlers.
 	if next, cmd, handled := m.handleRepoCommandKey(msg); handled {
 		return next, cmd
 	}
@@ -182,15 +165,12 @@ func (m Model) handleViewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleListKey(msg)
 }
 
-// handleRepoCommandKey handles the keys that launch repo commands regardless of
-// view (refresh-all, shell, per-repo refresh) from the list and detail views.
-// The trailing bool reports whether the key was consumed; false means handleKey
-// should fall through to the view handler.
+// handleRepoCommandKey handles shared list/detail commands. Its bool reports
+// whether the key was consumed.
 func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.RefreshAll):
-		// Refresh-all acts on every repo, so it needs no per-view cursor and works
-		// from the list and detail views alike.
+		// Refresh-all is independent of the active list or detail cursor.
 		m.statusMsg = ""
 		wasIdle := len(m.pending) == 0
 		var cmds []tea.Cmd
@@ -199,17 +179,14 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 				cmds = append(cmds, cmd)
 			}
 		}
-		// Restart the spinner only on the idle->refreshing edge so a refresh-all
-		// fired while one is already running doesn't stack a second tick loop.
+		// Start one spinner loop only on the idle-to-refreshing transition.
 		if wasIdle && len(cmds) > 0 {
 			cmds = append(cmds, m.spinner.Tick)
 		}
 		return m, tea.Batch(cmds...), true
 	case key.Matches(msg, m.keys.Shell):
-		// `s` shells into the active scope: a snapshot when one is highlighted
-		// (detail view), otherwise the repo. Browse's own `s` handling never
-		// reaches this — handleBrowseKey runs first — so shellSnap covers only the
-		// list and detail cases.
+		// Shell into the selected detail snapshot or repository. Browse handled
+		// its own s before reaching this path.
 		if cmd := m.openShellCmd(m.shellSnap()); cmd != nil {
 			m.statusMsg = ""
 			return m, cmd, true
@@ -220,8 +197,7 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 			m.statusMsg = ""
 			wasIdle := len(m.pending) == 0
 			cmd := m.startRefresh(name)
-			// On the idle->refreshing edge, (re)start the spinner alongside the
-			// refresh; if one was already in flight its tick loop is still running.
+			// Start the spinner only when transitioning from idle.
 			if cmd != nil && wasIdle {
 				return m, tea.Batch(cmd, m.spinner.Tick), true
 			}
@@ -232,20 +208,13 @@ func (m Model) handleRepoCommandKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) 
 	return m, nil, false
 }
 
-// goBack steps one screen toward the list: the detail view returns to the list
-// and the help overlay returns to the view that opened it. No-op on the list.
-// Browse and find-versions are intentionally absent: their back paths must run
-// through cancel-aware helpers (browseBack / findVersionsBack) to interrupt the
-// underlying restic process, so they are routed in handleKey's Quit branch before
-// goBack is reached.
+// goBack handles non-canceling routes toward the list. Browse and find-versions
+// use their own helpers so backing out cancels the underlying restic process.
 func (m Model) goBack() Model {
 	switch m.view {
 	case detailView:
-		// Leaving the detail context for the list: drop the mark FIFO so a new
-		// detail visit starts fresh. The diff and browse sub-views take their
-		// own back paths to detail and never reach here, so marks survive
-		// detail ↔ diff and detail ↔ browse round-trips by construction. Snap
-		// grouping and collapse mode are visit-scoped too, so reset both here.
+		// Marks survive browse and diff round trips but not a return to the list.
+		// Grouping and collapse are also scoped to one detail visit.
 		m = m.clearDetailMarks()
 		m.snapGroupMode = snapGroupOff
 		m.snapCollapseTree = false
@@ -253,17 +222,13 @@ func (m Model) goBack() Model {
 	case helpView:
 		m.view = m.prevView
 	case infoView:
-		// info is only reachable from detail, so prevView is unnecessary; the
-		// detail arm above is the only one that clears marks, and infoView
-		// never reaches it, so the mark FIFO survives the round-trip.
+		// Info is reachable only from detail and must preserve detail marks.
 		m.view = detailView
 	}
 	return m
 }
 
-// toggleHelp opens the help overlay from the current view, or closes it back to
-// the view it was opened from. Remembering the origin lets `?` from the detail
-// view return there rather than dumping the user on the list.
+// toggleHelp opens the overlay or returns to the view that opened it.
 func (m Model) toggleHelp() Model {
 	if m.view == helpView {
 		m.view = m.prevView

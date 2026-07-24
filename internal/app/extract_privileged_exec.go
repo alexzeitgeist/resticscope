@@ -1,14 +1,9 @@
 package app
 
-// extract_privileged_exec.go is the production PrivilegedRunner: the one place
-// that knows how to launch the extract helper under sudo (rule 5 — a wrapped
-// hostile boundary, deliberately isolated like resticx/exec.go). Everything
-// here is shaped by one asymmetry: the child runs as root, so this process
-// cannot signal it. The helper's stdin pipe is therefore the only control
-// channel — the payload goes down it, and CLOSING it is the cancel/kill
-// switch (the helper exits on stdin EOF). Always `sudo -n`: the run must fail
-// fast rather than deadlock on an invisible password prompt; interactive
-// authentication is the TUI's job (sudo -v via tea.ExecProcess) before Run.
+// The production privileged runner launches the root helper with non-interactive
+// sudo. Because the parent cannot signal the root child, stdin carries the
+// payload and EOF cancellation. Interactive sudo authentication occurs in the
+// TUI before Run.
 
 import (
 	"bufio"
@@ -26,42 +21,30 @@ import (
 )
 
 const (
-	// sudoProbeTimeout bounds `sudo -n true`. Generous: a misconfigured sudo
-	// with LDAP/NSS lookups can stall for seconds, and the probe runs off the
-	// UI thread.
+	// sudoProbeTimeout bounds slow sudo credential and identity lookups.
 	sudoProbeTimeout = 10 * time.Second
 
-	// helperWaitDelay bounds Wait after the stdin pipe closes. We cannot
-	// SIGKILL a root child, so if the helper ignores EOF (a bug), os/exec
-	// closes our ends of the pipes and Wait returns ErrWaitDelay instead of
-	// hanging the extract Cmd goroutine forever.
+	// helperWaitDelay is os/exec's grace period after context cancellation.
 	helperWaitDelay = 15 * time.Second
 
-	// helperStderrLimit caps captured helper/sudo stderr (it is path-free by
-	// the helper's contract, but unbounded capture is never acceptable).
+	// helperStderrLimit bounds captured helper and sudo stderr.
 	helperStderrLimit = 32 << 10
 
-	// helperEventLineMax caps one stdout event line. Events are small JSON
-	// records; 1 MiB is far above any legitimate line.
+	// helperEventLineMax bounds one JSON event line.
 	helperEventLineMax = 1 << 20
 
-	// ExtractHelperSubcommand is the hidden cmd/resticscope subcommand the
-	// runner re-execs. Exported so cmd's dispatch switch routes the exact
-	// string the runner assembles into argv.
+	// ExtractHelperSubcommand is the hidden self-reexec command.
 	ExtractHelperSubcommand = "extract-helper"
 )
 
-// SudoPrivilegedRunner launches `sudo -n -- <Exe> extract-helper`. Exe is the
-// absolute path to the running resticscope binary: sudo resets PATH
-// (secure_path), so the helper must be addressed absolutely, and re-execing
-// self guarantees parent and helper agree on the wire format.
+// SudoPrivilegedRunner launches Exe through non-interactive sudo. The
+// constructor supplies an absolute executable path, avoiding PATH lookup.
 type SudoPrivilegedRunner struct {
 	Exe string
 }
 
-// NewSudoPrivilegedRunner resolves the running binary. It fails only when the
-// executable path cannot be determined, in which case the caller leaves
-// App.Priv nil and privileged extracts are reported unavailable.
+// NewSudoPrivilegedRunner resolves the running binary. Failure leaves
+// privileged extraction unavailable to the caller.
 func NewSudoPrivilegedRunner() (*SudoPrivilegedRunner, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -70,14 +53,12 @@ func NewSudoPrivilegedRunner() (*SudoPrivilegedRunner, error) {
 	return &SudoPrivilegedRunner{Exe: exe}, nil
 }
 
-// Probe runs `sudo -n true`. nil means sudo credentials are already cached and
-// a helper launch should not prompt; an error carries sudo's first stderr line
-// (path-free: sudo names no repo or target paths) so the TUI can decide to
-// authenticate interactively.
+// Probe performs a best-effort non-interactive sudo check. Errors include
+// sudo's first stderr line so the TUI can request authentication.
 func (r *SudoPrivilegedRunner) Probe(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, sudoProbeTimeout)
 	defer cancel()
-	// Best-effort timestamp-cache probe: command-specific sudoers policy can false-negative/false-positive against the real helper argv.
+	// Command-specific sudoers policy may differ from this best-effort probe.
 	cmd := exec.CommandContext(ctx, "sudo", "-n", "true")
 	// No stdin: a misconfigured sudo must fail, never read the terminal.
 	cmd.Stdin = nil
@@ -91,20 +72,17 @@ func (r *SudoPrivilegedRunner) Probe(ctx context.Context) error {
 	return fmt.Errorf("sudo -n: %w", err)
 }
 
-// AuthCommand is the interactive half of the sudo flow: `sudo -v` prompts on
-// the user's real TTY and warms the credential cache that Run's `sudo -n`
-// then hits without prompting. The -p prompt carries the explanation because
-// the TUI is suspended while sudo owns the terminal and cannot frame the ask
-// itself; it stays path-free like everything else in this file.
+// AuthCommand returns an interactive sudo validation command. Its path-free
+// prompt explains the request while sudo owns the terminal, and success warms
+// the cache used by Run.
 func (r *SudoPrivilegedRunner) AuthCommand() *exec.Cmd {
 	return exec.Command("sudo", "-v",
 		"-p", "resticscope needs sudo to extract as root (preserves snapshot ownership): ")
 }
 
-// Run launches the helper, writes payload to its stdin (keeping the pipe open
-// as the liveness channel), and streams stdout lines to onLine. See the
-// package comment for the control-channel design; the error path returns the
-// first line of captured stderr, which the helper keeps path-free.
+// Run sends the payload while keeping stdin open as the liveness channel and
+// streams stdout events to onLine. Errors may include the first captured
+// stderr line.
 func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine func(line []byte) error) error {
 	cmd := exec.CommandContext(ctx, "sudo", "-n", "--", r.Exe, ExtractHelperSubcommand) //nolint:gosec // fixed argv: sudo re-execs this same binary's helper subcommand, no shell
 
@@ -120,11 +98,9 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 	stderr.Limit = helperStderrLimit
 	cmd.Stderr = &stderr
 
-	// ctx cancellation closes stdin instead of the default SIGKILL, which
-	// would fail with EPERM against a root child. WaitDelay then guarantees
-	// Wait returns even if the helper ignores the EOF. closeStdin is
-	// once-wrapped so the explicit post-loop close and a ctx cancel racing it
-	// cannot turn the second close's ErrClosed into a spurious Wait error.
+	// Cancellation closes stdin so the helper sees EOF across the privilege boundary.
+	// WaitDelay lets it exit before os/exec attempts to kill sudo; Once makes
+	// concurrent closes share the same result.
 	closeStdin := sync.OnceValue(func() error { return stdin.Close() })
 	cmd.Cancel = closeStdin
 	cmd.WaitDelay = helperWaitDelay
@@ -133,9 +109,7 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 		return err
 	}
 	go func() {
-		// Deliver the payload; deliberately do NOT close stdin — the open pipe
-		// is what tells the helper the parent is alive. cmd.Cancel (ctx) or the
-		// post-loop close ends it.
+		// Keep stdin open after the payload as the parent's liveness signal.
 		_, _ = stdin.Write(payload)
 	}()
 
@@ -151,14 +125,10 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 			break
 		}
 	}
-	// The event stream is over — stdout EOF on the happy path, or the callback
-	// refused a line. Close stdin BEFORE draining/waiting: EOF is the only
-	// stop signal this process can deliver to a root child, and on a callback
-	// error the helper would otherwise keep restoring (for up to the full
-	// extract timeout) toward a result the parent has already discarded.
+	// Close stdin before drain and Wait so callback failure stops work whose
+	// result the parent has discarded.
 	_ = closeStdin()
-	// Drain leftover stdout so the helper is never wedged on a full pipe
-	// while we wait for it (mirrors resticx.ExecRunner.RunStream).
+	// Drain stdout so a full pipe cannot block helper exit.
 	_, _ = io.Copy(io.Discard, stdout)
 	waitErr := cmd.Wait()
 
@@ -177,7 +147,6 @@ func (r *SudoPrivilegedRunner) Run(ctx context.Context, payload []byte, onLine f
 	return nil
 }
 
-// firstNonEmptyLine returns the first non-blank, space-trimmed line of b.
 func firstNonEmptyLine(b []byte) string {
 	for line := range strings.SplitSeq(string(b), "\n") {
 		if t := strings.TrimSpace(line); t != "" {

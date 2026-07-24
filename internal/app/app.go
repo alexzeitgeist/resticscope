@@ -1,11 +1,6 @@
-// Package app is resticscope's headless orchestration layer. It loads cached
-// state, refreshes repositories by driving restic, evaluates status, and writes
-// the cache — with no terminal dependency. `status`, `check`, `exec`, and the
-// TUI are all thin callers of this package.
-//
-// Following the engineering rules, app owns no hidden globals: its clock,
-// restic runner, cache store, and secrets resolver are all injected as the
-// small consumer-side interfaces declared here.
+// Package app provides the headless workflows used by resticscope's CLI and
+// TUI. It drives restic, evaluates repository status, and manages cached state
+// through explicitly injected dependencies.
 package app
 
 import (
@@ -22,56 +17,47 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/secrets"
 )
 
-// Clock supplies the current time. Injected so status evaluation is
-// deterministic in tests.
+// Clock supplies the current time for deterministic status evaluation.
 type Clock interface {
+	// Now returns the current time.
 	Now() time.Time
 }
 
-// CacheStore reads and writes per-repo state. Satisfied by *cache.Store.
+// CacheStore reads and writes per-repository state.
 type CacheStore interface {
+	// Load returns stored state for name.
 	Load(ctx context.Context, name string) (model.RepoState, error)
+	// Save stores state for name.
 	Save(ctx context.Context, name string, state model.RepoState) error
 }
 
-// Restic runs the restic operations app needs. Satisfied by *resticx.Client.
+// Restic runs the restic operations required by the application.
 type Restic interface {
+	// Snapshots returns the snapshots for a target.
 	Snapshots(ctx context.Context, t resticx.Target, creds resticx.Creds) ([]model.Snapshot, error)
+	// CatConfig verifies access by reading the repository config.
 	CatConfig(ctx context.Context, t resticx.Target, creds resticx.Creds) error
+	// StreamSnapshotTree streams snapshot nodes to onNode and returns a completion summary.
 	StreamSnapshotTree(ctx context.Context, t resticx.Target, creds resticx.Creds, snapshotID string, timeout time.Duration, onNode func(model.BrowseNode) error) (model.BrowseScanSummary, error)
+	// FindMatches returns path matches, optionally restricted to host.
 	FindMatches(ctx context.Context, t resticx.Target, creds resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error)
+	// StreamDiff streams snapshot changes and progress to their callbacks.
 	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
+	// ExtractTree restores a tree and sends progress and summary events to onEvent.
 	ExtractTree(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error
 }
 
-// Secrets resolves a repo's runtime credentials. Satisfied by *secrets.Store.
+// Secrets resolves a repository's runtime credentials.
 type Secrets interface {
+	// Resolve returns runtime material for a repository credential.
 	Resolve(repoName, credName string) (secrets.Material, error)
 }
 
-// App wires the dependencies together. Construct it directly with a struct
-// literal; dependencies are per-method, not globally required, and each entry
-// point wires only the set it needs:
-//
-//   - Cfg backs every command-facing method; the privileged-runner probes
-//     (PrivilegedExtractProbe, PrivilegedAuthCommand) are the exception — they
-//     need only Priv and guard its nil themselves.
-//   - Cache and Clock back the status methods (Statuses, Refresh*).
-//   - Secrets and Restic back the refresh/check methods (Refresh*, Check) — and
-//     Secrets alone backs the shell session (exec).
-//   - Browse and Priv back the TUI's browse and privileged-extract paths.
-//   - Log is always optional; logger() falls back to a discard logger.
-//
-// A method invoked without the dependencies it needs nil-panics rather than
-// failing softly.
-//
-// Browse is the lazily-opened, session-scoped encrypted store backing the in-app
-// file browser. It is nil for non-TUI entry points (status/check/exec), and the
-// browse methods guard that nil.
-//
-// Priv launches the privileged (sudo) extract helper. It is nil for non-TUI
-// entry points and when the running binary cannot be resolved; the extract
-// methods guard that nil by refusing privileged requests.
+// App coordinates workflows through per-method dependencies. Callers provide
+// Cfg for command workflows except privileged probes; Cache and Clock for
+// status; Secrets and Restic for refresh and check; Secrets alone for shell;
+// Browse for browsing; and Priv for privileged extraction. Log is optional.
+// Browse and Priv methods reject nil; other methods may panic on missing deps.
 type App struct {
 	Cfg     *config.Config
 	Secrets Secrets
@@ -106,16 +92,10 @@ func (a *App) repo(name string) (config.Repo, bool) {
 	return config.Repo{}, false
 }
 
-// ErrUnknownRepo is the sentinel every app entry point returns when asked to act
-// on a repo name that is not in the loaded config. It is wrapped (with the name)
-// by unknownRepoError so callers can match the condition with errors.Is rather
-// than string-comparing the message. The name is the only dynamic part; the
-// repo name is not a secret (it is the user's own config label, not a URL or
-// credential).
+// ErrUnknownRepo identifies a repository name absent from the loaded config.
+// Wrapped errors include the requested name and support errors.Is.
 var ErrUnknownRepo = errors.New("unknown repo")
 
-// unknownRepoError builds the "unknown repo" error for a missing a.repo lookup,
-// wrapping ErrUnknownRepo so errors.Is(err, ErrUnknownRepo) holds.
 func unknownRepoError(name string) error {
 	return fmt.Errorf("%w %q", ErrUnknownRepo, name)
 }

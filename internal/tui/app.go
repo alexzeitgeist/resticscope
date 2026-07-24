@@ -1,7 +1,5 @@
-// Package tui implements resticscope's interactive terminal UI: the bubbletea
-// Model that drives every screen (repo list, snapshot detail, browse, find
-// versions, snapshot diff, extract, help, info) along with the rendering, key
-// handling, and command plumbing behind them.
+// Package tui implements resticscope's Bubble Tea terminal interface, including
+// its screens, rendering, input handling, and command plumbing.
 package tui
 
 import (
@@ -32,8 +30,8 @@ const (
 	extractView
 )
 
-// Model is the root Bubble Tea model. It drives both the list view and the
-// per-repo detail view; view selects which one is showing.
+// Model is the root Bubble Tea model coordinating all application views and
+// their transient UI state.
 type Model struct {
 	app        *app.App
 	ctx        context.Context    // scopes in-flight refreshes; cancelled on quit
@@ -52,7 +50,7 @@ type Model struct {
 	sortMode   sortMode        // order applied to the list view
 	filter     string          // active filter query (name/region/label substring)
 	filtering  bool            // true while the user is typing a filter
-	groupIndex int             // transient: 0 = flat view; 1..N picks cfg.Global.GroupBy[i-1] as the active group key
+	groupIndex int             // transient group selector: 0 is flat; 1..N indexes cfg.Global.GroupBy
 	pending    map[string]bool // repo name -> a refresh is in flight
 	sem        chan struct{}   // bounds concurrent refreshes to parallelism
 	resticVer  string
@@ -61,21 +59,15 @@ type Model struct {
 	statusMsg  string // transient footer notice (e.g. a cache-save warning)
 	quitting   bool
 
-	// termBg/termFg are the theme's terminal default background/foreground,
-	// painted on every View (OSC 11/10) so the whole screen matches the theme
-	// rather than the terminal's own scheme; the renderer resets them on quit
-	// and re-asserts them after a shell-out resumes. nil (no painting) when
-	// [theme] background = false. colorOK gates the painting on the terminal
-	// actually supporting color — set by the startup tea.ColorProfileMsg, so a
-	// NO_COLOR / dumb-terminal session never has its background forced.
+	// termBg and termFg are painted on every View, reset on quit, and restored
+	// after shell-outs. They are nil when theme background painting is disabled;
+	// colorOK prevents painting in NO_COLOR and dumb-terminal sessions.
 	termBg, termFg color.Color
 	colorOK        bool
 
-	// Browse state, kept off disk by design. The on-screen rows are session-only — they are never persisted
-	// to the cache, RepoState, or any log, and leaving browse clears them. The
-	// underlying filenames live only in the session-scoped encrypted store
-	// (app.Browse), which survives until the app exits so returning to an
-	// already-indexed snapshot is instant; clearBrowse drops only the UI state.
+	// Browse rows are session-only and cleared on leaving browse. Filenames remain
+	// in app.Browse's session-scoped encrypted store until exit so revisiting an
+	// indexed snapshot is immediate; clearBrowse drops only this UI state.
 	browseRows      []model.BrowseEntry // the current directory's children, or nil
 	browseRepo      string              // repo being browsed (pins the action target)
 	browseSnapshot  string              // snapshot id being browsed
@@ -91,21 +83,14 @@ type Model struct {
 	browseGen       int                 // generation token; stale browse msgs are discarded
 	browseProgress  chan int            // coalesced index-progress ticks; re-armed by waitForIndexProgress
 
-	// browseCache memoizes visited directories' listings for the current browse so
-	// back/parent navigation is served synchronously (no async query, no loading
-	// hop). A committed snapshot is immutable, so an entry never goes stale — no
-	// invalidation. It holds filenames, so clearBrowse drops it on leaving browse
-	// (non-negotiable #1: no filenames linger), and startBrowse resets it so one
-	// snapshot's "/" can never serve another's.
+	// browseCache makes back navigation synchronous. Snapshot listings are
+	// immutable; clearBrowse drops their filenames and startBrowse prevents one
+	// snapshot's root listing from serving another.
 	browseCache map[string][]model.BrowseEntry
 
-	// Global filename search state, kept entirely SEPARATE from the directory
-	// listing above to ensure cancelling search (esc) restores the prior listing untouched.
-	// Enter does not exit the search: it SUSPENDS it (browseSearchSuspended), keeping
-	// the query/rows/cursor so esc from the jumped-to listing can restore them. The
-	// rows hold full paths/filenames for the lifetime of the model only; clearBrowse
-	// zeros every field here on leaving browse (non-negotiable #1: no filenames linger
-	// once the user leaves browse).
+	// Search state stays separate so escape restores the directory listing.
+	// Enter suspends the result set behind the jumped-to listing, and clearBrowse
+	// removes the full paths held in its rows.
 	browseSearching        bool                // true while the search input is open
 	browseSearchSuspended  bool                // a search result set is parked behind a jumped-to listing; esc restores it
 	browseSearchQuery      string              // the live search query
@@ -115,12 +100,9 @@ type Model struct {
 	browseSearchTotal      int                 // total matches before the result cap
 	browseSearchErr        string              // path-free search error, shown while searching
 
-	// Find-versions state. Like browse, rows hold a filename and snapshot ids
-	// only for the lifetime of the model — clearFindVersions zeroes them on
-	// leaving the view. The split between findRequestAllHosts (user toggle) and
-	// findResultAllHosts/findResultHost (filter the visible rows came from) is
-	// deliberate: the renderer reads only the result fields, so a mid-toggle
-	// reload can never relabel rows that came from the other filter.
+	// Find-version rows hold filenames and snapshot IDs only until the view is
+	// cleared. Request and result filters stay separate so an in-flight toggle
+	// cannot relabel rows from the previous response.
 	findRepo            string
 	findOriginHost      string              // originating snapshot hostname from the live TUI row
 	findPath            string              // the path being searched (held by the model only)
@@ -133,33 +115,24 @@ type Model struct {
 	findGen             int                 // generation token; stale find msgs are discarded
 	findCancel          context.CancelFunc
 
-	// Vertical scroll offset for the snapshot-info modal body, in lines. Reset
-	// to 0 when the modal opens; clamped to a valid range on every render.
+	// infoScroll is reset when the modal opens and clamped on every render.
 	infoScroll int
 
-	// Vertical scroll offset for the help overlay body, in lines. Only moves
-	// when the rendered layout (two columns on a wide terminal, one stacked
-	// column on a narrow one) overflows the pane. Reset to 0 when the overlay
-	// opens; clamped to a valid range on every render.
+	// helpScroll moves only on overflow, resets when help opens, and is clamped
+	// on every render.
 	helpScroll int
 
-	// Detail-view 2-slot FIFO of marked snapshots. Marks belong to the "detail
-	// context": they survive a round-trip into the snapshot-diff or browse views
-	// (those are sub-screens reached from detail) and clear only when leaving the
-	// detail context for the list. The clear lives in goBack's detailView arm so
-	// every back path goes through the same gate.
+	// Detail marks form a two-slot FIFO. They survive detail sub-screens and are
+	// cleared only when goBack leaves detail for the repository list.
 	detailMarks []model.Snapshot
 
-	// Snapshot-table grouping and tree-ID collapse for the detail view. Both are
-	// transient per-detail-visit state: snapGroupMode cycles via `g` (off → host
-	// → tags → paths → off) and snapCollapseTree toggles via `c`. A fresh detail
-	// visit starts with both off; goBack on the detail arm resets both alongside
-	// clearDetailMarks so a return to detail starts fresh.
+	// Snapshot grouping and tree-ID collapse are transient per detail visit;
+	// goBack resets both when leaving detail for the repository list.
 	snapGroupMode    snapGroupMode
 	snapCollapseTree bool
 
-	// Snapshot-diff view state. Same path-no-persist discipline as findRows and
-	// browseRows: clearSnapshotDiff zeros every diff* field on leaving the view.
+	// Snapshot-diff paths remain in memory only until clearSnapshotDiff runs on
+	// leaving the view.
 	diffRepo       string
 	diffOlder      model.Snapshot    // first snapshot in the displayed diff direction
 	diffNewer      model.Snapshot    // second snapshot in the displayed diff direction
@@ -168,7 +141,7 @@ type Model struct {
 	diffDir        string            // path of the directory currently listed (defaults to DiffRoot)
 	diffRows       []model.DiffRow   // current dir's children, filtered + sorted (rebuilt on nav/filter)
 	diffCursor     int               // cursor within diffRows
-	diffCache      map[string]int    // visited dir → remembered cursor index (back-nav restore)
+	diffCache      map[string]int    // visited dir -> remembered cursor index (back-nav restore)
 	diffSelectPath string            // row path to reselect after an async diff rerun
 
 	// Diff search is a modal overlay over the loaded diffEntries. It searches
@@ -192,44 +165,31 @@ type Model struct {
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
 	diffProgress  chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
 
-	// Extract sub-model. Constructed on `e` from browse (selected entry) or
-	// detail (whole snapshot) and hosted here while m.view == extractView. The
-	// sub-model owns its own state machine, generation token, per-op cancel,
-	// embedded filepicker, and transient-clear discipline; the root Model just
-	// routes keys and messages to it and swaps view back to the originating
-	// view on extractBackToBrowseMsg.
+	// The extract sub-model owns its state machine, cancellation, file picker,
+	// and transient clearing. Model routes its input and restores the prior view
+	// when extraction closes.
 	extract extractModel
 
-	// extractReturn is the view the extract modal exits to, set by each launch
-	// site (browse, detail, find-versions) beside its switch to extractView and
-	// reset when the sub-model is dropped. The exit handler treats anything
-	// outside that set as browse, so a stale or unset value (the zero value is
-	// listView) lands on the historical default.
+	// extractReturn selects the originating view; stale or unset values fall back
+	// to browse.
 	extractReturn view
 
-	// extractTargetMemo remembers, for this process's lifetime only, the target
-	// root the most recent extract run actually dispatched with (copied from the
-	// sub-model's ranTargetRoot on modal close, so a picker selection without a
-	// run is forgotten). Each launch site seeds fresh requests from it via
-	// seedTargetMemo. Deliberately in-memory only: non-negotiable #1 keeps
-	// RepoState, log.jsonl, and the cache free of any recent-targets memory,
-	// and this field is never written down. [extract] remember_target = false
-	// disables the capture, so the field then stays empty for the whole run.
+	// extractTargetMemo holds the most recently used extraction root in memory
+	// only; picker-only selections are forgotten. It is never written to state,
+	// logs, or caches, and remember_target=false disables it.
 	extractTargetMemo string
 }
 
-// Run loads cached state for an instant first paint, then starts the program in
-// the alternate screen and blocks until the user quits. The caller must already
-// have wired the App's Secrets and Restic (i.e. run secrets_command) so any GPG
-// passphrase prompt happens before the alt-screen is entered (plan §12).
+// Run loads cached state, enters the alternate screen, and blocks until quit.
+// The caller must initialize App secrets and Restic first so passphrase prompts
+// occur before entering the alternate screen.
 func Run(ctx context.Context, a *app.App, resticVer string) error {
 	return runProgram(ctx, a, resticVer)
 }
 
 func runProgram(ctx context.Context, a *app.App, resticVer string, opts ...tea.ProgramOption) error {
-	// A cancellable child scopes refresh/browse goroutines. It is intentionally
-	// separate from Bubble Tea's program context: normal q/ctrl+c quits must cancel
-	// restic work without making Program.Run report "context canceled".
+	// Keep operation cancellation separate so a normal quit stops restic work
+	// without making Program.Run report context cancellation.
 	opCtx, cancelOps := context.WithCancel(ctx)
 	defer cancelOps()
 
@@ -263,9 +223,8 @@ func newModel(ctx context.Context, cancel context.CancelFunc, a *app.App, rows [
 		resticVer: resticVer,
 	}
 	m.termBg, m.termFg = themeTerminalColors(a.Cfg.Theme)
-	// Start grouped by the first configured key when any key is configured; the
-	// user cycles through the rest (and back to flat) with `g`. Transient, never
-	// persisted.
+	// Start with the first configured group; `g` cycles the rest and flat mode.
+	// Group selection is never persisted.
 	if len(a.Cfg.Global.GroupBy) > 0 {
 		m.groupIndex = 1
 	}
@@ -313,26 +272,19 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// Update implements tea.Model. It is the central message dispatcher: a flat
-// type-switch over message kinds, intentionally not split — the cases are
-// tightly coupled to the Model's fields and splitting them would scatter
-// closely-related state transitions across helpers.
+// Update implements tea.Model: the central message dispatcher, a flat
+// type-switch over message kinds whose cases share Model state.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funlen // central bubbletea message dispatcher; a flat type-switch whose cases share Model state, so splitting would reduce, not improve, readability
 	switch msg := msg.(type) {
 	case tea.ColorProfileMsg:
-		// Sent once at startup (and again if the profile is upgraded). ANSI and
-		// up means the terminal does color, so the theme background may be
-		// painted; Ascii/NoTTY (NO_COLOR sessions, dumb terminals) must keep
-		// their default background even though OSC 11 is technically separate
-		// from SGR color support.
+		// Paint the theme only for ANSI-capable profiles; NO_COLOR and dumb
+		// terminals retain their defaults.
 		m.colorOK = msg.Profile >= colorprofile.ANSI
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
-		// Keep the extract sub-model sized too: it owns an embedded filepicker
-		// whose viewport must reflow on a live resize while it is open.
 		m.extract.setHeight(msg.Height)
 		return m, nil
 	case tea.KeyPressMsg:
@@ -356,13 +308,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funle
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case extractRunDoneMsg:
-		// Every extract message is gated on the modal being active: the sub-model's
-		// gen restarts at 0 each session, so a late message from a prior session
-		// must not be applied (or worse, switch the view) once the user has left.
-		// "Active" includes the help overlay opened over extract — otherwise a
-		// completion that lands while help is open would be dropped and strand the
-		// modal (it returns to extract via prevView, not a real exit). The returned
-		// Cmd starts the next side of a multi-side (diff) extract, if one is queued.
+		// Reject late messages from a prior extract session, whose generation may
+		// have restarted at zero. The command advances a queued diff extraction.
 		if m.extractActive() {
 			return m, m.extract.applyRunDone(msg)
 		}
@@ -394,29 +341,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funle
 		if !m.extractActive() {
 			return m, nil
 		}
-		// The returned Cmd is the back-to-browse message, so the actual close runs
-		// through the single extractBackToBrowseMsg path below.
+		// Route closing through the single extractBackToBrowseMsg path below.
 		cmd := m.extract.applyDeleteStagingDone(msg)
 		return m, cmd
 	case extractBackToBrowseMsg:
 		if !m.extractActive() {
 			return m, nil
 		}
-		// supersede cancels any in-flight per-op work; replacing the sub-model
-		// with its zero value drops every transient path field (non-negotiable
-		// #1: no filenames linger after leaving the modal). The one survivor is
-		// the session target memo: a root the user actually ran an extract
-		// against this session, kept in memory only so the next extract starts
-		// there ("" — no run, or a config-default run — keeps the prior memo).
-		// Gated here, the single capture point, so [extract] remember_target =
-		// false means the memo simply never exists.
+		// Cancel in-flight work and zero all transient path fields. Only the target
+		// of an extraction that actually ran may survive, and only when configured.
 		if t := m.extract.ranTargetRoot; t != "" && m.app.Cfg.Extract.RememberTarget {
 			m.extractTargetMemo = t
 		}
 		m.extract.supersede()
 		m.extract = extractModel{}
-		// Land on the originating view; anything unset or stale falls back to
-		// browse, the historical default.
 		switch m.extractReturn {
 		case detailView, findVersionsView, snapshotDiffView:
 			m.view = m.extractReturn
@@ -438,10 +376,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funle
 		}
 		return m, cmd
 	default:
-		// The embedded filepicker is fully async: its Init and every navigation
-		// emit an unexported readDirMsg that no case above handles. Forward any
-		// otherwise-unhandled message to it while the overlay is open so the
-		// directory list actually populates (without this it renders empty).
+		// The embedded filepicker is fully async: its Init and navigation emit an
+		// unexported readDirMsg no case above handles. Forward unhandled messages
+		// to it while the overlay is open so the directory list populates.
 		if m.extractActive() && m.extract.state == extractStateFilePicker {
 			var cmd tea.Cmd
 			m.extract, cmd = m.extract.updateFilePicker(msg)
@@ -451,13 +388,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funle
 	return m, nil
 }
 
-// extractActive reports whether the extract sub-model is the live modal context:
-// either showing directly, or temporarily behind the help overlay (which was
-// opened over it and returns to it via prevView). Extract async messages and the
-// filepicker's async reads must be honored in both — help is an overlay, not a
-// real extract exit, and the sub-model is not dropped when it opens — otherwise a
-// run completion, progress tick, or staging delete that lands while help is up
-// would be silently dropped and strand the modal.
+// extractActive reports whether extraction is visible or behind its help
+// overlay. Async extract and file-picker messages remain active behind help so
+// they cannot strand the modal.
 func (m Model) extractActive() bool {
 	return m.view == extractView || (m.view == helpView && m.prevView == extractView)
 }

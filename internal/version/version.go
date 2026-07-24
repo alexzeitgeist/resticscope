@@ -1,11 +1,7 @@
 // Package version exposes build metadata, populated at link time via -ldflags.
 package version
 
-// These are overridden at build time, e.g.:
-//
-//	go build -ldflags "-X resticscope/internal/version.Version=v0.1.0 \
-//	    -X resticscope/internal/version.Commit=$(git rev-parse --short HEAD) \
-//	    -X resticscope/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+// Version, Commit, and Date may be overridden at build time with -ldflags -X.
 var (
 	// Version is the semantic version of the build, or "dev" for local builds.
 	Version = "dev"

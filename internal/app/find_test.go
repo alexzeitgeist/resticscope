@@ -18,8 +18,7 @@ func findTestApp(fc *fakeCache, fr fakeRestic) *App {
 	}
 }
 
-// seedSnapshot writes a single snapshot into the fake cache so the grouping step
-// can join snapshot metadata without needing a real refresh.
+// seedSnapshot adds cached metadata for grouping tests.
 func seedSnapshot(fc *fakeCache, repoName, snapID, host string, ts time.Time) {
 	fc.states[repoName] = model.RepoState{
 		Name:        repoName,
@@ -94,9 +93,7 @@ func TestFindFileVersionsAllHosts(t *testing.T) {
 }
 
 func TestFindFileVersionsErrFindUnknownHost(t *testing.T) {
-	// No origin host supplied — the app promotes that to ErrFindUnknownHost when
-	// allHosts is false; no FindMatches call must happen, since silently widening
-	// to all hosts would defeat the host filter.
+	// Missing origin host must fail rather than silently widen the query.
 	fc := newFakeCache()
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})
@@ -111,9 +108,7 @@ func TestFindFileVersionsErrFindUnknownHost(t *testing.T) {
 }
 
 func TestFindFileVersionsUsesLiveOriginHostWhenCacheMisses(t *testing.T) {
-	// A successful in-session refresh can update the TUI's live rows even if the
-	// cache write fails. FindFileVersions must use the selected snapshot's live
-	// host passed by the caller, not rediscover the host from the persisted cache.
+	// Use the caller's live host when a successful refresh was not cached.
 	fc := newFakeCache()
 	snapID := "snap-live-only"
 	cap := &findCapture{}
@@ -137,8 +132,7 @@ func TestFindFileVersionsUsesLiveOriginHostWhenCacheMisses(t *testing.T) {
 }
 
 func TestFindFileVersionsUnknownHostRecoverableViaAllHosts(t *testing.T) {
-	// When the originating host is unknown but the user opts into all-hosts,
-	// the call must succeed without --host. This is the recovery affordance.
+	// Explicit all-hosts is the recovery path for an unknown origin host.
 	fc := newFakeCache()
 	cap := &findCapture{}
 	a := findTestApp(fc, fakeRestic{findCap: cap})

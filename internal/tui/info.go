@@ -9,41 +9,29 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// info.go renders the full-screen snapshot-info modal (key `i` from detail): a
-// labeled dump of as much of the selected snapshot record as restic's
-// `snapshots --json` makes available. It mirrors help.go's modal pattern —
-// title row, body, closed via `i`, `q`, or `esc` — and reuses the same heading
-// / label / meta styles. The bound is intentionally split off m.field's
-// labelWidth: rows like "Files unmodified" or "Data added packed" exceed the
-// detail panel's 11-cell label column, so the renderer computes its own column
-// width.
+// The snapshot-info modal renders the selected restic snapshot record. It
+// computes its label width independently because its labels are unusually long.
 
-// infoLabelMin is the floor for the info modal's label column. Real labels go
-// up to ~17 cells; the floor keeps a degenerate empty group from collapsing the
-// value column against the gutter.
+// infoLabelMin prevents an empty group from collapsing the value column into
+// the gutter.
 const infoLabelMin = 12
 
-// infoRow is one label/value pair. multi true means each value renders on its
-// own line, with continuation lines indented to the value column.
+// infoRow is a label/value pair; multi places each value on its own line.
 type infoRow struct {
 	label  string
 	values []string
 	multi  bool
 }
 
-// infoSection groups rows under a heading. An empty rows slice is silently
-// skipped by the renderer so missing data (e.g. pre-0.17 summary) leaves no
-// visible gap.
+// infoSection groups rows under a heading. The renderer omits empty sections,
+// including summary data absent from older restic versions.
 type infoSection struct {
 	title string
 	rows  []infoRow
 }
 
-// infoTitle names the info context: the detail repo and the inspected
-// snapshot's short id. detailName is used directly (it is what detailRow()
-// searches by and survives a refresh that drops the row); the snapshot part is
-// omitted when no snapshot is selected, and the bare "info" fallback covers an
-// empty detailName so the title can never be blank.
+// infoTitle identifies the detail repository and selected snapshot. It uses
+// detailName because that survives a refresh which drops the selected row.
 func (m Model) infoTitle() string {
 	if m.detailName == "" {
 		return m.styles.title.Render("info")
@@ -73,11 +61,8 @@ func (m Model) infoBody() string {
 	if len(lines) <= visible {
 		return strings.Join(lines, "\n")
 	}
-	// Content overflows: reserve the last visible row for a scroll hint and
-	// window the rest around m.infoScroll. clampModalScroll guarantees the same
-	// bounds the key handler enforces, so the model state and what is on screen
-	// can never disagree. When visible==1 there is no room for both body and
-	// hint — drop the hint so the modal never spills into an adjacent pane.
+	// Reserve the last row for the scroll hint, but omit it when only one row fits.
+	// clampModalScroll keeps rendering consistent with the key handler.
 	bodyRows := visible - 1
 	showHint := bodyRows >= 1
 	if !showHint {
@@ -94,9 +79,8 @@ func (m Model) infoBody() string {
 	return strings.Join(out, "\n")
 }
 
-// infoBodyLines builds the modal body as a flat line list so the renderer can
-// window it. Sections are separated by a single blank line; an empty section is
-// silently skipped so missing data leaves no visible gap.
+// infoBodyLines builds a flat, windowable body, separating non-empty sections
+// with one blank line.
 func (m Model) infoBodyLines(s model.Snapshot, width int) []string {
 	sections := infoSections(s)
 	labelW := infoLabelMin
@@ -120,11 +104,9 @@ func (m Model) infoBodyLines(s model.Snapshot, width int) []string {
 	return lines
 }
 
-// infoScrollable reports whether the info modal's body overflows the visible
-// pane and therefore needs to advertise scroll keys in the footer. It is
-// deliberately independent of m.footerRows() to avoid a cycle (footerRows
-// builds viewHelp, which calls this). The info modal cannot have an active
-// filter/search prompt, but an async status message can add one footer row.
+// infoScrollable reports whether the info body overflows the pane. It avoids
+// m.footerRows because that builds viewHelp and calls this method; an async
+// status message adds a second footer row.
 func (m Model) infoScrollable() bool {
 	if m.view != infoView {
 		return false
@@ -142,9 +124,8 @@ func (m Model) infoScrollable() bool {
 	return len(m.infoBodyLines(*s, w)) > available
 }
 
-// scrollInfo adjusts the modal scroll offset by delta lines and clamps the
-// result against the actual body extent so the model state always matches what
-// the renderer will show. A no-op when the body already fits on screen.
+// scrollInfo adjusts and clamps the modal scroll offset. It resets the offset
+// when no snapshot is selected or the body fits on screen.
 func (m Model) scrollInfo(delta int) Model {
 	s := m.selectedSnapshot()
 	if s == nil {
@@ -172,9 +153,8 @@ func (m Model) renderInfoSection(s infoSection, labelW, width int) []string {
 	return lines
 }
 
-// renderInfoRow renders one labeled row. Single-value rows fit on one line;
-// multi rows emit the label with the first value, then subsequent values as
-// continuation lines padded to the value column so the list reads as a block.
+// renderInfoRow renders one labeled row. Multi-value rows indent continuation
+// lines to the value column.
 func (m Model) renderInfoRow(r infoRow, labelW, width int) []string {
 	if len(r.values) == 0 {
 		return nil
@@ -194,10 +174,8 @@ func (m Model) renderInfoRow(r infoRow, labelW, width int) []string {
 	return lines
 }
 
-// infoSections is the pure data builder: it walks the snapshot record and
-// returns the grouped rows in render order. Missing/empty values are filtered
-// out at this layer so the renderer doesn't need to know which fields are
-// optional.
+// infoSections groups snapshot fields in render order and filters empty
+// sections before they reach the renderer.
 func infoSections(s model.Snapshot) []infoSection {
 	sections := []infoSection{
 		{title: "Identity", rows: identityRows(s)},
@@ -321,9 +299,8 @@ func churnRows(s model.Snapshot) []infoRow {
 	if sum.DirsUnmodified != nil {
 		rows = append(rows, infoRow{label: "Dirs unmodified", values: []string{strconv.FormatUint(*sum.DirsUnmodified, 10)}})
 	}
-	// Restic does not emit a total-dirs counter; derive it only when all three
-	// dir buckets are present so the modal can show a faithful total alongside
-	// the file total without inventing a number.
+	// Restic has no total-dirs counter, so derive it only when every bucket is
+	// present.
 	if sum.DirsNew != nil && sum.DirsChanged != nil && sum.DirsUnmodified != nil {
 		total := *sum.DirsNew + *sum.DirsChanged + *sum.DirsUnmodified
 		rows = append(rows, infoRow{label: "Dirs total", values: []string{strconv.FormatUint(total, 10)}})

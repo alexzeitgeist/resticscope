@@ -12,58 +12,39 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// browse.go is the TUI's in-app snapshot file browser: the controller that
-// starts/cancels indexing and directory listings, and the renderer for
-// browseView. The first time a snapshot is browsed its whole namespace is
-// streamed once into the session-scoped encrypted store (app.Browse); all later
-// navigation is a SQL directory query. The on-screen rows (m.browseRows) hold
-// filenames only for the lifetime of the model and are cleared on leaving browse;
-// the underlying store is encrypted at rest with an ephemeral in-memory key and
-// torn down on clean exit. Leaving browse clears the UI rows but NOT the session
-// DB, so returning to an already-indexed snapshot in the same run is instant by design.
+// Snapshot browsing indexes a repository namespace into the encrypted session
+// store once. UI rows are cleared on exit, while the store remains available
+// for immediate return to an indexed snapshot.
 
-// browseMetaRows is the number of fixed lines the browse body renders above the
-// scrolling entry list (the current-path line and the entry-count/indexing
-// summary).
+// browseMetaRows counts fixed body lines above the scrolling entries.
 const browseMetaRows = 2
 
-// browseProgressBuffer bounds the index-progress channel. Progress sends are
-// non-blocking, so the restic stdout consumer never stalls behind a full UI
-// channel: a dropped tick is harmless because a later tick (or the final count)
-// carries a fresher number.
+// browseProgressBuffer bounds non-blocking progress delivery; stale dropped
+// ticks are superseded by later ticks or the final count.
 const browseProgressBuffer = 64
 
-// browseSearchResultLimit caps how many ranked matches one global filename
-// search returns. The store ranks across every prefiltered match and keeps only
-// the best this many, so the UI state stays bounded even when a broad query
-// matches a large fraction of the snapshot; the footer reports the true total so
-// the user knows the list was trimmed.
+// browseSearchResultLimit bounds UI state while the footer reports the uncapped
+// match count.
 const browseSearchResultLimit = 200
 
-// startBrowse begins browsing a snapshot. It switches to browseView immediately
-// (showing the indexing state with no listing yet) and kicks off the one-time
-// index; the first directory listing arrives later, after the index commits.
+// startBrowse enters the indexing view immediately and loads the root listing
+// after the one-time index commits.
 func (m Model) startBrowse(repo, snapshotID string) (Model, tea.Cmd) {
 	m.browseRepo = repo
 	m.browseSnapshot = snapshotID
 	m.browseDir = "/"
 	m.browseRows = nil
-	m.browseCache = nil // a fresh snapshot: never serve a previous one's cached dirs
+	m.browseCache = nil // Never serve cached directories from another snapshot.
 	m.browseCursor = 0
-	m.browseSortMode = browseSortName // a prior session's sort must not leak in
+	m.browseSortMode = browseSortName
 	m.browseNotice = ""
 	m.view = browseView
-	// beginIndex owns the index-counter reset (browseIndexed, browseIndexN, and
-	// the rate fields), so startBrowse only sets the navigation state here.
 	return m.beginIndex()
 }
 
-// beginIndex sets up the generation/cancel/progress for the one-time index and
-// returns the commands that run it. It advances the generation token (so any
-// superseded run's late messages are discarded), cancels any prior in-flight
-// browse, and derives a fresh cancel from m.ctx — a child of the program context
-// so quitting still cascades, but back can cancel just the browse. The index runs
-// in one Cmd while a second Cmd pumps progress ticks; both carry the generation.
+// beginIndex starts the one-time index and its progress pump. Generation and
+// cancellation isolate superseded runs; quitting cancels through m.ctx while
+// leaving browse cancels only this operation.
 func (m Model) beginIndex() (Model, tea.Cmd) {
 	m, bctx, gen := m.beginBrowseOp()
 	m.isBrowseLoading = true
@@ -82,16 +63,14 @@ func (m Model) beginIndex() (Model, tea.Cmd) {
 			default:
 			}
 		})
-		close(progress) // ends the paired waitForIndexProgress Cmd
+		close(progress)
 		return browseIndexedMsg{gen: gen, err: err}
 	}
 	return m, tea.Batch(indexCmd, waitForIndexProgress(gen, progress))
 }
 
-// waitForIndexProgress blocks on the progress channel and turns the next tick
-// into a browseIndexProgressMsg, re-arming itself in Update so the count climbs
-// live. A closed channel (the index command finished) returns a nil msg, which
-// ends the loop.
+// waitForIndexProgress emits one tick at a time for Update to re-arm. Closing
+// progress ends the loop with a nil message.
 func waitForIndexProgress(gen int, progress <-chan int) tea.Cmd {
 	return func() tea.Msg {
 		n, ok := <-progress
@@ -102,10 +81,8 @@ func waitForIndexProgress(gen int, progress <-chan int) tea.Cmd {
 	}
 }
 
-// applyBrowseIndexProgress records a progress tick and re-arms the wait command.
-// A tick whose generation no longer matches is from a superseded index and is
-// dropped without re-arming (the superseding run owns its own channel). The count
-// is clamped monotonic so out-of-order ticks never make it jump backwards.
+// applyBrowseIndexProgress records monotonic ticks and re-arms the wait. It
+// drops superseded generations without re-arming them.
 func (m Model) applyBrowseIndexProgress(msg browseIndexProgressMsg) (Model, tea.Cmd) {
 	if msg.gen != m.browseGen {
 		return m, nil
@@ -117,13 +94,9 @@ func (m Model) applyBrowseIndexProgress(msg browseIndexProgressMsg) (Model, tea.
 	return m, waitForIndexProgress(msg.gen, m.browseProgress)
 }
 
-// applyBrowseIndexed handles a finished one-time index. A result whose generation
-// no longer matches is from a cancelled or superseded run and is dropped. On an
-// error there is no listing to show: the already-redacted restic/store message is
-// surfaced in the status line and we fall back to the detail view. Secrets are
-// redacted, but a restic-printed filesystem path can appear here transiently (by
-// design; the scoped shell is the path-free alternative); it is shown on screen
-// only and never persisted. On success the first directory is listed.
+// applyBrowseIndexed drops superseded results and loads the root on success. On
+// failure it returns to detail with a redacted, transient error; restic paths may
+// appear on screen but are never persisted.
 func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 	if msg.gen != m.browseGen {
 		return m, nil
@@ -139,20 +112,13 @@ func (m Model) applyBrowseIndexed(msg browseIndexedMsg) (Model, tea.Cmd) {
 	return m.beginListDir("/", "")
 }
 
-// beginListDir kicks off a directory-listing query against the session store.
-// selectPath is the child the cursor should land on when the rows arrive (empty
-// for the top of the list). Like beginIndex it advances the generation and
-// supersedes any prior in-flight browse so a stale listing can never overwrite a
-// newer one.
+// beginListDir loads dir from the session store and selects selectPath when it
+// arrives. Generation and cancellation prevent stale listings from replacing
+// newer navigation.
 func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 	m.browseNotice = ""
-	// Serve an already-visited directory straight from the session listing cache.
-	// The snapshot is immutable once indexed, so a cached listing can never go
-	// stale; answering synchronously skips the async query and its loading hop, so
-	// rapid parent/back navigation stays crisp — handleBrowseKey pauses navigation
-	// while isBrowseLoading, which would otherwise drop keystrokes during each query
-	// round-trip. supersedeBrowse advances the generation so any in-flight listing's
-	// late message is dropped; no new query is dispatched.
+	// Indexed snapshots are immutable, so cached listings can serve back
+	// navigation synchronously. Superseding also rejects any in-flight result.
 	if rows, ok := m.browseCache[dir]; ok {
 		m = m.supersedeBrowse()
 		m.isBrowseLoading = false
@@ -173,10 +139,8 @@ func (m Model) beginListDir(dir, selectPath string) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// applyBrowseDir installs a finished directory listing. A listing whose
-// generation no longer matches is from a superseded navigation and is dropped. On
-// error the path-free message is surfaced and the current rows are kept. On
-// success the rows replace the listing and the cursor lands on selectPath.
+// applyBrowseDir installs a current-generation listing and selects its requested
+// path. Errors are path-free and preserve the current rows.
 func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 	if msg.gen != m.browseGen {
 		return m
@@ -187,28 +151,23 @@ func (m Model) applyBrowseDir(msg browseDirMsg) Model {
 		return m
 	}
 	m.browseDir = msg.dir
-	// Memoize the canonical listing so a later return to this directory is served
-	// synchronously (see beginListDir). Because the snapshot is immutable, the entry
-	// never needs invalidation; clearBrowse drops the whole map on leaving browse.
+	// Cache the immutable canonical listing for synchronous return navigation;
+	// clearBrowse drops the map on exit.
 	if m.browseCache == nil {
 		m.browseCache = make(map[string][]model.BrowseEntry)
 	}
 	m.browseCache[msg.dir] = msg.rows
-	// Display rows derive from the canonical rows under the active sort; for
-	// non-name modes sortedBrowseRows copies, so the cached slice stays canonical.
+	// Non-name display sorting copies, preserving canonical cache order.
 	m.browseRows = sortedBrowseRows(msg.rows, m.browseSortMode)
 	m.browseCursor = m.indexOfBrowsePath(msg.selectPath)
 	return m
 }
 
-// browseBack leaves the browse view, shared by q and esc. It advances the
-// generation and cancels any in-flight index/listing (so a cancelled index rolls
-// back and its late messages are dropped), returns to the detail view, and clears
-// all session browse UI state so no filenames linger. The session store stays
-// open: an already-indexed snapshot reopened in the same run skips restic.
+// browseBack cancels in-flight work, clears filename-bearing UI state, and
+// returns to detail. The encrypted session store stays open so revisiting an
+// indexed snapshot does not invoke restic again.
 func (m Model) browseBack() Model {
-	// Drop any transient browse status so a restic/store message never lingers
-	// into the view we return to.
+	// Do not leak transient restic or store messages into the detail view.
 	m.statusMsg = ""
 	m = m.supersedeBrowse()
 	m.view = detailView
@@ -235,18 +194,17 @@ func (m Model) cancelBrowse() Model {
 	return m
 }
 
-// clearBrowse drops all session browse UI state. It is called on every exit from
-// browse so no filename or path data lingers in the model. It deliberately does
-// NOT touch app.Browse — the encrypted session DB stays open until the app exits,
-// so returning to the same snapshot in this run does not re-index.
+// clearBrowse removes browse navigation and search data when a browse session
+// ends. It leaves app.Browse's encrypted session database open until process
+// exit so the same snapshot need not be re-indexed.
 func (m Model) clearBrowse() Model {
 	m.browseRows = nil
-	m.browseCache = nil // filenames must not linger in the model after leaving browse
+	m.browseCache = nil
 	m.browseRepo = ""
 	m.browseSnapshot = ""
 	m.browseDir = ""
 	m.browseCursor = 0
-	m.browseSortMode = browseSortName // no sort state survives leaving browse
+	m.browseSortMode = browseSortName
 	m.browseIndexed = false
 	m.browseIndexN = 0
 	m.browseRate = rateSampler{}
@@ -254,23 +212,19 @@ func (m Model) clearBrowse() Model {
 	m.browseNotice = ""
 	m.browseCancel = nil
 	m.browseProgress = nil
-	// The search overlay carries filenames/paths too and must be zeroed here on
-	// leaving browse (non-negotiable #1: no filenames linger in the model) — including
-	// a parked (suspended) result set, the one place search state outlives the overlay.
+	// Also clear any suspended search result set carrying filenames or paths.
 	m = m.exitBrowseSearch()
 	return m
 }
 
-// handleBrowseKey routes keys while browsing. Back leaves (cancelling any
-// in-flight work); s shells into the browsed snapshot. Navigation is paused while
-// an index or listing is in flight, since the cursor would point into rows that
-// are about to be replaced.
+// handleBrowseKey routes browse input. Navigation pauses during loads because
+// the cursor would otherwise address rows about to be replaced.
 func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if next, cmd, handled := m.handleBrowseImmediateKey(msg); handled {
 		return next, cmd
 	}
 	if m.isBrowseLoading {
-		return m, nil // navigation is paused while indexing or a listing is in flight
+		return m, nil
 	}
 	return m.handleIdleBrowseKey(msg)
 }
@@ -278,10 +232,8 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleBrowseImmediateKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.Back):
-		// esc is dual-role in browse: while a search result set is parked (the user
-		// jumped to a match with Enter) it restores that search overlay rather than
-		// leaving browse, to ensure the modal stack pops one level at a time. q still leaves
-		// browse outright (handleKey's Quit case → browseBack), the quick escape hatch.
+		// Escape restores a suspended search before leaving browse, while q leaves
+		// browse directly, so the modal stack unwinds one level at a time.
 		if m.browseSearchSuspended {
 			return m.restoreBrowseSearch(), nil, true
 		}
@@ -344,18 +296,12 @@ func (m Model) handleBrowseNavigationKey(msg tea.KeyPressMsg) (Model, tea.Cmd, b
 func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.Sort):
-		// Cycle the display sort of the current directory listing. It sits in the
-		// idle-only switch (below the isBrowseLoading guard) so it can't fire
-		// mid-index/mid-load. While the search input is open handleKey routes to
-		// handleBrowseSearchKey first, so `o` is literal query text there; while a
-		// search is suspended it sorts only the visible directory listing.
+		// Search input consumes `o` as text; suspended search sorts only the visible
+		// directory listing.
 		m.browseNotice = ""
 		return m.cycleBrowseSort(), nil, true
 	case key.Matches(msg, m.keys.Search):
-		// `/` opens the global filename search, but only once the snapshot is
-		// indexed — there is nothing to search before the one-time crawl commits.
-		// It sits in the idle-only switch (below the isBrowseLoading guard) so it
-		// can't fire mid-index.
+		// Search is available only after the snapshot index commits.
 		return m.openBrowseSearchInput(), nil, true
 	case key.Matches(msg, m.keys.Versions):
 		next, cmd := m.openBrowseVersions()
@@ -367,17 +313,9 @@ func (m Model) handleBrowseActionKey(msg tea.KeyPressMsg) (Model, tea.Cmd, bool)
 	return m, nil, false
 }
 
-// openExtract launches the extract modal for the selected browse entry. Browse's
-// row listing is children-only (00-framework.md §22), so the selection is always
-// a non-root file or directory; the Source == "/" full-snapshot path belongs to
-// the detail-view entry point (openExtractSnapshot) and is unreachable here.
-// Symlinks and
-// special nodes are rejected with a path-free notice and no view change; a
-// path-planning or setup error likewise stays in browse. Only a clean
-// construction switches to extractView. The sub-model's parentCtx is m.ctx — the
-// program-scoped op context — so quitting cascades the cancel into any in-flight
-// extract, while leaving just the modal cancels only the extract (the root's
-// close path supersedes its per-op context on the way out).
+// openExtract opens extraction for a selected regular file or directory. It
+// rejects special nodes and setup failures with path-free notices. Quitting
+// cancels through m.ctx; leaving the modal cancels only extraction.
 func (m Model) openExtract() (Model, tea.Cmd) {
 	e := m.selectedBrowseEntry()
 	if e == nil {
@@ -388,17 +326,14 @@ func (m Model) openExtract() (Model, tea.Cmd) {
 		if errors.Is(err, ErrExtractUnsupportedType) {
 			m.browseNotice = "extract: this entry type is not supported (extract the parent directory instead)"
 		} else {
-			// Path-free by construction: extractRequestFromBrowseEntry's other
-			// errors name a shape problem ("snapshot id too short", "slug is
-			// empty"), never the source path.
+			// Request-shape errors name fields, never source paths.
 			m.browseNotice = "extract: " + firstLine(err.Error())
 		}
 		return m, nil
 	}
 	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), e.Size)
 	if err != nil {
-		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
-		// offending field, so the notice carries no path either.
+		// Planning errors name the invalid field without including its path.
 		m.browseNotice = "extract: " + firstLine(err.Error())
 		return m, nil
 	}
@@ -406,7 +341,6 @@ func (m Model) openExtract() (Model, tea.Cmd) {
 	m.extract = sub
 	m.extractReturn = browseView
 	m.view = extractView
-	// Directory sources kick off the async Contains-row lookup (nil for files).
 	return m, m.extract.countsCmd()
 }
 
@@ -415,20 +349,15 @@ func (m Model) openBrowseSearchInput() Model {
 	if !m.browseIndexed {
 		return m
 	}
-	// Start from a fully cleared overlay (also discards any parked result set),
-	// then open the input.
+	// Discard any parked result set before reopening search.
 	m = m.exitBrowseSearch()
 	m.browseSearching = true
 	return m
 }
 
-// openBrowseVersions opens the find-versions view for the selected entry,
-// regular files only: a directory has no version concept (the find query is
-// for one file path), and a symlink / device / fifo / socket row must not
-// enter a view whose `e` extract attests a regular file. Browse rows always
-// carry restic's node type, so the gate is strict. The blocked action stays in
-// browse and is explained on the notice line; browse state is intentionally
-// kept intact so q from find-versions can pop back to it.
+// openBrowseVersions opens versions only for regular files, preserving browse
+// state for return. Other node types remain in browse with a notice and cannot
+// reach extraction that assumes a regular file.
 func (m Model) openBrowseVersions() (Model, tea.Cmd) {
 	e := m.selectedBrowseEntry()
 	if e == nil {
@@ -446,15 +375,9 @@ func (m Model) openBrowseVersions() (Model, tea.Cmd) {
 	return m.startFindVersions(m.browseRepo, originHost, e.Path)
 }
 
-// cycleBrowseSort advances the browse display sort (name → size → modified → name)
-// and keeps the cursor on the same entry across the reorder, mirroring the list
-// view's cycleSort. It re-derives the listing from the canonical cached rows so
-// cycling back to name restores canonical order rather than re-sorting an
-// already-permuted slice. The current dir is cached whenever browse is idle
-// (applyBrowseDir caches every successful load; the loading guard blocks `o` until
-// then; even the error path leaves browseDir on the last cached dir). The ok guard
-// makes that explicit and turns any future violation into a safe no-op instead of
-// blanking the listing.
+// cycleBrowseSort advances name, size, and modified order while retaining the
+// selected entry. Each order derives from canonical cached rows; a missing cache
+// safely leaves the listing unchanged.
 func (m Model) cycleBrowseSort() Model {
 	rows, ok := m.browseCache[m.browseDir]
 	if !ok {
@@ -471,8 +394,7 @@ func (m Model) cycleBrowseSort() Model {
 }
 
 // openBrowseDir descends into the selected entry when it is a directory; files
-// have no action here (the shell is the way to read file contents). It lists the
-// directory fresh from the store, cursor at the top.
+// have no action here. It lists the directory fresh from the store, cursor at top.
 func (m Model) openBrowseDir() (Model, tea.Cmd) {
 	e := m.selectedBrowseEntry()
 	if e == nil || !e.IsDir {
@@ -481,9 +403,8 @@ func (m Model) openBrowseDir() (Model, tea.Cmd) {
 	return m.beginListDir(e.Path, "")
 }
 
-// browseToParent steps up one directory, asking the listing to restore the cursor
-// onto the child we came from so repeated enter/backspace feels like walking a
-// path.
+// browseToParent moves up one directory and restores the cursor to the child
+// just left.
 func (m Model) browseToParent() (Model, tea.Cmd) {
 	if m.browseDir == "" || m.browseDir == "/" {
 		return m, nil
@@ -492,9 +413,8 @@ func (m Model) browseToParent() (Model, tea.Cmd) {
 	return m.beginListDir(path.Dir(m.browseDir), from)
 }
 
-// browseSnapshotPtr resolves the browsed snapshot's full record from the cached
-// rows so the shell can scope to it. It returns nil if the snapshot is no longer
-// present, in which case openShellCmd falls back to a repo-only shell.
+// browseSnapshotPtr resolves the cached snapshot for shell scoping. It returns
+// nil when absent, allowing openShellCmd to use repository-only scope.
 func (m Model) browseSnapshotPtr() *model.Snapshot {
 	for _, r := range m.rows {
 		if r.Name != m.browseRepo {
@@ -509,13 +429,11 @@ func (m Model) browseSnapshotPtr() *model.Snapshot {
 	return nil
 }
 
-// browseRowCount is the number of selectable entries in the current directory.
 func (m Model) browseRowCount() int {
 	return len(m.browseRows)
 }
 
-// selectedBrowseEntry returns the entry under the cursor, or nil when the cursor
-// is out of range (e.g. an empty directory).
+// selectedBrowseEntry returns the cursor entry, or nil when out of range.
 func (m Model) selectedBrowseEntry() *model.BrowseEntry {
 	if m.browseCursor < 0 || m.browseCursor >= len(m.browseRows) {
 		return nil
@@ -523,8 +441,7 @@ func (m Model) selectedBrowseEntry() *model.BrowseEntry {
 	return &m.browseRows[m.browseCursor]
 }
 
-// indexOfBrowsePath returns the position of path p among the current rows, or 0
-// when it is absent or empty (so the cursor lands at the top).
+// indexOfBrowsePath returns p's row index, or zero when absent or empty.
 func (m Model) indexOfBrowsePath(p string) int {
 	if p == "" {
 		return 0

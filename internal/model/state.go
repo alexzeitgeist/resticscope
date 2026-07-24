@@ -2,12 +2,9 @@ package model
 
 import "time"
 
-// RepoState is the cached, observed state of a single repository. It is the
-// only resticscope-authored structure persisted to disk (one JSON file per
-// repo), so it must never hold credentials.
-//
-// The schema is forward-compatible: decoders ignore unknown fields, so new
-// fields can be added without invalidating existing cache files.
+// RepoState is the credential-free observed state persisted for a repository.
+// Hosts and Tags are derived from snapshots. Decoders ignore unknown fields for
+// forward compatibility.
 type RepoState struct {
 	Name          string     `json:"name"`
 	RefreshedAt   time.Time  `json:"refreshed_at"`
@@ -16,8 +13,8 @@ type RepoState struct {
 	LastSnapshot  time.Time  `json:"last_snapshot"`
 	LockedSince   *time.Time `json:"locked_since,omitempty"`
 	Snapshots     []Snapshot `json:"snapshots,omitempty"`
-	Hosts         []string   `json:"hosts,omitempty"` // observed, derived from snapshots
-	Tags          []string   `json:"tags,omitempty"`  // observed
+	Hosts         []string   `json:"hosts,omitempty"`
+	Tags          []string   `json:"tags,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
 	ResticVer     string     `json:"restic_version,omitempty"`
 }

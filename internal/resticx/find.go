@@ -8,19 +8,9 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// find.go runs `restic find --json --long [--host H] <pattern>` and parses the
-// result. It is the second restic boundary the version view uses (alongside
-// the cached snapshot list); the surrounding app/tui layers add no per-snapshot
-// `ls` or `dump` call.
-
-// resticFindLiteralPattern escapes the glob metacharacters Go's
-// filepath.Match recognizes, so a literal path with any of [, ], *, ?, or \
-// is not interpreted as a glob by `restic find`. Verified against restic
-// 0.18.1: without escaping, `a[1].txt` matches `a1.txt` and `star*.txt`
-// matches `starXYZ.txt`. The post-filter on Path == p in
-// model.GroupFileVersions is the authoritative correctness gate; this escape
-// is the cheap cost-saver that keeps restic from scanning matches that
-// cannot possibly belong to this file.
+// resticFindLiteralPattern escapes filepath.Match metacharacters for restic 0.18.1.
+// This preserves literal matches and avoids overmatching; model.GroupFileVersions
+// also enforces exact paths.
 func resticFindLiteralPattern(p string) string {
 	var b strings.Builder
 	b.Grow(len(p))
@@ -34,12 +24,8 @@ func resticFindLiteralPattern(p string) string {
 	return b.String()
 }
 
-// FindMatches runs `restic find --json --long [--host H] <pattern>` and
-// parses the result. host is empty to widen to all hosts. p is escaped so
-// glob metacharacters in a literal filename do not over-match; the caller
-// (model.GroupFileVersions) still post-filters Path == p as the
-// authoritative gate. --no-lock is used for the same reason as Snapshots:
-// read-only and we want to keep the repo usable when locks are write-held.
+// FindMatches parses long JSON matches for p. An empty host searches all hosts;
+// p is literal-escaped, and --no-lock permits reads while a write lock exists.
 func (c *Client) FindMatches(ctx context.Context, t Target, creds Creds, host, p string) ([]model.FindSnapshotResult, error) {
 	args := []string{"--no-lock", "find", "--json", "--long"}
 	if host != "" {

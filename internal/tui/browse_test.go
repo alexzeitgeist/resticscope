@@ -20,11 +20,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// --- browse test fakes ---
-
 func bnode(p, name string, isDir bool, size int64) model.BrowseNode {
-	// Real restic ls always reports a node type; fixtures mirror that so
-	// type-gated paths (e.g. openBrowseVersions) behave as in production.
+	// Mirror restic's always-present node type for production-equivalent gating.
 	t := "file"
 	if isDir {
 		t = "dir"
@@ -32,25 +29,21 @@ func bnode(p, name string, isDir bool, size int64) model.BrowseNode {
 	return model.BrowseNode{Path: p, Name: name, Type: t, IsDir: isDir, Size: size}
 }
 
-// fakeBrowseStore is an in-memory app.BrowseStore for TUI state tests. It records
-// the nodes streamed during indexing and serves directory listings from them, so
-// the browse flow (index → list) runs end to end without real SQLite. ListDir
-// returns only direct children, dirs-first then case-insensitive, mirroring
-// browsedb's contract (which has its own dedicated tests).
+// fakeBrowseStore runs index, list, and search flows in memory. Its direct-child,
+// directory-first ordering mirrors browsedb's separately tested contract.
 type fakeBrowseStore struct {
 	mu        sync.Mutex
 	indexed   map[string]bool
 	nodes     map[string][]model.BrowseNode
-	listCalls map[string]int // per-dir ListDir count, to prove the cache short-circuits requeries
-	searchErr error          // when set, Search returns it (to exercise the path-free error path)
-	searchN   int            // number of Search calls (to prove supersede / no-scan behaviour)
+	listCalls map[string]int
+	searchErr error
+	searchN   int
 }
 
 func newFakeBrowseStore() *fakeBrowseStore {
 	return &fakeBrowseStore{indexed: map[string]bool{}, nodes: map[string][]model.BrowseNode{}, listCalls: map[string]int{}}
 }
 
-// listCount reports how many times ListDir was called for a directory.
 func (s *fakeBrowseStore) listCount(dir string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -69,9 +62,8 @@ func (s *fakeBrowseStore) BeginIndex(_ context.Context, repo, snap string) (app.
 	return &fakeBrowseWriter{store: s, key: browseKey(repo, snap)}, nil
 }
 
-// SubtreeCounts mirrors the real store's semantics over the in-memory node
-// list: recursive counts under dir (excluding dir itself), files = regular
-// files only, known=false for an uncommitted snapshot.
+// SubtreeCounts mirrors recursive store counts, excluding dir itself and
+// reporting uncommitted snapshots as unknown.
 func (s *fakeBrowseStore) SubtreeCounts(_ context.Context, repo, snap, dir string) (files, dirs int, known bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,7 +114,7 @@ func (s *fakeBrowseStore) ListDir(_ context.Context, repo, snap, dir string) ([]
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].IsDir != out[j].IsDir {
-			return out[i].IsDir // dirs first
+			return out[i].IsDir
 		}
 		li, lj := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
 		if li != lj {
@@ -133,11 +125,8 @@ func (s *fakeBrowseStore) ListDir(_ context.Context, repo, snap, dir string) ([]
 	return out, nil
 }
 
-// Search mirrors browsedb.Search's contract using the shared model scorer: it
-// matches every indexed node by name, ranks with model.RankFuzzy, caps Rows to
-// limit, and reports Total as the full match count before the cap. It never
-// returns a path in its error (searchErr, if set, is a plain canned error), so the
-// TUI's path-free handling can be exercised without leaking a filename.
+// Search uses the shared scorer, caps Rows, and reports the uncapped Total. Its
+// canned errors contain no paths.
 func (s *fakeBrowseStore) Search(_ context.Context, repo, snap, query string, limit int) (model.BrowseSearchResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -172,8 +161,6 @@ func (s *fakeBrowseStore) searchCalls() int {
 	return s.searchN
 }
 
-// failSearches makes every subsequent Search return err, so a test can exercise
-// the TUI's path-free error handling.
 func (s *fakeBrowseStore) failSearches(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,18 +194,15 @@ func (w *fakeBrowseWriter) Commit(_ context.Context) error {
 
 func (w *fakeBrowseWriter) Rollback() error { return nil }
 
-// browseApp builds a detail app whose restic streams the given nodes and whose
-// browse session is backed by an in-memory store, so b → index → list runs end to
-// end. The store is shared across re-opens within the test so a second browse of
-// the same snapshot short-circuits via IsIndexed.
+// browseApp builds an in-memory index-to-list flow whose store persists across
+// reopenings within the test.
 func browseApp(t *testing.T, nodes ...model.BrowseNode) *app.App {
 	t.Helper()
 	a, _ := browseAppWithStore(t, nodes...)
 	return a
 }
 
-// browseAppWithStore is browseApp but also returns the backing in-memory store so
-// a test can assert how many times ListDir was actually called (cache behaviour).
+// browseAppWithStore also exposes the store for call-count assertions.
 func browseAppWithStore(t *testing.T, nodes ...model.BrowseNode) (*app.App, *fakeBrowseStore) {
 	t.Helper()
 	a := detailApp(t)
@@ -230,10 +214,8 @@ func browseAppWithStore(t *testing.T, nodes ...model.BrowseNode) (*app.App, *fak
 	return a, store
 }
 
-// findBrowseIndexed runs the leaves of a browse command and returns the
-// browseIndexedMsg. The index command is batched with the progress-wait command;
-// the index leaf runs first and produces the message, so the wait leaf (which
-// would block on the progress channel) is never reached.
+// findBrowseIndexed runs command leaves until the index result, before the
+// progress-wait leaf can block.
 func findBrowseIndexed(t *testing.T, cmd tea.Cmd) browseIndexedMsg {
 	t.Helper()
 	if cmd == nil {
@@ -248,8 +230,7 @@ func findBrowseIndexed(t *testing.T, cmd tea.Cmd) browseIndexedMsg {
 	return browseIndexedMsg{}
 }
 
-// drivePastIndex delivers a successful browseIndexedMsg and runs the resulting
-// directory-list command, so the model lands on the first listing.
+// drivePastIndex delivers an index result and the first directory listing.
 func drivePastIndex(t *testing.T, m Model, idx browseIndexedMsg) Model {
 	t.Helper()
 	next, listCmd := m.Update(idx)
@@ -267,8 +248,7 @@ func drivePastIndex(t *testing.T, m Model, idx browseIndexedMsg) Model {
 	return update(t, m, msg)
 }
 
-// openBrowse drives the model into browseView with the first directory listed:
-// enter detail, press b, run the index, then run the first directory list.
+// openBrowse enters browse and completes its index and root listing.
 func openBrowse(t *testing.T, m Model) Model {
 	t.Helper()
 	m = update(t, m, press("enter"))
@@ -277,9 +257,7 @@ func openBrowse(t *testing.T, m Model) Model {
 	return drivePastIndex(t, m, findBrowseIndexed(t, cmd))
 }
 
-// pressBrowse presses a browse key and, if it produced a navigation command,
-// runs that command and delivers the resulting browseDirMsg. Cursor-only keys
-// (which emit no command) and no-op keys are returned unchanged.
+// pressBrowse delivers any directory result produced by a browse key.
 func pressBrowse(t *testing.T, m Model, k string) Model {
 	t.Helper()
 	next, cmd := m.Update(press(k))
@@ -294,10 +272,7 @@ func pressBrowse(t *testing.T, m Model, k string) Model {
 	return update(t, m, msg)
 }
 
-// --- tests ---
-
-// b indexes the snapshot once, then lists the root directory: the view shows the
-// top-level children and the model is marked indexed and idle.
+// Opening browse indexes once and lists top-level children.
 func TestBrowseIndexesAndListsRoot(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -322,8 +297,7 @@ func TestBrowseIndexesAndListsRoot(t *testing.T) {
 	}
 }
 
-// Enter descends into the selected directory and resets the cursor to the top of
-// the new listing.
+// Enter descends and resets the cursor.
 func TestBrowseEnterDescendsAndResetsCursor(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/a", "a", true, 0),
@@ -331,11 +305,11 @@ func TestBrowseEnterDescendsAndResetsCursor(t *testing.T) {
 		bnode("/b/child.txt", "child.txt", false, 5),
 	)))
 
-	m = pressBrowse(t, m, "j") // cursor onto /b (second root entry)
+	m = pressBrowse(t, m, "j")
 	if m.browseCursor != 1 {
 		t.Fatalf("precondition: cursor = %d, want 1", m.browseCursor)
 	}
-	m = pressBrowse(t, m, "enter") // descend into /b
+	m = pressBrowse(t, m, "enter")
 	if m.browseDir != "/b" {
 		t.Errorf("browseDir = %q, want /b", m.browseDir)
 	}
@@ -347,8 +321,7 @@ func TestBrowseEnterDescendsAndResetsCursor(t *testing.T) {
 	}
 }
 
-// Stepping up to the parent restores the cursor onto the child we descended from,
-// so enter-then-parent feels like walking a path.
+// Parent navigation restores the cursor to the child just left.
 func TestBrowseParentRestoresCursorOntoChild(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/a", "a", true, 0),
@@ -357,12 +330,12 @@ func TestBrowseParentRestoresCursorOntoChild(t *testing.T) {
 		bnode("/b/inner.txt", "inner.txt", false, 1),
 	)))
 
-	m = pressBrowse(t, m, "j")     // cursor onto /b (index 1 of a,b,c)
-	m = pressBrowse(t, m, "enter") // descend into /b
+	m = pressBrowse(t, m, "j")
+	m = pressBrowse(t, m, "enter")
 	if m.browseDir != "/b" {
 		t.Fatalf("precondition: browseDir = %q, want /b", m.browseDir)
 	}
-	m = pressBrowse(t, m, "backspace") // step back up to /
+	m = pressBrowse(t, m, "backspace")
 	if m.browseDir != "/" {
 		t.Errorf("browseDir = %q, want / after parent", m.browseDir)
 	}
@@ -371,10 +344,7 @@ func TestBrowseParentRestoresCursorOntoChild(t *testing.T) {
 	}
 }
 
-// A visited directory is served from the in-session listing cache: returning to it
-// dispatches no async query (so navigation is never paused) and the store is not
-// asked for it again. The snapshot is immutable, so the cached rows are still
-// correct. This holds for both back/parent and forward re-entry.
+// Visited immutable directories are served synchronously from the session cache.
 func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 	a, store := browseAppWithStore(t,
 		bnode("/a", "a", true, 0),
@@ -386,14 +356,13 @@ func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 		t.Fatalf("precondition: root listed %d times after opening, want 1", store.listCount("/"))
 	}
 
-	m = pressBrowse(t, m, "j")     // cursor onto /b (index 1 of a,b)
-	m = pressBrowse(t, m, "enter") // descend into /b (cache miss -> exactly one query)
+	m = pressBrowse(t, m, "j")
+	m = pressBrowse(t, m, "enter")
 	if m.browseDir != "/b" || store.listCount("/b") != 1 {
 		t.Fatalf("precondition: dir=%q ListDir(/b)=%d, want /b and 1", m.browseDir, store.listCount("/b"))
 	}
 
-	// Back to /: served from cache, so no command is emitted, the model never enters
-	// the loading state, and the store is not re-queried for /.
+	// A cached parent emits no command and never enters loading state.
 	next, cmd := m.Update(press("backspace"))
 	m = next.(Model)
 	if cmd != nil {
@@ -412,8 +381,6 @@ func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 		t.Errorf("parent should restore the cursor onto /b (index 1), got %d", m.browseCursor)
 	}
 
-	// Re-descending into /b (cursor is already on it) is likewise cache-served — the
-	// optimization is not special to parent navigation.
 	next, cmd = m.Update(press("enter"))
 	m = next.(Model)
 	if cmd != nil {
@@ -427,10 +394,7 @@ func TestBrowseRevisitServedFromListingCache(t *testing.T) {
 	}
 }
 
-// Leaving browse drops the listing cache (which holds filenames) so nothing
-// lingers in the model — the same contract clearBrowse enforces for browseRows
-// (non-negotiable #1) — and resets the transient browse sort so a prior session's
-// order can't leak into the next one.
+// Leaving browse clears filename-bearing caches and transient sort state.
 func TestBrowseLeavingClearsListingCache(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/a", "a", true, 0),
@@ -440,12 +404,12 @@ func TestBrowseLeavingClearsListingCache(t *testing.T) {
 		t.Fatal("precondition: the root listing should be cached after opening browse")
 	}
 
-	m = update(t, m, press("o")) // move off the default sort so the reset is observable
+	m = update(t, m, press("o"))
 	if m.browseSortMode == browseSortName {
 		t.Fatal("precondition: pressing o should leave the default sort")
 	}
 
-	m = update(t, m, press("q")) // leave browse
+	m = update(t, m, press("q"))
 	if m.view != detailView {
 		t.Fatalf("q should return to detail, view = %d", m.view)
 	}
@@ -457,8 +421,7 @@ func TestBrowseLeavingClearsListingCache(t *testing.T) {
 	}
 }
 
-// Right arrow and l are aliases for Enter: each opens the selected directory; on a
-// file they are a no-op (files have no open action).
+// Right arrow and l open directories but ignore files.
 func TestBrowseRightArrowOpensDirectory(t *testing.T) {
 	for _, k := range []string{"right", "l"} {
 		t.Run(k, func(t *testing.T) {
@@ -469,7 +432,7 @@ func TestBrowseRightArrowOpensDirectory(t *testing.T) {
 			if m.browseDir != "/" {
 				t.Fatalf("precondition: browseDir = %q, want /", m.browseDir)
 			}
-			m = pressBrowse(t, m, k) // cursor is on /dir
+			m = pressBrowse(t, m, k)
 			if m.browseDir != "/dir" {
 				t.Errorf("%q should open the selected directory, browseDir = %q", k, m.browseDir)
 			}
@@ -481,7 +444,7 @@ func TestBrowseRightArrowOnFileIsNoOp(t *testing.T) {
 	for _, k := range []string{"right", "l"} {
 		t.Run(k, func(t *testing.T) {
 			m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a.txt", "a.txt", false, 5))))
-			m = pressBrowse(t, m, k) // cursor is on the file
+			m = pressBrowse(t, m, k)
 			if m.browseDir != "/" {
 				t.Errorf("%q on a file should be a no-op, browseDir = %q", k, m.browseDir)
 			}
@@ -489,14 +452,12 @@ func TestBrowseRightArrowOnFileIsNoOp(t *testing.T) {
 	}
 }
 
-// A late browse message whose generation no longer matches (a cancelled or
-// superseded navigation) is silently discarded and never resurrects browse state.
+// Stale generations cannot resurrect browse state.
 func TestBrowseStaleMessagesDropped(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a", "a", true, 0))))
 	gen, dir := m.browseGen, m.browseDir
 	rowsBefore := len(m.browseRows)
 
-	// A stale directory listing must not replace the current rows or path.
 	m = update(t, m, browseDirMsg{
 		gen:  gen + 99,
 		dir:  "/zzz",
@@ -509,22 +470,20 @@ func TestBrowseStaleMessagesDropped(t *testing.T) {
 		t.Errorf("stale listing leaked into the view\n---\n%s", m.View().Content)
 	}
 
-	// A stale index-done message must not flip the view or indexed state.
 	m = update(t, m, browseIndexProgressMsg{gen: gen + 99, n: 123})
 	if m.browseIndexN == 123 {
 		t.Errorf("stale progress tick applied: browseIndexN = %d", m.browseIndexN)
 	}
 }
 
-// A stale browseIndexedMsg (its generation superseded by a back/cancel) does not
-// drive a directory list or flip indexed state.
+// A superseded index result cannot start listing or mark the snapshot indexed.
 func TestBrowseStaleIndexedMsgDropped(t *testing.T) {
 	m := newTestModel(t, browseApp(t, bnode("/a", "a", true, 0)))
 	m = update(t, m, press("enter"))
 	next, _ := m.Update(press("b"))
 	m = next.(Model)
 
-	next, cmd := m.Update(browseIndexedMsg{gen: m.browseGen - 1, err: nil}) // stale
+	next, cmd := m.Update(browseIndexedMsg{gen: m.browseGen - 1, err: nil})
 	m = next.(Model)
 	if cmd != nil {
 		t.Error("a stale browseIndexedMsg should not start a directory list")
@@ -534,8 +493,7 @@ func TestBrowseStaleIndexedMsgDropped(t *testing.T) {
 	}
 }
 
-// Back (q and esc) during indexing cancels the in-flight index, returns to the
-// detail view, and clears all session browse state so no filenames linger.
+// Back during indexing cancels work and clears browse state.
 func TestBrowseBackDuringIndexingCancelsAndClears(t *testing.T) {
 	for _, k := range []string{"q", "esc"} {
 		t.Run(k, func(t *testing.T) {
@@ -570,8 +528,7 @@ func TestBrowseBackDuringIndexingCancelsAndClears(t *testing.T) {
 	}
 }
 
-// Progress ticks advance the running count monotonically, re-arm the wait, and a
-// stale-generation tick is dropped without re-arming.
+// Progress is monotonic and stale ticks do not re-arm the wait.
 func TestBrowseProgressCoalescesMonotonically(t *testing.T) {
 	m := newTestModel(t, browseApp(t, bnode("/a", "a", true, 0)))
 	m = update(t, m, press("enter"))
@@ -596,7 +553,7 @@ func TestBrowseProgressCoalescesMonotonically(t *testing.T) {
 		t.Errorf("recent progress rate = %q, want 72k/s", got)
 	}
 
-	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 1000}) // out of order
+	m, _ = m.applyBrowseIndexProgress(browseIndexProgressMsg{gen: gen, n: 1000})
 	if m.browseIndexN != 722000 {
 		t.Errorf("a lower out-of-order tick must not lower the count: got %d, want 722000", m.browseIndexN)
 	}
@@ -646,8 +603,7 @@ func TestBrowseIndexRateLabel(t *testing.T) {
 	}
 }
 
-// waitForIndexProgress turns a buffered value into a progress message and a closed
-// channel into a nil message that ends the wait loop.
+// A closed progress channel ends the wait loop with a nil message.
 func TestWaitForIndexProgress(t *testing.T) {
 	ch := make(chan int, 1)
 	ch <- 7
@@ -662,8 +618,7 @@ func TestWaitForIndexProgress(t *testing.T) {
 	}
 }
 
-// An index error has no listing to show: the redacted message is surfaced and the
-// model falls back to the detail view with session state cleared.
+// Index errors return to detail with redacted status and cleared browse state.
 func TestBrowseIndexErrorReturnsToDetail(t *testing.T) {
 	a := browseApp(t)
 	a.Restic = stubRestic{browseErr: errors.New("repository is locked")}
@@ -707,13 +662,11 @@ func TestBrowseIndexErrorCancelsBrowseContext(t *testing.T) {
 	}
 }
 
-// While the one-time index runs, the view must keep a visible cancel affordance:
-// a minutes-long crawl on a huge snapshot must never look hung. This is
-// non-negotiable.
+// Long-running indexing keeps a visible cancellation affordance.
 func TestBrowseIndexingShowsCancelAffordance(t *testing.T) {
 	m := newTestModel(t, browseApp(t, bnode("/a", "a", true, 0)))
 	m = update(t, m, press("enter"))
-	next, _ := m.Update(press("b")) // start indexing; do not run the index command
+	next, _ := m.Update(press("b"))
 	m = next.(Model)
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 
@@ -729,9 +682,7 @@ func TestBrowseIndexingShowsCancelAffordance(t *testing.T) {
 	}
 }
 
-// Leaving browse clears the UI rows but not the session DB: reopening the same
-// snapshot in the same run short-circuits via IsIndexed and never re-streams from
-// restic (proven by swapping in a restic that would error if streamed).
+// Reopening an indexed snapshot reuses the session database without restic.
 func TestBrowseReopenSkipsRestic(t *testing.T) {
 	m := newTestModel(t, browseApp(t, bnode("/secret-dir", "secret-dir", true, 0)))
 	m = openBrowse(t, m)
@@ -739,12 +690,11 @@ func TestBrowseReopenSkipsRestic(t *testing.T) {
 		t.Fatal("precondition: first browse should list the indexed entry")
 	}
 
-	m = update(t, m, press("q")) // back to detail; clearBrowse drops UI rows
+	m = update(t, m, press("q"))
 	if m.view != detailView || m.browseRows != nil {
 		t.Fatalf("leaving browse should return to detail and clear rows: view=%d rows=%v", m.view, m.browseRows)
 	}
 
-	// A re-stream now would fail; a correct reopen must short-circuit via IsIndexed.
 	m.app.Restic = stubRestic{browseErr: errors.New("must not re-stream an indexed snapshot")}
 	next, cmd := m.Update(press("b"))
 	m = next.(Model)
@@ -758,8 +708,7 @@ func TestBrowseReopenSkipsRestic(t *testing.T) {
 	}
 }
 
-// Quitting (ctrl+c) while the one-time index is in flight cancels the browse
-// context so the restic subprocess does not outlive the UI.
+// Quitting cancels an in-flight index so restic cannot outlive the UI.
 func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 	a := detailApp(t)
 	a.Cfg.Browse = config.Browse{IndexTimeout: config.Duration(time.Minute)}
@@ -776,9 +725,7 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a browse command")
 	}
-	// Run every leaf; the index leaf blocks in restic, the wait leaf blocks on the
-	// progress channel. Forward only the index result so the assertion below is not
-	// satisfied by the wait leaf.
+	// Forward only the index result, not the progress waiter's nil message.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
 		go func() {
@@ -794,7 +741,7 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 		t.Fatal("index never reached restic")
 	}
 
-	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}) // hard quit cancels m.ctx -> browse ctx
+	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	select {
 	case <-done:
@@ -803,10 +750,7 @@ func TestBrowseQuitCancelsInFlightIndex(t *testing.T) {
 	}
 }
 
-// lineContaining returns the first line of s that contains sub, failing the test
-// if none does. It lets owner/perms assertions target a specific table row rather
-// than the whole view, so a value rendered on one row can't accidentally satisfy
-// an assertion meant for another.
+// lineContaining returns the first matching line or fails the test.
 func lineContaining(t *testing.T, s, sub string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(s, "\n") {
@@ -818,16 +762,13 @@ func lineContaining(t *testing.T, s, sub string) string {
 	return ""
 }
 
-// At a wide width the browse table shows every metadata column (Modified, Perms,
-// Owner) with their values; narrowing the terminal drops Owner, then Perms, then
-// Modified in that priority order while Name and Size always remain.
+// Responsive columns drop Owner, Perms, then Modified while retaining Name and Size.
 func TestBrowseRendersMetadataColumnsResponsively(t *testing.T) {
 	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		model.BrowseNode{Path: "/file.txt", Name: "file.txt", Size: 42, ModTime: mod, Permissions: "-rw-r--r--", UID: 1000, GID: 1000, OwnerKnown: true},
 	)))
 
-	// Wide: every promoted column header and value is present.
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	wide := stripANSI(m.View().Content)
 	for _, want := range []string{"Modified", "Perms", "Owner", "2026-05-26 11:28", "-rw-r--r--", "1000:1000"} {
@@ -836,8 +777,6 @@ func TestBrowseRendersMetadataColumnsResponsively(t *testing.T) {
 		}
 	}
 
-	// Narrow (width 50): only Modified survives the promotion budget, so the Perms
-	// and Owner columns and their values drop, while Name and Size stay.
 	m = update(t, m, tea.WindowSizeMsg{Width: 50, Height: 40})
 	narrow := stripANSI(m.View().Content)
 	if strings.Contains(narrow, "Owner") || strings.Contains(narrow, "1000:1000") {
@@ -856,10 +795,10 @@ func TestBrowseRendersMetadataColumnsResponsively(t *testing.T) {
 
 func TestBrowseTableWidthCapsWideTerminals(t *testing.T) {
 	cases := map[int]int{
-		80:                      80, // narrower than the cap: full width
+		80:                      80,
 		browseTableMaxWidth:     browseTableMaxWidth,
-		browseTableMaxWidth + 1: browseTableMaxWidth, // just over: capped
-		240:                     browseTableMaxWidth, // far over: capped
+		browseTableMaxWidth + 1: browseTableMaxWidth,
+		240:                     browseTableMaxWidth,
 	}
 	for in, want := range cases {
 		if got := browseTableWidth(in); got != want {
@@ -868,10 +807,7 @@ func TestBrowseTableWidthCapsWideTerminals(t *testing.T) {
 	}
 }
 
-// On a very wide terminal the file table is bounded to browseTableMaxWidth rather
-// than stretching the Name column the full width, so metadata never drifts to the
-// far right. Both the data row and the column header (which belong to the table)
-// must stay within the cap.
+// Wide terminals cap both header and data rows at browseTableMaxWidth.
 func TestBrowseTableBoundedOnWideTerminal(t *testing.T) {
 	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -880,9 +816,7 @@ func TestBrowseTableBoundedOnWideTerminal(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 240, Height: 40})
 	view := stripANSI(m.View().Content)
 
-	// View() right-pads every line to the full terminal width as part of its
-	// layout block, so trim that trailing padding before measuring: what matters
-	// is that the table's content (the metadata) does not drift past the cap.
+	// Ignore View's terminal-width padding when measuring table content.
 	row := strings.TrimRight(lineContaining(t, view, "file.txt"), " ")
 	if w := lipgloss.Width(row); w > browseTableMaxWidth {
 		t.Errorf("file row width = %d, want <= %d (table must be capped on a wide terminal)\n%q", w, browseTableMaxWidth, row)
@@ -893,12 +827,8 @@ func TestBrowseTableBoundedOnWideTerminal(t *testing.T) {
 	}
 }
 
-// A filename with a wide rune (here U+FE55, the small colon some apps substitute
-// for the filesystem-illegal ':') must not push the metadata columns out of
-// alignment: the Name cell is sized by display width, not rune count. Were it
-// rune-counted, the wide name would render one cell too wide and the trailing
-// Owner value would be clipped (e.g. 10316:1023 → 10316:102), the exact symptom
-// reported. Assert both the wide-rune and plain rows keep their full owner.
+// A wide U+FE55 rune must not shift columns or clip the owner value; display
+// width, rather than rune count, determines the Name cell width.
 func TestBrowseWideRuneNameKeepsColumnsAligned(t *testing.T) {
 	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -916,11 +846,7 @@ func TestBrowseWideRuneNameKeepsColumnsAligned(t *testing.T) {
 	}
 }
 
-// A node carrying explicit uid=0,gid=0 renders as a real "0:0" owner, while a node
-// that omitted uid/gid renders the missing-owner em-dash — never a spurious 0:0.
-// Both rows carry a non-zero mtime so the Modified column is never an em-dash;
-// the assertions then target each row's own line, so the only em-dash on the anon
-// line comes from its missing owner cell (and a regression to 0:0 would fail it).
+// Explicit root ownership renders as 0:0; absent ownership renders as an em dash.
 func TestBrowseOwnerRendersRootVersusMissing(t *testing.T) {
 	mod := time.Date(2026, 5, 26, 11, 28, 0, 0, time.UTC)
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -944,14 +870,11 @@ func TestBrowseOwnerRendersRootVersusMissing(t *testing.T) {
 	}
 }
 
-// Directories now carry a real recursive subtree size, so a directory row renders
-// its size with humanize.Bytes rather than the old em-dash — and an empty
-// directory (subtree size 0) renders "0 B", not "—". The store supplies the
-// rolled-up size; the renderer no longer special-cases dirs.
+// Directory rows render recursive sizes, including "0 B" for empty directories.
 func TestBrowseRendersDirectorySize(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
-		bnode("/big", "big", true, 4096),  // a directory carrying a rolled-up size
-		bnode("/empty", "empty", true, 0), // an empty directory rolls up to 0
+		bnode("/big", "big", true, 4096),
+		bnode("/empty", "empty", true, 0),
 	)))
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	view := stripANSI(m.View().Content)
@@ -966,8 +889,7 @@ func TestBrowseRendersDirectorySize(t *testing.T) {
 	}
 }
 
-// The help overlay's Browse section documents the open alias as enter/→/l, while
-// the compact browse footer must not advertise the right-arrow alias.
+// Help documents all open aliases while the compact footer omits right arrow.
 func TestBrowseHelpDocumentsOpenAliasFooterHidesIt(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
 
@@ -999,9 +921,7 @@ func TestBrowseHelpDocumentsOpenAliasFooterHidesIt(t *testing.T) {
 	}
 }
 
-// The full keybinding overlay documents the browse sort cycle under Browse, so the
-// reference agrees with the o sort the compact footer advertises (and does not bury
-// sort under List alone).
+// Full help documents sorting in the Browse section.
 func TestBrowseHelpDocumentsSort(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
 
@@ -1029,8 +949,7 @@ func TestBrowseHelpDocumentsSort(t *testing.T) {
 	}
 }
 
-// The browse footer advertises navigation, open, shell, and back — and never the
-// removed load-more affordance.
+// The browse footer omits the removed load-more affordance.
 func TestBrowseFooterHasNoLoadMore(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
 	footer := stripANSI(m.footerView())
@@ -1042,10 +961,9 @@ func TestBrowseFooterHasNoLoadMore(t *testing.T) {
 	}
 }
 
-// The detail-view footer reads "b browse" (shortened from "browse files").
 func TestDetailFooterBrowseWording(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
-	m = update(t, m, press("enter")) // enter detail view
+	m = update(t, m, press("enter"))
 	footer := stripANSI(m.footerView())
 	if !strings.Contains(footer, "browse") {
 		t.Errorf("detail footer should advertise browse\n---\n%s", footer)
@@ -1055,17 +973,10 @@ func TestDetailFooterBrowseWording(t *testing.T) {
 	}
 }
 
-// --- browse → extract wiring (step 07) ---
-
-// extractTestSnapID is a real 64-hex restic snapshot id, the shape
-// PlanExtractPaths requires; the browse `e` dispatch passes m.browseSnapshot
-// straight through, so the test snapshot must be well-formed.
+// extractTestSnapID has the 64-hex shape required by extraction planning.
 const extractTestSnapID = "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
 
-// extractBrowseModel parks a Model in browseView with a valid [extract] config, a
-// real 64-hex snapshot, and the given rows under the cursor — the exact state an
-// `e` press needs. It bypasses the full index/list flow (covered by the
-// browse-open tests) to isolate the extract dispatch.
+// extractBrowseModel isolates extraction dispatch with valid browse state.
 func extractBrowseModel(t *testing.T, rows []model.BrowseEntry, cursor int) Model {
 	t.Helper()
 	a := extractApp(t)
@@ -1079,9 +990,7 @@ func extractBrowseModel(t *testing.T, rows []model.BrowseEntry, cursor int) Mode
 	return m
 }
 
-// e on a directory row opens the extract sub-model in directory-tree mode, with
-// every request field derived from the selection and the snapshot pinned by
-// browse. TargetRoot stays empty so the app layer applies the cfg default.
+// Directory extraction derives its request from the selected browse entry.
 func TestBrowseExtractDirectoryOpensSubModel(t *testing.T) {
 	m := extractBrowseModel(t, []model.BrowseEntry{
 		{Path: "/etc/nginx", Name: "nginx", Type: "dir", IsDir: true, Size: 4096},
@@ -1122,9 +1031,7 @@ func TestBrowseExtractDirectoryOpensSubModel(t *testing.T) {
 	}
 }
 
-// e on a regular-file row opens the sub-model in file mode with WasRegularFile
-// set, so the app layer routes restic restore --include and mirrors the file to
-// its true path under the per-snapshot directory.
+// Regular-file extraction sets the file-mode attestation.
 func TestBrowseExtractFileOpensSubModel(t *testing.T) {
 	m := extractBrowseModel(t, []model.BrowseEntry{
 		{Path: "/etc/hosts", Name: "hosts", Type: "file", Size: 412},
@@ -1150,10 +1057,7 @@ func TestBrowseExtractFileOpensSubModel(t *testing.T) {
 	}
 }
 
-// e on a symlink / device / fifo / socket row is rejected: a path-free
-// status-line notice, no view change, and no sub-model constructed. Browse's
-// listing is children-only, so the snapshot-root path is never reachable here
-// (00-framework.md §22) and needs no separate guard.
+// Unsupported node types are rejected without changing views or exposing paths.
 func TestBrowseExtractRejectsUnsupportedTypes(t *testing.T) {
 	for _, typ := range []string{"symlink", "dev", "char", "fifo", "socket"} {
 		t.Run(typ, func(t *testing.T) {
@@ -1172,7 +1076,6 @@ func TestBrowseExtractRejectsUnsupportedTypes(t *testing.T) {
 			if m.extract.req.Source != "" {
 				t.Errorf("no sub-model should be built on rejection; req = %+v", m.extract.req)
 			}
-			// Privacy: the rejection notice must never echo the entry path.
 			if strings.Contains(m.browseNotice, "thing") {
 				t.Errorf("rejection notice leaked the entry name/path: %q", m.browseNotice)
 			}
@@ -1180,36 +1083,30 @@ func TestBrowseExtractRejectsUnsupportedTypes(t *testing.T) {
 	}
 }
 
-// Quitting the program while an extract is in flight cancels it: the sub-model's
-// per-op context is a child of the program op-context (m.ctx) the `e` dispatch
-// passes as parentCtx, so a hard quit cascades the cancel and the worker
-// unblocks. This is the same cascade the browse-index quit test asserts.
+// Quitting cascades cancellation from the program context into extraction.
 func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
 	m := extractBrowseModel(t, []model.BrowseEntry{
 		{Path: "/etc/hosts", Name: "hosts", Type: "file", Size: 1},
 	}, 0)
-	m = update(t, m, press("e")) // builds the sub-model with parentCtx = m.ctx
+	m = update(t, m, press("e"))
 	if m.view != extractView {
 		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
 	}
 
-	// Swap in a blocking driver so the live run hangs until the context fires.
+	// Block the driver until cancellation reaches it.
 	drv := &fakeExtractDriver{}
 	block := make(chan struct{})
 	defer close(block)
 	drv.push(extractResp{blockOn: block, err: context.Canceled})
 	m.extract.drv = drv
 
-	// File source: enter commits straight to the live extract (no dry-run preview).
 	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if m.extract.state != extractStateRunning {
 		t.Fatalf("precondition: enter should start the run, state = %v", m.extract.state)
 	}
 
-	// Run the worker leaf in a goroutine; it blocks in Extract until the per-op
-	// context cancels. The progress pump leaf returns nil once the run closes its
-	// channel, so we filter for the worker's done message only.
+	// Observe only the worker result, not the progress pump's nil completion.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
 		go func() {
@@ -1219,7 +1116,6 @@ func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
 		}()
 	}
 
-	// Hard quit cancels m.ctx, which the extract's per-op child context inherits.
 	m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	select {
@@ -1229,8 +1125,7 @@ func TestBrowseExtractQuitCancelsInFlight(t *testing.T) {
 	}
 }
 
-// The browse footer advertises the extract action so it is discoverable in
-// context. Rendered wide so the full short-help line is visible.
+// The wide browse footer advertises extraction.
 func TestBrowseFooterAdvertisesExtract(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/dir", "dir", true, 0))))
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
@@ -1240,7 +1135,6 @@ func TestBrowseFooterAdvertisesExtract(t *testing.T) {
 	}
 }
 
-// The extract action is bound to the single key `e`.
 func TestExtractKeyBoundToE(t *testing.T) {
 	keys := defaultKeys().Extract.Keys()
 	if len(keys) != 1 || keys[0] != "e" {
@@ -1248,11 +1142,7 @@ func TestExtractKeyBoundToE(t *testing.T) {
 	}
 }
 
-// --- browse sort ---
-
-// sortBrowseApp builds a browse app whose root directory holds one dir plus three
-// files whose name order (a→b→c) disagrees with both their size order and their
-// mtime order, so each browse sort mode produces a provably distinct permutation.
+// sortBrowseApp uses attributes that give each sort mode a distinct order.
 func sortBrowseApp(t *testing.T) *app.App {
 	t.Helper()
 	mid := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -1266,19 +1156,18 @@ func sortBrowseApp(t *testing.T) *app.App {
 	)
 }
 
-// Pressing o cycles the directory listing name → size → modified → name, reordering
-// browseRows each step, and keeps the cursor on the same entry across the reorder.
+// Sorting cycles name, size, and modified order without moving selection.
 func TestBrowseSortCyclesAndPreservesCursor(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
 
 	nameOrder := []string{"/dir", "/a.txt", "/b.txt", "/c.txt"}
-	sizeOrder := []string{"/dir", "/b.txt", "/c.txt", "/a.txt"} // dirs first, then largest
-	modOrder := []string{"/dir", "/c.txt", "/a.txt", "/b.txt"}  // dirs first, then newest
+	sizeOrder := []string{"/dir", "/b.txt", "/c.txt", "/a.txt"}
+	modOrder := []string{"/dir", "/c.txt", "/a.txt", "/b.txt"}
 	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, nameOrder) {
 		t.Fatalf("initial listing = %v, want canonical %v", got, nameOrder)
 	}
 
-	m = update(t, m, press("j")) // cursor onto /a.txt (index 1)
+	m = update(t, m, press("j"))
 	if sel := m.selectedBrowseEntry(); sel == nil || sel.Path != "/a.txt" {
 		t.Fatalf("precondition: cursor should be on /a.txt, got %+v", sel)
 	}
@@ -1305,18 +1194,17 @@ func TestBrowseSortCyclesAndPreservesCursor(t *testing.T) {
 	}
 }
 
-// o is part of the idle-only switch, below the loading guard, so it can't cycle the
-// sort mid-index/mid-load (the rows are about to be replaced).
+// Loading freezes sort changes while rows are pending replacement.
 func TestBrowseSortIgnoredWhileLoading(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
-	m = update(t, m, press("o")) // size
+	m = update(t, m, press("o"))
 	if m.browseSortMode != browseSortSize {
 		t.Fatalf("precondition: first o should select size, got %q", m.browseSortMode.label())
 	}
 	frozen := browseRowPaths(m.browseRows)
 
 	m.isBrowseLoading = true
-	m = update(t, m, press("o")) // ignored while loading
+	m = update(t, m, press("o"))
 	if m.browseSortMode != browseSortSize {
 		t.Errorf("o while loading should not advance the sort, got %q", m.browseSortMode.label())
 	}
@@ -1325,35 +1213,32 @@ func TestBrowseSortIgnoredWhileLoading(t *testing.T) {
 	}
 }
 
-// The active sort persists across navigation: descending into a subdirectory lists
-// its children under the same sort, not back at canonical name order.
+// Subdirectories inherit the active browse sort.
 func TestBrowseSortInheritedIntoSubdir(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/dir", "dir", true, 0),
 		bnode("/dir/a.txt", "a.txt", false, 100),
 		bnode("/dir/z.bin", "z.bin", false, 300),
 	)))
-	m = update(t, m, press("o")) // size
+	m = update(t, m, press("o"))
 	if m.browseSortMode != browseSortSize {
 		t.Fatalf("precondition: o should select size, got %q", m.browseSortMode.label())
 	}
 
-	m = pressBrowse(t, m, "enter") // descend into /dir (cursor is on it)
+	m = pressBrowse(t, m, "enter")
 	if m.browseDir != "/dir" {
 		t.Fatalf("should have descended into /dir, browseDir = %q", m.browseDir)
 	}
 	if m.browseSortMode != browseSortSize {
 		t.Errorf("descending should keep the active sort, got %q", m.browseSortMode.label())
 	}
-	want := []string{"/dir/z.bin", "/dir/a.txt"} // largest first, not name order
+	want := []string{"/dir/z.bin", "/dir/a.txt"}
 	if got := browseRowPaths(m.browseRows); !reflect.DeepEqual(got, want) {
 		t.Errorf("subdir listing = %v, want size order %v", got, want)
 	}
 }
 
-// Sorting only ever reorders a copy: browseCache keeps the canonical ListDir order
-// in every mode (so re-cycling never compounds a previous sort), name mode lands
-// back on canonical order, and a cached directory is never re-queried.
+// Sorting preserves canonical cached rows and never requeries visited directories.
 func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
 	a, store := browseAppWithStore(t,
 		model.BrowseNode{Path: "/dir", Name: "dir", IsDir: true},
@@ -1365,7 +1250,6 @@ func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, a))
 	canonical := browseRowPaths(m.browseCache["/"])
 
-	// size and modified each display a distinct backing array and never touch the cache.
 	for _, want := range []browseSortMode{browseSortSize, browseSortModified} {
 		m = update(t, m, press("o"))
 		if m.browseSortMode != want {
@@ -1379,7 +1263,7 @@ func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
 		}
 	}
 
-	m = update(t, m, press("o")) // back to name
+	m = update(t, m, press("o"))
 	if m.browseSortMode != browseSortName {
 		t.Fatalf("three cycles should return to name, got %q", m.browseSortMode.label())
 	}
@@ -1387,10 +1271,8 @@ func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
 		t.Errorf("name mode should restore canonical order: %v want %v", got, canonical)
 	}
 
-	// Navigating away and back is still served from the listing cache — sorting did
-	// not invalidate it — so the store is not re-queried for a visited directory.
-	m = pressBrowse(t, m, "enter")     // into /dir (cursor on it in name mode)
-	m = pressBrowse(t, m, "backspace") // back to /
+	m = pressBrowse(t, m, "enter")
+	m = pressBrowse(t, m, "backspace")
 	if m.browseDir != "/" {
 		t.Fatalf("should be back at /, browseDir = %q", m.browseDir)
 	}
@@ -1399,9 +1281,7 @@ func TestBrowseSortKeepsCacheCanonical(t *testing.T) {
 	}
 }
 
-// While a search is suspended (the user jumped to a match with Enter), o sorts the
-// visible directory listing only; the parked fuzzy-ranked browseSearchRows are never
-// reordered.
+// Sorting a suspended search changes only the visible directory listing.
 func TestBrowseSortLeavesSuspendedSearchUntouched(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -1414,7 +1294,6 @@ func TestBrowseSortLeavesSuspendedSearchUntouched(t *testing.T) {
 		t.Fatalf("precondition: 'report' should match 2 files, got %d", len(m.browseSearchRows))
 	}
 
-	// Enter suspends the search and jumps to the match's parent directory (/home).
 	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd == nil {
@@ -1430,7 +1309,7 @@ func TestBrowseSortLeavesSuspendedSearchUntouched(t *testing.T) {
 	}
 	searchBefore := browseRowPaths(m.browseSearchRows)
 
-	m = update(t, m, press("o")) // sort the visible /home listing
+	m = update(t, m, press("o"))
 	if m.browseSortMode != browseSortSize {
 		t.Errorf("o should sort the directory listing while a search is suspended, mode = %q", m.browseSortMode.label())
 	}
@@ -1442,8 +1321,7 @@ func TestBrowseSortLeavesSuspendedSearchUntouched(t *testing.T) {
 	}
 }
 
-// The summary line shows the active non-default sort and omits the indicator in
-// name mode, mirroring the list view's header.
+// The summary labels non-default sorts only.
 func TestBrowseSortSummaryIndicator(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
 
@@ -1451,23 +1329,22 @@ func TestBrowseSortSummaryIndicator(t *testing.T) {
 		t.Errorf("name mode should omit the sort indicator, got %q", line)
 	}
 
-	m = update(t, m, press("o")) // size
+	m = update(t, m, press("o"))
 	if line := m.browseSummaryLine(); !strings.Contains(line, "sort: size") {
 		t.Errorf("summary should show the size sort, got %q", line)
 	}
 
-	m = update(t, m, press("o")) // modified
+	m = update(t, m, press("o"))
 	if line := m.browseSummaryLine(); !strings.Contains(line, "sort: modified") {
 		t.Errorf("summary should show the modified sort, got %q", line)
 	}
 
-	m = update(t, m, press("o")) // back to name
+	m = update(t, m, press("o"))
 	if line := m.browseSummaryLine(); strings.Contains(line, "sort:") {
 		t.Errorf("cycling back to name should drop the sort indicator, got %q", line)
 	}
 }
 
-// The browse footer advertises the sort key so the cycle is discoverable.
 func TestBrowseFooterAdvertisesSort(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
@@ -1477,19 +1354,13 @@ func TestBrowseFooterAdvertisesSort(t *testing.T) {
 	}
 }
 
-// The directory header marks the active sort column with a single down arrow that
-// follows the cycle: "Name ↓" in name mode, "↓ Size" in size mode (leading, because
-// Size is right-aligned), "Modified ↓" in modified mode — and only one column is
-// ever marked. The arrow lands on each column's padding side so the label never
-// shifts. The header line is located by the Owner label, which appears only in the
-// table header.
+// The directory header marks exactly one active sort column without shifting its label.
 func TestBrowseSortHeaderArrow(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, sortBrowseApp(t)))
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
 
 	header := func() string { return lineContaining(t, stripANSI(m.View().Content), "Owner") }
 
-	// name mode (default): down arrow on Name only.
 	hdr := header()
 	if !strings.Contains(hdr, "Name ↓") {
 		t.Errorf("name sort should mark Name with ↓\n%q", hdr)
@@ -1498,8 +1369,7 @@ func TestBrowseSortHeaderArrow(t *testing.T) {
 		t.Errorf("name sort should not mark Size/Modified\n%q", hdr)
 	}
 
-	// size mode: the arrow moves to Size, leading it (Size is right-aligned, so the
-	// arrow sits to the left to keep the label pinned over the numbers).
+	// Size's arrow leads its right-aligned label.
 	m = update(t, m, press("o"))
 	hdr = header()
 	if !strings.Contains(hdr, "↓ Size") {
@@ -1509,7 +1379,6 @@ func TestBrowseSortHeaderArrow(t *testing.T) {
 		t.Errorf("size sort should mark only Size\n%q", hdr)
 	}
 
-	// modified mode: the arrow moves to Modified.
 	m = update(t, m, press("o"))
 	hdr = header()
 	if !strings.Contains(hdr, "Modified ↓") {
@@ -1520,16 +1389,14 @@ func TestBrowseSortHeaderArrow(t *testing.T) {
 	}
 }
 
-// The global search results are relevance-ranked, not column-sorted, so their table
-// header must carry no sort arrow (even though the directory sort mode persists
-// underneath the parked listing).
+// Relevance-ranked search results never display a column-sort arrow.
 func TestBrowseSearchHeaderHasNoSortArrow(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
 		bnode("/home/report.txt", "report.txt", false, 10),
 	)))
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = update(t, m, press("o")) // a non-default dir sort is active under the search
+	m = update(t, m, press("o"))
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "report")
 

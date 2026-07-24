@@ -18,8 +18,7 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// setup writes a config file and a cache dir, seeds the given repo states, and
-// returns the config path. The config declares one repo per seeded state.
+// setup creates a config and cache with one repository per seeded state.
 func setup(t *testing.T, states map[string]model.RepoState) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -92,7 +91,7 @@ func TestStatusExitCodes(t *testing.T) {
 		},
 		{
 			name:     "missing cache (grey) yields 2",
-			states:   map[string]model.RepoState{}, // config will have no repos; add one below
+			states:   map[string]model.RepoState{},
 			wantCode: 2,
 		},
 	}
@@ -102,7 +101,6 @@ func TestStatusExitCodes(t *testing.T) {
 			states := tt.states
 			cfgPath := setup(t, states)
 			if tt.name == "missing cache (grey) yields 2" {
-				// Rewrite config with a repo that has no cache entry.
 				appendRepoWithoutCache(t, cfgPath)
 			}
 			code, out, errOut := runStatus(t, cfgPath)
@@ -149,9 +147,6 @@ func TestStatusOutputFormat(t *testing.T) {
 	}
 }
 
-// cache prune removes restic caches for repos no longer in config and keeps the
-// caches backing live repos. The cache dir from setup() is also the restic-cache
-// root, so seed both an orphaned and a live cache subdirectory under it.
 func TestCachePruneRemovesOrphans(t *testing.T) {
 	cfgPath := setup(t, map[string]model.RepoState{
 		"live-repo": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
@@ -180,7 +175,6 @@ func TestCachePruneRemovesOrphans(t *testing.T) {
 	}
 }
 
-// --dry-run reports what would go but deletes nothing.
 func TestCachePruneDryRun(t *testing.T) {
 	cfgPath := setup(t, map[string]model.RepoState{
 		"live-repo": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
@@ -238,11 +232,9 @@ func TestBrowseStoreCloseRemovesSessionDir(t *testing.T) {
 	}
 }
 
-// TestBrowseStoreCloseErrorIsPathFree forces RemoveAll(sessionDir) to fail and
-// asserts the surfaced error never contains the session directory name — the
-// cmd-level wiring of the privacy invariant (#1: browse errors are path-free).
-// It makes the parent unwritable so RemoveAll can delete the dir's contents but
-// not the dir itself; that needs non-root, so it skips if removal still succeeds.
+// TestBrowseStoreCloseErrorIsPathFree verifies removal errors do not expose the
+// session directory. A read-only parent triggers the failure only for non-root
+// users, so successful removal skips the test.
 func TestBrowseStoreCloseErrorIsPathFree(t *testing.T) {
 	parent := t.TempDir()
 	const secret = "SECRET_session_dir_marker"
@@ -261,8 +253,6 @@ func TestBrowseStoreCloseErrorIsPathFree(t *testing.T) {
 	}
 	store := &browseStore{db: db, lock: lock, dir: dir}
 
-	// Read-only parent: RemoveAll can unlink dir's contents but not dir itself,
-	// yielding an *os.PathError whose Path embeds the secret directory name.
 	if err := os.Chmod(parent, 0o500); err != nil {
 		t.Fatalf("chmod parent: %v", err)
 	}
@@ -277,8 +267,7 @@ func TestBrowseStoreCloseErrorIsPathFree(t *testing.T) {
 	}
 }
 
-// seedResticCache creates a per-repo restic cache subdirectory with one file in
-// it, named exactly as a real run would, and returns its path.
+// seedResticCache creates a populated per-repository cache and returns its path.
 func seedResticCache(t *testing.T, cacheDir, repoName string) string {
 	t.Helper()
 	dir := filepath.Join(cacheDir, "restic-cache", repoName)
@@ -291,10 +280,8 @@ func seedResticCache(t *testing.T, cacheDir, repoName string) string {
 	return dir
 }
 
-// secrets template scaffolds a blank secrets document from config alone: it
-// loads no secrets and makes no network/restic calls, so it works with the
-// hermetic setup() config. stdout must be valid JSON listing every configured
-// credential/repo name with blank values; the guidance line goes to stderr.
+// TestSecretsTemplate verifies hermetic scaffolding: stdout contains pipeable
+// JSON with blank values, while guidance goes to stderr.
 func TestSecretsTemplate(t *testing.T) {
 	cfgPath := setup(t, map[string]model.RepoState{
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
@@ -314,7 +301,6 @@ func TestSecretsTemplate(t *testing.T) {
 		t.Fatalf("stdout is not valid JSON: %v\n%s", err, out.String())
 	}
 
-	// setup() declares the single credential "cred-a" and one repo per state.
 	cred, ok := doc.Credentials["cred-a"]
 	if !ok {
 		t.Fatalf("missing credential cred-a:\n%s", out.String())
@@ -333,7 +319,6 @@ func TestSecretsTemplate(t *testing.T) {
 		}
 	}
 
-	// Guidance must not pollute the pipeable stdout.
 	if strings.Contains(out.String(), "secrets backend") {
 		t.Errorf("guidance leaked into stdout: %q", out.String())
 	}
@@ -342,8 +327,8 @@ func TestSecretsTemplate(t *testing.T) {
 	}
 }
 
-// A credential whose repos use the generic url form scaffolds the env-map
-// shape instead of the s3 access_key/secret_key shorthand.
+// TestSecretsTemplateEnvShape verifies generic URLs scaffold an environment map
+// rather than S3 key fields.
 func TestSecretsTemplateEnvShape(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `
@@ -440,11 +425,8 @@ func TestHelpShowsUsage(t *testing.T) {
 	}
 }
 
-// The TUI wires secrets and restic before starting Bubble Tea (plan §12). When
-// secrets_command cannot produce usable secrets, cmdTUI must fail fast with exit
-// 2 rather than launching a screen that can never refresh — and crucially
-// without trying to open a terminal in the test harness. The setup config's
-// secrets_command ("true") yields no secrets JSON, so refreshDeps fails.
+// TestTUIFailsFastWhenSecretsUnavailable verifies unusable secrets fail before
+// Bubble Tea opens a terminal. setup's empty "true" output makes refreshDeps fail.
 func TestTUIFailsFastWhenSecretsUnavailable(t *testing.T) {
 	cfgPath := setup(t, map[string]model.RepoState{
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
@@ -470,10 +452,8 @@ func TestCheckBadConfig(t *testing.T) {
 	}
 }
 
-// setup()'s secrets_command is "true", which prints nothing, so secrets
-// validation fails and check stops at the secrets stage with exit 2 — never
-// spawning restic. This keeps the test hermetic while exercising the staged
-// output and the "could not run the check" exit code.
+// TestCheckFailsAtSecretsStage uses setup's empty secrets output to exercise
+// staged exit 2 without spawning restic.
 func TestCheckFailsAtSecretsStage(t *testing.T) {
 	cfgPath := setup(t, map[string]model.RepoState{
 		"repo-a": {RefreshedAt: time.Now(), LastSnapshot: time.Now()},
@@ -492,9 +472,8 @@ func TestCheckFailsAtSecretsStage(t *testing.T) {
 	}
 }
 
-// The restic version is a hard gate: against an unsupported or unparseable
-// restic the probe results are untrustworthy, so checkRestic must print the
-// failed stage and return without reaching any repository.
+// TestCheckResticGateSkipsProbes verifies unsupported or unparseable restic
+// versions stop repository probes whose results would be untrustworthy.
 func TestCheckResticGateSkipsProbes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -527,9 +506,8 @@ func TestCheckResticGateSkipsProbes(t *testing.T) {
 	}
 }
 
-// A non-nil probe error means the check could not complete. Even though every
-// per-repo row here looks OK, checkRestic must report the stage as unfinished
-// and exit 2 — never "all checks passed".
+// TestCheckResticCancelledProbeIsExit2 verifies a probe error makes the check
+// incomplete even when every repository row appears healthy.
 func TestCheckResticCancelledProbeIsExit2(t *testing.T) {
 	version := func(context.Context) (string, error) { return "0.18.1", nil }
 	probe := func(context.Context) ([]app.RepoCheck, error) {
@@ -572,10 +550,8 @@ func TestCheckResticVerdicts(t *testing.T) {
 	}
 }
 
-// A refresh whose repos are all healthy but whose results could not be
-// persisted must still exit 2 ("...or a failure"), not 0 — otherwise cron
-// callers miss that the cache is now stale. The end-to-end --refresh path needs
-// a real restic and a save-erroring cache, so the policy is tested directly.
+// TestRefreshExitCodeFloorsOnFailure verifies persistence failures force exit 2
+// so callers do not mistake a stale cache for a healthy refresh.
 func TestRefreshExitCodeFloorsOnFailure(t *testing.T) {
 	green := []app.RepoStatus{{Status: model.StatusGreen}, {Status: model.StatusGreen}}
 	if got := refreshExitCode(green, nil); got != 0 {

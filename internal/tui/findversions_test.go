@@ -15,16 +15,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// findversions_test.go drives the find-versions view through its state
-// transitions: open from browse, message arrival, cursor moves, host toggle,
-// both back keys, the path-free no-persistence discipline on leave, and the
-// ErrFindUnknownHost recovery path.
+// These tests cover version-query state, privacy, cancellation, and host recovery.
 
-// findApp wires a browse-capable app whose restic returns the given
-// find-versions snapshot results when FindMatches is called. The browse path
-// (stream → index → list) uses the supplied nodes, so `v` from browse can
-// reach the find-versions view with a file selected. The find capture is
-// returned so a test can assert host/pattern/call count.
+// findApp builds a complete in-memory browse-to-find flow and exposes call capture.
 func findApp(t *testing.T, results []model.FindSnapshotResult, nodes ...model.BrowseNode) (*app.App, *stubFindCapture) {
 	t.Helper()
 	a := detailApp(t)
@@ -37,9 +30,7 @@ func findApp(t *testing.T, results []model.FindSnapshotResult, nodes ...model.Br
 	return a, cap
 }
 
-// drivePastFind delivers a synchronously-produced findVersionsMsg from the
-// startFindVersions command, so the model lands on a populated find-versions
-// view in one step (rather than waiting on a goroutine).
+// drivePastFind synchronously delivers a find result.
 func drivePastFind(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
 	if cmd == nil {
@@ -52,15 +43,10 @@ func drivePastFind(t *testing.T, m Model, cmd tea.Cmd) Model {
 	return update(t, m, msg)
 }
 
-// openFindVersions drives the model into findVersionsView with the row table
-// populated: open browse, place the cursor on a file, press `v`, deliver the
-// resulting findVersionsMsg.
+// openFindVersions opens a selected file's populated versions table.
 func openFindVersions(t *testing.T, m Model, fileName string) Model {
 	t.Helper()
 	m = openBrowse(t, m)
-	// Move the cursor onto the chosen file (rows from openBrowse start at the
-	// top of the root listing; the test setups put exactly one file at root,
-	// so cursor 0 lands on it).
 	for i, r := range m.browseRows {
 		if r.Name == fileName {
 			m.browseCursor = i
@@ -80,9 +66,7 @@ func mkFindResults(snapID string, size int64, mtime time.Time) []model.FindSnaps
 	}
 }
 
-// detailAppSnapID picks a snapshot id from detailApp's seeded rows so the find
-// query can join cached snapshot metadata. detailApp seeds three snapshots on
-// repo-a; we use the first row's first snapshot.
+// detailAppSnapID returns a seeded snapshot for metadata joins.
 func detailAppSnapID(t *testing.T, m Model) string {
 	t.Helper()
 	for _, r := range m.rows {
@@ -94,14 +78,11 @@ func detailAppSnapID(t *testing.T, m Model) string {
 	return ""
 }
 
-// v on a file opens the find-versions view, runs the one find call, lands a
-// row table populated from GroupFileVersions, and clears any loading/error.
+// Opening versions runs once and populates grouped rows.
 func TestFindVersionsOpensFromBrowseAndPopulates(t *testing.T) {
 	mt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	a, cap := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	m := newTestModel(t, a)
-	// Seed find results keyed to repo-a's first snapshot id so the grouper
-	// joins in the cached snapshot metadata.
 	snapID := detailAppSnapID(t, m)
 	a.Restic = stubRestic{
 		browseNodes: []model.BrowseNode{bnode("/hostname", "hostname", false, 12)},
@@ -140,8 +121,7 @@ func TestFindVersionsOpensFromBrowseAndPopulates(t *testing.T) {
 	}
 }
 
-// v on a directory entry stays in browse and tells the user to select a file
-// (directories have no single-file version concept).
+// Directories remain in browse with regular-file guidance.
 func TestFindVersionsKeyOnDirectoryShowsMessage(t *testing.T) {
 	a, _ := findApp(t, nil, bnode("/dir", "dir", true, 0))
 	m := newTestModel(t, a)
@@ -180,8 +160,7 @@ func TestFindVersionsDirectoryNoticeClearsOnBrowseNavigation(t *testing.T) {
 	}
 }
 
-// `a` toggles the host filter and re-runs the find with the new flag. The
-// stub records the latest call's host arg, which must now be empty.
+// The host toggle reruns the query across all hosts.
 func TestFindVersionsAToggleRerunsWithAllHosts(t *testing.T) {
 	mt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	a, cap := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
@@ -217,9 +196,7 @@ func TestFindVersionsAToggleRerunsWithAllHosts(t *testing.T) {
 	}
 }
 
-// The renderer reads only the result-of-record fields, never the user-toggle.
-// Pressing `a` while a prior result is on screen must NOT relabel the visible
-// rows until the new result lands.
+// Pending host toggles cannot relabel rows from the previous result.
 func TestFindVersionsHostLabelDrivenByResultNotRequest(t *testing.T) {
 	mt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	a, cap := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
@@ -236,21 +213,17 @@ func TestFindVersionsHostLabelDrivenByResultNotRequest(t *testing.T) {
 		t.Fatal("precondition: a default-narrow result must record a host")
 	}
 
-	// Press `a`, but DO NOT deliver the new findVersionsMsg yet.
 	next, _ := m.Update(press("a"))
 	m = next.(Model)
 	if !m.findRequestAllHosts {
 		t.Fatal("precondition: `a` should flip the user toggle")
 	}
-	// While loading, the header still shows the prior result's host so the
-	// rows on screen are never mislabeled mid-reload.
 	if got := m.findHostLabel(); got != hostBefore {
 		t.Errorf("mid-reload host label = %q, want %q (the prior result's host)", got, hostBefore)
 	}
 }
 
-// Both q and esc return to browseView (the global Quit branch catches q; the
-// view's own handler catches esc). Both must work — wiring only one is a bug.
+// q and escape both return to browse.
 func TestFindVersionsBackKeys(t *testing.T) {
 	for _, k := range []string{"q", "esc"} {
 		t.Run(k, func(t *testing.T) {
@@ -272,12 +245,10 @@ func TestFindVersionsBackKeys(t *testing.T) {
 			if m.view != browseView {
 				t.Errorf("%q should return to browse, view = %d", k, m.view)
 			}
-			// Browse state is preserved across the round trip.
 			if m.browseDir != browseDirBefore || m.browseCursor != browseCursorBefore {
 				t.Errorf("%q should preserve prior browse state: dir=%q cursor=%d (was %q,%d)",
 					k, m.browseDir, m.browseCursor, browseDirBefore, browseCursorBefore)
 			}
-			// All find state is cleared on leave so no filename lingers.
 			if m.findPath != "" || m.findRepo != "" || m.findOriginHost != "" || m.findRows != nil {
 				t.Errorf("%q should clear find state: path=%q repo=%q host=%q rows=%v",
 					k, m.findPath, m.findRepo, m.findOriginHost, m.findRows)
@@ -294,9 +265,7 @@ func TestFindVersionsBackKeys(t *testing.T) {
 	}
 }
 
-// A late findVersionsMsg whose generation no longer matches (e.g. the user
-// pressed back, or toggled host, before the response arrived) is silently
-// discarded and never resurrects find state.
+// Late results cannot resurrect cleared version state.
 func TestFindVersionsStaleMessageDropped(t *testing.T) {
 	mt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	a, cap := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
@@ -308,10 +277,9 @@ func TestFindVersionsStaleMessageDropped(t *testing.T) {
 		findCap:     cap,
 	}
 	m = openFindVersions(t, m, "hostname")
-	m = update(t, m, press("q")) // leave find-versions, advancing gen
+	m = update(t, m, press("q"))
 	staleGen := m.findGen - 1
 
-	// A stale message must not restore rows or flip the view back to versions.
 	stale := findVersionsMsg{gen: staleGen, result: app.FindFileVersionsResult{
 		Host: "h", Rows: []model.FileVersion{{Size: 99}},
 	}}
@@ -324,14 +292,9 @@ func TestFindVersionsStaleMessageDropped(t *testing.T) {
 	}
 }
 
-// ErrFindUnknownHost surfaces the recovery affordance in the status line and
-// leaves the rows empty; `a` then re-fires with allHosts=true.
+// Unknown hosts offer recovery through an all-host query.
 func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 	mt := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	// fakeFindApp wraps the App so FindFileVersions can return the sentinel
-	// without setting up an unknown-host repo state on the real App. Reuse the
-	// real App but inject a wrapper Restic that triggers the path via an
-	// untracked snapshot id.
 	a, cap := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	m := newTestModel(t, a)
 	a.Restic = stubRestic{
@@ -346,9 +309,7 @@ func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 			break
 		}
 	}
-	// Forcibly clobber the browsed snapshot to one not in the live TUI rows.
-	// startFindVersions derives originHost via browseSnapshotPtr(), so this
-	// makes the origin host empty and FindFileVersions returns ErrFindUnknownHost.
+	// An untracked snapshot leaves originHost empty and triggers unknown-host recovery.
 	m.browseSnapshot = "00000000000000000000000000000000"
 	next, cmd := m.Update(press("v"))
 	m = next.(Model)
@@ -360,8 +321,6 @@ func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 	if !strings.Contains(m.findErr, "press a to search all hosts") {
 		t.Errorf("findErr should advertise the `a` recovery: %q", m.findErr)
 	}
-	// `a` re-fires with allHosts=true; this time the find succeeds because
-	// the snapshot host is irrelevant (allHosts skips the origin-host guard).
 	next, cmd = m.Update(press("a"))
 	m = next.(Model)
 	m = drivePastFind(t, m, cmd)
@@ -377,7 +336,7 @@ func TestFindVersionsUnknownHostErrAndRecovery(t *testing.T) {
 	}
 }
 
-// Restic errors land as the path-free findErr first line.
+// Restic errors render as one path-free line.
 func TestFindVersionsResticErrorSurfaces(t *testing.T) {
 	a, _ := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	m := newTestModel(t, a)
@@ -394,9 +353,6 @@ func TestFindVersionsResticErrorSurfaces(t *testing.T) {
 	}
 }
 
-// applyFindVersionsMsg drops a stale message even outside the back path: an
-// independent unit test on the controller, so the gen-check rule is locked in
-// without depending on the full open/back round trip.
 func TestApplyFindVersionsMsgDropsStaleGen(t *testing.T) {
 	m := Model{findGen: 5}
 	in := findVersionsMsg{gen: 4, result: app.FindFileVersionsResult{Rows: []model.FileVersion{{Size: 1}}}}
@@ -406,8 +362,6 @@ func TestApplyFindVersionsMsgDropsStaleGen(t *testing.T) {
 	}
 }
 
-// Cursor moves are paused while a find is loading, since the row set is about
-// to be replaced.
 func TestFindVersionsCursorPausedWhileLoading(t *testing.T) {
 	m := Model{view: findVersionsView, findCancel: func() {}, findCursor: 0}
 	m.keys = defaultKeys()
@@ -459,9 +413,7 @@ func TestPathLineDoesNotExpandSpacesInsidePath(t *testing.T) {
 	}
 }
 
-// v on a symlink / special-node row stays in browse with the regular-file
-// notice: find-versions admits only regular files, because its `e` extract
-// attests a regular-file source.
+// Special nodes cannot enter versions because extraction requires regular-file attestation.
 func TestFindVersionsKeyOnNonFileShowsMessage(t *testing.T) {
 	for _, typ := range []string{"symlink", "socket", "fifo", "dev"} {
 		t.Run(typ, func(t *testing.T) {
@@ -483,9 +435,7 @@ func TestFindVersionsKeyOnNonFileShowsMessage(t *testing.T) {
 	}
 }
 
-// A single version in a single snapshot reads "1 version across 1 snapshot",
-// not "1 versions across 1 snapshots". Regression for the phase-4
-// pluralization pass.
+// Singular version and snapshot counts remain grammatical.
 func TestFindSummaryLineSingularCounts(t *testing.T) {
 	m := Model{
 		findRows: []model.FileVersion{{

@@ -80,9 +80,7 @@ grey   = "245"
 }
 
 func TestThemeRejectsExplicitEmptyName(t *testing.T) {
-	// Omitted name keeps the default (seeded in Decode); an explicit empty
-	// string must overwrite the seed and fail validation like any unknown name
-	// rather than being silently corrected.
+	// An explicit empty name overrides the seeded default and must fail validation.
 	_, err := load(t, minimalTOML+`
 [theme]
 name = ""
@@ -150,8 +148,7 @@ red = "crimson"
 	if !strings.Contains(err.Error(), `theme.colors.red`) {
 		t.Errorf("error does not name the bad role: %v", err)
 	}
-	// The diagnostic must enumerate the full accepted set — hex, ANSI-256, and
-	// the "default" keyword — so it cannot drift from theme.ValidColor again.
+	// Require every accepted form so diagnostics stay aligned with theme.ValidColor.
 	for _, form := range []string{"#rrggbb", "ANSI-256", `"default"`} {
 		if !strings.Contains(err.Error(), form) {
 			t.Errorf("error does not mention accepted form %s: %v", form, err)
@@ -170,8 +167,6 @@ magenta = "#ff00ff"
 }
 
 func TestThemePaletteFallsBackWithoutNormalize(t *testing.T) {
-	// A zero-value Theme (config built in tests, never normalized) must still
-	// resolve to the default palette rather than an all-empty one.
 	var th Theme
 	if got, want := th.Palette(), theme.Default(); got != want {
 		t.Errorf("zero-value palette = %+v, want default %+v", got, want)

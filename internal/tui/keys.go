@@ -2,46 +2,45 @@ package tui
 
 import "charm.land/bubbles/v2/key"
 
-// keyMap is the list- and detail-view keybinding set. It also satisfies
-// help.KeyMap via the per-view helpers below, so the footer help reflects what
-// the keys do in the current view rather than listing every binding at once.
+// keyMap contains bindings shared across views. Per-view helpers adapt it to
+// help.KeyMap so the footer shows only relevant actions.
 type keyMap struct {
 	Up         key.Binding
 	Down       key.Binding
-	SearchUp   key.Binding // search: move the result cursor up (arrows + ctrl+k, never plain k)
-	SearchDown key.Binding // search: move the result cursor down (arrows + ctrl+j, never plain j)
+	SearchUp   key.Binding // Search results: up or ctrl+k, never literal k.
+	SearchDown key.Binding // Search results: down or ctrl+j, never literal j.
 	PageUp     key.Binding
 	PageDown   key.Binding
 	Enter      key.Binding
 	Back       key.Binding
 	Shell      key.Binding
 	Browse     key.Binding
-	Parent     key.Binding // browse: step to the parent directory (backspace/left)
-	Open       key.Binding // browse: open the selected directory (right/l), alias for enter
+	Parent     key.Binding // Browse: open the parent directory.
+	Open       key.Binding // Browse: open the selected directory; aliases Enter.
 	Refresh    key.Binding
 	RefreshAll key.Binding
 	Filter     key.Binding
-	Search     key.Binding // browse: open the global filename search (same `/` key as Filter)
+	Search     key.Binding // Browse: open filename search; shares / with Filter.
 	Sort       key.Binding
-	Group      key.Binding // list: cycle group_by keys + flat view; detail: cycle snapshot section grouping (off → host → tags → paths)
-	Collapse   key.Binding // detail: toggle tree-ID collapse on the snapshot table (folds consecutive same-tree rows into "(+N)")
-	Versions   key.Binding // browse: open the find-versions view for the selected file
-	HostToggle key.Binding // find-versions: toggle the host filter on/off
-	Mark       key.Binding // detail: toggle the cursor snapshot's place in the 2-slot diff FIFO
-	Diff       key.Binding // detail: open the diff view for the resolved (older, newer) pair
-	Info       key.Binding // detail: open the full snapshot-info modal
-	DiffSwap   key.Binding // diff: swap the directional first/second pair and rerun
-	Extract    key.Binding // browse: extract the selected entry; detail: the whole snapshot; find-versions: the selected version
-	Target     key.Binding // extract: open the target-root filepicker overlay from review
-	Priv       key.Binding // extract: toggle the privileged (sudo) restore on review
-	Keep       key.Binding // extract: keep the staging dir from the cancel/error prompt
-	Delete     key.Binding // extract: delete the staging dir from the cancel/error prompt
+	Group      key.Binding // List/detail: cycle the available grouping modes.
+	Collapse   key.Binding // Detail: collapse consecutive snapshots with the same tree ID.
+	Versions   key.Binding // Browse: find versions of the selected file.
+	HostToggle key.Binding // Find versions: toggle the host filter.
+	Mark       key.Binding // Detail: toggle the snapshot in the two-slot diff FIFO.
+	Diff       key.Binding // Detail: open the resolved older-to-newer diff.
+	Info       key.Binding // Detail: open snapshot information.
+	DiffSwap   key.Binding // Diff: reverse the snapshot pair and rerun.
+	Extract    key.Binding // Extract the selection appropriate to the current view.
+	Target     key.Binding // Extract: choose the target root.
+	Priv       key.Binding // Extract: toggle privileged restore.
+	Keep       key.Binding // Extract: keep staging after cancellation or failure.
+	Delete     key.Binding // Extract: delete staging after cancellation or failure.
 	Help       key.Binding
-	Quit       key.Binding // context-aware q: back from nested views, quit on list
-	HardQuit   key.Binding // unconditional ctrl+c
+	Quit       key.Binding // Context-aware q: back when nested, quit on the list.
+	HardQuit   key.Binding // Unconditional ctrl+c.
 
-	// Snapshot-diff filter toggles: one bit each in model.ModifierKind. `?`
-	// collides with Help (the modifier char for bitrot), so the binding is `b`.
+	// Each diff filter toggles one model.ModifierKind bit. Bitrot uses b because
+	// its native ? character collides with Help.
 	DiffFilterAdded       key.Binding
 	DiffFilterRemoved     key.Binding
 	DiffFilterModified    key.Binding
@@ -61,8 +60,7 @@ func defaultKeys() keyMap {
 	return keyMap{
 		Up:   key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 		Down: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-		// Search-result navigation excludes plain j/k so they stay literal query
-		// characters (json, java, kernel, …); arrows and ctrl+j/ctrl+k move instead.
+		// Keep j/k available for queries; arrows and ctrl+j/ctrl+k navigate results.
 		SearchUp:   key.NewBinding(key.WithKeys("up", "ctrl+k"), key.WithHelp("↑/ctrl+k", "up")),
 		SearchDown: key.NewBinding(key.WithKeys("down", "ctrl+j"), key.WithHelp("↓/ctrl+j", "down")),
 		PageUp:     key.NewBinding(key.WithKeys("pgup", "ctrl+b"), key.WithHelp("pgup", "page up")),
@@ -111,32 +109,22 @@ func defaultKeys() keyMap {
 	}
 }
 
-// viewHelp adapts a keyMap to help.KeyMap for the active view: the list shows
-// navigation, filter/sort/group, shell/refresh, and quit; the detail view swaps
-// in the snapshot-scoped keys and back (advertised as q, with esc still bound),
-// where q steps back rather than quits; the help overlay shows only back (the
-// overlay itself is the full reference). The list keeps Quit because q only exits
-// there. While the user is typing a filter (filtering), it shows the apply/clear
-// bindings instead. Enter does something different in each view (open detail in
-// the list, browse the selected snapshot in detail, open directory in browse),
-// so its footer label is overridden per view via helpAs below.
+// viewHelp adapts keyMap to help.KeyMap for the active view. It relabels shared
+// keys and substitutes bindings for active filter and search inputs.
 //
-// Every ShortHelp keeps one chip order so reused keys sit in the same relative
-// place across views: move → enter → ⌫ → / → view actions → sort/group →
-// shell/refresh → back/quit.
+// ShortHelp preserves one relative action order across views.
 type viewHelp struct {
 	keys            keyMap
 	view            view
 	filtering       bool
-	searching       bool // browse global filename search input is open
-	infoScrollable  bool // info modal body overflows; advertise up/down in the footer
-	helpScrollable  bool // help overlay body overflows; advertise up/down in the footer
-	searchSuspended bool // browse: a search result set is parked; esc restores it
-	diffJumped      bool // diff: a search jump is armed; esc (and q) reverse it
+	searching       bool // Browse filename-search input is open.
+	infoScrollable  bool // Info body overflows; show scroll bindings.
+	helpScrollable  bool // Help body overflows; show scroll bindings.
+	searchSuspended bool // Browse results are parked; esc restores them.
+	diffJumped      bool // A diff search jump is armed; esc or q reverses it.
 
-	// extractBindings are the extract modal's per-state footer bindings,
-	// supplied by extractModel.shortHelp (the sub-model owns its state machine,
-	// so footerView fills this in when the extract view is active).
+	// extractBindings come from extractModel.shortHelp, which owns the modal's
+	// state machine.
 	extractBindings []key.Binding
 }
 
@@ -145,8 +133,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	if h.filtering {
 		return []key.Binding{k.FilterAccept, k.FilterCancel}
 	}
-	// While the global filename search is open the cursor keys move through the
-	// matches and enter/esc open/cancel; the regular browse keys are suspended.
+	// Search input replaces the regular browse bindings while it is open.
 	if h.searching {
 		return []key.Binding{searchMoveHelp(), k.SearchAccept, k.SearchCancel}
 	}
@@ -155,9 +142,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "browse"), k.Mark, k.Diff, k.Info, k.Extract, k.Group, k.Shell, k.Back}
 	case browseView:
 		if h.searchSuspended {
-			// esc restores the parked search while q leaves browse outright
-			// (browse.go's deliberate asymmetry), so both chips are correct
-			// side by side.
+			// esc restores parked results, while q leaves browse.
 			return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, escHelp("results"), k.Back}
 		}
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Versions, k.Extract, k.Sort, k.Shell, k.Back}
@@ -165,9 +150,7 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "extract"), k.HostToggle, k.Back}
 	case snapshotDiffView:
 		if h.diffJumped {
-			// After a search jump q mirrors esc and reverses the jump instead
-			// of leaving the view (routing.go), so the normal `q back` chip
-			// would lie; one combined chip replaces it until the jump is undone.
+			// After a search jump, q and esc reverse the jump instead of leaving.
 			return []key.Binding{
 				moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(),
 				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous")),
@@ -175,76 +158,57 @@ func (h viewHelp) ShortHelp() []key.Binding {
 		}
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(), k.Back}
 	case extractView:
-		// Per-state bindings from the extract sub-model; fall back to the
-		// always-present back affordance if a caller forgot to supply them.
+		// Preserve a back affordance if the extract model supplied no bindings.
 		if len(h.extractBindings) > 0 {
 			return h.extractBindings
 		}
 		return []key.Binding{k.Back}
 	case helpView:
-		// Same scroll chip rule as the info modal: advertise the keys only when
-		// the body actually overflows, and as "scroll", not "move" — they move
-		// a document viewport, not a cursor.
+		// Show "scroll" only when the document viewport overflows.
 		if h.helpScrollable {
 			return []key.Binding{helpAs(moveHelp(), "scroll"), k.Back}
 		}
 		return []key.Binding{k.Back}
 	case infoView:
-		// The footer carries only the canonical back key (i and esc also close
-		// the modal) — plus a scroll chip when the body overflows. "scroll",
-		// not "move": the keys move a document viewport, not a cursor.
+		// Show the canonical back key and, only on overflow, document scrolling.
 		if h.infoScrollable {
 			return []key.Binding{helpAs(moveHelp(), "scroll"), k.Back}
 		}
 		return []key.Binding{k.Back}
 	default: // listView
-		// No ? help chip here: the title row carries the persistent help
-		// affordance in every view, so the footer advertising it too would be
-		// the one view that duplicates it.
+		// The title already provides the persistent help affordance.
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "detail"), k.Filter, k.Sort, k.Group, k.Shell, k.Refresh, k.Quit}
 	}
 }
 
-// helpAs returns b with a view-specific footer description. The underlying keys
-// are unchanged so key.Matches against the canonical binding still works; only
-// the help text differs (e.g. Enter advertises "open"/"browse"/"extract" per
-// view, Back advertises "cancel" while an extract runs).
+// helpAs changes only a binding's view-specific footer description, preserving
+// its keys for key.Matches.
 func helpAs(b key.Binding, desc string) key.Binding {
 	b.SetHelp(b.Help().Key, desc)
 	return b
 }
 
-// escHelp is a footer-only chip for the states where esc does something q does
-// not (restore a parked browse search). helpAs(k.Back, …) would be wrong here:
-// Back's displayed key is deliberately "q", so the chip would read "q results".
+// escHelp creates a footer-only chip where esc differs from q. Back cannot be
+// relabeled because its displayed key is q.
 func escHelp(desc string) key.Binding {
 	return key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", desc))
 }
 
-// moveHelp is the condensed "↑/↓ move" footer entry every view's key bar uses:
-// the two cursor-movement bindings collapse into one chip so the bar stays
-// short on an ~100-col terminal and reads identically everywhere. j/k still
-// move (the ? overlay lists them); only the footer hint is condensed.
+// moveHelp combines cursor bindings into one compact, consistent footer chip.
+// The full help overlay still lists j/k.
 func moveHelp() key.Binding {
 	return key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑/↓", "move"))
 }
 
-// searchMoveHelp is moveHelp's twin for the search-input footers, where plain
-// j/k are literal query text and the real bindings are the arrows plus
-// ctrl+j/k (SearchUp/SearchDown). The chip shows only the arrow form; the ?
-// overlay documents the ctrl variants.
+// searchMoveHelp keeps j/k as query text while arrows and ctrl+j/k navigate.
+// The footer shows arrows; the full help overlay lists the alternatives.
 func searchMoveHelp() key.Binding {
 	return key.NewBinding(key.WithKeys("up", "ctrl+k", "down", "ctrl+j"), key.WithHelp("↑/↓", "move"))
 }
 
-// diffFiltersHelp condenses the six diff filter-toggle bindings into one
-// footer chip — advertising a single toggle (the old `+ added`) implied the
-// others didn't exist, and listing all six as chips would flood the bar. The
-// key display is the compact run the summary's `filter: +-MUT?` mask already
-// uses (not slash-joined: slashes mean alternates of one action, these are six
-// toggles), which also keeps the normal diff bar inside 80 columns with
-// `q back` visible. The per-key meanings live in the ? overlay; the active
-// mask is state and renders in the summary line, not here.
+// diffFiltersHelp combines six independent toggles into the compact mask shown
+// in the diff summary. Avoiding slash separators distinguishes independent
+// actions from alternate keys and keeps q visible at 80 columns.
 func diffFiltersHelp() key.Binding {
 	return key.NewBinding(key.WithKeys("+", "-", "M", "U", "T", "b"), key.WithHelp("+-MUTb", "filters"))
 }

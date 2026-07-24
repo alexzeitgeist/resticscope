@@ -24,8 +24,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// --- fakes built on app's exported consumer-side interfaces ---
-
 type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
@@ -240,15 +238,8 @@ func testApp(states map[string]model.RepoState) *app.App {
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
-	// Pin a non-interactive shell so building a session (the `s` key →
-	// openShellCmd → ShellSession) never resolves to the developer's real $SHELL.
-	// Tests that only assert "a shell command was produced" discard the session
-	// without reaching its Cleanup (it is buried in the tea.ExecProcess command);
-	// were the shell bash/zsh/fish, applyPromptTag would eagerly write a temp
-	// rcfile/ZDOTDIR at build time that then leaks into /tmp. /bin/sh is not
-	// prompt-tagged, so no scaffolding is created and the result is host-independent.
-	// Tests that actually run the shell (e.g. TestDetailShellKeyRoutePassesSnapshot)
-	// override this with their own fake executable.
+	// Use an untagged non-interactive shell so discarded sessions create no temp
+	// prompt files and tests remain independent of the developer's SHELL.
 	cfg.Global.Shell = "/bin/sh"
 	return &app.App{
 		Cfg:     cfg,
@@ -285,7 +276,7 @@ func update(t *testing.T, m Model, msg tea.Msg) Model {
 // leafCmds flattens a possibly-batched command into its leaf commands. The
 // refresh keys now batch the spinner tick with the live refresh, so a test that
 // wants the refresh command unwraps the batch first. Running the batch wrapper
-// only assembles the slice — it never runs the leaves — so this is safe even
+// only assembles the slice; it never runs the leaves, so this is safe even
 // when a leaf (the refresh) would block.
 func leafCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
 	t.Helper()
@@ -297,8 +288,6 @@ func leafCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
 	}
 	return []tea.Cmd{cmd}
 }
-
-// --- tests ---
 
 func TestViewRendersReposGlyphsAndMeta(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
@@ -427,7 +416,7 @@ func TestRefreshMarksPendingAndIgnoresDouble(t *testing.T) {
 }
 
 // The spinner must stop ticking once nothing is refreshing: an idle spinner is
-// invisible, so re-arming its tick only re-renders a hidden frame ~12×/second
+// invisible, so re-arming its tick only re-renders a hidden frame ~12x/second
 // and burns CPU forever (this was the cause of ~5% idle CPU). While a repo is
 // pending the tick must keep going so the glyph animates.
 func TestSpinnerTickStopsWhenIdle(t *testing.T) {
@@ -529,7 +518,7 @@ func TestRefreshCommandRunsLiveRefresh(t *testing.T) {
 }
 
 // Pressing q while a refresh is in flight must cancel the refresh context so the
-// restic subprocess does not outlive the UI (Rule 10). The refresh command runs
+// restic subprocess does not outlive the UI. The refresh command runs
 // the real RefreshRow path against a restic that blocks until cancelled.
 func TestQuitCancelsInFlightRefresh(t *testing.T) {
 	a := testApp(nil)
@@ -618,8 +607,8 @@ func TestHelpOverlayToggle(t *testing.T) {
 
 // On a terminal wide enough for both columns the overlay keeps the side-by-side
 // layout (a left-column heading and a right-column heading share a line), and
-// when the body also fits vertically the footer must not advertise scroll keys
-// — same minimal-footer rule the info modal locks in.
+// when the body also fits vertically the footer must not advertise scroll keys,
+// the same minimal-footer rule the info modal locks in.
 func TestHelpOverlayTwoColumnsWhenWide(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 60})
@@ -644,8 +633,8 @@ func TestHelpOverlayTwoColumnsWhenWide(t *testing.T) {
 }
 
 // Below the two-column width the overlay stacks into a single column: every
-// rendered line stays inside the terminal width and the full reference —
-// including the sections that used to live in the truncated right column —
+// rendered line stays inside the terminal width and the full reference
+// (including the sections that used to live in the truncated right column)
 // survives in the scrollable line list instead of being cut off.
 func TestHelpOverlayNarrowStacksSingleColumn(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
@@ -707,7 +696,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 	}
 
 	// Page-down enough times to reach the bottom; clampModalScroll bounds the
-	// stored offset, so excess presses are a no-op once we hit the floor.
+	// stored offset, so excess presses are a no-op once the floor is hit.
 	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
@@ -804,12 +793,8 @@ func TestKeyLabel(t *testing.T) {
 	}
 }
 
-// The footers must advertise the back/quit scheme: the list still shows
-// `q quit`, the nested footers show `q back`, and the removed `b back` hint
-// appears nowhere. Back lives only in the key bar — the title row instead
-// carries the view prefix and the persistent `? help` chip. The footer's help
-// styles each key and label as separate ANSI spans, so we strip color before
-// matching the "key label" pairs.
+// Footer text distinguishes list quit from nested back, while the title owns
+// the persistent help chip. Strip ANSI spans before matching key-label pairs.
 func TestBackQuitFooterAndHeaderRendering(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m = update(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
@@ -867,7 +852,7 @@ func TestFooterEnterLabelsByView(t *testing.T) {
 		t.Errorf("list footer must not show the old 'open/shell' label\n---\n%s", listFooter)
 	}
 
-	m = update(t, m, press("enter")) // → detail view
+	m = update(t, m, press("enter")) // -> detail view
 	detailFooter := stripANSI(m.footerView())
 	if !strings.Contains(detailFooter, "enter browse") {
 		t.Errorf("detail footer should advertise 'enter browse'\n---\n%s", detailFooter)
@@ -960,8 +945,6 @@ func TestHelpOverlayDescribesContextAwareQuit(t *testing.T) {
 		t.Errorf("Detail section should document 'esc/q back to the list', got %+v", detail.entries)
 	}
 }
-
-// --- detail view ---
 
 // detailApp seeds repo-a with three snapshots and observed hosts/tags. It uses
 // env password mode so building a shell session in tests never writes a temp
@@ -1144,8 +1127,8 @@ func TestDetailSnapshotsUseModelOrdering(t *testing.T) {
 	m := newTestModel(t, a)
 	m = update(t, m, press("enter"))
 	// Narrow pane: no Took column, so the duration lives in the selected panel's
-	// backup-window row, which is where we prove the selected detail tracks the
-	// ordered snapshot.
+	// backup-window row, which is where the test proves the selected detail
+	// tracks the ordered snapshot.
 	m.width, m.height = 80, 40
 	snaps := m.detailSnapshots()
 	if len(snaps) != 2 || snaps[0].ID != "b" {
@@ -1183,7 +1166,7 @@ func TestDetailBackReturnsToList(t *testing.T) {
 	}
 }
 
-// b — and enter, its drill-in alias on the detail view — opens the in-app file
+// b (and enter, its drill-in alias on the detail view) opens the in-app file
 // browser for the selected snapshot: it switches to browseView (showing the
 // indexing state with no listing yet), marks the index in flight, and returns
 // the command that runs the one-time index.
@@ -1364,8 +1347,6 @@ func findRow(m Model, name string) app.RepoStatus {
 	return app.RepoStatus{}
 }
 
-// --- filter & sort ---
-
 func names(rows []app.RepoStatus) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {
@@ -1399,8 +1380,8 @@ func TestSortRowsOrders(t *testing.T) {
 		want string
 	}{
 		{sortConfig, "Grey,Amber,Echo,green,red-1"},  // untouched
-		{sortUrgency, "Echo,red-1,Amber,green,Grey"}, // error → red → amber → green → grey
-		{sortName, "Amber,Echo,green,Grey,red-1"},    // case-insensitive A→Z
+		{sortUrgency, "Echo,red-1,Amber,green,Grey"}, // error -> red -> amber -> green -> grey
+		{sortName, "Amber,Echo,green,Grey,red-1"},    // case-insensitive A-Z
 	} {
 		rows := clone()
 		sortRows(rows, tc.mode)
@@ -1464,8 +1445,8 @@ func TestFilterMatchesLabel(t *testing.T) {
 	}
 }
 
-// While the filter input is open every key is literal text — "q" must not quit,
-// "r" must not refresh — and backspace edits the query.
+// While the filter input is open every key is literal text ("q" must not quit,
+// "r" must not refresh), and backspace edits the query.
 func TestFilterCapturesKeysAndBackspace(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	m = update(t, m, press("/"))
@@ -1608,8 +1589,8 @@ func TestListTookCellTruncatesLongDuration(t *testing.T) {
 	l := computeListLayout(100)
 	rendered := m.renderRow(row, l, false, 100)
 	// listTookWidth (7) reserves one cell for the ellipsis, so a 1000h+ run
-	// truncates to "1000h0…" — the row width invariant matters more than the
-	// exact digits, but the ellipsis must appear.
+	// truncates with a trailing ellipsis; the row width invariant matters more
+	// than the exact digits, but the ellipsis must appear.
 	if got := stripANSI(rendered); !strings.Contains(got, "…") {
 		t.Errorf("Took column did not truncate long duration\n---\n%s", got)
 	}
@@ -1623,8 +1604,8 @@ func TestListTookCellTruncatesLongDuration(t *testing.T) {
 }
 
 // The Took cell distinguishes a known zero-duration backup ("<1s") from one
-// without a summary ("—"), so the user can tell an instant backup from missing
-// data. The cell value lives in the row, not a free-form summary.
+// without a summary (an em dash), so the user can tell an instant backup from
+// missing data. The cell value lives in the row, not a free-form summary.
 func TestListTookCellDistinguishesZeroFromUnknown(t *testing.T) {
 	start := testNow.Add(-time.Hour)
 	zero := model.Snapshot{
@@ -1778,7 +1759,7 @@ func TestDetailViewTruncatesLongTookColumn(t *testing.T) {
 	assertLinesFit(t, view, m.width)
 }
 
-// Every detail line clips to a narrow pane — including the section heading and
+// Every detail line clips to a narrow pane, including the section heading and
 // the no-snapshots placeholder, both wider than the narrowest width tested. The
 // height is generous: the detail view's fixed meta block sets a minimum usable
 // height, so this exercises width only.
@@ -1854,11 +1835,11 @@ func TestSortCycleReordersAndKeepsSelection(t *testing.T) {
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
 	states := map[string]model.RepoState{
-		// charlie: recent snapshot but a recorded refresh error → Error status.
+		// charlie: recent snapshot but a recorded refresh error -> Error status.
 		"charlie": {Name: "charlie", RefreshedAt: testNow, LastSnapshot: testNow.Add(-2 * time.Hour), SnapshotCount: 10, LastError: "boom"},
-		// ada: 25h old → Amber (just past expected frequency, within grace).
+		// ada: 25h old -> Amber (just past expected frequency, within grace).
 		"ada": {Name: "ada", RefreshedAt: testNow, LastSnapshot: testNow.Add(-25 * time.Hour), SnapshotCount: 99},
-		// boris: 50h old → Red (past grace, also the staleness winner).
+		// boris: 50h old -> Red (past grace, also the staleness winner).
 		"boris": {Name: "boris", RefreshedAt: testNow, LastSnapshot: testNow.Add(-50 * time.Hour), SnapshotCount: 2},
 	}
 	a := &app.App{
@@ -1987,8 +1968,6 @@ func TestDetailStaysAnchoredAcrossReorder(t *testing.T) {
 	}
 }
 
-// --- list table layout / grouping ---
-
 // computeListLayout promotes Took then Labels in strict priority order: Took
 // (7) appears first and may appear alone, Labels only after Took. listLabelsMin
 // + 2 = 3 extra cells is the floor for Labels to appear (1 content cell + the
@@ -2015,7 +1994,7 @@ func TestComputeListLayoutProgressiveThresholds(t *testing.T) {
 				tc.width, l.showTook, l.showLabels, tc.wantTook, tc.wantLabels)
 		}
 		// Strict priority: Labels never appears without Took. If this fired the
-		// shrinking-window path would lose Took before Labels — the opposite of
+		// shrinking-window path would lose Took before Labels, the opposite of
 		// the documented order.
 		if l.showLabels && !l.showTook {
 			t.Errorf("computeListLayout(%d) promoted Labels without Took", tc.width)
@@ -2140,9 +2119,9 @@ func TestRenderRowStaleMarkerSuppressedWhilePending(t *testing.T) {
 }
 
 // An errored repo carries over its last successful RefreshedAt, which often
-// reads as stale — but the `×` glyph and "refresh failed" text already tell the
-// freshness story, so the stale `*` marker is suppressed. Without this guard the
-// cell renders the jammed-together "×*".
+// reads as stale, but the error glyph and "refresh failed" text already tell
+// the freshness story, so the stale `*` marker is suppressed. Without this
+// guard the cell renders a jammed-together error-glyph-and-star.
 func TestRenderRowStaleMarkerSuppressedOnError(t *testing.T) {
 	m := newTestModel(t, testApp(nil))
 	row := app.RepoStatus{
@@ -2235,7 +2214,7 @@ func TestGroupedSectionsOrder(t *testing.T) {
 
 // Values that differ only by case (e.g. "Prod" vs "prod") must come back in
 // a deterministic order. Sorting by the lowercase form alone leaves
-// case-only ties to map iteration order, which is randomized — letting two
+// case-only ties to map iteration order, which is randomized, letting two
 // displayList() calls in the same handler disagree on cursor mapping.
 func TestGroupedSectionsCaseOnlyCollisionIsStable(t *testing.T) {
 	rows := []app.RepoStatus{
@@ -2277,12 +2256,12 @@ func TestGroupedSectionsAllUngrouped(t *testing.T) {
 	}
 }
 
-// In grouped mode the cursor indexes the flattened display order — the same
-// order render uses — so the highlighted repo and the acted-on repo match.
+// In grouped mode the cursor indexes the flattened display order (the same
+// order render uses), so the highlighted repo and the acted-on repo match.
 func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
 	a := testApp(nil)
 	// Config order: repo-a, repo-b. Put repo-a under "personal" so that group
-	// renders after "business" (where we'll put a new repo-c) — proves the
+	// renders after "business" (where a new repo-c is placed), proving the
 	// display-order index doesn't fall back to config order.
 	a.Cfg.Global.GroupBy = []string{"category"}
 	a.Cfg.Repos[0].Labels = map[string]string{"category": "personal"}
@@ -2313,7 +2292,7 @@ func TestGroupedDisplayOrderDrivesSelection(t *testing.T) {
 }
 
 // With grouping active, enter pins the detail view to the highlighted repo
-// and r marks that same repo pending — both act on display-order selection.
+// and r marks that same repo pending, both act on display-order selection.
 func TestGroupedActionsUseHighlightedRepo(t *testing.T) {
 	a := testApp(nil)
 	a.Cfg.Global.GroupBy = []string{"category"}
@@ -2451,7 +2430,7 @@ func TestGroupedListFitsHeightWithManyGroups(t *testing.T) {
 }
 
 // When the rendered budget is two content lines or more, the cursor's group
-// heading must be the first rendered line — never replaced by an adjacent data
+// heading must be the first rendered line, never replaced by an adjacent data
 // row. This covers the "cursor on second/third row of a single group with
 // max=2" case where centering would otherwise drop the heading.
 func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
@@ -2516,19 +2495,15 @@ func TestGroupedListIncludesHeadingForCursorSection(t *testing.T) {
 	}
 }
 
-// When the cursor sits on the first row of a non-first section, the rendered
-// window must still start with that section's heading — never with the
-// previous section's row or the blank separator above the heading. With a
-// budget of three content lines the centered window naturally spans
-// [prev-row, blank, heading], which would push the cursor's heading down a
-// line; the renderer must anchor the heading at start.
+// The first row of a later section must anchor its heading above the cursor,
+// excluding the preceding row and separator from a short centered window.
 func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	cfg := &config.Config{
 		Global: config.Global{Parallelism: 2, GroupBy: []string{"category"}},
 	}
 	cfg.Global.StaleGrace = config.Duration(12 * time.Hour)
 	cfg.Global.StaleAfter = config.Duration(10 * time.Minute)
-	// Two sections, one row each — minimal token stream that exposes the
+	// Two sections, one row each: minimal token stream that exposes the
 	// blank-separator bug: [h0, r0, sep, h1, r1].
 	for _, r := range []struct{ name, cat string }{
 		{"repo-a", "alpha"}, {"repo-b", "bravo"},
@@ -2548,7 +2523,7 @@ func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 		Restic:  stubRestic{},
 	}
 	m := newTestModel(t, a)
-	// Cursor on repo-b — the first (and only) row of the second section.
+	// Cursor on repo-b, the first (and only) row of the second section.
 	// repo-a (alpha) sorts before repo-b (bravo), so the bravo section is
 	// second and m.cursor=1 selects repo-b in displayList().rows.
 	m.cursor = 1
@@ -2584,7 +2559,7 @@ func TestGroupedListAnchorsHeadingAtFirstRowOfSection(t *testing.T) {
 	}
 }
 
-// Cycling g with two configured keys steps key[0] → key[1] → flat → key[0],
+// Cycling g with two configured keys steps key[0] -> key[1] -> flat -> key[0],
 // matching the documented order. activeGroupKey() and groupingActive() track
 // the cycle at each step.
 func TestCycleGroupingThroughKeys(t *testing.T) {
@@ -2624,7 +2599,7 @@ func TestCycleGroupingThroughKeys(t *testing.T) {
 	}
 }
 
-// A one-key configuration behaves like the old toggle: key → flat → key → ….
+// A one-key configuration behaves like the old toggle: key -> flat -> key -> ...
 func TestCycleGroupingSingleKey(t *testing.T) {
 	a := testApp(nil)
 	a.Cfg.Global.GroupBy = []string{"env"}
@@ -2648,12 +2623,8 @@ func TestCycleGroupingSingleKey(t *testing.T) {
 	}
 }
 
-// The cursor follows the selected repo by name across the full cycle, even
-// when the repo's flattened-index changes between two grouping keys and the
-// flat view. Labels are picked so the section ordering differs between
-// "env" and "criticality": repo-a sits at a different cursor index under env
-// vs under criticality, so a "preserve only the numeric index" implementation
-// would land on the wrong repo at the cycle's second step.
+// Selection follows repository name across grouping modes whose section order
+// moves the same repository to different flattened indices.
 func TestCycleGroupingPreservesCursor(t *testing.T) {
 	a := testApp(nil)
 	a.Cfg.Global.GroupBy = []string{"env", "criticality"}
@@ -2913,13 +2884,13 @@ func snapshotInfoApp(t *testing.T) *app.App {
 // enterInfoOnFullSnapshot opens the info modal on the full-summary snapshot of
 // snapshotInfoApp. The detail view orders newest-first, so id-full lands at
 // snapCursor 0 and `i` from there opens the modal in one step. The window is
-// resized to a tall pane first so the body fits without scrolling — tests that
+// resized to a tall pane first so the body fits without scrolling; tests that
 // exercise scrolling shrink the height themselves.
 func enterInfoOnFullSnapshot(t *testing.T, m Model) Model {
 	t.Helper()
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 80})
-	m = update(t, m, press("enter")) // → detailView
-	m = update(t, m, press("i"))     // → infoView
+	m = update(t, m, press("enter")) // -> detailView
+	m = update(t, m, press("i"))     // -> infoView
 	if m.view != infoView {
 		t.Fatalf("view = %d, want infoView", m.view)
 	}
@@ -2960,7 +2931,7 @@ func TestInfoModalRendersAllSectionsForFullSnapshot(t *testing.T) {
 
 func TestInfoModalSkipsSummarySectionsForMinimalSnapshot(t *testing.T) {
 	m := newTestModel(t, snapshotInfoApp(t))
-	m = update(t, m, press("enter")) // → detailView
+	m = update(t, m, press("enter")) // -> detailView
 	// Move cursor to the minimal (older) snapshot. detailSnapshots() sorts
 	// newest-first, so the minimal one is index 1.
 	m = update(t, m, press("j"))
@@ -2990,7 +2961,7 @@ func TestInfoModalSkipsSummarySectionsForMinimalSnapshot(t *testing.T) {
 
 func TestInfoKeyTogglesAndPreservesDetailMarks(t *testing.T) {
 	m := newTestModel(t, snapshotInfoApp(t))
-	m = update(t, m, press("enter")) // → detailView
+	m = update(t, m, press("enter")) // -> detailView
 	m = update(t, m, press("t"))     // mark the cursor snapshot
 	if len(m.detailMarks) != 1 {
 		t.Fatalf("precondition: 1 mark, got %d", len(m.detailMarks))
@@ -3031,7 +3002,7 @@ func TestInfoKeyTogglesAndPreservesDetailMarks(t *testing.T) {
 func TestInfoKeyIsNoOpWithoutSnapshot(t *testing.T) {
 	a := testApp(nil) // both repos have no cached state, so no snapshots
 	m := newTestModel(t, a)
-	m = update(t, m, press("enter")) // → detailView (with empty snapshot list)
+	m = update(t, m, press("enter")) // -> detailView (with empty snapshot list)
 	if m.view != detailView {
 		t.Fatalf("view = %d, want detailView", m.view)
 	}
@@ -3042,7 +3013,7 @@ func TestInfoKeyIsNoOpWithoutSnapshot(t *testing.T) {
 }
 
 // TestInfoFooterStaysMinimalWhenBodyFits locks the symmetric UX rule: when no
-// scrolling is needed the footer must NOT advertise up/down — the only key the
+// scrolling is needed the footer must NOT advertise up/down; the only key the
 // modal exposes there is `q back`. This guards the conditional in viewHelp
 // against regressions that would always-on the scroll chip.
 func TestInfoFooterStaysMinimalWhenBodyFits(t *testing.T) {
@@ -3082,8 +3053,8 @@ func TestInfoModalScrolls(t *testing.T) {
 	if !strings.Contains(initial, "showing lines") {
 		t.Fatalf("initial view missing position indicator, modal must report overflow\n---\n%s", initial)
 	}
-	// Scrollability advertised in the footer (the condensed "↑/↓ scroll" chip),
-	// not inline with the body anymore.
+	// Scrollability advertised in the footer (the condensed "up/down scroll"
+	// chip), not inline with the body anymore.
 	if !strings.Contains(initial, "scroll") {
 		t.Errorf("info footer missing the scroll chip while scrolling is needed\n---\n%s", initial)
 	}
@@ -3092,7 +3063,7 @@ func TestInfoModalScrolls(t *testing.T) {
 	}
 
 	// Page-down enough times to reach the bottom. clampModalScroll bounds the
-	// stored offset, so excess presses are a no-op once we hit the floor.
+	// stored offset, so excess presses are a no-op once the floor is hit.
 	for range 20 {
 		m = update(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	}
@@ -3292,7 +3263,7 @@ func TestTruncateNameWidth(t *testing.T) {
 
 // truncatePathWidth keeps the basename intact and elides the middle of the
 // directory chain, keeping as many leading components as fit; when even
-// "…/<base>" overflows it falls back to extension-preserving name truncation,
+// ".../<base>" overflows it falls back to extension-preserving name truncation,
 // and a slash-free input behaves exactly like truncateNameWidth.
 func TestTruncatePathWidth(t *testing.T) {
 	const long = "/Android/media/com.whatsapp/WhatsApp/Media/IMG-1234.jpg"

@@ -13,13 +13,8 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// browsesearch_test.go drives the global fuzzy filename search added to the
-// snapshot browser. The tests are state-transition tests (no pixels): they press
-// keys, run the resulting commands through the in-memory fakeBrowseStore — which
-// ranks with the real model scorer so DB and TUI ranking cannot drift — and assert
-// the model's search state and the rendered footer/list. Two invariants are guarded
-// directly: filenames never linger once search/browse is left, and a store error
-// surfaces path-free.
+// These state-transition tests share the production scorer and protect filename
+// clearing and path-free error behavior.
 
 // openSearch opens the global filename search from an indexed, idle browse view.
 func openSearch(t *testing.T, m Model) Model {
@@ -31,10 +26,8 @@ func openSearch(t *testing.T, m Model) Model {
 	return m
 }
 
-// typeSearch sends each rune of q to the open search input, runs the search
-// command, and delivers its browseSearchMsg so the model lands on the result for
-// the full query. A keystroke that emits no command (a whitespace-only query that
-// clears synchronously) is skipped, mirroring the live behaviour.
+// typeSearch enters q and delivers each asynchronous search result. Synchronous
+// query clearing emits no command and is skipped.
 func typeSearch(t *testing.T, m Model, q string) Model {
 	t.Helper()
 	for _, r := range q {
@@ -52,11 +45,8 @@ func typeSearch(t *testing.T, m Model, q string) Model {
 	return m
 }
 
-// Activation is gated on an indexed, idle browse: there is nothing to search
-// before the one-time crawl commits, and navigation (including opening search) is
-// paused while a load is in flight.
+// Search activation requires an indexed, idle browse session.
 func TestBrowseSearchActivationRequiresIndexedIdle(t *testing.T) {
-	// Mid-index: "/" must not open search.
 	m := newTestModel(t, browseApp(t, bnode("/a", "a", true, 0)))
 	m = update(t, m, press("enter"))
 	next, _ := m.Update(press("b")) // start indexing; do not run the index command
@@ -68,7 +58,6 @@ func TestBrowseSearchActivationRequiresIndexedIdle(t *testing.T) {
 		t.Error("/ must not open search while indexing")
 	}
 
-	// Indexed and idle: "/" opens the search input, reset to an empty query.
 	indexed := openBrowse(t, newTestModel(t, browseApp(t, bnode("/a", "a", true, 0))))
 	indexed = update(t, indexed, press("/"))
 	if !indexed.browseSearching {
@@ -80,8 +69,7 @@ func TestBrowseSearchActivationRequiresIndexedIdle(t *testing.T) {
 	}
 }
 
-// Typing fires a live search and populates the ranked matches and the true total,
-// drawn from anywhere in the snapshot (not just the current directory).
+// Live search returns ranked matches and an uncapped snapshot-wide total.
 func TestBrowseSearchTypePopulates(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -110,9 +98,7 @@ func TestBrowseSearchTypePopulates(t *testing.T) {
 	}
 }
 
-// A late search result whose generation or query no longer matches the model (a
-// superseded keystroke, or one the user has since edited past) is dropped and
-// never overwrites fresher state or leaks into the view.
+// Results from stale generations or edited queries cannot replace visible state.
 func TestBrowseSearchStaleResultsDropped(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -137,16 +123,15 @@ func TestBrowseSearchStaleResultsDropped(t *testing.T) {
 	}
 }
 
-// Esc cancels the search and restores the underlying directory listing exactly —
-// the separate search state never disturbs browseDir/browseRows/browseCursor.
+// Escape cancels search without disturbing directory-list state.
 func TestBrowseSearchEscRestoresListing(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/a", "a", true, 0),
 		bnode("/b", "b", true, 0),
 		bnode("/b/inner.txt", "inner.txt", false, 1),
 	)))
-	m = pressBrowse(t, m, "j")     // cursor onto /b
-	m = pressBrowse(t, m, "enter") // descend into /b
+	m = pressBrowse(t, m, "j")
+	m = pressBrowse(t, m, "enter")
 	dirBefore, curBefore := m.browseDir, m.browseCursor
 	rowsBefore := m.browseRows
 	if dirBefore != "/b" {
@@ -155,7 +140,7 @@ func TestBrowseSearchEscRestoresListing(t *testing.T) {
 
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "inner")
-	m = update(t, m, press("esc")) // cancel
+	m = update(t, m, press("esc"))
 
 	if m.browseSearching {
 		t.Error("esc should close the search")
@@ -175,9 +160,7 @@ func TestBrowseSearchEscRestoresListing(t *testing.T) {
 	}
 }
 
-// Enter on a match opens that match's parent directory with the file preselected and
-// suspends the search (the input closes but the result set is parked so esc can
-// restore it) — so a global hit lands the user in the right folder.
+// Enter opens a match's parent with the file selected and search suspended.
 func TestBrowseSearchEnterNavigatesToMatch(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -219,8 +202,7 @@ func TestBrowseSearchEnterNavigatesToMatch(t *testing.T) {
 	}
 }
 
-// Enter with no selected match (an empty result) just closes the search, leaving
-// the prior listing in place and emitting no navigation command.
+// Enter without a match closes search without navigating.
 func TestBrowseSearchEnterNoMatchCloses(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -246,10 +228,7 @@ func TestBrowseSearchEnterNoMatchCloses(t *testing.T) {
 	}
 }
 
-// Enter suspends (parks) the search rather than exiting it: esc from the jumped-to
-// listing restores the overlay with the same query, rows, and cursor, and a second
-// Enter jumps again. This is the "open a result, go back to the result set, pick
-// another" file-picker flow, kept within the no-filenames-linger-after-browse rule.
+// Suspended search restores its query, rows, and cursor for another selection.
 func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -263,8 +242,7 @@ func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 		t.Fatalf("precondition: 'report' should match 2 files across dirs, got %d", len(m.browseSearchRows))
 	}
 
-	// Move onto the second match so the restored cursor is provably preserved (not 0),
-	// and capture its path without assuming a ranking order.
+	// Use the second result to prove cursor restoration without assuming rank.
 	m = update(t, m, press("down"))
 	wantCursor := m.browseSearchCursor
 	if wantCursor != 1 {
@@ -277,7 +255,6 @@ func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 	}
 	wantPath, wantDir := sel.Path, path.Dir(sel.Path)
 
-	// Enter suspends the search and jumps to the match's parent directory.
 	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd == nil {
@@ -298,7 +275,6 @@ func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 		t.Errorf("the cursor should land on the match, got %+v want %q", cur, wantPath)
 	}
 
-	// esc restores the parked search overlay with the same query, rows, and cursor.
 	m = update(t, m, press("esc"))
 	if !m.browseSearching || m.browseSearchSuspended {
 		t.Fatalf("esc should restore the search overlay: searching=%v suspended=%v", m.browseSearching, m.browseSearchSuspended)
@@ -313,9 +289,7 @@ func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 		t.Errorf("restored cursor = %d, want %d", m.browseSearchCursor, wantCursor)
 	}
 
-	// A second Enter from the restored search jumps again (the shown/live accept gate
-	// still matches). It may serve a cached dir synchronously, so accept either a
-	// command or no command; only the suspend transition is asserted.
+	// Cached directories may make the second jump synchronous.
 	next, cmd = m.Update(press("enter"))
 	m = next.(Model)
 	if cmd != nil {
@@ -328,9 +302,7 @@ func TestBrowseSearchSuspendedEscRestores(t *testing.T) {
 	}
 }
 
-// q is the escape hatch out of a parked search: unlike esc (which restores the
-// results), q leaves browse outright and clearBrowse wipes every search field, so no
-// filename lingers once the user leaves browse.
+// q leaves a parked search and clears every filename-bearing search field.
 func TestBrowseSearchSuspendedQuitLeavesBrowse(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -339,7 +311,7 @@ func TestBrowseSearchSuspendedQuitLeavesBrowse(t *testing.T) {
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "report")
 
-	next, cmd := m.Update(press("enter")) // suspend + navigate
+	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd != nil {
 		if msg, ok := cmd().(browseDirMsg); ok {
@@ -360,9 +332,7 @@ func TestBrowseSearchSuspendedQuitLeavesBrowse(t *testing.T) {
 	}
 }
 
-// While a search is parked the footer key bar advertises esc → results (and
-// still q → back, which leaves browse outright — the deliberate asymmetry),
-// not the open-input "esc cancel" — the back affordance tracks the modal state.
+// A parked-search footer distinguishes restoring results from leaving browse.
 func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -372,7 +342,7 @@ func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "report")
 
-	next, cmd := m.Update(press("enter")) // suspend + navigate
+	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd != nil {
 		if msg, ok := cmd().(browseDirMsg); ok {
@@ -395,23 +365,18 @@ func TestBrowseSearchSuspendedHeaderShowsResults(t *testing.T) {
 	}
 }
 
-// Restoring the search while the jumped-to directory listing is still in flight, then
-// cancelling, must not leave isBrowseLoading stuck true. Enter starts an async load of
-// the (unlisted) parent dir; esc restores the parked search and esc cancels it, both
-// before the listing returns; the stale browseDirMsg is then dropped on its old
-// generation. Without restoreBrowseSearch dropping the in-flight listing, isBrowseLoading
-// would never clear and navigation would be paused forever.
+// Restoring and cancelling search before a jump listing returns must clear
+// isBrowseLoading; otherwise dropping the stale result would freeze navigation.
 func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
-		bnode("/etc", "etc", true, 0), // a second top-level row so navigation can be proven
+		bnode("/etc", "etc", true, 0),
 		bnode("/home/report.txt", "report.txt", false, 10),
 	)))
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "report")
 
-	// Enter jumps to /home (never listed → a real async load). Capture the command but
-	// do NOT deliver its browseDirMsg, so the listing stays in flight.
+	// Hold the jump result to keep the directory listing in flight.
 	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd == nil {
@@ -420,9 +385,8 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 	if !m.isBrowseLoading {
 		t.Fatal("precondition: the jumped-to listing should be in flight (isBrowseLoading)")
 	}
-	stale := cmd().(browseDirMsg) // delivered last, after the generation has moved on
+	stale := cmd().(browseDirMsg)
 
-	// esc restores the parked search — and must drop the in-flight jump, clearing loading.
 	m = update(t, m, press("esc"))
 	if !m.browseSearching {
 		t.Fatal("first esc should restore the search overlay")
@@ -431,8 +395,7 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 		t.Error("restoring search must drop the in-flight jump listing and clear isBrowseLoading")
 	}
 
-	// esc again cancels the restored search; the stale listing then returns and is
-	// dropped on its old generation.
+	// Return the stale listing after cancelling the restored search.
 	m = update(t, m, press("esc"))
 	if m.browseSearching {
 		t.Fatal("second esc should cancel the restored search")
@@ -442,17 +405,14 @@ func TestBrowseSearchRestoreWhileLoadingClearsLoading(t *testing.T) {
 		t.Error("isBrowseLoading must stay cleared after the stale jump listing is dropped, not stuck true")
 	}
 
-	// Navigation is paused while isBrowseLoading; moving the cursor proves it is not frozen.
+	// Cursor movement proves navigation is no longer frozen.
 	m = update(t, m, press("j"))
 	if m.browseCursor != 1 {
 		t.Errorf("browse navigation should work after restore+cancel, cursor = %d want 1", m.browseCursor)
 	}
 }
 
-// Restoring the search while the jump listing is in flight, then typing a new query
-// (which supersedes that listing) and cancelling, must also not leave isBrowseLoading
-// stuck — the new search never sets loading, so only restoreBrowseSearch clearing it
-// keeps navigation alive.
+// Refiring search after restoring an in-flight jump must also clear browse loading.
 func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -463,28 +423,25 @@ func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
 	m = openSearch(t, m)
 	m = typeSearch(t, m, "report")
 
-	next, cmd := m.Update(press("enter")) // jump to /home → async load, loading=true
+	next, cmd := m.Update(press("enter"))
 	m = next.(Model)
 	if cmd == nil || !m.isBrowseLoading {
 		t.Fatal("precondition: enter should start an in-flight jump listing")
 	}
 	stale := cmd().(browseDirMsg)
 
-	m = update(t, m, press("esc")) // restore (drops the jump, clears loading)
+	m = update(t, m, press("esc"))
 	if !m.browseSearching || m.isBrowseLoading {
 		t.Fatalf("restore should reopen search and clear loading: searching=%v loading=%v", m.browseSearching, m.isBrowseLoading)
 	}
 
-	// Type a further character; the new search dispatches and its result lands.
-	m = typeSearch(t, m, "x") // "report" -> "reportx"
+	m = typeSearch(t, m, "x")
 	if m.isBrowseLoading {
 		t.Error("a refired search must not set isBrowseLoading")
 	}
 
-	// The original jump listing finally returns and is dropped (old generation).
 	m = update(t, m, stale)
 
-	// Cancel and confirm navigation works.
 	m = update(t, m, press("esc"))
 	if m.browseSearching {
 		t.Fatal("esc should cancel the restored search")
@@ -498,24 +455,20 @@ func TestBrowseSearchRestoreThenTypeClearsLoading(t *testing.T) {
 	}
 }
 
-// Enter pressed after editing the query but before the new scan returns must not
-// accept a row from the previous query. The visible rows are kept between
-// keystrokes (no per-edit flicker), so without a guard the stale row would stay
-// selectable in that window; Enter is gated on the query that produced the rows.
+// Enter cannot accept rows from the previous query while a new scan is pending.
 func TestBrowseSearchEnterDropsStaleRowAfterEdit(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
 		bnode("/home/report.txt", "report.txt", false, 10),
 	)))
 	m = openSearch(t, m)
-	m = typeSearch(t, m, "report") // settle: the visible row belongs to "report"
+	m = typeSearch(t, m, "report")
 	if len(m.browseSearchRows) != 1 || m.browseSearchShownQuery != "report" {
 		t.Fatalf("precondition: 'report' should be the shown query with one row, got shown=%q rows=%+v",
 			m.browseSearchShownQuery, m.browseSearchRows)
 	}
 
-	// Edit the query to "reportz" but do NOT deliver the new scan's result, so the
-	// visible row still belongs to "report" while the live query has moved on.
+	// Hold the new result so visible rows still belong to the previous query.
 	next, cmd := m.Update(press("z"))
 	m = next.(Model)
 	if cmd == nil {
@@ -525,8 +478,6 @@ func TestBrowseSearchEnterDropsStaleRowAfterEdit(t *testing.T) {
 		t.Fatalf("after edit: query=%q shown=%q, want reportz/report", m.browseSearchQuery, m.browseSearchShownQuery)
 	}
 
-	// Enter now, before the "reportz" result returns, must be a no-op: no navigation
-	// command, and the search stays open so the user can keep typing.
 	next, navCmd := m.Update(press("enter"))
 	m = next.(Model)
 	if navCmd != nil {
@@ -539,15 +490,12 @@ func TestBrowseSearchEnterDropsStaleRowAfterEdit(t *testing.T) {
 		t.Errorf("Enter must not change the listing, browseDir = %q want /", m.browseDir)
 	}
 
-	// Once the fresh "reportz" result (no match) arrives, the shown query catches up
-	// to the live query so Enter is live again.
 	m = update(t, m, cmd().(browseSearchMsg))
 	if m.browseSearchShownQuery != "reportz" {
 		t.Errorf("after the scan returns, shown query = %q, want reportz", m.browseSearchShownQuery)
 	}
 }
 
-// Backspace trims the query and refires the search, broadening the matches.
 func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -555,7 +503,7 @@ func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
 		bnode("/home/rep.md", "rep.md", false, 1),
 	)))
 	m = openSearch(t, m)
-	m = typeSearch(t, m, "repo") // 'o' narrows to report.txt only (rep.md has no 'o')
+	m = typeSearch(t, m, "repo")
 	if len(m.browseSearchRows) != 1 || m.browseSearchRows[0].Path != "/home/report.txt" {
 		t.Fatalf("precondition: 'repo' should match only report.txt, got %+v", m.browseSearchRows)
 	}
@@ -575,8 +523,7 @@ func TestBrowseSearchBackspaceTrimsAndRefires(t *testing.T) {
 	}
 }
 
-// Emptying the query (backspace to nothing) clears the results synchronously with
-// no command — there is nothing to scan — while keeping the search input open.
+// Empty queries clear synchronously without closing search or scanning storage.
 func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
 	a, store := browseAppWithStore(t,
 		bnode("/home", "home", true, 0),
@@ -590,13 +537,11 @@ func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
 	}
 	scansBefore := store.searchCalls()
 
-	next, cmd := m.Update(press("backspace")) // "a" -> ""
+	next, cmd := m.Update(press("backspace"))
 	m = next.(Model)
 	if cmd != nil {
 		t.Error("emptying the query must clear synchronously, with no command")
 	}
-	// The no-scan contract: an empty query supersedes and clears in place; it must
-	// never reach the store (no command above, and no extra Search call here).
 	if got := store.searchCalls(); got != scansBefore {
 		t.Errorf("emptying the query must not scan the store: %d scans, want %d", got, scansBefore)
 	}
@@ -611,9 +556,7 @@ func TestBrowseSearchEmptyQueryClearsSynchronously(t *testing.T) {
 	}
 }
 
-// A whitespace-only query renders the empty "type to search" state, so Enter must
-// behave exactly like an empty query: no selection → close the search and leave the
-// listing untouched, never a stale no-op left over from the accept gate.
+// Whitespace-only queries accept like empty queries rather than stale results.
 func TestBrowseSearchWhitespaceQueryEnterCloses(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -622,7 +565,7 @@ func TestBrowseSearchWhitespaceQueryEnterCloses(t *testing.T) {
 	dirBefore := m.browseDir
 	m = openSearch(t, m)
 
-	next, cmd := m.Update(press(" ")) // whitespace-only: clears synchronously, no scan
+	next, cmd := m.Update(press(" "))
 	m = next.(Model)
 	if cmd != nil {
 		t.Error("a whitespace-only query must clear synchronously, with no command")
@@ -644,10 +587,7 @@ func TestBrowseSearchWhitespaceQueryEnterCloses(t *testing.T) {
 	}
 }
 
-// While searching, the footer help reflects the search semantics — Enter opens the
-// selected match and esc cancels — rather than the filter's borrowed "apply"/"clear"
-// wording (esc exits search and restores the listing; it does not clear a query in
-// place).
+// Search help uses open/cancel rather than filter-specific apply/clear wording.
 func TestBrowseSearchFooterHelpWording(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
@@ -665,7 +605,6 @@ func TestBrowseSearchFooterHelpWording(t *testing.T) {
 	}
 }
 
-// ctrl+c is a hard quit from anywhere, including the search input.
 func TestBrowseSearchHardQuitQuits(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -684,10 +623,7 @@ func TestBrowseSearchHardQuitQuits(t *testing.T) {
 	}
 }
 
-// Keys that drive actions or navigation in normal browse (q quit/back, s shell, ?
-// help, h parent, l open, and the j/k Up/Down letters) are all literal query
-// characters while the search input is open — a fuzzy input must let text entry win
-// so common searches like json/java/kernel are typable.
+// Printable browse bindings remain literal text while search input is open.
 func TestBrowseSearchPrintableKeysAreLiteral(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/qsh", "qsh", true, 0),
@@ -711,9 +647,7 @@ func TestBrowseSearchPrintableKeysAreLiteral(t *testing.T) {
 	}
 }
 
-// Result navigation in search uses the arrows plus ctrl+k/ctrl+j (never plain
-// k/j, which stay literal text): each moves the result cursor without editing the
-// query, while a plain j/k edits the query and refires the live search.
+// Arrows and ctrl+j/ctrl+k navigate results while plain j/k edit the query.
 func TestBrowseSearchResultNavigationKeys(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -727,8 +661,6 @@ func TestBrowseSearchResultNavigationKeys(t *testing.T) {
 		t.Fatalf("precondition: 'job' should match 3 files, got %d", len(m.browseSearchRows))
 	}
 
-	// Arrows and ctrl+j/ctrl+k move the result cursor, emit no command, and never
-	// touch the query.
 	ctrl := func(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl} }
 	steps := []struct {
 		name    string
@@ -754,7 +686,6 @@ func TestBrowseSearchResultNavigationKeys(t *testing.T) {
 		}
 	}
 
-	// A plain k is NOT navigation: it is appended to the query and refires the search.
 	next, cmd := m.Update(press("k"))
 	m = next.(Model)
 	if cmd == nil {
@@ -765,8 +696,7 @@ func TestBrowseSearchResultNavigationKeys(t *testing.T) {
 	}
 }
 
-// clearBrowse zeroes every browseSearch* field: the search rows carry filenames,
-// which must not linger in the model once browse is left (non-negotiable #1).
+// clearBrowse removes filenames from every active or suspended search field.
 func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t,
 		bnode("/home", "home", true, 0),
@@ -777,8 +707,7 @@ func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
 	if len(m.browseSearchRows) == 0 || !m.browseSearching {
 		t.Fatal("precondition: search should be open with matches")
 	}
-	// Park the search (as Enter would) so clearBrowse is exercised against the one
-	// state where search data is meant to outlive the overlay — it must still be wiped.
+	// Exercise the suspended state where data may outlive the overlay but not browse.
 	m.browseSearchSuspended = true
 
 	c := m.clearBrowse()
@@ -792,7 +721,6 @@ func TestBrowseSearchClearBrowseWipesSearchState(t *testing.T) {
 	}
 }
 
-// browseSearchSummary reports each search state for the body summary line.
 func TestBrowseSearchSummaryStates(t *testing.T) {
 	m := newTestModel(t, browseApp(t))
 	m.browseSearching = true
@@ -819,9 +747,7 @@ func TestBrowseSearchSummaryStates(t *testing.T) {
 	}
 }
 
-// A broad query whose matches exceed the result cap returns the capped rows but the
-// true total, and the footer reports "showing N of Total" so a truncated result
-// never masquerades as complete.
+// Capped results retain the true total in the footer.
 func TestBrowseSearchFooterShowsCappedNote(t *testing.T) {
 	nodes := []model.BrowseNode{bnode("/home", "home", true, 0)}
 	for i := range browseSearchResultLimit + 5 {
@@ -846,8 +772,7 @@ func TestBrowseSearchFooterShowsCappedNote(t *testing.T) {
 	}
 }
 
-// A store search error is shown in the footer while the search stays open, and the
-// error never carries a filename (path-free invariant).
+// Store errors remain visible without exposing a filename.
 func TestBrowseSearchErrorVisibleAndPathFree(t *testing.T) {
 	a, store := browseAppWithStore(t,
 		bnode("/home", "home", true, 0),
@@ -857,9 +782,7 @@ func TestBrowseSearchErrorVisibleAndPathFree(t *testing.T) {
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = openSearch(t, m)
 	store.failSearches(errors.New("browse store unavailable"))
-	// Query "secret" against the file "topsecret.txt": the footer echoes the user's
-	// query ("/secret"), which is fine, but the filename ("topsecret") must never
-	// appear — a store error is path-free.
+	// The query may be echoed, but the matching filename must remain absent.
 	m = typeSearch(t, m, "secret")
 
 	if m.browseSearchErr == "" {
@@ -880,9 +803,7 @@ func TestBrowseSearchErrorVisibleAndPathFree(t *testing.T) {
 	}
 }
 
-// Search results render each match's full path (not just its bare name) under a
-// "Path" column header, and an overlong path is clipped to the table width rather
-// than wrapping.
+// Search rows show full paths and clip overlong paths without wrapping.
 func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 	full := "/home/deep/needle.txt"
 	m := openBrowse(t, newTestModel(t, browseApp(t,
@@ -897,14 +818,12 @@ func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 	if !strings.Contains(wide, full) {
 		t.Errorf("a search result should render its full path %q\n---\n%s", full, wide)
 	}
-	hdr := lineContaining(t, wide, "Size") // the table header row
+	hdr := lineContaining(t, wide, "Size")
 	if !strings.Contains(hdr, "Path") {
 		t.Errorf("the search list flex column should be labelled 'Path', got %q", hdr)
 	}
 
-	// Narrow terminal: the path is clipped (ellipsis) but keeps the basename —
-	// the part that identifies the match — and the row stays within the table
-	// width on a single line, never wrapped.
+	// Clipping preserves the basename that identifies the match.
 	m = update(t, m, tea.WindowSizeMsg{Width: 32, Height: 20})
 	narrow := stripANSI(m.View().Content)
 	tw := browseTableWidth(32)
@@ -917,9 +836,7 @@ func TestBrowseSearchRowsRenderFullPaths(t *testing.T) {
 	}
 }
 
-// The browse footer key bar advertises "q back" normally, but while the search
-// input is open q is literal text and esc cancels — so the bar must switch to
-// "esc cancel" rather than keep a contradictory affordance.
+// Search mode replaces the browse footer's q-back hint with esc-cancel.
 func TestBrowseSearchHeaderShowsCancelLabel(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
 	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -938,8 +855,6 @@ func TestBrowseSearchHeaderShowsCancelLabel(t *testing.T) {
 	}
 }
 
-// The browse footer advertises search and the help overlay documents it, so the
-// feature is discoverable from the browse view.
 func TestBrowseHelpDocumentsSearch(t *testing.T) {
 	m := openBrowse(t, newTestModel(t, browseApp(t, bnode("/home", "home", true, 0))))
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})

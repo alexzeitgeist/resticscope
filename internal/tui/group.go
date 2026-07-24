@@ -8,30 +8,21 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
-// group.go owns the list view's optional grouping by a configured repo label
-// key. When `global.group_by` is set, the list partitions repos into sections —
-// one per distinct label value, plus a final fallback section for repos
-// missing the key. Sort applies within each section so a cycle (e.g. urgency)
-// never breaks group boundaries; filter applies before grouping.
+// List grouping partitions filtered repositories by configured label values,
+// sorts within sections, and places missing labels in a fallback section.
 
-// groupingConfigured reports whether the config supplies at least one group_by
-// label key. The `g` cycle is a no-op when this is false.
+// groupingConfigured reports whether any grouping key is configured.
 func (m Model) groupingConfigured() bool {
 	return len(m.app.Cfg.Global.GroupBy) > 0
 }
 
-// groupingActive reports whether the list view should partition by a group_by
-// key right now. The transient m.groupIndex cycles via `g` (0 = flat view,
-// 1..N = the i-1'th configured key); it never persists.
+// groupingActive reports whether the transient selector names a configured key.
 func (m Model) groupingActive() bool {
 	keys := m.app.Cfg.Global.GroupBy
 	return m.groupIndex > 0 && m.groupIndex <= len(keys)
 }
 
-// activeGroupKey resolves the currently selected group key, or "" while the
-// cycle is on the flat-view state (or when groupIndex falls outside the
-// configured range, which should never happen but is clamped defensively so
-// callers can't see a config-OOB key).
+// activeGroupKey returns the selected key, or empty for flat and invalid selectors.
 func (m Model) activeGroupKey() string {
 	keys := m.app.Cfg.Global.GroupBy
 	if m.groupIndex <= 0 || m.groupIndex > len(keys) {
@@ -40,12 +31,8 @@ func (m Model) activeGroupKey() string {
 	return keys[m.groupIndex-1]
 }
 
-// groupedSections partitions filtered rows by their value for key. Sections
-// render in case-insensitive order on the group value with the fallback
-// section last; sortRows applies within each section so the in-group order
-// honors the active sort mode. An empty key value falls into the fallback
-// "(no <key>)" bucket, marked with noKey=true so callers can distinguish it
-// from a real label value that happens to match the same title.
+// groupedSections orders label sections case-insensitively, sorts within each,
+// and appends a structurally marked missing-label fallback.
 func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string, mode sortMode) []listSection {
 	byValue := make(map[string][]app.RepoStatus, len(rows))
 	var ungrouped []app.RepoStatus
@@ -66,10 +53,7 @@ func groupedSections(rows []app.RepoStatus, meta map[string]rowMeta, key string,
 		if li != lj {
 			return li < lj
 		}
-		// Byte-order tie-break for case-only collisions ("Prod" vs "prod").
-		// Without it the map iteration order leaks into the rendered order,
-		// and two displayList() calls in the same handler can disagree —
-		// breaking the canonical render-and-action invariant.
+		// Resolve case-only collisions so map iteration cannot change action order.
 		return values[i] < values[j]
 	})
 	out := make([]listSection, 0, len(values)+1)
@@ -93,9 +77,7 @@ const (
 	groupTokRow
 )
 
-// groupTok is one unrendered line of the flattened grouped-list stream. Row
-// tokens carry both their section-local row index and their flattened data index
-// so windowing can happen before lipgloss renders any discarded rows.
+// groupTok identifies an unrendered grouped-list line and its local and flat indices.
 type groupTok struct {
 	kind    groupTokKind
 	section int
@@ -103,9 +85,7 @@ type groupTok struct {
 	data    int
 }
 
-// buildGroupTokens flattens sections into a render-free token stream and
-// records each section heading's line index. Blank separators precede every
-// non-first section.
+// buildGroupTokens flattens sections and records heading positions.
 func buildGroupTokens(sections []listSection) ([]groupTok, []int) {
 	capLines := len(sections)
 	if len(sections) > 1 {
@@ -137,10 +117,7 @@ func (m Model) renderGroupToken(t groupTok, sections []listSection, cursor int, 
 		return ""
 	case groupTokHeading:
 		sec := sections[t.section]
-		// Fallback section renders in the dim/meta style so a real label value
-		// that happens to match the fallback title can't visually merge with
-		// it — the structural noKey flag, not the title string, carries the
-		// distinction.
+		// Style the structural fallback distinctly from an identical real label.
 		titleStyle := m.styles.heading
 		if sec.noKey {
 			titleStyle = m.styles.meta
@@ -155,12 +132,8 @@ func (m Model) renderGroupToken(t groupTok, sections []listSection, cursor int, 
 	}
 }
 
-// groupedWindow picks [start, end) into the flattened token stream so the
-// cursor is visible AND its section heading is anchored. Contiguous case
-// (cursor fits within max of the heading): window starts at the heading.
-// Non-contiguous case: returns prependHeading=true and a tail window of size
-// max-1 that never crosses into prior sections. See renderGroupedList for the
-// full user-visible contract.
+// groupedWindow keeps the cursor visible with its heading anchored. Deep rows
+// use a separate heading plus a tail window that never crosses into prior sections.
 func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading bool) {
 	if cursorPos < hPos+max {
 		start = hPos
@@ -174,32 +147,14 @@ func groupedWindow(cursorPos, hPos, max, n int) (start, end int, prependHeading 
 		start = hPos + 1
 	}
 	end = min(start+tailSize,
-		// No slide-back: once end clamps to n, a full tail window would
-		// move start backward to n-tailSize. We deliberately keep the
-		// centered start instead, accepting a smaller tail window near EOF.
+		// Preserve centering near EOF even when the tail becomes shorter.
 		n)
 	return start, end, prependHeading
 }
 
-// renderGroupedList paints the grouped sections, windowed to fit the rendered
-// line budget (m.listHeight minus the table header and the scroll-note row),
-// keeping the selected data row visible. Group headings and blank separators
-// between sections consume rendered lines too, so the budget is enforced over
-// the full output, not just data rows.
-//
-// When the whole grouped list fits the budget, sections render top-to-bottom
-// in their natural order — no anchoring needed because nothing is truncated.
-//
-// When the list must be windowed and two or more content lines fit, the
-// cursor's group heading is anchored as the first rendered line, never a
-// previous section's row or the blank separator above the heading. When the
-// cursor sits deep inside a large group and the heading can't appear
-// contiguously with the cursor's neighborhood, the heading is emitted alone
-// at the top and the tail window below shows rows around the cursor —
-// intermediate rows are dropped (the scroll note conveys the truncation).
-// When only one content line fits, the selected data row is rendered without
-// the heading. The scroll note reports data-row bounds, not section-fragment
-// indexes.
+// renderGroupedList windows all tokens, including headings and separators, while
+// keeping the selected row and its heading visible. A one-line window shows only
+// the selected row; scroll notes report data-row rather than token bounds.
 func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string {
 	cursor := clampCursor(m.cursor, len(d.rows))
 	tokens, headingPos := buildGroupTokens(d.sections)
@@ -225,13 +180,11 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 		}
 	}
 
-	// If only one content line fits, render the selected data row alone.
 	if max == 1 {
 		return m.renderGroupToken(tokens[cursorPos], d.sections, cursor, l, width) + "\n" + m.scrollNote(cursor, cursor+1, len(d.rows), width)
 	}
 
-	// Find the heading position for the cursor's section. The flattened row
-	// index maps to section i where cursor lies within rowsBefore..rowsBefore+len.
+	// Map the flat cursor to its section heading.
 	cursorSec, rowsBefore := 0, 0
 	for si, sec := range d.sections {
 		if cursor < rowsBefore+len(sec.rows) {
@@ -252,9 +205,7 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 		out = append(out, m.renderGroupToken(tokens[i], d.sections, cursor, l, width))
 	}
 
-	// Data-row bounds for the scroll note: scan the rendered window (start..end)
-	// for real data tokens. The non-contiguous heading prepended above is itself
-	// not a data row, so it doesn't affect the bounds.
+	// Derive scroll bounds from rendered data tokens, excluding headings.
 	dataStart, dataEnd := cursor, cursor+1
 	dataStartFound := false
 	for i := start; i < end; i++ {
@@ -272,8 +223,7 @@ func (m Model) renderGroupedList(d listDisplay, l listLayout, width int) string 
 	return strings.Join(out, "\n")
 }
 
-// scrollNote returns the "showing N–M of T" line for a window over a total of
-// data rows, or "" when the window covers everything.
+// scrollNote reports a partial data-row window.
 func (m Model) scrollNote(start, end, total, width int) string {
 	if start <= 0 && end >= total {
 		return ""

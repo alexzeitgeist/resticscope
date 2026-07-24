@@ -5,14 +5,8 @@ import (
 	"testing"
 )
 
-// TestMain isolates TMPDIR for the whole test binary so the temporary password
-// files and prompt-tag rcfiles/ZDOTDIRs that ShellSession and applyPromptTag
-// write land in a throwaway directory rather than the developer's real /tmp.
-// The session tests remove their own scaffolding on the happy path, but a failed
-// assertion (a t.Fatalf reached before Cleanup) would otherwise strand a 0600
-// resticscope-pw-* (plaintext restic password) or resticscope-bashrc-* file in
-// the shared /tmp. The isolated directory is removed when the binary exits
-// regardless of which tests pass.
+// TestMain isolates TMPDIR so failed shell tests cannot strand password or prompt
+// files in shared temporary storage on Unix. The directory is removed after the suite.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "resticscope-app-test-*")
 	if err != nil {

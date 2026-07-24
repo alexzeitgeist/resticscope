@@ -12,7 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Defaults applied when a setting is left at its zero value.
+// Default values apply when settings retain their zero values.
 const (
 	defaultParallelism           = 4
 	defaultCacheDir              = "~/.cache/resticscope"
@@ -23,20 +23,15 @@ const (
 	defaultResticCommandTimeout  = 2 * time.Minute
 	defaultShellPasswordMode     = "file"
 
-	// Long-running interactive streams. Browse indexing and snapshot diffing
-	// compare or walk large trees, so their defaults are intentionally more
-	// generous than the generic restic command timeout.
+	// Interactive tree operations get longer timeouts than routine restic commands.
 	defaultBrowseIndexTimeout = 10 * time.Minute
 	defaultBrowseMaxDiskBytes = 2 << 30
 	defaultDiffTimeout        = 10 * time.Minute
 
-	// Extract copies data out of a backup with a read-only restic invocation. A
-	// large tree can take minutes, so its timeout is likewise generous, and its
-	// output lands under target_root by default.
+	// Extraction allows time for large restores and writes under TargetRoot by default.
 	defaultExtractTimeout    = 30 * time.Minute
 	defaultExtractTargetRoot = "~/resticscope-extracts"
-	// Restored symlinks that point outside the tree are kept verbatim (+ warn) by
-	// default, matching restic and the wider restore ecosystem.
+	// Preserve escaping symlinks with a warning by default, matching restic behavior.
 	defaultUnsafeSymlinks = UnsafeSymlinksKeep
 )
 
@@ -62,16 +57,10 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Decode parses TOML into a Config. Value-normalization defaults live in
-// Normalize, not here, with two deliberate exceptions seeded pre-decode:
-// refresh_on_open (a plain bool cannot tell an absent key from an explicit
-// `false` afterward, so its default-true must precede decoding) and the browse
-// index settings. The browse settings are seeded here for the same reason in
-// reverse: seeding index_timeout before decode lets an explicit `0` overwrite
-// the default and survive into validation as a rejected value, while an omitted
-// key keeps the default. max_disk_bytes = "0" remains an accepted explicit
-// opt-in to unlimited growth. It rejects unknown keys so typos in config surface
-// as errors rather than being silently ignored.
+// Decode parses TOML and rejects unknown keys. It seeds default-true booleans
+// and positive timeouts before decoding so explicit false or zero values survive
+// for validation; Normalize applies other defaults. An explicit zero
+// MaxDiskBytes remains unlimited.
 func Decode(data []byte) (*Config, error) {
 	cfg := Config{
 		Global: Global{RefreshOnOpen: true},
@@ -84,24 +73,14 @@ func Decode(data []byte) (*Config, error) {
 			TargetRoot:     defaultExtractTargetRoot,
 			ExtractTimeout: Duration(defaultExtractTimeout),
 			UnsafeSymlinks: defaultUnsafeSymlinks,
-			// Default-true bool, seeded pre-decode like refresh_on_open.
 			RememberTarget: true,
 		},
-		// Background, like refresh_on_open, is a default-true bool and must be
-		// seeded before the decode so an explicit `background = false` stays
-		// distinguishable. Name is seeded here too (not in Normalize) so an
-		// explicit `name = ""` overwrites the default, survives to validation,
-		// and is rejected there with the list of themes, while an omitted key
-		// keeps the default — the browse index_timeout pattern.
+		// Seed Theme so explicit false or empty values survive to validation.
 		Theme: Theme{Name: theme.DefaultName, Background: true},
 	}
-	// Repos and profiles are TOML maps (`[repos.<name>]`, `[profiles.<name>]`),
-	// but the rest of the program wants repos as a file-ordered slice and never
-	// needs the profiles after resolution. Decode both into a local wrapper so
-	// each Repo's fields are still decoded straight from their struct tags (no
-	// hand-written field dispatch), then assemble the ordered, profile-merged
-	// slice. The embedded Config keeps every other section — and the defaults
-	// seeded above — decoding exactly as before.
+	// Decode repos and profiles into maps, then assemble a file-ordered,
+	// profile-resolved slice. Embedded Config preserves struct-tag decoding and
+	// seeded defaults.
 	doc := struct {
 		Config
 		Repos    map[string]Repo `toml:"repos"`
@@ -128,7 +107,10 @@ func Decode(data []byte) (*Config, error) {
 }
 
 // Normalize fills in defaults and expands ~ in paths against home. It is split
-// from Load so tests can exercise it with an explicit home directory.
+// from Load so tests can exercise it with an explicit home directory. Settings
+// whose zero value is meaningful are seeded in Decode instead, so an explicit
+// timeout `0` or `name = ""` stays distinguishable from an omitted key and
+// reaches validation.
 func (c *Config) Normalize(home string) {
 	g := &c.Global
 	if g.Parallelism <= 0 {
@@ -155,15 +137,10 @@ func (c *Config) Normalize(home string) {
 	if g.ResticCommandTimeout == 0 {
 		g.ResticCommandTimeout = Duration(defaultResticCommandTimeout)
 	}
-	// Make the omitted-vs-explicit-empty shape uniform: both become a non-nil
-	// empty slice so runtime code only needs to test len.
+	// Normalize omitted GroupBy to a non-nil empty slice for runtime callers.
 	if g.GroupBy == nil {
 		g.GroupBy = []string{}
 	}
-
-	// Browse/diff stream settings and the theme are seeded with their defaults
-	// in Decode (not here) so an explicit timeout `0` / `name = ""` is
-	// distinguishable from an omitted key and reaches validation.
 
 	g.CacheDir = expandPath(g.CacheDir, home)
 	if g.LogFile == "" {
@@ -172,21 +149,14 @@ func (c *Config) Normalize(home string) {
 		g.LogFile = expandPath(g.LogFile, home)
 	}
 
-	// Extract output base and timeout are both seeded in Decode (not here) so an
-	// explicit empty `target_root` / explicit-zero `extract_timeout` is
-	// distinguishable from an omitted key: it overwrites the seed, survives to
-	// validation, and is rejected there rather than silently defaulted. Here we
-	// only expand ~, mirroring CacheDir.
+	// Decode seeds Extract defaults; Normalize only expands its target path.
 	c.Extract.TargetRoot = expandPath(c.Extract.TargetRoot, home)
 
 	for i := range c.Repos {
 		r := &c.Repos[i]
-		// A bare-path url may use ~ like every other configured path; restic
-		// scheme urls pass through expandPath untouched (no leading ~).
+		// Expand a leading ~ only for bare-path URLs; scheme URLs pass through.
 		r.URL = expandPath(r.URL, home)
-		// bucket_lookup is s3-shorthand sugar, so it is seeded only for that
-		// form: a url repo with an explicit bucket_lookup must survive to
-		// validation and be rejected as a mixed form.
+		// Default bucket lookup only for S3 shorthand so URL forms can reject it.
 		if r.URL == "" && r.BucketLookup == "" {
 			r.BucketLookup = "auto"
 		}

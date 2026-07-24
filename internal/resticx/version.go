@@ -7,20 +7,14 @@ import (
 	"strings"
 )
 
-// MinVersion is the oldest restic resticscope supports. 0.17.0 is where restic
-// introduced the stable exit codes this package classifies (10 repository does
-// not exist, 11 failed to lock, 12 wrong password) and the consistent --json
-// output the parsers depend on. Refusing to run against anything older is
-// safer than misreading its output (plan §9, §12; recommendation 6).
+// MinVersion is the oldest supported restic release. Version 0.17.0 introduced
+// exit codes 10 and 11; its JSON output is this package's compatibility baseline.
 const MinVersion = "0.17.0"
 
-// version is a parsed restic version, compared field by field.
 type version struct{ major, minor, patch int }
 
-// AtLeastMinVersion reports whether a restic version string (e.g. "0.18.1", as
-// returned by Client.Version) is at least MinVersion. A string it cannot parse
-// is returned as an error rather than a silent pass: an unknown restic is
-// treated as unsupported, not assumed new enough.
+// AtLeastMinVersion reports whether s is at least MinVersion. Malformed versions
+// return an error rather than being assumed supported.
 func AtLeastMinVersion(s string) (bool, error) {
 	got, err := parseVersion(s)
 	if err != nil {
@@ -34,9 +28,8 @@ func AtLeastMinVersion(s string) (bool, error) {
 	return !got.less(min), nil
 }
 
-// parseVersion parses a restic version like "0.18.1" or "0.18.1-dev" into its
-// numeric components. A pre-release/build suffix introduced by '-' or '+' is
-// ignored; an absent minor or patch defaults to 0.
+// parseVersion ignores pre-release and build suffixes; absent minor or patch
+// components default to zero.
 func parseVersion(s string) (version, error) {
 	core := strings.TrimSpace(s)
 	if i := strings.IndexAny(core, "-+"); i >= 0 {

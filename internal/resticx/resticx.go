@@ -1,11 +1,7 @@
-// Package resticx is the single boundary that knows how to execute restic.
-//
-// Nothing else in resticscope shells out to restic. The package wraps restic as
-// a hostile external boundary (engineering rules, Rule 5): it builds the
-// command environment, passes the repository password out-of-band (i.e. never on argv), parses the
-// --json output defensively, and classifies restic's exit codes into typed
-// errors. It imports model only; config/secrets coordinates are passed in as
-// plain structs so the layering stays clean.
+// Package resticx executes restic as the application's external-process boundary.
+// It constructs restricted environments, transports repository passwords outside
+// argv, parses JSON defensively, and classifies exit failures. Repository and
+// credential coordinates enter as plain structs to preserve package layering.
 package resticx
 
 import (
@@ -25,11 +21,8 @@ import (
 
 const defaultTimeout = 2 * time.Minute
 
-// Target is the restic-facing coordinates of one repository, assembled by the
-// caller from a config repo. It is backend-agnostic: Repo is the repository
-// string restic itself understands (any backend), Options are the repo's
-// restic -o backend options, and Env is its non-secret backend environment.
-// Secret env vars ride in Creds, never here.
+// Target contains backend-agnostic restic repository coordinates. Env contains
+// only non-secret values; secret environment values belong in Creds.
 type Target struct {
 	Name    string            // repo name; used for the per-repo restic cache subdir
 	Repo    string            // RESTIC_REPOSITORY, e.g. "s3:https://host/bucket" or "sftp:user@host:/srv/repo"
@@ -37,38 +30,27 @@ type Target struct {
 	Env     map[string]string // non-secret backend env vars (e.g. AWS_DEFAULT_REGION)
 }
 
-// Creds are the resolved secret values for a Target: the credential's backend
-// env vars (AWS_*, B2_*, AZURE_*, ... — nil for backends that need none) plus
-// the repository password, which is passed to restic out-of-band (a pipe on
-// fd 3), never on the command line.
+// Creds contains resolved backend environment secrets and the repository
+// password. The password is delivered out of band on fd 3, never on argv.
 type Creds struct {
 	Env            map[string]string
 	ResticPassword string
 }
 
-// Runner executes a single restic invocation. The production implementation
-// (ExecRunner) passes password via fd 3; tests inject a fake. It returns stdout
-// and stderr separately so callers can parse one and redact the other.
+// Runner executes one restic invocation and separates parseable stdout from
+// redactable stderr.
 type Runner interface {
 	Run(ctx context.Context, env []string, password string, args ...string) (stdout, stderr []byte, err error)
 }
 
-// StreamRunner executes a restic invocation whose stdout is consumed as a
-// stream rather than buffered whole. onStdout is called on the runner's calling
-// goroutine with a reader over restic's stdout; the runner returns once onStdout
-// returns and the process exits. It uses the same out-of-band password delivery
-// as Runner. It is a separate seam from Runner so the buffered path is untouched
-// and the streaming caps/cancellation are testable without a real restic.
+// StreamRunner executes restic with streaming stdout. onStdout runs on the
+// caller's goroutine, and RunStream returns after the callback and process exit.
 type StreamRunner interface {
 	RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error)
 }
 
-// PatternStreamRunner is the optional streaming capability for invocations
-// that also deliver a pattern-file payload out-of-band on fd 4 (the argv
-// references it as /dev/fd/4) — the multi-include restore shape. The
-// production ExecRunner implements it; ExtractTree type-asserts for it only
-// when a run actually carries a pattern file, so fakes and runners for the
-// other streams can stay plain StreamRunners.
+// PatternStreamRunner optionally supplies a pattern-file payload on fd 4.
+// ExtractTree requires it only for multi-include restores.
 type PatternStreamRunner interface {
 	StreamRunner
 	RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error)
@@ -83,15 +65,12 @@ type Client struct {
 	Redact   func(string) string // optional; scrubs stderr before it enters an error
 }
 
-// ErrNoRunner is returned by buffered methods when a Client has no Runner
-// wired. Production wires Runner explicitly, so it signals a miswire.
+// ErrNoRunner indicates that a buffered call has no configured Runner.
 var ErrNoRunner = errors.New("resticx: no runner configured (set Client.Runner)")
 
 // Snapshots lists the repository's snapshots.
 func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.Snapshot, error) {
-	// snapshots is read-only. Running it lockless keeps resticscope usable for
-	// repositories that can still be read but reject lock writes, for example a
-	// provider-side write hold.
+	// Lockless reads support repositories that reject lock writes.
 	out, err := c.runOp(ctx, t, creds, "snapshots", "--no-lock", "snapshots", "--json")
 	if err != nil {
 		return nil, err
@@ -103,13 +82,9 @@ func (c *Client) Snapshots(ctx context.Context, t Target, creds Creds) ([]model.
 	return snaps, nil
 }
 
-// CatConfig reaches the repository by reading and decrypting its config file
-// (`restic cat config`). It is the cheapest end-to-end probe: it exercises the
-// backend credentials, confirms the repository exists (exit 10 otherwise), and
-// verifies the password decrypts it (exit 12 otherwise) — all without taking a
-// lock. It returns a classified *Error on failure and nil when the repo is
-// reachable; the decrypted config (stdout) is intentionally discarded, as it
-// is not secret-free and `check` needs only the reachability verdict.
+// CatConfig probes repository access by decrypting its config without a lock. It
+// returns classified backend, repository, and password failures and discards the
+// decrypted repository metadata rather than treating it as secret-free.
 func (c *Client) CatConfig(ctx context.Context, t Target, creds Creds) error {
 	_, err := c.runOp(ctx, t, creds, "cat", "--no-lock", "cat", "config")
 	return err
@@ -135,6 +110,8 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// runOp executes a buffered operation with the client's timeout, backend options,
+// and restricted environment. It classifies process failures before returning.
 func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, args ...string) ([]byte, error) {
 	if c.Runner == nil {
 		return nil, ErrNoRunner
@@ -152,10 +129,7 @@ func (c *Client) runOp(ctx context.Context, t Target, creds Creds, op string, ar
 	return stdout, nil
 }
 
-// prependBackendOpts returns args with the target's backend -o options
-// prepended, in sorted key order so argv is deterministic. The single assembly
-// point for every driver (runOp and the browse/diff/restore streams), so a new
-// backend option means one config entry, not code.
+// prependBackendOpts adds backend options in deterministic key order.
 func prependBackendOpts(t Target, args ...string) []string {
 	full := make([]string, 0, len(args)+2*len(t.Options))
 	for _, k := range sortedKeys(t.Options) {
@@ -171,9 +145,8 @@ func (c *Client) timeout() time.Duration {
 	return defaultTimeout
 }
 
-// buildEnv constructs restic's environment from a known base. The repository
-// password is NOT placed here; it is delivered via fd 3 and referenced by
-// RESTIC_PASSWORD_FILE (engineering rules, Rule 9; plan §7).
+// buildEnv constructs a restricted restic environment that references the fd-3
+// password without containing it.
 func (c *Client) buildEnv(t Target, creds Creds) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -185,16 +158,11 @@ func (c *Client) buildEnv(t Target, creds Creds) []string {
 	return append(env, BackendEnviron(t, creds)...)
 }
 
-// BackendEnviron flattens the target's and credential's backend env maps into
-// sorted KEY=value entries — Target.Env (non-secret, from config) merged with
-// Creds.Env (secret), the secret value winning a key collision. It is exported
-// so the repo shell-out (internal/app) exports the identical environment.
-//
-// Reserved and invalid names are dropped here, not just rejected at
-// config/secrets validation: this assembly also runs inside the privileged
-// extract helper on a payload that crossed a process boundary, and the helper
-// runs restic as root, so the chokepoint enforces the model policy itself
-// (RESTIC_*/PATH/HOME ownership, no LD_PRELOAD-style injection).
+// BackendEnviron returns sorted backend KEY=value entries, with Creds.Env taking
+// precedence over Target.Env; repository shells use the same environment. It
+// rejects invalid names and the explicit reserved set at this privileged-process
+// boundary: PATH, HOME, restic repository/password/cache selectors, and LD_/DYLD_
+// loader variables.
 func BackendEnviron(t Target, creds Creds) []string {
 	if len(t.Env) == 0 && len(creds.Env) == 0 {
 		return nil
@@ -215,8 +183,7 @@ func BackendEnviron(t Target, creds Creds) []string {
 	return env
 }
 
-// sortedKeys returns m's keys sorted, so env and argv assembly stay
-// deterministic across runs (maps iterate in random order).
+// sortedKeys returns deterministic map keys.
 func sortedKeys(m map[string]string) []string {
 	return slices.Sorted(maps.Keys(m))
 }
@@ -229,10 +196,8 @@ func (c *Client) repoCacheDir(t Target) string {
 	return RepoCacheDir(c.CacheDir, t.Name)
 }
 
-// RepoCacheDir returns the RESTIC_CACHE_DIR for one repo — the per-repo
-// subdirectory under CacheRoot that holds its restic cache — or "" when no
-// cache dir is configured. It is the single source of truth for the path the
-// refresh runner sets and the built-in shell exports, so both warm one cache.
+// RepoCacheDir returns a repository's cache directory, or "" when caching is
+// disabled. Refresh and shell processes share this path.
 func RepoCacheDir(cacheDir, repoName string) string {
 	root := CacheRoot(cacheDir)
 	if root == "" {
@@ -241,11 +206,8 @@ func RepoCacheDir(cacheDir, repoName string) string {
 	return filepath.Join(root, RepoCacheName(repoName))
 }
 
-// CacheRoot returns the directory under which resticscope keeps restic's own
-// per-repo caches (RESTIC_CACHE_DIR for each repo is a subdirectory named by
-// RepoCacheName). It returns "" when cacheDir is empty. This is the layout
-// `resticscope cache prune` scans, so the path lives here, with the runner that
-// sets RESTIC_CACHE_DIR, as the single source of truth.
+// CacheRoot returns the parent of per-repository restic caches, or "" when
+// caching is disabled. The cache-prune command scans this layout.
 func CacheRoot(cacheDir string) string {
 	if cacheDir == "" {
 		return ""
@@ -253,9 +215,8 @@ func CacheRoot(cacheDir string) string {
 	return filepath.Join(cacheDir, "restic-cache")
 }
 
-// RepoCacheName returns the single path element under CacheRoot that holds a
-// repo's restic cache. It matches the directory restic actually writes to under
-// ExecRunner, so prune can map configured repos to their caches on disk.
+// RepoCacheName returns the sanitized path element shared by restic and cache
+// pruning for one repository.
 func RepoCacheName(repoName string) string { return sanitize(repoName) }
 
 // sanitize makes a repo name safe to use as a single path element.

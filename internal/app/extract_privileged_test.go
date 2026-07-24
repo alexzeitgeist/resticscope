@@ -1,11 +1,7 @@
 package app
 
-// extract_privileged_test.go covers the parent (non-root) side of a privileged
-// extract: routing through App.Extract, the stdin payload contract, replaying
-// the helper's NDJSON events into result/onProgress, and reconstructing the
-// sentinel errors across the process boundary. The runner is faked — the real
-// sudo launch is exercised by the manual test note in
-// docs/extract-privileged.md.
+// These tests cover parent-side payloads, event replay, and sentinel reconstruction
+// with a fake runner.
 
 import (
 	"context"
@@ -85,8 +81,7 @@ func TestExtractPrivilegedHappyPath(t *testing.T) {
 		t.Errorf("privileged extract persisted cache state: %v", fc.saved)
 	}
 
-	// The payload must carry the resolved creds, the wire version, and an
-	// explicit absolute target root.
+	// The payload carries resolved credentials and complete helper configuration.
 	var payload helperPayload
 	if err := json.Unmarshal(runner.payloads[0], &payload); err != nil {
 		t.Fatalf("payload: %v", err)
@@ -157,7 +152,6 @@ func TestExtractPrivilegedRunnerFailureWithoutEvents(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "helper") {
 		t.Fatalf("err = %v, want a helper failure", err)
 	}
-	// No staging dir exists (the helper never ran), so none may be reported.
 	if res.StagingCreated {
 		t.Errorf("StagingCreated = true with no staging on disk")
 	}
@@ -177,10 +171,8 @@ func TestExtractPrivilegedValidatesBeforeLaunch(t *testing.T) {
 	}
 }
 
-// TestHelperWireSentinelRoundTrip drives every classifiable pipeline error
-// through the full wire contract — helperErrCode on the helper side, then
-// helperSentinelError on the parent side — and asserts both the errors.Is
-// identity and any cause detail survive the process boundary.
+// TestHelperWireSentinelRoundTrip checks errors.Is identity and detail across
+// both helper and parent wire mappings.
 func TestHelperWireSentinelRoundTrip(t *testing.T) {
 	tests := []struct {
 		name   string

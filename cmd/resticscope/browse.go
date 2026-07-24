@@ -14,10 +14,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// browseStore adapts *browsedb.DB to app.BrowseStore. It bridges BeginIndex's
-// concrete *browsedb.IndexTx to the app.IndexWriter seam and, on Close, tears down
-// the whole session — pool, advisory lock, and the encrypted session directory —
-// so a clean exit leaves nothing on disk.
+// browseStore adapts *browsedb.DB to app.BrowseStore and removes the encrypted
+// session's pool, advisory lock, and on-disk state when closed.
 type browseStore struct {
 	db   *browsedb.DB
 	lock *browsedb.SessionLock
@@ -48,11 +46,8 @@ func (s *browseStore) Search(ctx context.Context, repo, snapshot, query string, 
 	return s.db.Search(ctx, repo, snapshot, query, limit)
 }
 
-// Close closes the DB pool, releases the session lock, and removes the entire
-// session directory. This wrapper owns whole-directory cleanup, so db.Close only
-// closes the pool; RemoveAll is authoritative for whether encrypted browse files
-// actually survived. The RemoveAll error is reduced to a path-free form via the
-// shared browsedb.PathFreeFSError so a failure never surfaces the session path.
+// Close releases all session resources and removes the session directory.
+// Filesystem errors are stripped of the session path.
 func (s *browseStore) Close() error {
 	dbErr := s.db.Close()
 	lockErr := s.lock.Close()
@@ -60,13 +55,10 @@ func (s *browseStore) Close() error {
 	return errors.Join(dbErr, lockErr, rmErr)
 }
 
-// newBrowseOpen returns the lazy-open closure for the session-scoped encrypted
-// browse store. It runs at most once per app run, on the first browse: it mints a
-// random 32-byte in-memory key, creates a fresh 0700 session directory under the
-// cache dir keyed by a random token (not the PID, to avoid reuse ambiguity),
-// takes the advisory session lock, and opens the encrypted DB. On any failure it
-// removes whatever it created so a broken open never orphans a session directory,
-// and the surfaced error is path-free.
+// newBrowseOpen returns the lazy opener for the session-scoped encrypted store.
+// BrowseSession invokes it on first browse and retries after failed opens.
+// Failures after directory creation trigger best-effort cleanup; direct filesystem
+// errors are path-free.
 func newBrowseOpen(cacheDir string, maxDiskBytes int64) func(context.Context) (app.BrowseStore, error) {
 	return func(ctx context.Context) (app.BrowseStore, error) {
 		if err := ctx.Err(); err != nil {

@@ -5,12 +5,10 @@ import (
 	"strings"
 )
 
-// redactionMask replaces any secret value found in scrubbed text.
 const redactionMask = "[REDACTED]"
 
-// Redactor replaces known secret values with a mask. Build it from a Store
-// (Store.Redactor) or from explicit values (NewRedactor), then run any text
-// that might contain a secret through Redact before logging or returning it.
+// Redactor masks known secret values before text is logged or returned. Construct
+// one from Store.Redactor or NewRedactor.
 type Redactor struct {
 	replacer *strings.Replacer
 }

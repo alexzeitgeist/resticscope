@@ -7,24 +7,10 @@ import (
 	"unicode/utf8"
 )
 
-// fuzzy.go is the pure, credential-free scorer behind the snapshot browser's
-// global filename search. It lives in the leaf model package so both the store
-// (browsedb.Search, which ranks its SQL-prefiltered rows) and the TUI can share
-// one ordering and never drift. It holds filenames only as in/out arguments —
-// nothing here persists, logs, or returns a path on its own.
-//
-// The match is fzf-style: a query matches a candidate when the query's runes
-// appear in order (a case-folded subsequence), not necessarily adjacent. Among
-// matches, a small bonus model rewards the matches that read as "more relevant"
-// to a human — contiguous runs, hits at the start of a name or after a word
-// separator, and exact-case hits — while a per-rune length penalty lets a
-// shorter name win an otherwise-equal contest.
+// Filename search uses a shared case-folded subsequence scorer so browsedb and
+// the TUI apply the same ordering.
 
-// Fuzzy scoring weights. They are deliberately coarse: the goal is a stable,
-// explainable ordering (start-of-name beats mid-name, contiguous beats
-// scattered, exact-case and shorter break near-ties), not a finely tuned metric.
-// The length penalty is subtracted once per candidate rune so a shorter name
-// outscores a longer one that matched the same way.
+// Coarse weights favor starts, contiguous runs, exact case, and shorter names.
 const (
 	fuzzyMatchBonus      = 16 // each matched rune
 	fuzzyContiguityBonus = 8  // matched rune immediately follows the previous match
@@ -34,43 +20,29 @@ const (
 	fuzzyLengthPenalty   = 1  // subtracted per candidate rune (shorter wins ties)
 )
 
-// BrowseSearchResult is the outcome of a global filename search: the best Rows
-// (already ranked and capped to the caller's limit) plus Total, the count of
-// every node that matched before the cap. Total > len(Rows) tells the UI to show
-// "showing N of Total" so a truncated result never masquerades as complete.
+// BrowseSearchResult contains ranked, capped rows and the number of matches
+// before the cap.
 type BrowseSearchResult struct {
 	Rows  []BrowseEntry
 	Total int
 }
 
-// FuzzyMatch is the result of scoring one candidate against a query: its
-// relevance Score and the matched rune Positions (indices into the candidate's
-// runes, ascending). Positions support a later match highlight; v1 may ignore
-// them, but they are part of the scorer's contract and are unit-tested.
+// FuzzyMatch contains a relevance score and ascending matched-rune positions.
 type FuzzyMatch struct {
 	Score     int
 	Positions []int
 }
 
-// FuzzyRank pairs a matched entry with its score. It is the unit the shared
-// comparator orders, so the store's bounded top-N accumulator and the pure
-// RankFuzzy used in tests apply byte-identical ordering.
+// FuzzyRank pairs a browser entry with its fuzzy match for shared ordering.
 type FuzzyRank struct {
 	Entry BrowseEntry
 	Match FuzzyMatch
 }
 
-// FuzzyScore reports whether query is a case-folded subsequence of candidate
-// and, when it is, returns the match's score and matched rune positions. ok is
-// false when any query rune cannot be consumed in order. An empty query never
-// matches: there is nothing to rank and an "everything matches" answer would be
-// useless for search (the whitespace-only case is screened earlier, by RankFuzzy
-// and browsedb.Search, so a query that is only spaces never reaches scoring; a
-// query with non-space runes treats its spaces as literal subsequence chars).
-//
-// Matching folds case per rune with unicode.ToLower, the same fold strings.ToLower
-// applies when building name_ci, so the in-Go score agrees with the SQL LIKE
-// prefilter and cannot reject a row the prefilter accepted.
+// FuzzyScore reports whether query is a case-folded rune subsequence of
+// candidate and returns its score and matched positions. Empty queries do not
+// match; spaces in nonblank queries are literal. Per-rune unicode.ToLower
+// folding matches the browser index's case-folded SQL prefilter.
 func FuzzyScore(candidate, query string) (FuzzyMatch, bool) {
 	if len(query) == 0 {
 		return FuzzyMatch{}, false
@@ -115,9 +87,7 @@ func FuzzyScore(candidate, query string) (FuzzyMatch, bool) {
 	return FuzzyMatch{Score: score, Positions: positions}, true
 }
 
-// isWordBoundary reports whether r is a separator that makes the following rune
-// read as the start of a new word — the path, extension, and word delimiters a
-// filename uses. A match right after one of these earns the boundary bonus.
+// isWordBoundary reports whether r separates words in a filename.
 func isWordBoundary(r rune) bool {
 	switch r {
 	case '/', '.', '-', '_', ' ':
@@ -126,12 +96,8 @@ func isWordBoundary(r rune) bool {
 	return false
 }
 
-// BetterFuzzy reports whether a should rank before b. The primary key is score
-// (higher first); ties break by name length in runes (shorter first) then by
-// Path (lexicographically smaller first). The two tie-breakers make the order
-// total and deterministic, so equal-scoring matches never shuffle between runs
-// or between the store's accumulator and a pure RankFuzzy. It is exported so
-// browsedb.Search's bounded top-N uses the very same predicate.
+// BetterFuzzy reports whether a ranks before b by score, rune length, then path.
+// The tie-breakers provide deterministic ordering across ranking implementations.
 func BetterFuzzy(a, b FuzzyRank) bool {
 	if a.Match.Score != b.Match.Score {
 		return a.Match.Score > b.Match.Score
@@ -144,11 +110,8 @@ func BetterFuzzy(a, b FuzzyRank) bool {
 	return a.Entry.Path < b.Entry.Path
 }
 
-// RankFuzzy scores every entry against query, drops the non-matches, orders the
-// rest by BetterFuzzy, and returns at most limit entries (all matches when
-// limit <= 0). A blank or whitespace-only query returns nil — search has nothing
-// to rank. This is the pure reference ranking; browsedb.Search reproduces the
-// same ordering incrementally over its SQL-prefiltered rows.
+// RankFuzzy returns matching entries in fuzzy order, capped when limit is
+// positive. A blank query returns nil.
 func RankFuzzy(entries []BrowseEntry, query string, limit int) []BrowseEntry {
 	if strings.TrimSpace(query) == "" {
 		return nil

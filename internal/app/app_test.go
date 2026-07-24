@@ -16,8 +16,6 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/secrets"
 )
 
-// --- fakes ---
-
 type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
@@ -93,9 +91,7 @@ type fakeRestic struct {
 	extractBlock      bool                       // block on ctx.Done and return ctx.Err() (cancel/timeout tests)
 }
 
-// extractCapture records the arguments ExtractTree was called with. It is a
-// pointer field so the value-receiver fake can still record through it; the mutex
-// guards it under concurrency.
+// extractCapture records ExtractTree calls through a concurrency-safe pointer.
 type extractCapture struct {
 	mu         sync.Mutex
 	treeCalls  int
@@ -111,8 +107,7 @@ type diffCapture struct {
 	timeout time.Duration
 }
 
-// findCapture records FindMatches' arguments. It is a pointer so the
-// value-receiver fakeRestic can still record through it, matching browseCapture.
+// findCapture records FindMatches calls through the value-receiver fake.
 type findCapture struct {
 	mu      sync.Mutex
 	calls   int
@@ -120,10 +115,8 @@ type findCapture struct {
 	pattern string
 }
 
-// browseCapture records StreamSnapshotTree's arguments. It is a pointer field so
-// the value-receiver fake (kept a value to satisfy the interface as the existing
-// tests pass it by value) can still record through it; the mutex guards it when
-// two goroutines share one fake in the serialization test.
+// browseCapture records StreamSnapshotTree calls through the value-receiver
+// fake and guards concurrent access during serialization tests.
 type browseCapture struct {
 	mu      sync.Mutex
 	snapID  string
@@ -196,8 +189,7 @@ func (f fakeRestic) ExtractTree(ctx context.Context, t resticx.Target, c resticx
 	if f.extractTreeErr != nil {
 		return f.extractTreeErr
 	}
-	// A live run hands resticscope a populated staging dir; the fake builds one so
-	// the metadata normalizer and rename have something to act on.
+	// Populate staging so metadata normalization and rename exercise real files.
 	if f.extractTreeSetup != nil {
 		if err := f.extractTreeSetup(params.Target); err != nil {
 			return err
@@ -217,8 +209,7 @@ func (f fakeRestic) StreamSnapshotTree(ctx context.Context, t resticx.Target, c 
 	n := 0
 	for _, node := range f.browseNodes {
 		if err := onNode(node); err != nil {
-			// Mirror resticx: a callback (store/disk-limit/cancel) error is surfaced
-			// verbatim so the app can classify it, not as a restic failure.
+			// Match resticx by returning callback errors verbatim for classification.
 			return model.BrowseScanSummary{Entries: n}, err
 		}
 		n++
@@ -266,15 +257,10 @@ func (blockingBrowseRestic) ExtractTree(ctx context.Context, t resticx.Target, c
 	return ctx.Err()
 }
 
-// --- fake browse store / index writer ---
-
 func storeKey(repo, snap string) string { return repo + "\x00" + snap }
 
-// fakeStore is an in-memory BrowseStore. It records the repo keys it is asked
-// about (to prove the app passes the configured repo name, not a target), tracks
-// commit/rollback/indexed state per snapshot, and counts the maximum number of
-// concurrently-open index transactions (which the session operation lock must hold
-// to 1).
+// fakeStore records repository keys, transaction outcomes, and peak concurrent
+// transactions for BrowseStore behavior tests.
 type fakeStore struct {
 	mu sync.Mutex
 
@@ -377,7 +363,6 @@ func (s *fakeStore) Close() error {
 	return nil
 }
 
-// fakeWriter is one index transaction over fakeStore.
 type fakeWriter struct {
 	store      *fakeStore
 	repo, snap string
@@ -428,14 +413,11 @@ func (w *fakeWriter) Rollback() error {
 	return nil
 }
 
-// browseApp wires an App whose Browse session serves store and whose Restic is r.
 func browseApp(store BrowseStore, r fakeRestic) *App {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: r}
 	a.Browse = NewBrowseSession(func(context.Context) (BrowseStore, error) { return store, nil })
 	return a
 }
-
-// --- helpers ---
 
 func testConfig() *config.Config {
 	cfg := &config.Config{
@@ -453,8 +435,6 @@ func testConfig() *config.Config {
 }
 
 var now = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
-
-// --- tests ---
 
 func TestStatusesColdCacheIsGrey(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}}
@@ -551,10 +531,8 @@ func TestRefreshResticErrorRecorded(t *testing.T) {
 	}
 }
 
-// A transient snapshots failure must not erase the last-known-good observation:
-// the repo reports StatusError (live verdict) but keeps the snapshots,
-// last-snapshot time, and observed hosts/tags from the prior successful refresh,
-// and keeps that refresh's RefreshedAt rather than advancing it.
+// A failed refresh reports the live error without replacing the last successful
+// observation or advancing RefreshedAt.
 func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 	fc := newFakeCache()
 	good := model.RepoState{
@@ -600,13 +578,12 @@ func TestRefreshPreservesLastGoodOnFailure(t *testing.T) {
 	}
 }
 
-// With no prior good state, a failed refresh stays an empty error state and —
-// per the RefreshedAt = "last successful observation" semantics — leaves
-// RefreshedAt zero so it reads as "last refresh failed", not "refreshed now".
+// With no prior good state, a failed refresh leaves RefreshedAt zero to mean
+// that no refresh has succeeded.
 func TestRefreshFailureWithNoPriorLeavesUnrefreshed(t *testing.T) {
 	a := &App{
 		Cfg:     testConfig(),
-		Cache:   newFakeCache(), // cold: no prior entry
+		Cache:   newFakeCache(),
 		Clock:   fixedClock{now},
 		Secrets: fakeSecrets{},
 		Restic:  fakeRestic{snapErr: errors.New("restic snapshots: repository does not exist (exit 10)")},
@@ -626,8 +603,7 @@ func TestRefreshFailureWithNoPriorLeavesUnrefreshed(t *testing.T) {
 	}
 }
 
-// RefreshAll honors the same preservation: a per-repo snapshots failure keeps
-// that repo's last-known-good data while reporting it as an error.
+// RefreshAll preserves last-known-good data while reporting a live error.
 func TestRefreshAllPreservesLastGoodOnFailure(t *testing.T) {
 	fc := newFakeCache()
 	fc.states["repo-a"] = model.RepoState{
@@ -710,13 +686,10 @@ func TestRefreshAll(t *testing.T) {
 	}
 }
 
-// A failed cache write must surface as an error AND the returned states must be
-// the live refresh, never the (possibly green) stale cache. This guards the
-// `status --refresh` contract: refresh means live state, even when the disk is
-// unwritable.
+// A failed cache write surfaces an error but returns live state, preserving the
+// `status --refresh` contract when the cache is unwritable.
 func TestRefreshAllSurfacesSaveFailureWithLiveState(t *testing.T) {
 	fc := newFakeCache()
-	// An old green cache entry that must NOT be what we report after refresh.
 	fc.states["repo-a"] = model.RepoState{Name: "repo-a", RefreshedAt: now.Add(-time.Hour), LastSnapshot: now.Add(-2 * time.Hour)}
 	fc.saveErr = errors.New("disk full")
 
@@ -762,8 +735,7 @@ func TestRefreshRow(t *testing.T) {
 	}
 }
 
-// A save failure must surface as an error but still return the live row, so the
-// TUI shows fresh state with a warning rather than falling back to stale cache.
+// A save failure returns the live row with an error instead of stale cache.
 func TestRefreshRowSurfacesSaveFailureWithLiveRow(t *testing.T) {
 	fc := newFakeCache()
 	fc.saveErr = errors.New("disk full")
@@ -844,7 +816,6 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 	if err := a.IndexSnapshot(t.Context(), "repo-a", "snap123", func(n int) { lastProgress = n }); err != nil {
 		t.Fatalf("IndexSnapshot: %v", err)
 	}
-	// Resolved the right snapshot, the repo's target, and the configured timeout.
 	if bc.snapID != "snap123" {
 		t.Errorf("snapshot ID = %q, want snap123", bc.snapID)
 	}
@@ -854,7 +825,6 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 	if bc.timeout != 10*time.Minute {
 		t.Errorf("timeout = %v, want 10m (cfg.Browse.IndexTimeout)", bc.timeout)
 	}
-	// Committed and marked indexed; every node was streamed into the writer.
 	if !store.indexed[storeKey("repo-a", "snap123")] {
 		t.Error("snapshot not marked indexed after a complete stream")
 	}
@@ -867,7 +837,6 @@ func TestIndexSnapshotIndexesAllNodes(t *testing.T) {
 	if lastProgress != len(nodes) {
 		t.Errorf("final progress = %d, want %d", lastProgress, len(nodes))
 	}
-	// The store is keyed by the configured repo NAME, never the bucket/endpoint.
 	for _, r := range store.repos {
 		if r != "repo-a" {
 			t.Errorf("store saw repo key %q, want the configured name repo-a", r)
@@ -909,9 +878,7 @@ func TestIndexSnapshotIncompleteRollsBack(t *testing.T) {
 	if !store.rolledBack[storeKey("repo-a", "snap123")] {
 		t.Error("an incomplete stream must roll back")
 	}
-	// The exact final count is emitted even when the stream ends incomplete: the
-	// live ticks are throttled and sampled only every browseProgressCheckEvery
-	// nodes, so the last tick can lag the true total.
+	// The final tick carries the exact count even when throttled live ticks lag.
 	if lastProgress != 2 {
 		t.Errorf("final progress on incomplete index = %d, want 2", lastProgress)
 	}
@@ -935,7 +902,6 @@ func TestIndexSnapshotDiskLimitRollsBack(t *testing.T) {
 	if !store.rolledBack[storeKey("repo-a", "snap123")] {
 		t.Error("a disk-limited index must roll back")
 	}
-	// The surfaced error must never leak a filename.
 	if strings.Contains(err.Error(), "secret") {
 		t.Errorf("surfaced error leaked a filename: %q", err.Error())
 	}
@@ -1002,9 +968,7 @@ func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 	a := browseApp(store, fakeRestic{})
 	a.Restic = blockingBrowseRestic{started: started}
 
-	// Index with a context this test NEVER cancels, to prove Close does not depend
-	// on the caller: Close itself must interrupt the in-flight op so shutdown cannot
-	// hang behind a long stream wired to a context that is never cancelled.
+	// A never-canceled caller context proves Close interrupts the operation itself.
 	indexDone := make(chan error, 1)
 	go func() {
 		//nolint:usetesting // deliberately a never-cancelled context: this test proves Close interrupts the in-flight index without any caller- or test-scoped cancellation, which t.Context() (cancelled at cleanup) would undermine.
@@ -1017,8 +981,6 @@ func TestBrowseSessionCloseCancelsInFlightIndex(t *testing.T) {
 		t.Fatal("index never reached the blocking restic stream")
 	}
 
-	// Close must cancel the in-flight index and return on its own, with no external
-	// context cancellation.
 	closeDone := make(chan error, 1)
 	go func() {
 		closeDone <- a.Browse.Close()
@@ -1107,10 +1069,8 @@ func TestBrowseSessionCloseCancelsInFlightOpen(t *testing.T) {
 }
 
 func TestBeginOpReturnsCallableReleaseOnError(t *testing.T) {
-	// Both error paths must hand back a non-nil, safe-to-call release so a future
-	// caller that defers release() before checking err never hits a nil-func call.
-	// The real op cleanup already ran inline on these paths, so the returned release
-	// must be the no-op (the real release would double-unlock opMu).
+	// Error paths return a callable no-op release because cleanup has already
+	// unlocked opMu.
 
 	closed := NewBrowseSession(func(context.Context) (BrowseStore, error) {
 		t.Fatal("open must not run on a closed session")
@@ -1222,9 +1182,8 @@ func TestSubtreeCountsDelegates(t *testing.T) {
 	}
 }
 
-// A nil Browse session degrades to known=false rather than erroring (unlike
-// ListDir's ErrBrowseNotEnabled): the counts are advisory review detail, and a
-// detail-view extract can legitimately run with browse disabled.
+// Missing browse support yields unknown advisory counts so extraction can
+// continue without browse enabled.
 func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
 	if _, _, known, err := a.SubtreeCounts(t.Context(), "repo-a", "s1", "/"); err != nil || known {
@@ -1232,8 +1191,7 @@ func TestSubtreeCountsNilBrowseDegrades(t *testing.T) {
 	}
 }
 
-// Unlike a nil Browse session (which degrades to known=false), an unknown repo
-// is a caller error and must surface as ErrUnknownRepo, not silently degrade.
+// An unknown repository remains a caller error rather than an unknown count.
 func TestSubtreeCountsUnknownRepo(t *testing.T) {
 	a := browseApp(newFakeStore(), fakeRestic{})
 	if _, _, _, err := a.SubtreeCounts(t.Context(), "nope", "s1", "/"); !errors.Is(err, ErrUnknownRepo) {
@@ -1256,8 +1214,6 @@ func TestSearchSnapshotDelegates(t *testing.T) {
 	if got.Total != 5 || len(got.Rows) != 1 || got.Rows[0].Name != "report.txt" {
 		t.Errorf("SearchSnapshot = %+v, want the store's result", got)
 	}
-	// The store must see the configured repo name (never a backend target) plus the
-	// verbatim query and limit.
 	if store.searchQuery != "rpt" || store.searchLimit != 200 {
 		t.Errorf("store saw query=%q limit=%d, want rpt/200", store.searchQuery, store.searchLimit)
 	}

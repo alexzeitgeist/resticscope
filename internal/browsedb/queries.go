@@ -25,23 +25,18 @@ const listDirQuery = `SELECT name,type,is_dir,size,mtime_unix,mtime_offset_sec,m
 	`FROM nodes WHERE parent_did=? ` +
 	`ORDER BY is_dir DESC, name_ci, name`
 
-// searchQuery is the global filename search prefilter: a subsequence LIKE over
-// the precomputed name_ci column across one committed snapshot, joined to dirs so
-// each matched node carries its own parent path for full-path reconstruction. It
-// deliberately has NO LIMIT and NO ORDER BY — the LIKE is only a coarse prefilter
-// and the result cap is applied after fuzzy scoring (see Search), so the returned
-// rows are the true top matches rather than an arbitrary prefix of the scan order.
-// ESCAPE '\' makes the LIKE specials escaped by likeSubsequence match literally.
+// searchQuery prefilters one committed snapshot by a subsequence LIKE pattern.
+// It has no ordering or limit because Search ranks the complete match set.
+// Joining dirs supplies parent paths, and ESCAPE makes LIKE metacharacters
+// produced by likeSubsequence literal.
 const searchQuery = `SELECT d.path,n.name,n.type,n.is_dir,n.size,n.mtime_unix,n.mtime_offset_sec,n.mtime_known,n.perms,n.uid,n.gid,n.owner_known,n.link_target ` +
 	`FROM nodes n ` +
 	`JOIN snapshots s ON s.sid=n.sid ` +
 	`JOIN dirs d ON d.did=n.parent_did ` +
 	`WHERE s.repo=? AND s.snapshot=? AND s.indexed_at_unix IS NOT NULL AND n.name_ci LIKE ? ESCAPE '\'`
 
-// defaultSearchLimit caps how many ranked rows a search returns when the caller
-// passes a non-positive limit. It bounds the result slice (and the UI state built
-// from it) even when a broad query matches a large fraction of the snapshot; Total
-// still reports every match so the UI can show "showing N of Total".
+// defaultSearchLimit bounds returned rows for non-positive limits. Total remains
+// uncapped so callers can report truncated results.
 const defaultSearchLimit = 200
 
 // IsIndexed reports whether (repo, snapshot) has a committed index marker.
@@ -62,23 +57,17 @@ func (db *DB) IsIndexed(ctx context.Context, repo, snapshot string) (bool, error
 // means the snapshot has no committed index.
 const subtreeSIDQuery = `SELECT sid FROM snapshots WHERE repo=? AND snapshot=? AND indexed_at_unix IS NOT NULL`
 
-// subtreeCountsQuery counts the file and directory nodes hanging off dir or any
-// directory below it. Containment is by parent-directory path under the BINARY
-// collation: every path strictly inside dir sorts in [dir+"/", dir+"0") because
-// '0' is the byte after '/'. A LIKE prefix would be wrong here — SQLite LIKE is
-// ASCII case-insensitive by default, so '/A/sub' LIKE '/a/%' matches — and the
-// byte range needs no wildcard escaping and fits the UNIQUE(sid,path) index.
+// subtreeCountsQuery uses a half-open BINARY path range to count descendants.
+// Unlike LIKE, the range is case-sensitive and treats wildcard bytes literally.
 const subtreeCountsQuery = `SELECT ` +
 	`COALESCE(SUM(CASE WHEN n.type='file' THEN 1 ELSE 0 END),0),` +
 	`COALESCE(SUM(CASE WHEN n.is_dir THEN 1 ELSE 0 END),0) ` +
 	`FROM nodes n JOIN dirs d ON d.did=n.parent_did ` +
 	`WHERE n.sid=? AND d.sid=? AND (d.path=? OR (d.path>=? AND d.path<?))`
 
-// SubtreeCounts reports how many file and directory nodes dir contains within
-// (repo, snapshot), recursively, excluding dir itself. The split mirrors
-// ExtractResult's: files counts regular files only, dirs counts directories;
-// symlinks and specials are in neither. known is false when the snapshot has no
-// committed index, so callers can render nothing instead of a misleading zero.
+// SubtreeCounts reports recursive file and directory counts below dir, excluding
+// dir itself, symlinks, and special nodes. known is false when the snapshot has
+// no committed index.
 func (db *DB) SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (files, dirs int, known bool, err error) {
 	root := model.CleanBrowsePath(dir)
 	var sid int64
@@ -102,10 +91,9 @@ func (db *DB) SubtreeCounts(ctx context.Context, repo, snapshot, dir string) (fi
 	return files, dirs, true, nil
 }
 
-// ListDir returns the immediate children of dir within (repo, snapshot),
-// directories first then case-insensitively by name with deterministic
-// tie-breakers. A never-indexed (repo, snapshot) yields an empty slice and nil
-// error; callers that must distinguish "indexed but empty" use IsIndexed.
+// ListDir returns the immediate children of dir, with directories first and
+// names ordered case-insensitively with deterministic tie-breakers. A snapshot
+// without a committed index returns an empty slice and nil error.
 func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.BrowseEntry, error) {
 	parent := model.CleanBrowsePath(dir)
 	var did int64
@@ -141,15 +129,13 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 			return nil, fmt.Errorf("browsedb list-dir scan: %w", err)
 		}
 		e.Name = name
-		// path is not stored; derive it from the requested parent and row name.
+		// Nodes omit paths, so reconstruct one from the requested parent.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
 		e.OwnerKnown = ownerKnown != 0
-		// uid/gid were stored from uint32 (int64(r.uid)); the round-trip back is lossless.
 		e.UID, e.GID = uint32(uid), uint32(gid) //nolint:gosec // values originate from uint32, no truncation
 		if mtimeKnown != 0 {
-			// FixedZone preserves the wall-clock minute the old browse table
-			// displayed; Location().String() is intentionally not meaningful.
+			// Preserve the source wall-clock time; the location name is irrelevant.
 			loc := zones[mtimeOff]
 			if loc == nil {
 				if zones == nil {
@@ -171,21 +157,10 @@ func (db *DB) ListDir(ctx context.Context, repo, snapshot, dir string) ([]model.
 	return out, nil
 }
 
-// Search finds nodes anywhere in (repo, snapshot) whose name is a case-folded
-// fuzzy (subsequence) match for query, ranked best-first and capped to limit (the
-// default cap when limit <= 0). It returns the ranked rows plus Total, the count
-// of every match before the cap, so the caller can report a truncated result.
-//
-// A blank or whitespace-only query returns a zero result with no scan: there is
-// nothing to rank. Otherwise the query is lowercased to build a subsequence LIKE
-// pattern over name_ci (byte-identical to how name_ci was written, so the
-// prefilter never rejects a true match), then every prefiltered row is re-scored
-// with model.FuzzyScore on its original name and kept in a bounded top-N using the
-// shared model.BetterFuzzy ordering — so DB search and the pure-model ranking
-// cannot drift. The original query (not the lowercased pattern) is scored so the
-// exact-case bonus still applies. Errors are path-free: they wrap the operation
-// name and the driver/scan cause, never a node name or path (those flow only
-// through bound parameters, which SQLite never echoes into error text).
+// Search returns the best case-folded subsequence name matches, capped at limit
+// or the default for non-positive limits. Total counts all matches before the cap.
+// A blank query performs no scan. Ranking uses the original query to preserve
+// exact-case bonuses and follows model.BetterFuzzy. Errors omit node names and paths.
 func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit int) (model.BrowseSearchResult, error) {
 	if strings.TrimSpace(query) == "" {
 		return model.BrowseSearchResult{}, nil
@@ -224,17 +199,15 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 		}
 		match, ok := model.FuzzyScore(name, query)
 		if !ok {
-			// The LIKE prefilter and the subsequence test are equivalent conditions,
-			// so this is defensive; skip anything the scorer rejects.
+			// Defensively reject any row admitted by LIKE but rejected by the scorer.
 			continue
 		}
 		total++
 		e.Name = name
-		// path is not stored on the node; each row carries its own parent.
+		// Reconstruct the omitted path from the joined parent.
 		e.Path = model.JoinBrowsePath(parent, name)
 		e.IsDir = isDir != 0
 		e.OwnerKnown = ownerKnown != 0
-		// uid/gid were stored from uint32 (int64(r.uid)); the round-trip back is lossless.
 		e.UID, e.GID = uint32(uid), uint32(gid) //nolint:gosec // values originate from uint32, no truncation
 		if mtimeKnown != 0 {
 			loc := zones[mtimeOff]
@@ -263,18 +236,12 @@ func (db *DB) Search(ctx context.Context, repo, snapshot, query string, limit in
 	return model.BrowseSearchResult{Rows: out, Total: total}, nil
 }
 
-// dirSizePathChunk caps how many directory paths are bound into one dirSizes
-// query. At one param per path plus the two fixed repo/snapshot binds, this stays
-// far under the driver's LIMIT_VARIABLE_NUMBER even though callers (ListDir on a
-// huge directory) may ask about thousands of children at once.
+// dirSizePathChunk keeps directory-size queries below the driver's bind limit.
 const dirSizePathChunk = 900
 
-// fillDirSizes rewrites every directory entry's size in place to its recursive
-// subtree total, leaving files untouched. A directory's raw nodes.size is its own
-// (~0) inode size, so each dir is first zeroed and then filled from the dirs table;
-// a directory absent from the lookup (empty subtree, or a never-indexed snapshot)
-// keeps the explicit zero rather than leaking the inode value. ListDir and Search
-// share this so the listing and search results stay consistent.
+// fillDirSizes replaces directory sizes with recursive totals and leaves files
+// unchanged. Missing or empty directories remain zero rather than exposing raw
+// inode sizes.
 func (db *DB) fillDirSizes(ctx context.Context, repo, snapshot string, entries []model.BrowseEntry) error {
 	dirPaths := make([]string, 0, len(entries))
 	for i := range entries {
@@ -300,14 +267,8 @@ func (db *DB) fillDirSizes(ctx context.Context, repo, snapshot string, entries [
 	return nil
 }
 
-// dirSizes returns the recursive subtree size for each of paths within
-// (repo, snapshot), keyed on the exact dirs.path the writer stored (the same
-// model.JoinBrowsePath output ListDir/Search build), so no SQL path
-// reconstruction is needed. Only directories with a positive subtree size appear
-// in the map; an empty directory (or any path not present) is simply absent, and
-// the caller leaves its size at the explicit zero it set. The path list is
-// chunked to stay under the bind cap. A never-indexed snapshot yields an empty
-// map.
+// dirSizes returns positive recursive sizes keyed by exact stored paths.
+// Absent paths remain zero in the caller; queries are chunked below the bind cap.
 func (db *DB) dirSizes(ctx context.Context, repo, snapshot string, paths []string) (map[string]int64, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -322,9 +283,8 @@ func (db *DB) dirSizes(ctx context.Context, repo, snapshot string, paths []strin
 	return out, nil
 }
 
-// dirSizesChunk runs one bind-capped chunk of dirSizes, writing results into out.
-// rows is scoped to this call so defer closes it before the next chunk opens one
-// (a function-wide defer in dirSizes' loop would leak each chunk's cursor).
+// dirSizesChunk writes one query chunk into out. Its local defer closes the rows
+// before dirSizes opens the next chunk.
 func (db *DB) dirSizesChunk(ctx context.Context, repo, snapshot string, chunk []string, out map[string]int64) error {
 	args := make([]any, 0, len(chunk)+2)
 	args = append(args, repo, snapshot)
@@ -352,8 +312,7 @@ func (db *DB) dirSizesChunk(ctx context.Context, repo, snapshot string, chunk []
 	return nil
 }
 
-// buildDirSizesSQL builds the dirSizes query for a chunk of n directory paths,
-// with n bound placeholders in the IN clause after the fixed repo/snapshot binds.
+// buildDirSizesSQL builds a directory-size query with n path binds.
 func buildDirSizesSQL(n int) string {
 	var b strings.Builder
 	b.WriteString(`SELECT d.path,d.subtree_size FROM dirs d JOIN snapshots s ON s.sid=d.sid ` +
@@ -368,10 +327,8 @@ func buildDirSizesSQL(n int) string {
 	return b.String()
 }
 
-// likeSubsequence builds a LIKE pattern matching q as a subsequence: each rune of
-// q wrapped in '%' wildcards, so "abc" → "%a%b%c%". The LIKE specials (% _ \) are
-// prefixed with a backslash so they match literally under ESCAPE '\'. q is the
-// already-lowercased query, matching the BINARY-sorted name_ci column.
+// likeSubsequence builds a LIKE subsequence pattern from lowercase q. It escapes
+// LIKE metacharacters so they match literally under the query's ESCAPE clause.
 func likeSubsequence(q string) string {
 	var b strings.Builder
 	b.Grow(len(q)*2 + 1)
@@ -387,18 +344,13 @@ func likeSubsequence(q string) string {
 	return b.String()
 }
 
-// insertTopN keeps top as a best-first slice of at most limit ranks, using the
-// shared model.BetterFuzzy ordering. The slice stays sorted, so once it is full a
-// candidate that cannot beat the current worst (the last element) is dropped in
-// O(1); otherwise it is inserted at its ordered position and the worst is evicted.
-// This bounds memory to limit even when a broad query matches a huge fraction of
-// the snapshot, while still yielding the exact global top-N.
+// insertTopN maintains at most limit ranks in model.BetterFuzzy order. Candidates
+// that cannot beat a full slice's worst entry are discarded immediately.
 func insertTopN(top []model.FuzzyRank, r model.FuzzyRank, limit int) []model.FuzzyRank {
 	if len(top) >= limit && !model.BetterFuzzy(r, top[len(top)-1]) {
 		return top
 	}
-	// First position r outranks: the predicate is false…false,true…true because top
-	// is sorted best-first, so sort.Search finds the correct insertion index.
+	// Search for the first entry that r outranks in the best-first slice.
 	i := sort.Search(len(top), func(i int) bool { return model.BetterFuzzy(r, top[i]) })
 	if len(top) < limit {
 		top = append(top, model.FuzzyRank{})
@@ -406,7 +358,6 @@ func insertTopN(top []model.FuzzyRank, r model.FuzzyRank, limit int) []model.Fuz
 		top[i] = r
 		return top
 	}
-	// Full: shift [i, len-1) down by one (dropping the old worst), then place r.
 	copy(top[i+1:], top[i:len(top)-1])
 	top[i] = r
 	return top

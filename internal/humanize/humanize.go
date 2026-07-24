@@ -1,7 +1,5 @@
-// Package humanize renders machine quantities (byte counts, elapsed time) as
-// short human-readable strings. It is shared by every presentation layer — the
-// plain `resticscope status` table and the TUI list view — so the two render
-// the same value identically.
+// Package humanize formats machine quantities consistently across CLI and TUI
+// presentation.
 package humanize
 
 import (
@@ -28,10 +26,8 @@ func Ago(now, t time.Time) string {
 	}
 }
 
-// Duration renders an elapsed duration in coarse units: sub-second durations as
-// "<1s", whole seconds below a minute ("28s"), minutes and seconds below an
-// hour ("4m12s"), else hours and minutes ("1h03m"). A negative duration renders
-// as an em-dash because it is invalid.
+// Duration renders elapsed time as "<1s", seconds, minutes and seconds, or hours
+// and minutes. Negative values render as an em-dash.
 func Duration(d time.Duration) string {
 	if d < 0 {
 		return "—"
@@ -48,12 +44,8 @@ func Duration(d time.Duration) string {
 	}
 }
 
-// Count renders a count with its noun, picking the singular form for exactly
-// one ("1 file", "3 files", "0 files"). Callers pass both forms because
-// English pluralization is irregular ("entry" / "entries"). The constraint
-// covers the integer types presentation code actually carries — len() results
-// and restic's uint64 summary counters — so no caller has to narrow; extend it
-// as needed.
+// Count renders n with the singular form only for one. Callers provide both
+// forms for irregular plurals.
 func Count[N ~int | ~int64 | ~uint64](n N, singular, plural string) string {
 	if n == 1 {
 		return "1 " + singular
@@ -64,9 +56,8 @@ func Count[N ~int | ~int64 | ~uint64](n N, singular, plural string) string {
 // byteSuffixes are the IEC unit suffixes indexed by Bytes's division exponent.
 var byteSuffixes = [...]string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
 
-// Bytes formats a byte count in IEC units (GiB, MiB, …), with one decimal place
-// below 10 of a unit. A negative count renders as an em-dash because it is
-// invalid.
+// Bytes formats nonnegative byte counts in IEC units, using one decimal below
+// 10 of a unit. Negative counts render as an em-dash.
 func Bytes(n int64) string {
 	const unit = 1024
 	if n < 0 {
@@ -81,8 +72,7 @@ func Bytes(n int64) string {
 		exp++
 	}
 	value := float64(n) / float64(div)
-	// exp counts 1024-divisions of an int64: the max (~8 EiB) gives exp == 5,
-	// the last of six suffixes, so the index can never run off the end.
+	// int64 values require at most all six suffixes, so exp stays in bounds.
 	suffix := byteSuffixes[exp]
 	if value >= 10 {
 		return fmt.Sprintf("%.0f %s", value, suffix)

@@ -15,10 +15,8 @@ import (
 
 var validBucketLookup = map[string]bool{"auto": true, "dns": true, "path": true}
 
-// validRepoName restricts repo names to characters that survive unchanged
-// through cache-file and restic-cache-dir sanitization. Without this, distinct
-// names like "foo/bar" and "foo:bar" would both collapse to "foo_bar" and share
-// (and clobber) each other's on-disk state.
+// validRepoName allows only characters preserved by both the state-file and
+// restic-cache-directory sanitizers, preventing collisions that clobber state.
 var validRepoName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Validate checks the normalized config for structural problems: missing
@@ -44,8 +42,7 @@ func (c *Config) Validate() error {
 		if norm != k {
 			errs = append(errs, fmt.Errorf("global.group_by[%d]: key %q has surrounding whitespace", i, k))
 		}
-		// Dedup on the trimmed key so [" env", "env"] surfaces as a duplicate
-		// rather than slipping through under two different map entries.
+		// Deduplicate trimmed keys so whitespace variants cannot bypass validation.
 		if prev, ok := seenGroupBy[norm]; ok {
 			errs = append(errs, fmt.Errorf("global.group_by[%d]: duplicate key %q (also at index %d)", i, k, prev))
 		} else {
@@ -70,10 +67,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("repo %q: name may contain only letters, digits, '.', '_' and '-' (it becomes a cache filename)", r.Name))
 		}
 		errs = append(errs, validateRepoLocation(r)...)
-		// credential is optional (local/sftp/rclone need no secret env vars); when
-		// set, the name is a key the secrets_command must provide. It is resolved
-		// against the secrets document when a command loads secrets (the TUI,
-		// `check`, a refresh), not validated here.
+		// Credentials are optional names resolved against secrets_command output
+		// when secrets are loaded, not during config validation.
 		errs = append(errs, validateRepoEnvOptions(r)...)
 		if r.ExpectedFrequency <= 0 {
 			errs = append(errs, fmt.Errorf("repo %q: expected_frequency must be a positive duration (e.g. \"24h\")", r.Name))
@@ -88,20 +83,12 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// validateRepoLocation checks that the repo describes where it lives in
-// exactly one of the two supported forms: a generic restic repository url, or
-// the s3 shorthand (endpoint/bucket + optional region/path/bucket_lookup).
-// Mixing them is rejected — the shorthand fields would be silently ignored
-// otherwise, which always means the user misunderstood one of the forms.
-//
-// A url is accepted when it is a known restic scheme ("scheme:rest") or a bare
-// absolute filesystem path (restic's local backend); an unknown scheme or a
-// relative path is rejected here so the typo fails at startup rather than as a
-// restic error mid-refresh. Normalize has already expanded a leading ~.
+// validateRepoLocation accepts exactly one of a generic URL or S3 shorthand.
+// URLs use known schemes or absolute paths so typos fail before refresh, and
+// mixed forms fail instead of silently ignoring shorthand fields.
 func validateRepoLocation(r Repo) []error {
 	var errs []error
 	if r.URL == "" {
-		// s3 shorthand: same required fields as always.
 		if r.Bucket == "" {
 			errs = append(errs, fmt.Errorf("repo %q: bucket is required (or set url for a non-s3 backend)", r.Name))
 		}
@@ -126,9 +113,8 @@ func validateRepoLocation(r Repo) []error {
 	return errs
 }
 
-// schemeLike reports whether s looks like a URL scheme rather than the start
-// of a path — lowercase letters/digits only, as restic's schemes are. A path
-// like "/srv/x" or "C" fails this and is judged as a filesystem path instead.
+// schemeLike reports whether s matches restic's lowercase alphanumeric scheme
+// syntax rather than a filesystem path.
 func schemeLike(s string) bool {
 	if s == "" {
 		return false
@@ -141,17 +127,12 @@ func schemeLike(s string) bool {
 	return true
 }
 
-// validateRepoEnvOptions checks the repo's generic backend env/options maps.
 func validateRepoEnvOptions(r Repo) []error {
 	return validateEnvOptions(fmt.Sprintf("repo %q", r.Name), r.Env, r.Options)
 }
 
-// validateEnvOptions checks a generic backend env/options pair: env names must
-// be valid, non-reserved env identifiers (the model contract resticx enforces at
-// assembly time), env values and option keys must be non-empty. It is shared by
-// repos and profiles, so the caller passes the label the errors are prefixed
-// with. Values are user-chosen but non-secret, so error messages may name the
-// key; they still never echo the value.
+// validateEnvOptions validates backend keys and non-empty values for repositories
+// and profiles. Values are non-secret; errors may name keys but never values.
 func validateEnvOptions(label string, env, options map[string]string) []error {
 	var errs []error
 	for _, k := range sortedKeys(env) {
@@ -180,13 +161,9 @@ func sortedKeys[V any](m map[string]V) []string {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// validateTheme checks the [theme] block: the name must be a built-in theme
-// (the message lists every valid choice, since the set lives in the binary and
-// is otherwise undiscoverable), and each non-empty [theme.colors] override
-// must be a color lipgloss can parse — rejected here by theme.ValidColor so a
-// typo fails at startup instead of silently rendering as black. Name is seeded
-// to the default in Decode, so an empty value reaching here was explicit and
-// is rejected like any other unknown name.
+// validateTheme checks built-in names and non-empty color overrides. Diagnostics
+// list compiled names and formats so invalid values fail at startup; explicit
+// empty names remain invalid.
 func (c *Config) validateTheme() []error {
 	var errs []error
 	if _, ok := theme.Lookup(c.Theme.Name); !ok {
@@ -222,14 +199,8 @@ func (c *Config) validateDiff() []error {
 	return errs
 }
 
-// validateExtract checks the extract output base and timeout. target_root is
-// seeded in Decode and only ~-expanded in Normalize, so an omitted key arrives
-// here as the default (absolute) path, while an explicit empty or relative value
-// survives to be rejected as a config error. Error messages name the key and the
-// kind of failure but never echo the user's path — the privacy discipline that
-// governs extract source/destination paths starts at config time. extract_timeout
-// is likewise seeded pre-decode, so a value reaching here at <= 0 was set
-// explicitly and is rejected rather than silently defaulted.
+// validateExtract checks the normalized output root and timeout without echoing
+// paths. Decode seeding preserves explicit invalid values for rejection.
 func (c *Config) validateExtract() []error {
 	var errs []error
 	switch root := c.Extract.TargetRoot; {
@@ -241,10 +212,7 @@ func (c *Config) validateExtract() []error {
 	if c.Extract.ExtractTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("extract.extract_timeout must be a positive duration, got %q", c.Extract.ExtractTimeout.Std()))
 	}
-	// unsafe_symlinks is seeded to "keep" in Decode, so an omitted key arrives
-	// valid; an explicit empty/unknown value survives to be rejected here. The
-	// message names the key and the allowed set but never echoes the bad value —
-	// same path-free discipline as the rest of the extract config.
+	// Decode seeding preserves explicit invalid policies for rejection without echoing them.
 	switch c.Extract.UnsafeSymlinks {
 	case UnsafeSymlinksKeep, UnsafeSymlinksSkip, UnsafeSymlinksPlaceholder:
 	default:
@@ -253,11 +221,8 @@ func (c *Config) validateExtract() []error {
 	return errs
 }
 
-// validateBrowse checks the browse index settings: index_timeout must be a
-// positive duration, and max_disk_bytes must be non-negative (0 = unlimited).
-// index_timeout's default is seeded pre-decode (in Decode), so a value reaching
-// here at <= 0 was set explicitly — an explicit `0` or a negative — and is
-// rejected rather than silently defaulted.
+// validateBrowse requires a positive index timeout and nonnegative disk cap, with
+// zero disk unlimited. Decode seeding preserves explicit invalid timeouts.
 func (c *Config) validateBrowse() []error {
 	var errs []error
 	b := c.Browse

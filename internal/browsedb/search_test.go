@@ -7,9 +7,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// entriesFromNodes projects index nodes to the (Name, Path) pairs the pure model
-// ranker needs, so a DB search result can be checked against model.RankFuzzy over
-// the same set — pinning DB-search ranking to the pure scorer.
+// entriesFromNodes projects nodes for comparison with the pure-model fuzzy
+// ranking.
 func entriesFromNodes(nodes []model.BrowseNode) []model.BrowseEntry {
 	out := make([]model.BrowseEntry, 0, len(nodes))
 	for _, n := range nodes {
@@ -19,9 +18,8 @@ func entriesFromNodes(nodes []model.BrowseNode) []model.BrowseEntry {
 	return out
 }
 
-// TestLikeSubsequence pins the prefilter pattern builder: each rune wrapped in
-// '%', with the LIKE specials (% _ \) backslash-escaped so they match literally
-// under ESCAPE '\'.
+// TestLikeSubsequence covers wildcard placement and literal LIKE
+// metacharacters.
 func TestLikeSubsequence(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"abc", "%a%b%c%"},
@@ -36,9 +34,8 @@ func TestLikeSubsequence(t *testing.T) {
 	}
 }
 
-// TestSearchSubsequenceAcrossDirs confirms a global subsequence query matches
-// nodes anywhere in the snapshot and reconstructs each one's full path from its
-// own parent directory (not a single requested parent).
+// TestSearchSubsequenceAcrossDirs covers global matching and reconstructing each
+// result from its own parent directory.
 func TestSearchSubsequenceAcrossDirs(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -52,8 +49,7 @@ func TestSearchSubsequenceAcrossDirs(t *testing.T) {
 		{Path: "/home/alex/photo.jpg"},
 	})
 
-	// "rpt" is a subsequence of both report.txt and receipt.pdf, neither contiguous,
-	// and they live in different directories.
+	// Match non-contiguous subsequences in different directories.
 	res, err := db.Search(ctx, repo, snap, "rpt", 0)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -63,15 +59,13 @@ func TestSearchSubsequenceAcrossDirs(t *testing.T) {
 	}
 	want := []string{"/etc/report.txt", "/home/alex/receipt.pdf"}
 	got := paths(res.Rows)
-	// Order is by score, but both are valid full paths from distinct dirs; assert the
-	// set regardless of order.
+	// This test concerns path reconstruction, not score order.
 	if !sameSet(got, want) {
 		t.Errorf("paths = %v, want set %v", got, want)
 	}
 }
 
-// TestSearchFullPathMatchesListDir proves a searched row reconstructs the exact
-// same Path (and metadata) ListDir produces for the same node.
+// TestSearchFullPathMatchesListDir compares search and listing reconstruction.
 func TestSearchFullPathMatchesListDir(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -99,8 +93,7 @@ func TestSearchFullPathMatchesListDir(t *testing.T) {
 	}
 }
 
-// TestSearchLikeSpecialsLiteral proves a query containing LIKE wildcards matches
-// them literally: "a%b" matches "a%b" but not "axb"; "a_b" matches "a_b" only.
+// TestSearchLikeSpecialsLiteral ensures LIKE wildcards match literally.
 func TestSearchLikeSpecialsLiteral(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -129,9 +122,8 @@ func TestSearchLikeSpecialsLiteral(t *testing.T) {
 	}
 }
 
-// TestSearchLiteralSpaces proves spaces in a non-empty query are literal
-// subsequence characters: " re" matches a name with a leading space but not one
-// without it.
+// TestSearchLiteralSpaces ensures non-empty whitespace is a literal subsequence
+// character.
 func TestSearchLiteralSpaces(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -150,14 +142,13 @@ func TestSearchLiteralSpaces(t *testing.T) {
 	}
 }
 
-// TestSearchSidGatedOnIndexed proves search only sees committed snapshots and
-// never crosses snapshot boundaries: a rolled-back index is invisible, and one
-// snapshot's query never returns another's nodes.
+// TestSearchSidGatedOnIndexed ensures search sees only the requested committed
+// snapshot.
 func TestSearchSidGatedOnIndexed(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
 
-	// Rolled-back index → no committed marker → invisible to search.
+	// A rolled-back index has no marker and remains invisible.
 	itx, _ := db.BeginIndex(ctx, "repo", "pending")
 	if err := itx.Add(ctx, model.BrowseNode{Path: "/secretfile"}); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -169,7 +160,7 @@ func TestSearchSidGatedOnIndexed(t *testing.T) {
 		t.Errorf("search of rolled-back snapshot = %v (total %d), %v; want empty", paths(res.Rows), res.Total, err)
 	}
 
-	// Two committed snapshots with distinct nodes: each query stays in its own sid.
+	// Distinct committed snapshots must remain isolated.
 	mustIndex(t, db, "repo", "A", []model.BrowseNode{{Path: "/onlyA"}})
 	mustIndex(t, db, "repo", "B", []model.BrowseNode{{Path: "/onlyB"}})
 	res, err := db.Search(ctx, "repo", "A", "only", 0)
@@ -181,9 +172,8 @@ func TestSearchSidGatedOnIndexed(t *testing.T) {
 	}
 }
 
-// TestSearchResultLimitAndTotal proves the cap returns the exact ranked prefix
-// (not an arbitrary scan prefix) while Total counts every match, and that the
-// DB ranking is identical to the pure model.RankFuzzy over the same set.
+// TestSearchResultLimitAndTotal compares capped database results with the pure
+// model's complete ranking.
 func TestSearchResultLimitAndTotal(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -214,8 +204,7 @@ func TestSearchResultLimitAndTotal(t *testing.T) {
 		t.Errorf("Total = %d, want %d", full.Total, len(want))
 	}
 
-	// A small cap returns exactly the top-N prefix of the full ranking, with Total
-	// unchanged.
+	// Capping preserves Total and returns the exact ranked prefix.
 	const limit = 3
 	capped, err := db.Search(ctx, repo, snap, query, limit)
 	if err != nil {
@@ -232,8 +221,7 @@ func TestSearchResultLimitAndTotal(t *testing.T) {
 	}
 }
 
-// TestSearchEmptyQuery is the no-scan contract: blank or whitespace-only queries
-// return a zero result with no error.
+// TestSearchEmptyQuery covers the zero-result contract for blank queries.
 func TestSearchEmptyQuery(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -250,8 +238,7 @@ func TestSearchEmptyQuery(t *testing.T) {
 	}
 }
 
-// TestSearchMetadataRoundTrip proves a matched row carries the same node metadata
-// the listing path does (mtime/perms/owner/is_dir/link_target/size).
+// TestSearchMetadataRoundTrip covers all metadata returned with a match.
 func TestSearchMetadataRoundTrip(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -280,9 +267,7 @@ func TestSearchMetadataRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSearchCaseFoldParity proves matching folds case the same way name_ci was
-// built: a query in any case matches, and the lowercase pattern agrees with the
-// stored fold.
+// TestSearchCaseFoldParity compares query case folding with the stored fold.
 func TestSearchCaseFoldParity(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -299,9 +284,8 @@ func TestSearchCaseFoldParity(t *testing.T) {
 	}
 }
 
-// TestSearchErrorPathFree proves a search failure never carries the query (which
-// is user input that could be a filename fragment) or an indexed node name. The
-// query flows only as a bound LIKE parameter, which SQLite never echoes.
+// TestSearchErrorPathFree ensures failures omit the query and indexed names.
+// The query reaches SQLite only as a bound parameter.
 func TestSearchErrorPathFree(t *testing.T) {
 	db, _, _ := newTestDB(t, 0)
 	ctx := t.Context()
@@ -309,8 +293,7 @@ func TestSearchErrorPathFree(t *testing.T) {
 	const secretQuery = "SEARCH_secret_query_waldo"
 	mustIndex(t, db, "repo", "snap", []model.BrowseNode{{Path: "/" + secretName, Name: secretName}})
 
-	// Closing the pool forces QueryContext to fail; the wrapped error must stay
-	// path-free.
+	// Closing the pool forces a path-free QueryContext failure.
 	if err := db.pool.Close(); err != nil {
 		t.Fatalf("pool close: %v", err)
 	}
@@ -318,7 +301,6 @@ func TestSearchErrorPathFree(t *testing.T) {
 	assertErrPathFree(t, err, secretQuery, secretName)
 }
 
-// sameSet reports whether a and b contain the same strings regardless of order.
 func sameSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

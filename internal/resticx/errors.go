@@ -7,12 +7,11 @@ import (
 	"os/exec"
 )
 
-// ErrorKind classifies a restic failure. The numeric exit codes come from
-// restic 0.17.0+; older versions are not supported (plan §9, §12).
+// ErrorKind classifies a restic failure. Exit codes 10 and 11 are available in
+// restic 0.17.0; code 12 is available in 0.17.1. Older versions are unsupported.
 type ErrorKind int
 
-// The ErrorKind values; KindUnknown is the zero value, and the inline comment
-// on each gives the restic exit code or condition it classifies.
+// The ErrorKind values, each commented with the exit code or condition it classifies.
 const (
 	KindUnknown       ErrorKind = iota
 	KindRepoNotFound            // restic exit 10
@@ -25,17 +24,18 @@ const (
 	KindPartial                 // restic completed but some items failed (e.g. a partial restore)
 )
 
-// Error is a classified restic failure. Its message is a clear diagnostic
-// rather than a raw stderr dump; Stderr is already redacted by the time it is
-// stored here, so the error is always safe to log.
+// Error is a classified restic failure with a diagnostic message. Client.classify
+// applies Client.Redact when configured; Error values are not intrinsically safe
+// to log.
 type Error struct {
 	Kind    ErrorKind
 	Op      string // restic subcommand, e.g. "snapshots"
 	Code    int    // restic exit code, when known
-	Stderr  string // redacted
+	Stderr  string // stderr, redacted when Client.Redact is configured
 	wrapped error
 }
 
+// Error formats the classified failure for display.
 func (e *Error) Error() string {
 	switch e.Kind {
 	case KindRepoNotFound:
@@ -62,12 +62,14 @@ func (e *Error) Error() string {
 	}
 }
 
+// Unwrap returns the underlying process or context error.
 func (e *Error) Unwrap() error { return e.wrapped }
 
-// exitCoder is implemented by *exec.ExitError and by test fakes, so
-// classification works without spawning a real process.
+// exitCoder decouples process-error classification from concrete runners.
 type exitCoder interface{ ExitCode() int }
 
+// classify prioritizes context cancellation and deadlines before process errors.
+// It redacts stderr when Client.Redact is configured.
 func (c *Client) classify(ctx context.Context, op string, err error, stderr []byte) error {
 	redacted := string(stderr)
 	if c.Redact != nil {

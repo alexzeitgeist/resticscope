@@ -10,8 +10,7 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// RepoStatus is one repo's evaluated status plus the cached state it was
-// derived from. It is what `resticscope status` and the TUI list view render.
+// RepoStatus contains one repository's evaluated status and source state.
 type RepoStatus struct {
 	Name   string
 	Status model.Status
@@ -19,10 +18,9 @@ type RepoStatus struct {
 	Stale  bool // the cache entry is older than global.stale_after
 }
 
-// Statuses returns the current status of every configured repo, reading the
-// cache only — no backend or restic calls. A missing or corrupt cache entry yields a
-// grey (never-refreshed) status rather than an error, so `status` stays fast
-// and side-effect-free for cron and scripts.
+// Statuses reads cached status for every repository without backend calls. A
+// missing or corrupt entry becomes grey rather than failing, keeping the operation
+// side-effect-free.
 func (a *App) Statuses(ctx context.Context) ([]RepoStatus, error) {
 	now := a.Clock.Now()
 	staleAfter := a.Cfg.Global.StaleAfter.Std()
@@ -35,7 +33,6 @@ func (a *App) Statuses(ctx context.Context) ([]RepoStatus, error) {
 			case errors.Is(err, cache.ErrCorrupt):
 				a.logger().Warn("cache corrupt; treating repo as cold", "repo", r.Name)
 			case errors.Is(err, cache.ErrMiss):
-				// cold; nothing to log
 			default:
 				return nil, err // genuine error (e.g. context cancelled)
 			}
@@ -46,11 +43,8 @@ func (a *App) Statuses(ctx context.Context) ([]RepoStatus, error) {
 	return rows, nil
 }
 
-// RowsFromStates evaluates already-known live states (e.g. the result of
-// RefreshAll) into status rows without touching the cache. This is what
-// `status --refresh` renders, so a failed cache write can never make a refresh
-// display — or exit on — stale data. states must be in config order, one per
-// configured repo.
+// RowsFromStates evaluates config-ordered live states without reading cache.
+// Status refresh uses it so persistence failures cannot substitute stale data.
 func (a *App) RowsFromStates(states []model.RepoState) []RepoStatus {
 	now := a.Clock.Now()
 	staleAfter := a.Cfg.Global.StaleAfter.Std()
@@ -65,7 +59,6 @@ func (a *App) RowsFromStates(states []model.RepoState) []RepoStatus {
 	return rows
 }
 
-// statusRow evaluates one repo's state into a render-ready row.
 func (a *App) statusRow(now time.Time, r config.Repo, state model.RepoState, staleAfter time.Duration) RepoStatus {
 	row := RepoStatus{
 		Name:   r.Name,
@@ -78,9 +71,8 @@ func (a *App) statusRow(now time.Time, r config.Repo, state model.RepoState, sta
 	return row
 }
 
-// WorstExitCode maps a set of statuses to a process exit code: 0 if all green,
-// 1 if any amber, 2 if any red/error/grey. It is the contract `resticscope
-// status` exposes to cron and shell conditionals (plan §9).
+// WorstExitCode returns zero for green, one for any amber, and two for any red,
+// error, or grey status.
 func WorstExitCode(rows []RepoStatus) int {
 	code := 0
 	for _, r := range rows {

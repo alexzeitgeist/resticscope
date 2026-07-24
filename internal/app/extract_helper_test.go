@@ -1,11 +1,7 @@
 package app
 
-// extract_helper_test.go covers the root-side helper runtime without root and
-// without a real restic: opts.Euid is injected (the gate is tested, not the
-// kernel), OwnerUID/GID stay -1 so every chown is disabled (the ownership
-// hand-off itself is root-only behavior, covered by the manual test note in
-// docs/extract-privileged.md), and fakeRestic materializes the staging tree
-// the way the real restore would.
+// These tests inject Euid, disable chown with negative owner IDs, and materialize
+// staging with fakeRestic.
 
 import (
 	"bytes"
@@ -20,7 +16,6 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/resticx"
 )
 
-// helperPayloadFor builds a valid stdin payload for req against root.
 func helperPayloadFor(t *testing.T, req ExtractRequest, root string) []byte {
 	t.Helper()
 	req.TargetRoot = root
@@ -37,9 +32,7 @@ func helperPayloadFor(t *testing.T, req ExtractRequest, root string) []byte {
 	return b
 }
 
-// openStdin models the production stdin: the payload followed by an OPEN pipe
-// (the parent holds its end for the lifetime of the run — EOF means cancel, so
-// a plain bytes.Reader would cancel the pipeline the moment it is decoded).
+// Keep the pipe open after the payload because EOF cancels the helper.
 func openStdin(t *testing.T, payload []byte) io.Reader {
 	t.Helper()
 	pr, pw := io.Pipe()
@@ -48,7 +41,6 @@ func openStdin(t *testing.T, payload []byte) io.Reader {
 	return pr
 }
 
-// decodeHelperEvents splits the helper's NDJSON stdout into typed events.
 func decodeHelperEvents(t *testing.T, out []byte) []helperEvent {
 	t.Helper()
 	var evs []helperEvent
@@ -88,9 +80,7 @@ func TestRunExtractHelperTreeHappyPath(t *testing.T) {
 		t.Fatalf("RunExtractHelper: %v", err)
 	}
 
-	// No cache dir in the payload (and an unknown invoker): the restore must
-	// fall back to --no-cache — a root restic may not touch a cache it cannot
-	// hand back to the user.
+	// An unknown invoker cannot safely receive cache ownership, so use no-cache.
 	if !fake.extractCap.treeParams.NoCache {
 		t.Error("helper restore params: NoCache = false, want true")
 	}
@@ -116,14 +106,11 @@ func TestRunExtractHelperTreeHappyPath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(wantFinal, "nginx.conf")); err != nil {
 		t.Errorf("published file missing: %v", err)
 	}
-	// Staging container is removed after a clean publish.
 	if _, err := os.Lstat(last.Result.StagingDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("staging dir still present after publish: %v", err)
 	}
 }
 
-// cachePayloadFor is helperPayloadFor plus a cache root, for the shared-cache
-// tests.
 func cachePayloadFor(t *testing.T, req ExtractRequest, root, cacheRoot string) []byte {
 	t.Helper()
 	req.TargetRoot = root
@@ -150,8 +137,7 @@ func TestRunExtractHelperSharedCache(t *testing.T) {
 		extractTreeSetup: dirStagingSetup("nginx", nil),
 		extractCap:       &extractCapture{},
 	}
-	// A known invoker (ourselves — chown to one's own uid/gid needs no root)
-	// plus a cache root in the payload enables the shared cache.
+	// Chown to the current user needs no root and enables shared-cache testing.
 	opts := ExtractHelperOpts{Euid: 0, OwnerUID: os.Getuid(), OwnerGID: os.Getgid(), Clock: fixedClock{now}, Restic: fake}
 
 	var out bytes.Buffer
@@ -162,7 +148,6 @@ func TestRunExtractHelperSharedCache(t *testing.T) {
 	if fake.extractCap.treeParams.NoCache {
 		t.Error("helper restore params: NoCache = true, want false (shared cache)")
 	}
-	// The per-repo cache dir chain is pre-created (user-owned in production).
 	if info, err := os.Stat(resticx.RepoCacheDir(cacheRoot, "repo-a")); err != nil || !info.IsDir() {
 		t.Errorf("per-repo cache dir not pre-created: %v", err)
 	}
@@ -177,8 +162,7 @@ func TestRunExtractHelperUnknownInvokerForcesNoCache(t *testing.T) {
 		extractTreeSetup: dirStagingSetup("nginx", nil),
 		extractCap:       &extractCapture{},
 	}
-	// helperOpts leaves OwnerUID/GID at -1: with nobody to hand root-written
-	// cache entries back to, the cache root in the payload must be ignored.
+	// Negative owner IDs force no-cache because ownership cannot be returned.
 	var out bytes.Buffer
 	err := RunExtractHelper(t.Context(), openStdin(t, cachePayloadFor(t, treeReq(), root, cacheRoot)), &out, helperOpts(fake))
 	if err != nil {
@@ -192,10 +176,8 @@ func TestRunExtractHelperUnknownInvokerForcesNoCache(t *testing.T) {
 	}
 }
 
-// TestRunExtractHelperCachePathNotADir covers the prepareHelperCache gate: a
-// pre-existing file or symlink where the per-repo cache dir belongs must
-// disable the shared cache (fall back to --no-cache), never be handed to a
-// root-run restic or the recursive chown-back.
+// Files and symlinks at the cache leaf must force no-cache before root restic or
+// recursive chown-back.
 func TestRunExtractHelperCachePathNotADir(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -13,16 +13,14 @@ import (
 	"strings"
 )
 
-// diff.go holds the pure DTOs and helpers for the snapshot-diff feature: the
-// streamed NDJSON parser, the virtual-tree builder, and the modifier-bitmask
-// model. Like the rest of model/, it imports nothing from internal/ and never
-// participates in persistence — diff data lives only in the active TUI session.
+// Snapshot diff data is parsed into a virtual tree and modifier bitmasks. It
+// remains in the active TUI session and is never persisted.
 
 // ChangeType is the single primary kind chosen for color/glyph display.
 type ChangeType uint8
 
-// The ChangeType values, low to high; ChangeUnknown is the zero value. The
-// inline comment on each names the restic marker character it maps to.
+// ChangeType values are ordered from unknown to bitrot. Inline comments name
+// their restic markers.
 const (
 	ChangeUnknown      ChangeType = iota // synthetic ancestor / `?` marker
 	ChangeAdded                          // `+`
@@ -33,10 +31,8 @@ const (
 	ChangeBitrot                         // `?` reported by restic for bitrot
 )
 
-// ModifierKind is a bitmask of restic's per-change marker characters. Each
-// kind takes one bit so the multi-char modifier (e.g. `MU`, `?M`) survives
-// the parse without precedence dropouts; filter and aggregate-count semantics
-// read this bitmask, not the singular ChangeType.
+// ModifierKind is a bitmask of restic change markers, preserving every marker
+// in concatenated changes such as `M?`.
 type ModifierKind uint8
 
 // The ModifierKind bits, one per restic marker character.
@@ -49,16 +45,12 @@ const (
 	KindBitrot                               // `?`
 )
 
-// AllDiffKinds is the bitmask with every documented modifier bit set. The TUI
-// filter mask defaults to this; toggling a kind off clears its bit.
+// AllDiffKinds contains every supported modifier bit.
 const AllDiffKinds ModifierKind = KindAdded | KindRemoved | KindModified | KindMetadata | KindTypeChanged | KindBitrot
 
 // DiffEntry is one decoded `change` line from `restic diff --json`. Modifier
-// retains the raw multi-char marker for renderer use; Type is the primary
-// kind chosen for color/glyph; Kinds is the full bitmask used for filter and
-// aggregate counting. No Size field — the documented `change` schema carries
-// only message_type/path/modifier (sourcing size belongs to the metadata-join
-// follow-up).
+// retains the raw marker, Type selects its primary display kind, and Kinds
+// retains every marker for filtering and aggregation.
 type DiffEntry struct {
 	Path     string
 	Modifier string
@@ -67,20 +59,16 @@ type DiffEntry struct {
 	IsDir    bool
 }
 
-// SnapshotDiff is the terminal result of one streamed restic diff. Entries
-// are the parsed `change` records (the live stream forwards each one through
-// the onEntry callback). ParseErrors counts malformed-line tolerance so the
-// footer can surface it. No fields sourced from restic's `statistics` line —
-// UI counts come from BuildDiffTree's root aggregate so the parser is decoupled
-// from the statistics schema and survives restic-side changes to it.
+// SnapshotDiff is the result of a streamed restic diff. ParseErrors counts
+// malformed lines; aggregate counts come from BuildDiffTree rather than
+// restic's `statistics` line.
 type SnapshotDiff struct {
 	Entries     []DiffEntry
 	ParseErrors int
 }
 
-// DiffStats counts changes by kind for one directory's subtree. A multi-kind
-// entry (e.g. `MU`) contributes to each of its set kinds; no precedence is
-// applied.
+// DiffStats counts changes by kind for one directory subtree. Multi-kind
+// entries contribute to every set kind.
 type DiffStats struct {
 	Added        int
 	Removed      int
@@ -90,15 +78,14 @@ type DiffStats struct {
 	Bitrot       int
 }
 
-// Total is the sum of every counter, used to detect a dir's "all-filtered" state.
+// Total returns the sum of all counters.
 func (s DiffStats) Total() int {
 	return s.Added + s.Removed + s.Modified + s.MetadataOnly + s.TypeChanged + s.Bitrot
 }
 
-// Empty reports whether the stats carry no counters.
+// Empty reports whether the stats contain no changes.
 func (s DiffStats) Empty() bool { return s.Total() == 0 }
 
-// addKinds bumps every set-bit counter in k by 1.
 func (s *DiffStats) addKinds(k ModifierKind) {
 	if k&KindAdded != 0 {
 		s.Added++
@@ -120,8 +107,7 @@ func (s *DiffStats) addKinds(k ModifierKind) {
 	}
 }
 
-// EnabledKinds reports which DiffStats counters are >0, restricted to the
-// supplied filter mask. A dir row hides when this returns 0.
+// EnabledKinds reports which nonzero counters are included by filter.
 func (s DiffStats) EnabledKinds(filter ModifierKind) ModifierKind {
 	var out ModifierKind
 	if filter&KindAdded != 0 && s.Added > 0 {
@@ -145,9 +131,8 @@ func (s DiffStats) EnabledKinds(filter ModifierKind) ModifierKind {
 	return out
 }
 
-// DiffRow is one renderable row in a parent's listing. Type/Kinds mirror the
-// underlying entry (synthetic ancestor dirs use ChangeUnknown / zero Kinds).
-// Aggregate is the rollup info for dir rows, empty for files.
+// DiffRow is one renderable row in a parent listing. Synthetic ancestors have
+// unknown type and zero kinds; only directory rows have Aggregate values.
 type DiffRow struct {
 	Name      string
 	Path      string
@@ -158,25 +143,18 @@ type DiffRow struct {
 	Aggregate DiffStats
 }
 
-// DiffTree is the virtual tree built from a flat entry stream. Children is
-// keyed by parent dir path; the listed rows are that directory's children.
-// Aggregate carries the per-dir rollup counts used when the dir appears
-// collapsed in its own parent's listing.
+// DiffTree is the virtual tree built from flat entries. Children is keyed by
+// parent path, while Aggregate holds each directory's subtree counts.
 type DiffTree struct {
 	Children  map[string][]DiffRow
 	Aggregate map[string]DiffStats
 }
 
-// DiffRoot is the path that every absolute restic path traces back to. The TUI
-// starts navigation here.
+// DiffRoot is the root of every absolute restic path.
 const DiffRoot = "/"
 
-// ModifierString renders kinds as restic's modifier vocabulary in a fixed
-// bit-position order (+, -, M, U, T, ?). Used when a caller needs a canonical
-// rendering that depends only on the merged Kinds — e.g. a search dedup that
-// OR-merged duplicate-path records and must not let stream order decide
-// whether the marker reads "MU" or "UM". Single-record paths render restic's
-// verbatim modifier string instead, so this is not a default formatter.
+// ModifierString renders kinds in canonical restic order: +, -, M, U, T, ?.
+// It is intended for merged kinds; single records retain restic's raw marker.
 func ModifierString(kinds ModifierKind) string {
 	var b strings.Builder
 	if kinds&KindAdded != 0 {
@@ -200,12 +178,8 @@ func ModifierString(kinds ModifierKind) string {
 	return b.String()
 }
 
-// PrimaryChangeType picks the dominant ChangeType for a kinds bitmask using
-// the precedence Bitrot > TypeChanged > Removed > Added > Modified > MetadataOnly
-// — rarer / more alarming events win the one-cell glyph. Callers that already
-// hold a merged Kinds (e.g. a search dedup that OR-merged duplicate-path
-// records) use this to re-derive the primary marker so it reflects the merged
-// state instead of whichever record happened to arrive first.
+// PrimaryChangeType returns the dominant kind using the precedence Bitrot,
+// TypeChanged, Removed, Added, Modified, then MetadataOnly.
 func PrimaryChangeType(kinds ModifierKind) ChangeType {
 	switch {
 	case kinds&KindBitrot != 0:
@@ -224,10 +198,8 @@ func PrimaryChangeType(kinds ModifierKind) ChangeType {
 	return ChangeUnknown
 }
 
-// parseModifier maps restic's modifier characters to the kind bitmask and
-// picks a deterministic primary for color/glyph via PrimaryChangeType. Rows
-// still render the raw multi-char Modifier when the column has room, so the
-// user always sees the full restic vocabulary.
+// parseModifier returns the complete bitmask, its primary display kind, and
+// whether the input contained an unknown marker.
 func parseModifier(s string) (primary ChangeType, kinds ModifierKind, unknown bool) {
 	for _, r := range s {
 		switch r {
@@ -257,22 +229,16 @@ type changeMsg struct {
 	Modifier    string `json:"modifier"`
 }
 
-// diffScanBufferMax bounds the per-line scanner buffer (~1 MiB) so a
-// pathological single path errors cleanly rather than running away.
+// diffScanBufferMax caps one NDJSON line at approximately 1 MiB.
 const diffScanBufferMax = 1 << 20
 
-// diffProgressEvery coalesces onProgress callbacks: the parser ticks once per
-// this many parsed entries, so the streaming caller can drive a smooth UI
-// count without flooding it.
+// diffProgressEvery coalesces progress callbacks to avoid flooding the UI.
 const diffProgressEvery = 256
 
-// ScanDiffNDJSON reads NDJSON from r and forwards each `change` line to
-// onEntry as it arrives. It polls ctx.Err() between lines so cancellation
-// stops the scan promptly with whatever was parsed so far. onEntry returning
-// an error aborts the scan (the verbatim error is returned). Unknown
-// message_types (including the terminal `statistics` line) are skipped without
-// error. Malformed lines (JSON parse failure or missing required fields) are
-// counted into SnapshotDiff.ParseErrors and do not abort.
+// ScanDiffNDJSON forwards each NDJSON `change` record to onEntry as it arrives.
+// Cancellation returns the partial result and context error; an onEntry error
+// aborts and is returned unchanged. Unknown message types are skipped, while
+// malformed change lines increment SnapshotDiff.ParseErrors.
 func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) error, onProgress func(seen int)) (SnapshotDiff, error) {
 	var out SnapshotDiff
 	scanner := bufio.NewScanner(r)
@@ -327,8 +293,7 @@ func ScanDiffNDJSON(ctx context.Context, r io.Reader, onEntry func(DiffEntry) er
 	return out, nil
 }
 
-// ParseDiffNDJSON wraps ScanDiffNDJSON for unit tests: it runs over a byte
-// buffer with context.Background() and accumulates entries internally.
+// ParseDiffNDJSON parses buffered NDJSON and accumulates its change entries.
 func ParseDiffNDJSON(b []byte) (SnapshotDiff, error) {
 	var entries []DiffEntry
 	out, err := ScanDiffNDJSON(context.Background(), bytes.NewReader(b),
@@ -340,9 +305,8 @@ func ParseDiffNDJSON(b []byte) (SnapshotDiff, error) {
 	return out, nil
 }
 
-// newDiffEntry produces a DiffEntry from a raw path and modifier. A trailing
-// slash on the path marks a directory; it is stored stripped so all later
-// path comparisons use the canonical (no-slash) form.
+// newDiffEntry strips a directory's trailing slash so later path comparisons
+// use a canonical form.
 func newDiffEntry(rawPath, modifier string) (DiffEntry, bool) {
 	isDir := strings.HasSuffix(rawPath, "/")
 	clean := rawPath
@@ -359,21 +323,17 @@ func newDiffEntry(rawPath, modifier string) (DiffEntry, bool) {
 	}, unknown
 }
 
-// BuildDiffTree synthesizes navigation-only ancestor dirs from the flat entry
-// stream and computes per-dir aggregates. It is decoupled from restic's
-// `statistics` line so the root aggregate is the authoritative top-level count.
+// BuildDiffTree synthesizes missing ancestor directories and computes subtree
+// aggregates from flat diff entries.
 func BuildDiffTree(entries []DiffEntry) DiffTree {
-	// rows is keyed by full path so an explicit later entry can upgrade an
-	// earlier synthetic placeholder in place; children is keyed by parent dir
-	// and stores pointers into rows so the upgrade reflects in both views.
+	// Shared row pointers let explicit entries upgrade synthetic ancestors in
+	// both the path index and parent listings.
 	rows := make(map[string]*DiffRow)
 	children := make(map[string][]*DiffRow)
 
 	ensure := func(p string, isDir bool, typ ChangeType, kinds ModifierKind, modifier string) *DiffRow {
 		if existing, ok := rows[p]; ok {
-			// Upgrade in place when an explicit entry arrives for a previously-
-			// synthetic ancestor. Modified Type wins over the synthetic Unknown;
-			// Kinds OR-merges so a multi-kind explicit entry keeps every bit.
+			// Explicit entries replace synthetic type data and merge every kind.
 			prevKinds := existing.Kinds
 			if typ != ChangeUnknown {
 				existing.Type = typ
@@ -382,20 +342,13 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 			if modifier != "" {
 				existing.Modifier = modifier
 			}
-			// Duplicate-path merge (both sides carry kind bits): the row's
-			// Type/Modifier must mirror the OR-merged Kinds so the marker stays
-			// consistent with what filters and aggregates see — otherwise a
-			// later `U` overwrites an earlier `M` even though Kinds is M|U.
-			// Single-record paths keep restic's verbatim modifier string;
-			// synthetic ancestor upgrades (kinds==0) don't trigger this.
+			// Re-derive display data after merging duplicate-path kinds so later
+			// records cannot hide earlier markers.
 			if prevKinds != 0 && kinds != 0 {
 				existing.Type = PrimaryChangeType(existing.Kinds)
 				existing.Modifier = ModifierString(existing.Kinds)
 			}
-			// Only a real (non-synthetic) entry rewrites IsDir. A synthetic
-			// ancestor walk (typ==ChangeUnknown) for a child of /foo must not
-			// promote a previously-recorded file /foo into a directory, but a
-			// later explicit file entry must demote an earlier synthetic dir.
+			// Only explicit entries may change whether an existing row is a directory.
 			if typ != ChangeUnknown {
 				existing.IsDir = isDir
 			}
@@ -417,8 +370,7 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 
 	for _, e := range entries {
 		ensure(e.Path, e.IsDir, e.Type, e.Kinds, e.Modifier)
-		// Walk every ancestor up to the root; ensure is idempotent so a later
-		// explicit ancestor entry upgrades any synthetic placeholder.
+		// Ensure every ancestor up to the root.
 		for anc := DiffParentOf(e.Path); anc != ""; anc = DiffParentOf(anc) {
 			ensure(anc, true, ChangeUnknown, 0, "")
 			if anc == DiffRoot {
@@ -427,10 +379,8 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 		}
 	}
 
-	// Dedupe by path so two `change` lines for the same file don't double-count
-	// ancestor stats. Kinds OR-merge across duplicates so a `M` + `U` pair for
-	// the same path still contributes to both the Modified and MetadataOnly
-	// counters on every ancestor exactly once.
+	// Merge duplicate paths before aggregation so each kind contributes once
+	// per path to every ancestor.
 	mergedKinds := make(map[string]ModifierKind, len(entries))
 	pathOrder := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -452,8 +402,7 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 		}
 	}
 
-	// Materialize by-value rows under each parent, sorted dirs-first by name,
-	// after copying aggregates onto dir rows.
+	// Materialize by-value rows after copying directory aggregates.
 	out := DiffTree{
 		Children:  make(map[string][]DiffRow, len(children)),
 		Aggregate: aggregate,
@@ -478,40 +427,25 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 	return out
 }
 
-// DiffExtractSet is the outcome of selecting a diff subtree for extraction:
-// the per-side restic include lists plus the per-side selected-path counts the
-// extract review screen reports. First is the snapshot left of the directional
-// arrow (where `-` content lives), Second the right (where `+` content lives);
-// the both-sides kinds (M, U, T, ?) put a path on both. A side with no content
-// under the filter has a nil list and a zero count — the caller skips it.
+// DiffExtractSet holds restic include lists and selected-path counts for each
+// snapshot. Removed paths use First, added paths use Second, and other kinds
+// use both. An empty side has a nil list and zero count.
 type DiffExtractSet struct {
 	First, Second           []string
 	FirstCount, SecondCount int
 }
 
-// diffFirstSideKinds / diffSecondSideKinds map modifier bits to the snapshot
-// side(s) holding the content: a removed path exists only in the first
-// snapshot, an added one only in the second, and every other kind describes a
-// path present (in some form) on both sides.
+// These masks map modifier kinds to the snapshot sides containing the path.
 const (
 	diffFirstSideKinds  = KindRemoved | KindModified | KindMetadata | KindTypeChanged | KindBitrot
 	diffSecondSideKinds = KindAdded | KindModified | KindMetadata | KindTypeChanged | KindBitrot
 )
 
-// DiffExtractIncludes selects the changed paths at or under root that pass the
-// filter mask — the same any-enabled-bit predicate the diff view's row
-// visibility uses, so what extracts is exactly what the user sees — and splits
-// them onto the snapshot sides that hold their content. Counts are the raw
-// per-side selections; the include lists are then collapsed: a path under a
-// selected pure-added (resp. pure-removed) directory is dropped on that side,
-// because restic restores an included directory recursively and everything
-// under a pure-added dir is itself added, so the ancestor include covers the
-// whole subtree without ever pulling an unchanged sibling. Directory entries
-// carrying any other kind are never included themselves — a recursive include
-// would drag their unchanged contents along — so only their changed children
-// (which carry their own entries) extract; the dir node still materializes on
-// each side as the children's restored ancestor. Duplicate-path records are
-// OR-merged first, mirroring BuildDiffTree, so an `M`+`U` pair selects once.
+// DiffExtractIncludes selects visible changed paths at or under root and splits
+// them by snapshot side. Counts precede include-list collapsing. Pure added or
+// removed directories cover their descendants recursively; other changed
+// directories are omitted to avoid restoring unchanged contents. Duplicate
+// paths are merged before selection.
 func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) DiffExtractSet {
 	if root == "" {
 		root = DiffRoot
@@ -538,8 +472,7 @@ func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) 
 		}
 	}
 
-	// Only a filter-passing pure dir collapses its descendants: a filtered-out
-	// dir is not in the include list, so it covers nothing.
+	// Only a selected pure directory can cover its descendants.
 	pureFirst := make(map[string]bool)
 	pureSecond := make(map[string]bool)
 	for p, k := range merged {
@@ -568,8 +501,7 @@ func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) 
 		if eff == 0 {
 			continue
 		}
-		// A directory that is not purely one-sided never becomes an include
-		// itself; see the doc comment.
+		// Non-pure directories must not recursively include unchanged contents.
 		dirNonPure := isDir[p] && merged[p] != KindAdded && merged[p] != KindRemoved
 		if eff&diffFirstSideKinds != 0 {
 			out.FirstCount++
@@ -589,11 +521,8 @@ func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) 
 	return out
 }
 
-// DiffParentOf returns the parent directory path of p. It returns "" when p is
-// already the diff root, signaling "stop walking ancestors". An invalid path
-// (empty, no leading slash) also returns "" so a bad entry can't loop. Exported
-// so TUI navigation can share this canonical walk and not maintain a parallel
-// copy.
+// DiffParentOf returns the parent of an absolute diff path. It returns "" for
+// the root or an invalid path, terminating ancestor walks.
 func DiffParentOf(p string) string {
 	if p == "" || p == DiffRoot {
 		return ""
@@ -608,7 +537,6 @@ func DiffParentOf(p string) string {
 	return parent
 }
 
-// diffNameOf is the last path component (or "/" for the root).
 func diffNameOf(p string) string {
 	if p == DiffRoot || p == "" {
 		return DiffRoot
@@ -616,11 +544,10 @@ func diffNameOf(p string) string {
 	return path.Base(p)
 }
 
-// errInvalidModifier is returned by demand-parse helpers when restic emits a
-// modifier with no recognized character. Kept private to model — the parser
-// classes such lines as malformed and increments ParseErrors instead.
+// errInvalidModifier stays private to model: the parser classes an unrecognized
+// modifier as malformed and increments ParseErrors instead of returning it.
 var errInvalidModifier = errors.New("diff modifier has no recognized marker")
 
-// _ blocks the linter from complaining about an unused error; the symbol is
-// retained for documentation and a future precondition check.
+// Retained for documentation and a future precondition check; the blank
+// assignment keeps the unused-symbol linters quiet.
 var _ = errInvalidModifier

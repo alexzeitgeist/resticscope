@@ -12,14 +12,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// snapshotdiff_test.go covers the controller's three areas of interest: the
-// 2-slot mark FIFO, diffPair's ordering and ok semantics, and the round-trip
-// from detail through snapshotDiffView and back. The model package's diff_test
-// already covers BuildDiffTree, ScanDiffNDJSON, and the filter predicate; here
-// we exercise only the TUI-layer concerns.
+// These tests cover TUI diff marks, pair ordering, search, streaming, and view
+// transitions; model-level tree and parser behavior is tested separately.
 
-// openDetail enters detailView on repo-a with the default 3-snapshot fixture
-// from detailApp.
+// openDetail enters repo-a detail with the default three-snapshot fixture.
 func openDetail(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t, detailApp(t))
@@ -30,18 +26,14 @@ func openDetail(t *testing.T) Model {
 	return m
 }
 
-// drivePastDiff delivers the terminal snapshotDiffMsg produced by the
-// dispatchSnapshotDiff Cmd so the model lands on a populated diff view in one
-// step. The stub restic completes the stream synchronously, so the streamCmd
-// returns a snapshotDiffMsg directly.
+// drivePastDiff delivers the synchronous stub's terminal message to populate
+// the diff view.
 func drivePastDiff(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("expected a diff command")
 	}
-	// dispatchSnapshotDiff returns tea.Batch(streamCmd, waitForDiffProgress).
-	// We want the snapshotDiffMsg (the terminal message), so unwrap the batch
-	// and find the leaf that produces it.
+	// Select the terminal-message leaf from the stream/progress batch.
 	for _, leaf := range leafCmds(t, cmd) {
 		out := leaf()
 		if msg, ok := out.(snapshotDiffMsg); ok {
@@ -73,14 +65,13 @@ func typeDiffSearch(t *testing.T, m Model, q string) Model {
 	return m
 }
 
-// snapshotIDs returns the 3 ids in detailApp's seeded order: oldest, middle, newest.
+// snapshotIDs returns the fixture IDs in chronological order.
 func snapshotIDs(t *testing.T, m Model) (older, middle, newer string) {
 	t.Helper()
 	snaps := m.detailSnapshots()
 	if len(snaps) != 3 {
 		t.Fatalf("precondition: %d snapshots, want 3", len(snaps))
 	}
-	// detailSnapshots sorts newest first.
 	return snaps[2].ID, snaps[1].ID, snaps[0].ID
 }
 
@@ -88,13 +79,13 @@ func TestToggleDetailMarkFIFO(t *testing.T) {
 	m := openDetail(t)
 	older, middle, newer := snapshotIDs(t, m)
 
-	// Mark cursor (newest) → 1 entry.
+	// Mark cursor (newest) -> 1 entry.
 	m = update(t, m, press("t"))
 	if len(m.detailMarks) != 1 || m.detailMarks[0].ID != newer {
 		t.Fatalf("first mark = %+v, want one entry with id %q", m.detailMarks, newer)
 	}
 
-	// Move cursor and mark middle → 2 entries (newer, middle), FIFO order.
+	// Move cursor and mark middle -> 2 entries (newer, middle), FIFO order.
 	m = update(t, m, press("j"))
 	m = update(t, m, press("t"))
 	if len(m.detailMarks) != 2 ||
@@ -102,7 +93,7 @@ func TestToggleDetailMarkFIFO(t *testing.T) {
 		t.Fatalf("two marks = %+v, want [%q, %q]", m.detailMarks, newer, middle)
 	}
 
-	// Move to oldest and mark → FIFO eviction: oldest mark (newer) drops, list
+	// Move to oldest and mark -> FIFO eviction: oldest mark (newer) drops, list
 	// becomes [middle, older].
 	m = update(t, m, press("j"))
 	m = update(t, m, press("t"))
@@ -122,7 +113,7 @@ func TestDiffPairResolvesAndSortsChronologically(t *testing.T) {
 	m := openDetail(t)
 	older, _, newer := snapshotIDs(t, m)
 
-	// 0 marks → ok=false.
+	// 0 marks -> ok=false.
 	if _, _, ok := m.diffPair(); ok {
 		t.Error("0 marks: diffPair ok=true, want false")
 	}
@@ -322,13 +313,8 @@ func TestDOpensDiffViewSurfacesParseErrors(t *testing.T) {
 	}
 }
 
-// A first-time diff that fails mid-stream with entries already accumulated
-// must KEEP those entries on screen — dropping thousands of good rows because
-// one late line was malformed would be worse than rendering them with a
-// warning. The warning lives in diffErr (sticky for the tree's lifetime,
-// rendered on the summary line alongside the stats), not in statusMsg —
-// statusMsg is transient and the next j/filter/search key would clear it,
-// leaving an incomplete tree indistinguishable from a complete one.
+// A mid-stream failure keeps parsed entries and a persistent warning; a
+// transient status message could leave an incomplete tree looking complete.
 func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -363,8 +349,7 @@ func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
 	if !strings.Contains(m.diffErr, "partial: scanner: token too long") {
 		t.Errorf("partial-entry error: diffErr = %q, want sticky warning prefixed with partial:", m.diffErr)
 	}
-	// The summary line must show BOTH the warning AND the stats — replacing
-	// the stats with just the warning would hide the data the user can act on.
+	// Keep both the warning and actionable statistics visible.
 	summary := m.diffSummaryLine()
 	if !strings.Contains(summary, "partial:") {
 		t.Errorf("summary line missing partial warning: %q", summary)
@@ -373,15 +358,8 @@ func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
 		t.Errorf("summary line lost the stats next to the warning: %q", summary)
 	}
 
-	// Stickiness: the warning must survive — and remain VISIBLE — across
-	// navigation, filter, and search keys. statusMsg gets cleared by
-	// handleSnapshotDiffKey on every normal key; diffErr does not. Search
-	// mode replaces the regular summary line with diffSearchSummary, which
-	// must also surface the warning (a user finding "(no matches)" against
-	// an incomplete diff would otherwise wrongly conclude the file is
-	// absent). We assert against View() because it's the ground truth the
-	// user actually sees — checking m.diffSummaryLine() alone would have
-	// silently passed the search-mode gap.
+	// Assert through View because search replaces the normal summary; the warning
+	// must remain visible during navigation, filtering, and search.
 	for _, k := range []string{"j", "k", "+", "/"} {
 		next, _ := m.Update(press(k))
 		m = next.(Model)
@@ -394,9 +372,7 @@ func TestSnapshotDiffFirstTimeErrorWithPartialEntriesRetainsThem(t *testing.T) {
 	}
 }
 
-// A first-time diff that fails with no entries at all has nothing to render,
-// so the view must bail back to detail with the error in statusMsg. This is
-// the path the partial-entry retention deliberately does NOT take.
+// A failed first diff with no entries returns to detail with a status error.
 func TestSnapshotDiffFirstTimeErrorWithNoEntriesBailsToDetail(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -448,11 +424,8 @@ func TestSnapshotDiffSummaryShowsDirectionLegend(t *testing.T) {
 	}
 }
 
-// The summary line carries state only — the filter-toggle key hint lives in
-// the footer as one chip for the whole group (the old lone `+ added` implied
-// the other five toggles didn't exist). The active mask renders as the LAST
-// summary part, so toggling a filter appends it without shifting anything
-// already on the line.
+// Filter key hints live in one footer chip; the active mask appends to the
+// state-only summary without shifting existing fields.
 func TestSnapshotDiffFilterHintInFooterAndStableSummary(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -479,11 +452,7 @@ func TestSnapshotDiffFilterHintInFooterAndStableSummary(t *testing.T) {
 		t.Errorf("diff footer must not advertise a single toggle out of six\n---\n%s", footer)
 	}
 
-	// The grouped chip must not grow the bar past the 100-column footer budget
-	// (keys.go): the help model truncates trailing chips at width, and `q back`
-	// is last, so an oversized bar would hide the universal back affordance
-	// exactly where space is tightest. (The bar left 80 columns behind when the
-	// `e extract` action joined the view.)
+	// The grouped chip must leave the trailing q affordance visible at 100 columns.
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 40})
 	narrow := stripANSI(m.footerView())
 	for _, want := range []string{"+-MUTb filters", "q back"} {
@@ -877,7 +846,7 @@ func TestSnapshotDiffBackReturnsToDetailKeepingMarks(t *testing.T) {
 	m := newTestModel(t, a)
 	m = update(t, m, press("enter"))
 
-	// Two marks → d → diff view.
+	// Two marks -> d -> diff view.
 	m = update(t, m, press("t"))
 	m = update(t, m, press("j"))
 	m = update(t, m, press("t"))
@@ -925,7 +894,7 @@ func TestDiffFilterToggleHidesAndRestores(t *testing.T) {
 	// Two explicit entries directly under the diff root so the root listing has
 	// two file rows (a row's Kinds bitmask drives the filter predicate; dir
 	// rows would compare via their Aggregate instead, masking the filter
-	// effect we're exercising here).
+	// effect being exercised here).
 	a.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
 		diffEntries: []model.DiffEntry{
@@ -967,9 +936,7 @@ func TestDiffFilterToggleHidesAndRestores(t *testing.T) {
 }
 
 func TestSnapshotDiffSearchDedupesDuplicatePaths(t *testing.T) {
-	// Two `change` lines for the same path (a duplicate restic record) must
-	// surface as a single search hit, not two identical rows, and must count
-	// once in the total.
+	// Duplicate restic records must produce one search result and count.
 	a := detailApp(t)
 	a.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
@@ -1003,10 +970,7 @@ func TestSnapshotDiffSearchDedupesDuplicatePaths(t *testing.T) {
 }
 
 func TestSnapshotDiffSearchMergesMixedModifiersForSamePath(t *testing.T) {
-	// Two records for /etc/passwd carrying different modifiers (M then U) must
-	// rank as a single MU row with merged Kinds — matching BuildDiffTree's
-	// per-path OR-merge contract. The pre-merge step is what keeps the search
-	// marker independent of stream order and active filter.
+	// Mixed modifiers must merge before ranking, independent of order and filter.
 	a := detailApp(t)
 	a.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
@@ -1042,9 +1006,7 @@ func TestSnapshotDiffSearchMergesMixedModifiersForSamePath(t *testing.T) {
 		t.Errorf("merged Modifier = %q, want %q", row.Modifier, "MU")
 	}
 
-	// Reverse the input order: U then M. The merged Kinds is the same set, and
-	// the rendered modifier must still be the canonical "MU" — proves the
-	// marker is derived from Kinds in fixed bit order, not stream order.
+	// Reverse order must still render the canonical merged marker.
 	aRev := detailApp(t)
 	aRev.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
@@ -1070,10 +1032,7 @@ func TestSnapshotDiffSearchMergesMixedModifiersForSamePath(t *testing.T) {
 		t.Errorf("reverse-order Modifier = %q, want %q (canonical bit order)", got, "MU")
 	}
 
-	// Filter to U-only: the merged row must survive because its merged Kinds
-	// still has U set. Without the pre-merge, the first record (M) would have
-	// claimed the slot and been hidden by the U filter, swapping the visible
-	// marker depending on stream order.
+	// A U-only filter must retain the row because filtering follows the merge.
 	m = update(t, m, press("esc"))
 	m = update(t, m, press("+"))
 	m = update(t, m, press("-"))
@@ -1095,11 +1054,8 @@ func TestSnapshotDiffSearchMergesMixedModifiersForSamePath(t *testing.T) {
 }
 
 func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
-	// Contract: when existingDiffDir falls back to a parent because the search
-	// origin is gone, originCursor indexes the wrong list and must not be
-	// applied. The fallback dir owns its own cursor restoration (diffCache /
-	// selectPath / 0). We force the fallback branch by mutating the captured
-	// origin to a path the tree does not contain.
+	// When a missing origin falls back to a parent, its cursor belongs to the old
+	// list and must not override the fallback directory's restoration.
 	a := detailApp(t)
 	a.Restic = stubRestic{
 		snaps: []model.Snapshot{{Hostname: "h"}},
@@ -1130,9 +1086,7 @@ func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
 	if m.diffDir != "/var" {
 		t.Fatalf("precondition: diffDir = %q, want /var", m.diffDir)
 	}
-	// /var has /var/cache and /var/log. Land cursor on /var/log (index 1) so the
-	// captured originCursor (1) would visibly mis-restore the 3-row root listing
-	// if it leaked into the fallback path.
+	// Use a distinct /var cursor so stale restoration is observable at root.
 	m = update(t, m, press("j"))
 	if r := m.selectedDiffRow(); r == nil || r.Path != "/var/log" {
 		t.Fatalf("precondition: /var selected = %+v, want /var/log", r)
@@ -1144,8 +1098,7 @@ func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
 			m.diffSearchOrigin, m.diffSearchOrigCur)
 	}
 
-	// Force the fallback branch: origin no longer exists in the tree, so
-	// existingDiffDir resolves to /.
+	// Force the missing-origin fallback to root.
 	m.diffSearchOrigin = "/nonexistent"
 
 	m = update(t, m, press("esc"))
@@ -1153,8 +1106,7 @@ func TestCancelDiffSearchFallbackIgnoresStaleOriginCursor(t *testing.T) {
 	if m.diffDir != model.DiffRoot {
 		t.Fatalf("cancel fallback should land at root, got %q", m.diffDir)
 	}
-	// The bug would apply originCursor=1 (the /var index) to root's 3 rows; the
-	// fix lets diffCache["/"]=2 win, restoring /var as selected.
+	// Root's cached cursor must win over the stale origin cursor.
 	if m.diffCursor != 2 {
 		t.Errorf("fallback cursor = %d, want 2 (diffCache restoration, not stale originCursor=1)",
 			m.diffCursor)
@@ -1261,10 +1213,7 @@ func TestSnapshotDiffViewRenders(t *testing.T) {
 	}
 }
 
-// The search summary's two empty-state branches are user-visible feedback;
-// without coverage a future change could silently regress them to "0 matches"
-// or a blank line. Opening search with no query must render the prompt;
-// typing a query that hits nothing must render the no-match notice.
+// Search distinguishes its empty-query prompt from a query with no matches.
 func TestSnapshotDiffSearchSummaryEmptyStates(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{
@@ -1299,11 +1248,8 @@ func TestSnapshotDiffSearchSummaryEmptyStates(t *testing.T) {
 	}
 }
 
-// A user hitting ctrl+c with a diff stream still in flight must cancel that
-// stream — leaving the restic subprocess running past the UI's exit would
-// outlive the password fd's lifetime and burn S3 budget. blockingRestic
-// stalls in StreamDiff until cancelled, so a clean exit here proves the
-// HardQuit cascade reaches the diff context.
+// Hard quit must cancel an in-flight restic stream so it cannot outlive the
+// password fd or continue consuming backend resources.
 func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
 	a := detailApp(t)
 	started := make(chan struct{})
@@ -1326,9 +1272,7 @@ func TestSnapshotDiffHardQuitCancelsInFlightStream(t *testing.T) {
 		t.Fatal("expected a diff command")
 	}
 
-	// Run every leaf concurrently — one blocks in restic, another waits on the
-	// progress channel. We only forward the terminal snapshotDiffMsg, so a wait
-	// leaf returning nil doesn't satisfy the assertion below.
+	// Run stream and progress leaves concurrently, forwarding only terminal output.
 	done := make(chan tea.Msg, 1)
 	for _, c := range leafCmds(t, cmd) {
 		go func() {

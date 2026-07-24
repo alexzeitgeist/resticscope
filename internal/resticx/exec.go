@@ -9,15 +9,13 @@ import (
 	"sync"
 )
 
-// streamStderrLimit caps how much restic stderr RunStream retains. A verbose
-// restic error must neither fill the stderr pipe (which would block the stdout
-// reader) nor balloon memory, so the drain goroutine stops storing past this.
+// streamStderrLimit bounds retained stderr without blocking its pipe or growing
+// memory with hostile output.
 const streamStderrLimit = 64 << 10
 
-// ExecRunner is the production Runner. It executes the restic binary on PATH
-// and delivers the repository password through a pipe on fd 3, which the
-// environment references as RESTIC_PASSWORD_FILE=/dev/fd/3. This keeps the
-// password out of the argument list and out of /proc/<pid>/environ (plan §7).
+// ExecRunner executes restic from PATH. It supplies the repository password on
+// fd 3 through RESTIC_PASSWORD_FILE=/dev/fd/3, keeping the password out of argv
+// and the process environment.
 type ExecRunner struct{}
 
 // Run executes restic with env and args, delivering password over the fd-3
@@ -47,35 +45,23 @@ func (ExecRunner) Run(ctx context.Context, env []string, password string, args .
 	return out.Bytes(), errBuf.Bytes(), err
 }
 
-// RunStream executes restic and hands onStdout a reader over its stdout, instead
-// of buffering all output. It reuses the identical fd-3 password mechanism as
-// Run (the password never touches env or args). To avoid a stderr-pipe deadlock,
-// a goroutine drains stderr concurrently into a size-limited buffer while
-// onStdout reads stdout on the calling goroutine. When onStdout returns, leftover
-// stdout is drained so restic is never blocked on a full pipe, the process is
-// waited for, and the captured stderr plus the resulting error are returned. The
-// onStdout error takes precedence over the wait error: a deliberate cap-cancel
-// surfaces through onStdout, and the caller classifies the wait error itself.
+// RunStream passes restic's stdout to onStdout and captures bounded stderr. It
+// uses Run's fd-3 password mechanism, and callback errors take precedence over
+// process wait errors.
 func (ExecRunner) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
 	return runStreamFDs(ctx, env, password, nil, onStdout, args...)
 }
 
-// RunStreamPatterns is RunStream with one more out-of-band payload: patterns is
-// delivered to the child on fd 4 — the argv references it as /dev/fd/4 — via
-// the same pipe mechanism the password uses on fd 3. Restore include patterns
-// ride here so they touch neither argv (visible in /proc/<pid>/cmdline) nor
-// the filesystem.
+// RunStreamPatterns additionally supplies patterns on fd 4, referenced in argv
+// as /dev/fd/4. Pattern contents appear in neither argv nor the filesystem.
 func (ExecRunner) RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
 	return runStreamFDs(ctx, env, password, patterns, onStdout, args...)
 }
 
-// runStreamFDs is the shared core of RunStream / RunStreamPatterns. The
-// password pipe always occupies the fd-3 slot whenever any extra fd is wired
-// (even for an empty password) so the /dev/fd/4 reference in argv can never
-// shift. Both payloads are written from goroutines: a patterns payload larger
-// than the kernel pipe buffer would otherwise deadlock the spawn, and if the
-// child exits without reading, the deferred close of the parent's read end
-// EPIPEs the writer so the goroutine always terminates.
+// runStreamFDs reserves fd 3 whenever an extra descriptor is needed, preventing
+// the fd-4 pattern reference from shifting. Goroutine writers avoid pipe-buffer
+// deadlocks during startup; closing the read ends releases them if the child
+// exits without consuming a payload.
 func runStreamFDs(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, "restic", args...)
 	cmd.Env = env
@@ -128,8 +114,7 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 	})
 
 	cbErr := onStdout(stdout)
-	// Drain any stdout the callback left unread so restic is never wedged on a
-	// full pipe while we wait for it (e.g. after the callback hit a cap).
+	// Drain unread stdout so waiting cannot deadlock on a full child pipe.
 	_, _ = io.Copy(io.Discard, stdout)
 	waitErr := cmd.Wait()
 	wg.Wait()
@@ -140,16 +125,15 @@ func runStreamFDs(ctx context.Context, env []string, password string, patterns [
 	return errBuf.Bytes(), waitErr
 }
 
-// LimitedBuffer is a bytes.Buffer that stops accepting data past Limit bytes
-// (0 means unlimited), reporting every write as fully accepted so the writer
-// never blocks. It caps the stderr captured by RunStream and by the app's
-// privileged-helper runner — anywhere output from a hostile child process is
-// kept around.
+// LimitedBuffer retains at most Limit bytes, or unlimited bytes when Limit is
+// zero. Writes report full acceptance so hostile child output cannot block the
+// stderr drain.
 type LimitedBuffer struct {
 	buf   bytes.Buffer
 	Limit int64
 }
 
+// Write retains up to Limit bytes from p and always reports len(p) accepted.
 func (b *LimitedBuffer) Write(p []byte) (int, error) {
 	accepted := len(p)
 	if b.Limit > 0 {

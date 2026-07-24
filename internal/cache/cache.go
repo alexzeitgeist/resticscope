@@ -1,9 +1,5 @@
-// Package cache persists one model.RepoState JSON file per repository under the
-// cache directory. It is the only state resticscope writes to disk.
-//
-// Two invariants matter most: writes are atomic (write a temp file, then
-// rename), and the files never contain credentials. The second holds by design —
-// RepoState carries no secret fields — but the tests assert it anyway.
+// Package cache persists one model.RepoState JSON file per repository. Save
+// atomically replaces files on Unix, and RepoState has no credential fields.
 package cache
 
 import (
@@ -18,10 +14,9 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// ErrMiss means there is no usable cached state for a repo: either no file
-// exists or it could not be read. ErrCorrupt additionally signals that a file
-// was present but unparseable; it wraps ErrMiss, so a single errors.Is check
-// for ErrMiss covers both, while callers that want to warn can test ErrCorrupt.
+// ErrMiss reports that no usable cached state exists. ErrCorrupt identifies an
+// unparseable file and wraps ErrMiss, allowing callers to handle all misses or
+// warn specifically about corruption.
 var (
 	ErrMiss    = errors.New("cache miss")
 	ErrCorrupt = fmt.Errorf("cache file corrupt: %w", ErrMiss)

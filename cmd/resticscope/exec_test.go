@@ -97,10 +97,8 @@ func TestParseExecArgs(t *testing.T) {
 	}
 }
 
-// runExec in command mode must return the child's own exit code so it composes
-// in scripts, and 1 (with a message) when the command cannot be launched at
-// all. The session env is irrelevant to these process-level outcomes, so a bare
-// session is enough — no secrets, no repo.
+// TestRunExecExitCodes verifies command mode propagates child exit codes and
+// returns 1 when launch fails. These outcomes need no populated session.
 func TestRunExecExitCodes(t *testing.T) {
 	tests := []struct {
 		name     string

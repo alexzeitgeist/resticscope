@@ -37,9 +37,8 @@ func TestExtractRememberTargetHonorsExplicitFalse(t *testing.T) {
 	}
 }
 
-// unsafe_symlinks is enum-validated: skip/placeholder are accepted, anything else
-// is rejected. The error names the key and the allowed set but never echoes the
-// bad value.
+// UnsafeSymlinks accepts keep, skip, and placeholder. Validation errors identify
+// the key and allowed values without echoing the input.
 func TestExtractUnsafeSymlinksEnum(t *testing.T) {
 	for _, ok := range []string{"keep", "skip", "placeholder"} {
 		cfg, err := load(t, minimalTOML+"\n[extract]\nunsafe_symlinks = \""+ok+"\"\n")
@@ -64,8 +63,6 @@ func TestExtractUnsafeSymlinksEnum(t *testing.T) {
 	}
 }
 
-// A leading ~ is expanded against the home passed to Normalize, and the result
-// is absolute by the time Validate runs.
 func TestExtractTargetRootExpands(t *testing.T) {
 	cfg, err := load(t, minimalTOML+`
 [extract]
@@ -96,9 +93,7 @@ extract_timeout = "45m"
 	}
 }
 
-// A relative target_root is rejected by Validate. The error names the key but
-// must never echo the user-supplied path — the path-free discipline that governs
-// extract source/destination paths starts at config time.
+// Invalid target roots are reported without echoing the user-supplied path.
 func TestExtractTargetRootMustBeAbsolute(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [extract]
@@ -115,10 +110,7 @@ target_root = "relative/path"
 	}
 }
 
-// An explicit empty target_root is rejected, not silently defaulted. target_root
-// is seeded with the default in Decode, so an omitted key keeps the default while
-// an explicit "" overwrites it and survives to validation — distinguishable from
-// omitted, exactly like an explicit-zero timeout.
+// An explicit empty root overrides the seeded default and must fail validation.
 func TestExtractEmptyTargetRootRejected(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [extract]
@@ -132,9 +124,7 @@ target_root = ""
 	}
 }
 
-// extract_timeout is seeded with its default before decode, so an explicit 0 or
-// negative value survives into validation and is rejected rather than silently
-// defaulted — the same discipline as browse.index_timeout / diff.timeout.
+// Explicit non-positive timeouts override the seeded default and must fail validation.
 func TestExtractExplicitNonPositiveTimeoutRejected(t *testing.T) {
 	for _, bad := range []string{`"0s"`, `"-1m"`} {
 		_, err := load(t, minimalTOML+"\n[extract]\nextract_timeout = "+bad+"\n")

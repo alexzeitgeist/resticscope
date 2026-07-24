@@ -10,10 +10,7 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// combinedRunner implements both Runner and StreamRunner, modeling a single
-// fake (like the production ExecRunner) wired only as Client.Runner. It exercises
-// the preserved fallback: when Stream is unset, streamRunner uses a Runner that
-// also satisfies StreamRunner rather than failing.
+// combinedRunner exercises the StreamRunner fallback through Client.Runner.
 type combinedRunner struct{}
 
 func (*combinedRunner) Run(context.Context, []string, string, ...string) ([]byte, []byte, error) {
@@ -24,10 +21,8 @@ func (*combinedRunner) RunStream(context.Context, []string, string, func(io.Read
 	return nil, nil
 }
 
-// TestStreamRunnerSelection pins the selection precedence of streamRunner: the
-// Stream seam wins; a Runner that also implements StreamRunner is the preserved
-// fallback; a buffered-only Runner or a zero Client yields ErrNoStreamRunner
-// rather than a fabricated ExecRunner.
+// The Stream seam wins over a compatible Runner; other clients fail without
+// silently constructing an ExecRunner.
 func TestStreamRunnerSelection(t *testing.T) {
 	stream := &fakeStream{}
 	combined := &combinedRunner{}
@@ -67,9 +62,7 @@ func TestStreamRunnerSelection(t *testing.T) {
 	}
 }
 
-// TestStreamingMethodsRequireStreamRunner checks that with only a buffered-only
-// Runner wired, every streaming method returns ErrNoStreamRunner instead of
-// spawning a real restic.
+// Streaming methods reject a buffered-only Runner without spawning restic.
 func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 	c := &Client{Runner: &fakeRunner{}}
 	creds := Creds{ResticPassword: "pw"}
@@ -92,8 +85,7 @@ func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 	})
 
 	t.Run("ExtractTree", func(t *testing.T) {
-		// Valid params so arg-validation (which intentionally wins over wiring)
-		// does not short-circuit before the stream-runner check.
+		// Valid arguments reach the stream-runner check.
 		err := c.ExtractTree(t.Context(), testTarget, creds,
 			ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging"},
 			func(ExtractTreeEvent) error { return nil })

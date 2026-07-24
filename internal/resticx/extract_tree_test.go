@@ -12,12 +12,10 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// testSnapID is a concrete 64-char lowercase-hex snapshot ID (16 hex chars × 4).
 const testSnapID = "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890"
 
-// extractTreeStreamFake feeds canned NDJSON to onStdout once, mirroring
-// diffStreamFake: it records the argv/env, surfaces an onStdout (callback)
-// error, and otherwise returns the canned run error so classify can be tested.
+// extractTreeStreamFake supplies canned NDJSON, records the invocation, and
+// preserves callback or process failures.
 type extractTreeStreamFake struct {
 	data    string
 	stderr  []byte
@@ -26,14 +24,11 @@ type extractTreeStreamFake struct {
 	gotArgs []string
 	gotEnv  []string
 
-	// gotPatterns records the fd-4 payload of the most recent
-	// RunStreamPatterns call; nil when the plain RunStream path was used.
+	// gotPatterns is nil when the plain RunStream path was used.
 	gotPatterns []byte
 }
 
-// RunStreamPatterns makes the fake a PatternStreamRunner: it records the fd-4
-// payload and otherwise behaves exactly like RunStream, so the multi-include
-// tests exercise the same canned-stream plumbing.
+// RunStreamPatterns records fd-4 data before using the standard fake stream.
 func (f *extractTreeStreamFake) RunStreamPatterns(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) ([]byte, error) {
 	f.gotPatterns = patterns
 	return f.RunStream(ctx, env, password, onStdout, args...)
@@ -55,8 +50,6 @@ func (f *extractTreeStreamFake) RunStream(ctx context.Context, env []string, pas
 	}
 	return f.stderr, f.err
 }
-
-// --- argv tests (the safety-invariant core) ---------------------------------
 
 func TestBuildExtractTreeArgs(t *testing.T) {
 	tests := []struct {
@@ -80,23 +73,16 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json"},
 		},
 		{
-			// Nested single-file extract: no source rebase, the full path is the
-			// include. --include is appended after --json.
 			name: "nested file include (no source rebase)",
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "", IncludePaths: []string{"/etc/vzdump.conf"}, Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID, "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/etc/vzdump.conf"},
 		},
 		{
-			// Flattened single-file extract: <snap>:<parent> rebase plus a
-			// rebase-relative include, so the file lands directly under --target.
 			name: "flattened file include (source rebase)",
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", IncludePaths: []string{"/vzdump.conf"}, Target: "/abs/staging"},
 			want: []string{"--no-lock", "restore", testSnapID + ":/etc", "--target", "/abs/staging", "--overwrite", "never", "--json", "--include", "/vzdump.conf"},
 		},
 		{
-			// Privileged (sudo) extract: --no-cache keeps a root-run restic out of
-			// any on-disk cache (no /root duplicate, no root-owned files in the
-			// user's cache).
 			name: "no-cache (privileged extract)",
 			p:    ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/nginx", Target: "/abs/staging", NoCache: true},
 			want: []string{"--no-lock", "--no-cache", "restore", testSnapID + ":/etc/nginx", "--target", "/abs/staging", "--overwrite", "never", "--json"},
@@ -111,8 +97,7 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("args =\n  %q\nwant\n  %q", got, tt.want)
 			}
-			// Invariants restated as standalone assertions so a future refactor
-			// that still produces a "plausible" argv cannot drop one silently.
+			// Pin invariants independently of each table entry's expected argv.
 			assertNoForbiddenArgs(t, got)
 			if !slices.Contains(got, "--no-lock") {
 				t.Error("argv must always carry --no-lock")
@@ -123,7 +108,6 @@ func TestBuildExtractTreeArgs(t *testing.T) {
 			if i := slices.Index(got, "--target"); i < 0 || i+1 >= len(got) || got[i+1] != tt.p.Target {
 				t.Error("argv must carry --target <Target>")
 			}
-			// Zero or one include never produces an fd-4 pattern payload.
 			if gotPatterns != nil {
 				t.Errorf("patterns = %q, want nil for the single/zero-include shape", gotPatterns)
 			}
@@ -143,15 +127,11 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 		{"NUL in source", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/\x00ginx", Target: "/abs"}, ErrExtractInvalidSource},
 		{"non-hex snapshot", ExtractTreeParams{SnapshotID: "not-hex!", Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
 		{"latest snapshot", ExtractTreeParams{SnapshotID: "latest", Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
-		// A short ID is a valid hex prefix but must be rejected: restic would
-		// resolve it as an ambiguous prefix instead of the exact selected
-		// snapshot (00-framework.md §5 — verified long ID verbatim only).
+		// Restic may resolve a short ID ambiguously, so only the full ID is valid.
 		{"short hex ID", ExtractTreeParams{SnapshotID: testSnapID[:8], Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
 		{"over-length hex ID", ExtractTreeParams{SnapshotID: testSnapID + "ab", Source: "/etc", Target: "/abs"}, ErrExtractInvalidSnapshotID},
 		{"empty target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: ""}, ErrExtractInvalidTarget},
 		{"relative target", ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc", Target: "relative/dir"}, ErrExtractInvalidTarget},
-		// Include paths are validated by the same argv builder; "/" and an unclean
-		// path are rejected before any argv is produced.
 		{"root include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"/"}, Target: "/abs"}, ErrExtractInvalidInclude},
 		{"unclean include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"/etc/../secret"}, Target: "/abs"}, ErrExtractInvalidInclude},
 		{"non-rooted include", ExtractTreeParams{SnapshotID: testSnapID, IncludePaths: []string{"etc/x"}, Target: "/abs"}, ErrExtractInvalidInclude},
@@ -170,15 +150,10 @@ func TestBuildExtractTreeArgsRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestBuildExtractTreeArgsNoShellInterpolation pins that a previously-cleaned
-// source carrying shell metacharacters survives as the exact literal byte
-// sequence in the snap:source argv element — no expansion, quoting, escaping, or
-// splitting on ';'/'$'. The args are an []string handed straight to exec, so no
-// shell ever sees them; this test guards against a future refactor that might
-// route through a shell or re-process the path.
+// Shell metacharacters must remain literal bytes in the snap:source element.
+// The argument slice must never be routed through a shell or retokenized.
 func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
-	// Reference argv length for a plain (non-metachar) source — the metachar
-	// cases must introduce no extra tokens.
+	// Metacharacters must not add tokens relative to an ordinary source.
 	base, _, err := buildExtractTreeArgs(ExtractTreeParams{SnapshotID: testSnapID, Source: "/etc/plain", Target: "/abs"})
 	if err != nil {
 		t.Fatalf("baseline buildExtractTreeArgs: %v", err)
@@ -186,8 +161,6 @@ func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
 
 	for _, src := range []string{"/etc/$(whoami)", "/etc/foo;rm -rf .;bar", "/etc/`id`", "/etc/a|b&c"} {
 		t.Run(src, func(t *testing.T) {
-			// Sanity: these are exactly what CleanBrowsePath leaves intact, so the
-			// assert layer accepts them rather than the test pinning a fiction.
 			if src != model.CleanBrowsePath(src) {
 				t.Fatalf("test input %q is not already clean (CleanBrowsePath = %q)", src, model.CleanBrowsePath(src))
 			}
@@ -207,12 +180,8 @@ func TestBuildExtractTreeArgsNoShellInterpolation(t *testing.T) {
 	}
 }
 
-// TestBuildExtractTreeArgsIncludeLiteralEscaping is the load-bearing safety core:
-// --include is a glob pattern (filepath.Match), so a real filename carrying a
-// metacharacter (\ [ ] * ?) must be backslash-escaped to a literal or restic
-// over-matches siblings / matches the wrong node / matches nothing. The escaping
-// is per-whole-path, not just the basename — a glob char in a parent component is
-// escaped too.
+// Restic treats --include as a glob, so metacharacters must be escaped across the
+// entire path to prevent sibling overmatching or missed files.
 func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 	cases := []struct {
 		include string
@@ -222,7 +191,6 @@ func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 		{"/backup[1].txt", `/backup\[1\].txt`},
 		{"/question?.txt", `/question\?.txt`},
 		{`/slash\name`, `/slash\\name`},
-		// A glob char in a parent component proves escaping is per-whole-path.
 		{"/et[c]/x", `/et\[c\]/x`},
 	}
 	for _, c := range cases {
@@ -242,9 +210,7 @@ func TestBuildExtractTreeArgsIncludeLiteralEscaping(t *testing.T) {
 	}
 }
 
-// TestAssertCleanIncludePath pins the include-path contract: "" is allowed (no
-// filter), "/" is rejected (too broad, contradicts the one-file invariant), and
-// only a cleaned rooted non-root path is accepted.
+// Include paths may be empty or cleaned, rooted, and non-root.
 func TestAssertCleanIncludePath(t *testing.T) {
 	for _, p := range []string{"", "/vzdump.conf", "/etc/vzdump.conf", "/a*.conf", `/slash\name`} {
 		if err := assertCleanIncludePath(p); err != nil {
@@ -258,10 +224,8 @@ func TestAssertCleanIncludePath(t *testing.T) {
 	}
 }
 
-// assertNoForbiddenArgs fails if the argv contains any flag/value the framework
-// forbids for a read-only extract: a writing/deleting flag, a path filter, or
-// the "latest" pseudo-reference. It also confirms the password is never sourced
-// from a flag instead of fd 3.
+// assertNoForbiddenArgs rejects mutation, path-filter, moving-reference, and
+// password-source arguments.
 func assertNoForbiddenArgs(t *testing.T, args []string) {
 	t.Helper()
 	for _, forbidden := range []string{"--path", "--delete", "latest", "--password-file", "--password-command"} {
@@ -270,8 +234,6 @@ func assertNoForbiddenArgs(t *testing.T, args []string) {
 		}
 	}
 }
-
-// --- parser tests against captured fixtures ---------------------------------
 
 func TestExtractTreeParsesProgressFixture(t *testing.T) {
 	fs := &extractTreeStreamFake{data: string(readFixture(t, "restic-0.18-restore-progress.ndjson"))}
@@ -307,7 +269,6 @@ func TestExtractTreeParsesProgressFixture(t *testing.T) {
 	if last.Kind != ExtractTreeSummary {
 		t.Fatalf("stream must end with a summary, got kind %v", last.Kind)
 	}
-	// The captured run restored every file and byte: totals must be consistent.
 	if last.FilesRestored != last.TotalFiles || last.BytesRestored != last.TotalBytes {
 		t.Errorf("summary totals inconsistent: %+v", last)
 	}
@@ -316,9 +277,7 @@ func TestExtractTreeParsesProgressFixture(t *testing.T) {
 	}
 }
 
-// TestExtractTreeUnknownMessageSkipped pins the forward-compat rule: an unknown
-// message_type is silently skipped (not a parse error), while the known events
-// around it still parse.
+// Unknown message types are skipped without disrupting adjacent known events.
 func TestExtractTreeUnknownMessageSkipped(t *testing.T) {
 	fs := &extractTreeStreamFake{data: strings.Join([]string{
 		`{"message_type":"status","percent_done":0.5,"total_files":2,"files_restored":1,"total_bytes":20,"bytes_restored":10}`,
@@ -352,8 +311,6 @@ func TestExtractTreeMalformedJSONIsParseError(t *testing.T) {
 	}
 }
 
-// --- exit-code classification -----------------------------------------------
-
 func TestExtractTreeClassifiesExitCodes(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -383,10 +340,8 @@ func TestExtractTreeClassifiesExitCodes(t *testing.T) {
 	}
 }
 
-// TestExtractTreePartialFromSummaryThenExit1 is the real restic 0.18.1 partial
-// signal: the final summary reaches stdout (RestoreTo completed, Finish ran),
-// then restic exits 1 because some items failed (their per-item errors went to
-// stderr). Exit 1 alone is generic; the seen summary disambiguates it.
+// In restic 0.18.1, a final summary followed by exit 1 distinguishes a partial
+// restore from another generic failure.
 func TestExtractTreePartialFromSummaryThenExit1(t *testing.T) {
 	fs := &extractTreeStreamFake{
 		data: `{"message_type":"summary","total_files":9,"files_restored":7,"total_bytes":100,"bytes_restored":80}` + "\n",
@@ -401,11 +356,8 @@ func TestExtractTreePartialFromSummaryThenExit1(t *testing.T) {
 	}
 }
 
-// TestExtractTreeErrorEventMapsToPartial is the forward-compat path: if a restic
-// version routes an "error" message to stdout, the parser surfaces it as an
-// ExtractTreeError event and — even on a clean exit — the run is classified as a
-// partial restore. (restic 0.18 sends these to stderr, so this is a contract for
-// future versions, not a 0.18 capture.)
+// A future stdout error message must produce an ExtractTreeError and a partial
+// result even after a clean process exit; restic 0.18 sends these to stderr.
 func TestExtractTreeErrorEventMapsToPartial(t *testing.T) {
 	fs := &extractTreeStreamFake{data: strings.Join([]string{
 		`{"message_type":"error","error":{"message":"could not restore"},"during":"restore","item":"/etc/x"}`,
@@ -434,11 +386,7 @@ func TestExtractTreeErrorEventMapsToPartial(t *testing.T) {
 	}
 }
 
-// --- stderr sanitization (privacy) ------------------------------------------
-
-// TestExtractTreeScrubsPathsKeepsSecretMask feeds stderr carrying a secret plus
-// both the source and target paths. The returned error must show the secret's
-// redaction mask (proving the redactor still ran) yet contain neither path.
+// Redacted stderr may retain the secret mask but not source or target paths.
 func TestExtractTreeScrubsPathsKeepsSecretMask(t *testing.T) {
 	const source = "/etc/secret-dir"
 	const target = "/abs/staging/extract-7f3a"
@@ -466,9 +414,7 @@ func TestExtractTreeScrubsPathsKeepsSecretMask(t *testing.T) {
 	}
 }
 
-// TestExtractTreeDropsPathHeavyStderr asserts the residual-path guard: stderr
-// that still carries an un-enumerated path after fragment scrubbing is dropped
-// wholesale, while the *Error classification is preserved.
+// Stderr with an unknown residual path is dropped without losing classification.
 func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 	fs := &extractTreeStreamFake{
 		err:    fakeExitError(1),
@@ -492,12 +438,9 @@ func TestExtractTreeDropsPathHeavyStderr(t *testing.T) {
 	}
 }
 
-// TestExtractTreeScrubsFilePathAndBasename covers the single-file mapping's
-// privacy contract: restic echoes the real selected path AND its bare basename
-// (never the escaped pattern), and under nested mode the file's name lives only
-// in the include (Source is empty). Both the full include path and the bare
-// basename must be masked so the residual-'/' guard can't be defeated by a
-// bare-basename mention.
+// Single-file errors may contain both the selected path and its bare basename.
+// Both must be masked, including when Source is empty and only IncludePaths names
+// the file.
 func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -510,7 +453,7 @@ func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			const target = "/abs/staging/extract-7f3a"
-			// restic mentions the full selected path and, separately, the bare leaf.
+			// Exercise both full-path and bare-leaf output.
 			stderr := "Fatal: AK-LEAK-123 restoring " + c.includePath + " (item vzdump.conf) failed"
 			fs := &extractTreeStreamFake{err: fakeExitError(1), stderr: []byte(stderr)}
 			cl := &Client{
@@ -534,8 +477,6 @@ func TestExtractTreeScrubsFilePathAndBasename(t *testing.T) {
 		})
 	}
 }
-
-// --- onEvent contract & process construction --------------------------------
 
 func TestExtractTreeOnEventErrorAborts(t *testing.T) {
 	fs := &extractTreeStreamFake{data: strings.Join([]string{
@@ -581,23 +522,18 @@ func TestExtractTreePasswordOutOfBandAndBucketLookup(t *testing.T) {
 	if !strings.Contains(env, "RESTIC_PASSWORD_FILE=/dev/fd/3") {
 		t.Error("env should reference the password file on fd 3")
 	}
-	// The password must never reach the argument list either.
 	if strings.Contains(strings.Join(fs.gotArgs, " "), "super-secret-pw") {
 		t.Error("password leaked into argv")
 	}
-	// The bucket-lookup option is prepended by ExtractTree (not buildExtractTreeArgs).
 	if !slices.Equal(fs.gotArgs[:2], []string{"-o", "s3.bucket-lookup=dns"}) {
 		t.Errorf("argv must prepend the bucket-lookup option, got %q", fs.gotArgs)
 	}
 	assertNoForbiddenArgs(t, fs.gotArgs)
 }
 
-// TestBuildExtractTreeArgsMultiIncludeSplit covers the diff-extract shape:
-// file-safe patterns become the fd-4 payload (newline-joined, literal-escaped,
-// caller order) behind a single `--include-file /dev/fd/4`, while paths a
-// line-based pattern file cannot carry — '$' (env-expanded by restic), a
-// newline (line structure), edge whitespace (trimmed) — stay on argv as exact
-// elements; per-path validation still rejects the whole build.
+// Multi-include extraction sends file-safe patterns on fd 4 in caller order.
+// Paths affected by pattern-file expansion, splitting, or trimming remain exact
+// argv elements, and one invalid path rejects the build.
 func TestBuildExtractTreeArgsMultiIncludeSplit(t *testing.T) {
 	got, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
 		SnapshotID: testSnapID,
@@ -632,7 +568,6 @@ func TestBuildExtractTreeArgsMultiIncludeSplit(t *testing.T) {
 	}
 	assertNoForbiddenArgs(t, got)
 
-	// One invalid entry anywhere in the list rejects the whole build.
 	for _, bad := range []string{"", "/", "rel/x", "/a/../b"} {
 		_, patterns, err := buildExtractTreeArgs(ExtractTreeParams{
 			SnapshotID:   testSnapID,
@@ -648,12 +583,10 @@ func TestBuildExtractTreeArgsMultiIncludeSplit(t *testing.T) {
 	}
 }
 
-// TestBuildExtractTreeArgsArgvIncludeOverflow pins the only remaining argv
-// ceiling: a multi-include run whose argv-routed (non-file-safe) patterns
-// exceed the byte budget is refused with a path-free sentinel before any argv
-// is produced.
+// Oversized argv-routed patterns fail with a path-free sentinel before arguments
+// are returned.
 func TestBuildExtractTreeArgsArgvIncludeOverflow(t *testing.T) {
-	// Each path carries a '$' so it is forced onto argv; ~1 KiB × 600 > 512 KiB.
+	// Each path carries a '$' so it is forced onto argv; ~1 KiB x 600 > 512 KiB.
 	incs := make([]string, 600)
 	for i := range incs {
 		incs[i] = "/big/" + strings.Repeat("x", 1015) + "$v"
@@ -672,15 +605,10 @@ func TestBuildExtractTreeArgsArgvIncludeOverflow(t *testing.T) {
 	}
 }
 
-// TestBuildExtractTreeArgsArgvOverflowCountsFlagOverhead pins the budget's
-// accounting unit: many SHORT spillover paths must trip the overflow through
-// the per-flag execve cost ("--include" plus NUL terminators), because their
-// pattern bytes alone stay under the cap — pattern-only accounting would let
-// half a megabyte of flag overhead through and hit E2BIG at exec time.
+// Overflow accounting includes each --include flag and NUL terminator, preventing
+// many short patterns from bypassing the budget and causing E2BIG.
 func TestBuildExtractTreeArgsArgvOverflowCountsFlagOverhead(t *testing.T) {
-	// 9-byte patterns, '$'-forced onto argv: 30k × 9 = ~264 KiB of pattern
-	// bytes (inside the 512 KiB cap), but ~330 KiB of per-flag overhead on top
-	// pushes the accounted total past it.
+	// Pattern bytes fit the cap; 30,000 per-flag overhead charges exceed it.
 	incs := make([]string, 30_000)
 	for i := range incs {
 		incs[i] = fmt.Sprintf("/$%07d", i)
@@ -699,7 +627,6 @@ func TestBuildExtractTreeArgsArgvOverflowCountsFlagOverhead(t *testing.T) {
 	}
 }
 
-// TestFileSafePattern pins the split rule directly.
 func TestFileSafePattern(t *testing.T) {
 	for _, p := range []string{"/a/b", "/a/glob*", "/a/sp ace/in middle", `/a/back\slash`} {
 		if !fileSafePattern(p) {
@@ -713,9 +640,7 @@ func TestFileSafePattern(t *testing.T) {
 	}
 }
 
-// TestExtractTreeDeliversPatternsToRunner proves the dispatch: a multi-include
-// run routes through the PatternStreamRunner capability with the exact fd-4
-// payload, and the password still rides the normal out-of-band slot.
+// Multi-include runs require PatternStreamRunner and preserve exact fd-4 data.
 func TestExtractTreeDeliversPatternsToRunner(t *testing.T) {
 	fs := &extractTreeStreamFake{data: `{"message_type":"summary","files_restored":2}` + "\n"}
 	cl := &Client{Stream: fs}
@@ -740,8 +665,7 @@ func TestExtractTreeDeliversPatternsToRunner(t *testing.T) {
 	}
 }
 
-// TestExtractTreePatternsRequireCapableRunner: a runner without the fd-4
-// capability cannot silently drop the include selection — the run is refused.
+// A runner without fd-4 support must reject rather than drop include selection.
 func TestExtractTreePatternsRequireCapableRunner(t *testing.T) {
 	cl := &Client{Stream: plainStreamFake{}}
 	err := cl.ExtractTree(t.Context(), testTarget, Creds{ResticPassword: "pw"},
@@ -756,7 +680,6 @@ func TestExtractTreePatternsRequireCapableRunner(t *testing.T) {
 	}
 }
 
-// plainStreamFake is a StreamRunner WITHOUT the PatternStreamRunner capability.
 type plainStreamFake struct{}
 
 func (plainStreamFake) RunStream(ctx context.Context, env []string, password string, onStdout func(io.Reader) error, args ...string) ([]byte, error) {

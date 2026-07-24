@@ -2,12 +2,10 @@ package model
 
 import "time"
 
-// Status is the health classification of a repository. It is rendered as a
-// glyph in the TUI and as a word by `resticscope status`.
+// Status is a repository health classification.
 type Status string
 
-// The Status values; the inline comment on each gives the condition
-// EvaluateStatus assigns it for.
+// The Status values, each commented with the condition EvaluateStatus assigns it for.
 const (
 	StatusGreen Status = "green" // last snapshot within expected_frequency
 	StatusAmber Status = "amber" // within expected_frequency + stale_grace
@@ -16,24 +14,16 @@ const (
 	StatusError Status = "error" // the last refresh returned an error
 )
 
-// StatusParams are the thresholds that turn observed state into a Status. They
-// are derived from config by the caller; EvaluateStatus itself reads no config.
+// StatusParams contains the thresholds used to classify repository health.
 type StatusParams struct {
 	ExpectedFrequency time.Duration // a snapshot is expected at least this often
 	StaleGrace        time.Duration // additional slack before green/amber becomes red
 	LockMaxAge        time.Duration // a lock older than this is treated as red
 }
 
-// EvaluateStatus is the core product behavior: a pure function from thresholds
-// and observed state to a health classification. It performs no I/O, reads no
-// environment, and does not log. Keep it that way (engineering rules, Rule 7).
-//
-// Precedence, highest first:
-//  1. a recorded refresh error          -> error
-//  2. never refreshed                   -> grey
-//  3. a lock held longer than LockMaxAge -> red
-//  4. refreshed but no snapshots exist  -> red
-//  5. otherwise classify by snapshot age against ExpectedFrequency (+grace)
+// EvaluateStatus classifies observed repository state. Precedence is refresh
+// error, never refreshed, stale lock, no snapshots, then snapshot age against
+// ExpectedFrequency and StaleGrace.
 func EvaluateStatus(now time.Time, p StatusParams, s RepoState) Status {
 	if s.LastError != "" {
 		return StatusError

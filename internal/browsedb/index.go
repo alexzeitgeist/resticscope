@@ -12,19 +12,14 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// diskCheckRows is the coarse cadence (in accepted Add calls) at which the disk
-// ceiling is re-measured during indexing. The ceiling is a safety cap with
-// bounded overshoot between checks, not a precise quota, so a per-node stat is
-// deliberately avoided; Commit always checks once more before marking indexed.
+// diskCheckRows bounds disk-limit overshoot between periodic Add checks.
+// Commit checks again before marking the snapshot indexed.
 const diskCheckRows = 10000
 
-// errAlreadyIndexed is the path-free sentinel BeginIndex returns when a
-// (repo,snapshot) is already committed. The app gates on IsIndexed under its
-// session operation lock, so this is the defensive path that preserves the "no
-// silent replace" contract.
+// errAlreadyIndexed prevents BeginIndex from replacing a committed snapshot.
+// It contains no repository or snapshot identifiers.
 var errAlreadyIndexed = errors.New("snapshot already indexed")
 
-// nodeRow is one buffered row awaiting a batched flush.
 type nodeRow struct {
 	parentDID      int64
 	name           string
@@ -41,9 +36,8 @@ type nodeRow struct {
 	nameCI         string
 }
 
-// dirRow is one buffered directory awaiting a batched flush. parentDID is kept
-// in memory only (for the bottom-up subtree-size fold at Commit); subtreeSize is
-// set just before the flush and is the only one of the two persisted.
+// dirRow retains parentDID for Commit's bottom-up size fold; only subtreeSize is
+// persisted.
 type dirRow struct {
 	did         int64
 	parentDID   int64
@@ -51,41 +45,36 @@ type dirRow struct {
 	subtreeSize int64
 }
 
-// IndexTx is a single, terminal index transaction for one (repo, snapshot). Add
-// buffers rows and flushes them in bounded multi-row batches; Commit marks the
-// snapshots row indexed (sets indexed_at_unix) and commits atomically, so a
-// snapshot is marked indexed only on a clean, complete pass. Once any
-// Add/flush/check fails the tx is poisoned: it holds that path-free error and
-// every later Add/Commit returns it, while Rollback stays safe and idempotent.
+// IndexTx is a terminal index transaction for one repository snapshot. Commit
+// marks the snapshot indexed atomically after all buffered rows are written.
+// The first failure is retained and returned by later Add and Commit calls;
+// Rollback remains idempotent.
 type IndexTx struct {
 	db       *DB
 	tx       *sql.Tx
 	repo     string
 	snapshot string
-	sid      int64 // allocated in BeginIndex; never leaks through the app API
+	sid      int64 // allocated by BeginIndex; never exposed through the app API
 
 	buf             []nodeRow
 	dirBuf          []dirRow
 	insertStmt      *sql.Stmt
 	dirInsertStmt   *sql.Stmt
-	count           int // accepted Add calls, for progress reporting
+	count           int // accepted Add calls
 	insertedRows    int64
 	nextDID         int64
-	firstDID        int64   // first did allocated in this tx (== rootDID); dids are contiguous [firstDID..nextDID-1]
-	subtreeSizes    []int64 // accumulated recursive file bytes per dir, indexed by did-firstDID
+	firstDID        int64   // root ID; this transaction's IDs are contiguous from here
+	subtreeSizes    []int64 // recursive file bytes indexed by did-firstDID
 	sinceDiskCheck  int
 	dirs            map[string]int64
 	cachedParent    string
 	cachedParentDID int64
-	failed          error // sticky, path-free; set on first failure
+	failed          error // first path-free failure
 }
 
-// BeginIndex starts an index transaction for (repo, snapshot). The caller must
-// Commit on a complete stream or Rollback on cancel/error/incomplete. It allocates
-// the sid in-tx (so a rolled-back run discards the reserved row → no orphans). The
-// idx_nodes_dir index is left in place and maintained incrementally as rows are
-// inserted — deliberately not dropped here, because a deferred post-load rebuild
-// would sort the whole snapshot in the capped wasm heap and OOM.
+// BeginIndex starts an index transaction for a repository snapshot. The caller
+// must Commit a complete stream or Rollback after cancellation, failure, or an
+// incomplete stream. Rollback also discards the transaction's reserved ID.
 func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, error) {
 	tx, err := db.pool.BeginTx(ctx, nil)
 	if err != nil {
@@ -108,16 +97,12 @@ func (db *DB) BeginIndex(ctx context.Context, repo, snapshot string) (*IndexTx, 
 		return nil, err
 	}
 	itx.cacheParent("/", rootDID)
-	// Dir rows are held in memory until Commit (their subtree sizes are folded
-	// bottom-up there), so there is no mid-stream flush here.
+	// Retain directories until Commit can fold their subtree sizes.
 	return itx, nil
 }
 
-// allocSID resolves or reserves the integer sid for (repo, snapshot) inside the
-// index tx, without ON CONFLICT or RETURNING (avoiding any ncruces dialect edge).
-// A committed row (indexed_at_unix NOT NULL) returns errAlreadyIndexed; a leftover
-// NULL reservation (shouldn't occur — a rolled-back run discards its own row) is
-// reused; otherwise a fresh row is inserted and last_insert_rowid() taken as sid.
+// allocSID reuses an uncommitted reservation or inserts a new snapshot ID.
+// Committed reservations return errAlreadyIndexed.
 func (itx *IndexTx) allocSID(ctx context.Context) error {
 	var (
 		sid       int64
@@ -149,6 +134,7 @@ func (itx *IndexTx) allocSID(ctx context.Context) error {
 	}
 }
 
+// initNextDID starts allocation after the largest persisted directory ID.
 func (itx *IndexTx) initNextDID(ctx context.Context) error {
 	var maxDID int64
 	if err := itx.tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(did), 0) FROM dirs`).Scan(&maxDID); err != nil {
@@ -158,15 +144,13 @@ func (itx *IndexTx) initNextDID(ctx context.Context) error {
 	return nil
 }
 
-// ensureCleanDir resolves or reserves an interned directory path for this
-// snapshot. New dirs are assigned dids in Go and written in batches to avoid a
-// SELECT/INSERT wasm round-trip per unique directory.
+// ensureCleanDir interns a cleaned directory path for this snapshot. Assigning
+// IDs in Go avoids a database round trip per unique directory.
 func (itx *IndexTx) ensureCleanDir(ctx context.Context, p string) (int64, error) {
 	if did, ok := itx.dirs[p]; ok {
 		return did, nil
 	}
-	// The root's parent is 0 (no parent); every other dir records its parent did so
-	// Commit can fold subtree sizes bottom-up.
+	// Parent ID zero terminates Commit's bottom-up fold at the root.
 	var parentDID int64
 	if p != "/" {
 		var err error
@@ -178,8 +162,7 @@ func (itx *IndexTx) ensureCleanDir(ctx context.Context, p string) (int64, error)
 	itx.nextDID++
 	itx.dirs[p] = did
 	itx.dirBuf = append(itx.dirBuf, dirRow{did: did, parentDID: parentDID, path: p})
-	// Keep the accumulator slot index equal to did-firstDID; dir rows are flushed
-	// only at Commit so the buffer is never trimmed mid-stream.
+	// Directory IDs stay aligned with accumulator offsets until Commit.
 	itx.subtreeSizes = append(itx.subtreeSizes, 0)
 	return did, nil
 }
@@ -202,6 +185,7 @@ func (itx *IndexTx) cacheParent(parent string, did int64) {
 	itx.cachedParentDID = did
 }
 
+// sameParentPath reports whether p is an immediate child of parent.
 func sameParentPath(p, parent string) bool {
 	if parent == "" {
 		return false
@@ -215,13 +199,9 @@ func sameParentPath(p, parent string) bool {
 	return !strings.Contains(p[len(parent)+1:], "/")
 }
 
-// Add buffers one node for insertion. It cleans the path, skips the root record
-// (root is never its own child), resolves the parent directory ID, ensures a dir
-// ID for directory nodes, derives name/name_ci/type, normalizes is_dir, and
-// records mtime as Unix seconds + zone offset + a known flag (a zero time.Time
-// stores mtime_known=0 and can't round-trip through UnixNano). When the buffer
-// reaches batchRows it flushes; the disk ceiling is re-checked on the
-// diskCheckRows cadence.
+// Add buffers a node for insertion, skipping the root record. It preserves an
+// unknown modification time separately from the Unix timestamp and checks the
+// disk ceiling periodically.
 func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	if itx.failed != nil {
 		return itx.failed
@@ -286,16 +266,12 @@ func (itx *IndexTx) Add(ctx context.Context, n model.BrowseNode) error {
 	return nil
 }
 
-// Count reports the number of accepted Add calls, for live progress. The final
-// committed row count is tracked from successful inserts.
+// Count reports the number of accepted Add calls, for live progress.
 func (itx *IndexTx) Count() int { return itx.count }
 
-// foldSubtreeSizes rolls each directory's accumulated file bytes up into all of
-// its ancestors and stamps the total onto every buffered dir row. dirBuf is in
-// did-ascending order (ensureCleanDir assigns a child a strictly larger did than
-// its parent), so iterating in reverse visits children before parents: adding a
-// child's complete subtree to its parent is therefore safe in a single pass. The
-// root (parentDID 0, below firstDID) has no parent to add into.
+// foldSubtreeSizes writes recursive file totals into buffered directories.
+// Descending IDs visit every child before its parent; parent ID zero terminates
+// the fold at the root.
 func (itx *IndexTx) foldSubtreeSizes() {
 	for i := len(itx.dirBuf) - 1; i >= 0; i-- {
 		did := itx.dirBuf[i].did
@@ -324,12 +300,9 @@ func (itx *IndexTx) checkDisk() error {
 	return nil
 }
 
-// Commit is terminal: it flushes the final batch, re-checks the disk ceiling,
-// stores the successful insert count, marks the snapshots row indexed in the same
-// tx, and commits. Any failure rolls back the underlying tx and returns the
-// path-free error without marking the snapshot indexed. The index is maintained
-// incrementally during the load (see BeginIndex), so there is no post-load
-// rebuild here.
+// Commit is terminal: it flushes the final batch, folds subtree sizes, re-checks
+// the disk ceiling, marks the snapshots row indexed in the same tx, and commits.
+// Any failure rolls back and returns the path-free error without marking indexed.
 func (itx *IndexTx) Commit(ctx context.Context) error {
 	if itx.failed != nil {
 		_ = itx.tx.Rollback()

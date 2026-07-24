@@ -1,8 +1,6 @@
-// Package config loads and validates resticscope's TOML configuration.
-//
-// It never holds secrets, since credentials and restic passwords come from the
-// secrets_command (see internal/secrets), not from this file. Config only
-// describes which repos exist and what is expected of them.
+// Package config loads and validates resticscope's TOML configuration. It
+// contains repository metadata but never credentials or restic passwords,
+// which come from secrets_command through internal/secrets.
 package config
 
 import (
@@ -17,13 +15,10 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/theme"
 )
 
-// Config is the fully parsed, normalized, validated configuration.
-//
-// There is no separate credentials section: a repo names the secret env-var set
-// it needs with `credential = "..."` (see Repo.Credential), and that reference
-// is the declaration. CredentialNames derives the set of names the
-// secrets_command must provide. Repos are decoded from their `[repos.<name>]`
-// tables and assembled in Decode — see the Repos field.
+// Config is a parsed, normalized, validated configuration containing no
+// credentials. There is no credentials section: a repo's `credential = "..."`
+// reference is the declaration, and CredentialNames derives the set the
+// secrets_command must provide.
 type Config struct {
 	Global  Global  `toml:"global"`
 	Browse  Browse  `toml:"browse"`
@@ -31,44 +26,27 @@ type Config struct {
 	Extract Extract `toml:"extract"`
 	Theme   Theme   `toml:"theme"`
 
-	// Repos is the file-ordered repo list. It is not decoded directly (hence
-	// `toml:"-"`): TOML yields the `[repos.<name>]` tables as an unordered map,
-	// so Decode assembles this slice in file order and resolves profile
-	// inheritance before any other code sees it.
+	// Repos lists repositories in file order after profile inheritance is resolved.
+	// It is `toml:"-"` because TOML yields the `[repos.<name>]` tables unordered,
+	// so Decode assembles the slice itself.
 	Repos []Repo `toml:"-"`
 }
 
-// Theme selects the TUI color theme: one of the built-in palettes compiled
-// into the binary (internal/theme — no theme files ship beside it), optionally
-// adjusted per role through [theme.colors]. Overriding every role on top of
-// any base yields a fully custom theme. Name is seeded to theme.DefaultName in
-// Decode (so an explicit `name = ""` survives to be rejected); name and colors
-// are checked in Validate so a typo'd theme or color fails at startup instead
-// of rendering black.
-//
-// Background controls whether the TUI paints the terminal's default
-// background/foreground (OSC 11/10) with the theme's bg/fg while it runs —
-// required for a theme to look right on a terminal with a different scheme
-// (e.g. a light theme on a dark terminal). Default true; set false to keep the
-// terminal's own background (transparency, a matching terminal theme) and use
-// only the foreground colors. Seeded true in Decode because a plain bool
-// cannot distinguish an absent key from an explicit `false` afterward.
+// Theme selects a built-in TUI palette with optional per-role overrides.
+// Background defaults to true and controls OSC 11/10 painting of terminal
+// defaults. Disabling it retains terminal transparency or an existing matching
+// theme while palette foreground colors still apply. Invalid names and colors
+// fail validation.
 type Theme struct {
 	Name       string      `toml:"name"`
 	Background bool        `toml:"background"`
 	Colors     ThemeColors `toml:"colors"`
 }
 
-// ThemeColors holds optional per-role color overrides applied on top of the
-// named base palette. An empty field keeps the base color. Values are "#rgb" /
-// "#rrggbb" hex, an ANSI-256 code "0"–"255" (which inherits the terminal's
-// own palette for that slot), or the keyword "default" (the terminal's
-// default color, rendered unstyled — the basis of the built-in "terminal"
-// theme). For Bg/Fg the ANSI and "default" forms additionally skip the
-// terminal-default painting of that channel even when Background is true,
-// because OSC 10/11 take a concrete color, not a palette index — the
-// terminal's existing default already is that color. The role vocabulary is
-// documented on theme.Palette.
+// ThemeColors contains optional role overrides; empty fields retain base colors.
+// Values accept "#rgb", "#rrggbb", ANSI-256 indexes "0"-"255", or "default".
+// For Bg and Fg, ANSI and default values also disable OSC terminal-default
+// painting. See theme.Palette for role semantics.
 type ThemeColors struct {
 	Bg     string `toml:"bg"`
 	Fg     string `toml:"fg"`
@@ -82,10 +60,9 @@ type ThemeColors struct {
 	Orange string `toml:"orange"`
 }
 
-// Palette resolves the configured theme to the concrete palette the TUI
-// renders with: the named built-in base with every non-empty override applied
-// on top. An unknown name falls back to the default palette so a Config that
-// skipped Normalize/Validate (tests, zero values) still renders sanely.
+// Palette resolves the named base theme with non-empty overrides applied.
+// Unknown names use the default palette so zero-value or unvalidated
+// configurations still render.
 func (t Theme) Palette() theme.Palette {
 	p, ok := theme.Lookup(t.Name)
 	if !ok {
@@ -110,73 +87,55 @@ func (t Theme) Palette() theme.Palette {
 	return p
 }
 
-// Browse bounds the in-app snapshot file browser. The first time a snapshot is
-// browsed its whole namespace is streamed once into a session-scoped,
-// encrypted-at-rest SQLite DB, and all later navigation is served from SQL.
-// IndexTimeout caps how long that one-time index may run (generous, because a
-// huge snapshot can take minutes). MaxDiskBytes is an optional session-wide
-// ceiling on the total size of the encrypted browse directory — 0 means
-// unlimited — enforced by the browse store across every repo/snapshot indexed
-// during the run, not by resticx. Filenames are persisted only in that encrypted
-// DB and destroyed on clean exit.
+// Browse configures snapshot browsing. IndexTimeout caps namespace indexing;
+// MaxDiskBytes caps encrypted browse storage for the process, with zero meaning
+// unlimited.
 type Browse struct {
 	IndexTimeout Duration `toml:"index_timeout"`
 	MaxDiskBytes ByteSize `toml:"max_disk_bytes"`
 }
 
-// Diff bounds the in-app snapshot diff stream. Diffing two large snapshots can
-// legitimately take longer than cheap restic probes such as snapshots/cat, so it
-// has its own timeout instead of sharing global.restic_command_timeout.
+// Diff configures snapshot diffing with an independent timeout for operations
+// that can outlast global restic probes.
 type Diff struct {
 	Timeout Duration `toml:"timeout"`
 }
 
-// The allowed [extract] unsafe_symlinks policy values. Validate rejects
-// anything else; the app's metadata pass and the TUI's success-screen warning
-// both branch on these constants, so the enum lives here with the field.
+// The UnsafeSymlinks constants define values accepted by Validate.
 const (
-	UnsafeSymlinksKeep        = "keep"        // leave verbatim + warn (default, restic-faithful)
-	UnsafeSymlinksSkip        = "skip"        // remove from the output
-	UnsafeSymlinksPlaceholder = "placeholder" // replace with an inert text file recording the target
+	UnsafeSymlinksKeep        = "keep"        // preserve the link and warn (default; matches restic)
+	UnsafeSymlinksSkip        = "skip"        // omit the link from output
+	UnsafeSymlinksPlaceholder = "placeholder" // replace the link with a text file containing its target
 )
 
-// Extract bounds the in-app extract feature, which copies a file, directory, or
-// (later) full snapshot out of a backup with a read-only restic invocation and
-// writes it to the local filesystem. TargetRoot is the base directory for every
-// extract's per-op output subdir; it is stored expanded and absolute after
-// Normalize/Validate. ExtractTimeout caps a single extract run — extracting a
-// large tree can take minutes, so it has its own timeout instead
-// of sharing global.restic_command_timeout.
+// Extract configures local extraction through read-only restic invocations.
+// TargetRoot is normalized to an expanded absolute base directory, and
+// ExtractTimeout caps each restore.
 type Extract struct {
 	TargetRoot     string   `toml:"target_root"`
 	ExtractTimeout Duration `toml:"extract_timeout"`
 
-	// UnsafeSymlinks is the policy for a restored symlink whose target is absolute
-	// or escapes the extracted tree (and so would alias the live filesystem):
-	// "keep" (default; leave verbatim + warn, matching restic), "skip" (remove from
-	// the output), or "placeholder" (replace with an inert text file recording the
-	// target). Validated against that enum; defaulted in Decode.
+	// UnsafeSymlinks controls absolute or escaping restored links. Decode defaults
+	// it to UnsafeSymlinksKeep, and Validate accepts only those constants.
 	UnsafeSymlinks string `toml:"unsafe_symlinks"`
 
-	// RememberTarget keeps the target root the last extract run dispatched with
-	// as the default for the next extract, for the lifetime of one TUI process
-	// (in memory only — never persisted). Default true; seeded pre-decode like
-	// every default-true bool so an explicit `false` stays distinguishable.
+	// RememberTarget reuses the last extract root for the process lifetime. It
+	// defaults to true and is never persisted.
 	RememberTarget bool `toml:"remember_target"`
 }
 
 // Global holds process-wide settings.
 type Global struct {
-	Parallelism       int      `toml:"parallelism"`
+	Parallelism       int      `toml:"parallelism"` // Parallelism limits concurrent repository checks and refreshes; it defaults to 4.
 	CacheDir          string   `toml:"cache_dir"`
 	LogFile           string   `toml:"log_file"`
-	RefreshOnOpen     bool     `toml:"refresh_on_open"`
-	Shell             string   `toml:"shell"`
-	ShellPasswordMode string   `toml:"shell_password_mode"`
-	SecretsCommand    string   `toml:"secrets_command"`
-	GroupBy           []string `toml:"group_by"` // repo label keys the list view can group by; `g` cycles through them and a flat view, in list order. Empty = no grouping.
+	RefreshOnOpen     bool     `toml:"refresh_on_open"`     // RefreshOnOpen refreshes never-seen or stale repositories when the TUI opens; it defaults to true.
+	Shell             string   `toml:"shell"`               // Shell selects the interpreter for SecretsCommand and interactive sessions; empty uses $SHELL, then /bin/sh.
+	ShellPasswordMode string   `toml:"shell_password_mode"` // ShellPasswordMode is "file" (default) for a private temporary file or "env" for RESTIC_PASSWORD.
+	SecretsCommand    string   `toml:"secrets_command"`     // SecretsCommand runs through Shell and must emit one secrets JSON document on stdout.
+	GroupBy           []string `toml:"group_by"`            // label keys available for grouping in order; empty disables it
 
-	// Durations are TOML strings like "10m", "24h".
+	// Duration fields accept Go duration strings such as "10m" or "24h".
 	StaleAfter            Duration `toml:"stale_after"`             // cache entries older than this are refreshed on open
 	StaleGrace            Duration `toml:"stale_grace"`             // amber band added on top of a repo's expected_frequency
 	LockMaxAge            Duration `toml:"lock_max_age"`            // a lock older than this is treated as red
@@ -184,44 +143,26 @@ type Global struct {
 	ResticCommandTimeout  Duration `toml:"restic_command_timeout"`  // timeout for each restic invocation
 }
 
-// Repo is a single restic repository plus the expected_frequency that drives
-// its freshness status. Where it lives is described one of two ways, exactly
-// one per repo:
-//
-//   - url: the restic repository string, verbatim, for any backend restic
-//     supports — "/srv/restic-repo", "sftp:user@host:/srv/restic-repo",
-//     "rest:https://host:8000/repo", "b2:bucket:path", "azure:container:/",
-//     "gs:bucket:/", "swift:container:/", "rclone:remote:path", or a
-//     spelled-out "s3:..." URL. A leading ~ is expanded against $HOME.
-//   - the s3 shorthand: endpoint (+ optional region and bucket_lookup) and
-//     bucket (+ optional path), from which resticscope assembles the s3 URL.
-//     Endpoint/region/bucket_lookup live here, not on the credential, so one
-//     key pair can back buckets in several regions.
-//
-// credential names the secret env-var set restic gets for this repo; it is
-// optional because some backends need none (local, sftp via ssh config or
-// agent, rclone via its own config). env carries non-secret backend env vars
-// (e.g. GOOGLE_PROJECT_ID, AZURE_ACCOUNT_NAME — secrets stay in the
-// credential); options carries restic -o backend options verbatim (e.g.
-// "sftp.command", "rest.connections").
+// Repo describes one restic repository and its freshness expectations. It uses
+// either URL verbatim, with a leading ~ expanded, or S3 shorthand fields. S3
+// endpoint and region belong to the repository so one credential can span
+// regions. Credential names an optional secret environment set; Env remains
+// non-secret, and Options passes restic -o values verbatim.
 type Repo struct {
-	// Name is the final component of the repo's table header (`[repos.<name>]`),
-	// assigned in Decode — a literal `name = ...` inside a repo table is rejected.
-	// Profile names a `[profiles.<name>]` table whose fields this repo inherits
-	// (optional); it is resolved away in Decode, leaving every field merged.
+	// Name comes from the final repo table component; a literal name field is
+	// rejected. Profile optionally names inherited settings and is resolved by Decode.
 	Name       string `toml:"name"`
 	Profile    string `toml:"profile"`
 	Credential string `toml:"credential"`
 
-	// Generic form: the restic repository string, any backend.
+	// URL is the restic repository string for any backend.
 	URL string `toml:"url"`
 
-	// Non-secret backend env vars and -o options, passed to restic verbatim.
+	// Env holds non-secret backend variables; Options holds restic -o values.
 	Env     map[string]string `toml:"env"`
 	Options map[string]string `toml:"options"`
 
-	// S3 shorthand. endpoint/bucket(+path) assemble the s3 URL, region becomes
-	// AWS_DEFAULT_REGION, bucket_lookup becomes -o s3.bucket-lookup.
+	// S3 shorthand fields assemble the URL, AWS_DEFAULT_REGION, and bucket lookup.
 	Endpoint     string `toml:"endpoint"`
 	Region       string `toml:"region"`
 	Bucket       string `toml:"bucket"`
@@ -232,19 +173,15 @@ type Repo struct {
 	Labels            map[string]string `toml:"labels"`
 }
 
-// knownBackendSchemes are the repository-string schemes restic understands.
-// Validate checks an explicit url against this set so a typo'd scheme fails at
-// startup instead of as a cryptic restic error mid-refresh.
+// knownBackendSchemes lists repository URL schemes accepted by Validate.
 var knownBackendSchemes = map[string]bool{
 	"local": true, "sftp": true, "rest": true, "s3": true, "swift": true,
 	"b2": true, "azure": true, "gs": true, "rclone": true,
 }
 
-// RepositoryURL returns the restic repository string (RESTIC_REPOSITORY) for
-// the repo: url verbatim when set, otherwise the URL assembled from the s3
-// shorthand. The endpoint scheme is preserved — restic needs https:// to talk
-// to non-AWS endpoints like Hetzner (plan §7). Assembled form:
-// s3:https://host[:port]/bucket[/path].
+// RepositoryURL returns URL verbatim when set or assembles an S3 URL from
+// shorthand fields. It preserves endpoint schemes required by non-AWS HTTPS
+// endpoints.
 func (r Repo) RepositoryURL() string {
 	if r.URL != "" {
 		return r.URL
@@ -257,9 +194,8 @@ func (r Repo) RepositoryURL() string {
 	return u
 }
 
-// Backend returns the repo's restic backend scheme ("s3", "sftp", ...), or
-// "local" for a bare filesystem path. Display-only; derived from the
-// repository string so the two can never disagree.
+// Backend returns the restic backend scheme, or "local" for a bare filesystem
+// path. It is derived from RepositoryURL for display.
 func (r Repo) Backend() string {
 	if scheme, _, ok := strings.Cut(r.RepositoryURL(), ":"); ok && knownBackendSchemes[scheme] {
 		return scheme
@@ -267,9 +203,8 @@ func (r Repo) Backend() string {
 	return "local"
 }
 
-// BackendOptions returns every restic -o option for the repo: the options map
-// plus the s3 shorthand's bucket_lookup (dns/path only — auto is restic's
-// default and is not emitted). Returns nil when there are none.
+// BackendOptions returns Options plus a dns or path S3 bucket lookup. The auto
+// value is omitted so restic uses its default; the result is nil when empty.
 func (r Repo) BackendOptions() map[string]string {
 	var out map[string]string
 	if len(r.Options) > 0 {
@@ -285,11 +220,8 @@ func (r Repo) BackendOptions() map[string]string {
 	return out
 }
 
-// BackendEnv returns the repo's non-secret backend env vars: the env map plus
-// the s3 shorthand's region as AWS_DEFAULT_REGION (omitted when empty — the
-// endpoint host usually implies it, and restic must not see an empty value).
-// Returns nil when there are none. Secret env vars come from the credential
-// (internal/secrets), never from here.
+// BackendEnv returns Env plus a non-empty S3 region as AWS_DEFAULT_REGION. The
+// result is nil when empty; secret variables come only from internal/secrets.
 func (r Repo) BackendEnv() map[string]string {
 	var out map[string]string
 	if len(r.Env) > 0 {
@@ -305,12 +237,9 @@ func (r Repo) BackendEnv() map[string]string {
 	return out
 }
 
-// CredentialNames returns, in first-reference order, the distinct credential
-// names the repos use. Credentials are not declared separately: a repo names the
-// secret env-var set it needs with `credential = "..."`, and that reference is
-// the declaration. The result drives the secrets-template scaffold and the
-// secrets completeness check, where each name must resolve to material the
-// secrets_command provides.
+// CredentialNames returns distinct credential names in first-reference order.
+// Repo references act as declarations and drive secret-template generation and
+// completeness checks.
 func (c *Config) CredentialNames() []string {
 	seen := make(map[string]bool)
 	var names []string
@@ -339,14 +268,11 @@ func (d *Duration) UnmarshalText(text []byte) error {
 // Std returns the standard library duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// ByteSize is a byte count that unmarshals from a TOML string with a binary unit
-// suffix ("128MiB", "768MiB"). It mirrors Duration: a named integer with a text
-// unmarshaler and a typed accessor, so the browse caps read naturally in config.
+// ByteSize is a byte count parsed from TOML text with optional binary units.
 type ByteSize int64
 
-// UnmarshalText parses a byte-size string, satisfying encoding.TextUnmarshaler.
-// It accepts KiB/MiB/GiB (and the KB/MB/GB and bare K/M/G/B variants) and
-// rejects negative, unparseable, or int64-overflowing values.
+// UnmarshalText parses binary and abbreviated byte-size units. It rejects
+// negative, unparseable, and int64-overflowing values.
 func (b *ByteSize) UnmarshalText(text []byte) error {
 	n, err := parseByteSize(string(text))
 	if err != nil {
@@ -359,11 +285,8 @@ func (b *ByteSize) UnmarshalText(text []byte) error {
 // Bytes returns the size as a plain int64.
 func (b ByteSize) Bytes() int64 { return int64(b) }
 
-// parseByteSize parses a human byte size like "128MiB". It is intentionally a
-// duplicate of the parser in tools/restic-ls-poc: that is a dev measurement
-// tool, and product code must not import dev tooling. It accepts a bare number
-// (bytes) and the common binary/decimal-ish suffixes, treating e.g. KB and KiB
-// alike (1024); it rejects negative values.
+// parseByteSize parses bare byte counts and K/KB/KiB, M/MB/MiB, or G/GB/GiB
+// suffixes as binary units. It rejects negative values.
 func parseByteSize(raw string) (int64, error) {
 	s := strings.TrimSpace(strings.ToLower(raw))
 	if s == "" {
@@ -399,13 +322,8 @@ func parseByteSize(raw string) (int64, error) {
 	if n < 0 {
 		return 0, errors.New("byte size must be >= 0")
 	}
-	// Guard the float64→int64 conversion. Go does NOT saturate on an out-of-range
-	// float conversion — the result is implementation-defined (typically wraps to
-	// math.MinInt64), so an absurd value like "9000000000G" would otherwise become
-	// a negative or a finite-but-bogus cap rather than a clear error. float64 also
-	// can only represent the product exactly up to 2^53, so multi-PiB sizes round;
-	// that imprecision is irrelevant for a disk ceiling. float64(math.MaxInt64)
-	// rounds up to 2^63, so anything >= it (including +Inf) cannot fit in int64.
+	// Guard conversion because out-of-range floats may wrap; float64(MaxInt64)
+	// rounds to 2^63.
 	bytes := n * float64(mult)
 	if math.IsNaN(bytes) || bytes >= float64(math.MaxInt64) {
 		return 0, fmt.Errorf("byte size %q is out of range", raw)

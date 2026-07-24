@@ -1,9 +1,6 @@
-// Command resticscope is a local, on-demand overview of restic repositories on
-// any backend restic supports (local, sftp, rest, s3, b2, azure, gs, rclone, ...).
-//
-// It ships the Bubble Tea `tui` (the default), the cache-only `status`, the
-// `check` validator, and `exec` (a repo-scoped shell or one-shot command), all
-// thin callers of the internal/app core.
+// Command resticscope provides a terminal UI and CLI for monitoring and
+// operating restic repositories through the internal app core. It supports any
+// backend restic supports.
 package main
 
 import (
@@ -24,7 +21,6 @@ func main() {
 // testable entry point: all I/O goes through the passed writers.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		// Bare `resticscope` launches the TUI (plan §9).
 		return cmdTUI(ctx, nil, stdout, stderr)
 	}
 	cmd, rest := args[0], args[1:]
@@ -48,8 +44,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdSecrets(ctx, rest, stdout, stderr)
 	case app.ExtractHelperSubcommand:
 		// Internal: the root side of a privileged extract, launched by the TUI
-		// via `sudo -n -- <self> extract-helper`, request on stdin. The shared
-		// constant keeps this case routing exactly the argv the runner builds.
+		// via `sudo -n -- <self> extract-helper`, request on stdin.
 		return cmdExtractHelper(ctx, rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
@@ -78,7 +73,6 @@ exec   exit codes: the command's own exit code; 1 if it cannot be launched; 2 on
 `)
 }
 
-// realClock is the production Clock.
 type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }

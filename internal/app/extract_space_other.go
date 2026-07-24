@@ -2,6 +2,5 @@
 
 package app
 
-// freeBytesAt reports no answer on platforms without a statfs binding; the
-// review screen's space preflight simply stays silent there.
+// freeBytesAt reports unknown when no statfs binding is available.
 func freeBytesAt(string) (int64, bool) { return 0, false }

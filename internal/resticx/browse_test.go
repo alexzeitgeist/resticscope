@@ -19,9 +19,8 @@ const (
 	nodeAlex = `{"name":"alex","type":"dir","path":"/home/alex","size":0,"struct_type":"node"}`
 	nodeFile = `{"name":"f.txt","type":"file","path":"/home/alex/f.txt","size":42,"struct_type":"node"}`
 	nodeLink = `{"name":"link","type":"symlink","path":"/home/alex/link","linktarget":"/home/alex/f.txt","struct_type":"node"}`
-	// nodeMeta carries the full per-node metadata restic 0.18.1 emits (mtime,
-	// permissions, uid, gid) so the decode of the new fields can be asserted
-	// without disturbing the byte-exact fixtures other tests depend on.
+	// nodeMeta adds restic 0.18.1 ownership and file metadata for the dedicated
+	// decode assertions below.
 	nodeMeta = `{"name":"meta.txt","type":"file","path":"/home/alex/meta.txt","size":7,"uid":1000,"gid":1000,"mode":436,"permissions":"-rw-rw-r--","mtime":"2026-05-26T11:28:49Z","struct_type":"node"}`
 )
 
@@ -29,7 +28,6 @@ func ndjson(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
 
 const browseTimeout = 5 * time.Second
 
-// collect returns an onNode callback that appends to nodes (returned by pointer).
 func collect() (func(model.BrowseNode) error, *[]model.BrowseNode) {
 	var nodes []model.BrowseNode
 	return func(n model.BrowseNode) error {
@@ -38,10 +36,8 @@ func collect() (func(model.BrowseNode) error, *[]model.BrowseNode) {
 	}, &nodes
 }
 
-// fakeStream is an injected StreamRunner. It feeds onStdout canned NDJSON,
-// optionally blocking after the data until the context is done (to exercise the
-// timeout path), and records what it was asked to run plus the context state it
-// observed once the callback returned.
+// fakeStream supplies canned NDJSON, can block until cancellation, and records
+// the invocation and post-callback context state.
 type fakeStream struct {
 	data   string
 	stderr []byte
@@ -67,17 +63,14 @@ func (f *fakeStream) RunStream(ctx context.Context, env []string, password strin
 	if cbErr != nil {
 		return f.stderr, cbErr
 	}
-	// A real restic killed by the browse deadline returns a non-nil run error, not
-	// a clean exit; mirror that so timeout classification sees a failed run.
+	// Mirror the failed exit of a real restic process killed at the deadline.
 	if ctx.Err() != nil {
 		return f.stderr, ctx.Err()
 	}
 	return f.stderr, f.err
 }
 
-// cancelingBadJSONStream simulates a stdout read/decode error racing with a user
-// cancellation. The browse boundary must report the cancellation, not a parse
-// error from the pipe closing under the decoder.
+// cancelingBadJSONStream races user cancellation with a truncated JSON record.
 type cancelingBadJSONStream struct {
 	cancel context.CancelFunc
 }
@@ -104,9 +97,8 @@ func (r *cancelingBadJSONReader) Read(p []byte) (int, error) {
 	return copy(p, "{"), nil
 }
 
-// blockingReader yields its data once, then blocks until the context is done and
-// reports EOF — simulating restic stalling (in repo-open or mid-stream) until the
-// browse deadline kills it and the pipe closes.
+// blockingReader yields its data, then simulates a stalled restic process until
+// cancellation closes its pipe.
 type blockingReader struct {
 	data string
 	off  int
@@ -128,17 +120,15 @@ func (b *blockingReader) Read(p []byte) (int, error) {
 	return 0, io.EOF
 }
 
-// cleanButExpiredStream feeds the whole tree, lets the browse deadline elapse, then
-// reports a clean exit (nil run error) — modelling restic finishing and exiting 0
-// just before the index deadline fired. The boundary must treat this as complete,
-// not discard a fully-streamed tree as a partial.
+// cleanButExpiredStream models restic finishing just before the index deadline,
+// with classification occurring after the deadline.
 type cleanButExpiredStream struct{ data string }
 
 func (f cleanButExpiredStream) RunStream(ctx context.Context, _ []string, _ string, onStdout func(io.Reader) error, _ ...string) ([]byte, error) {
 	if err := onStdout(strings.NewReader(f.data)); err != nil {
 		return nil, err
 	}
-	<-ctx.Done() // the deadline fires after a clean, complete read
+	<-ctx.Done() // Delay the clean exit until after the deadline.
 	return nil, nil
 }
 
@@ -156,7 +146,6 @@ func TestStreamSnapshotTreeComplete(t *testing.T) {
 	if sum.Entries != 3 || len(*nodes) != 3 {
 		t.Fatalf("entries = %d / nodes = %d, want 3 (snapshot record must be skipped)", sum.Entries, len(*nodes))
 	}
-	// The recursive, no-lock listing args must be present.
 	got := strings.Join(fs.gotArgs, " ")
 	for _, want := range []string{"--no-lock", "ls", "--json", "--recursive", "abcd", "/"} {
 		if !strings.Contains(got, want) {
@@ -165,8 +154,7 @@ func TestStreamSnapshotTreeComplete(t *testing.T) {
 	}
 }
 
-// An empty snapshot is a clean run with zero nodes: it must report Complete=true
-// so the caller indexes it (an empty index is valid), not an error.
+// An empty snapshot is complete so callers can retain its valid empty index.
 func TestStreamSnapshotTreeEmptyIsComplete(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine)}
 	c := &Client{Stream: fs}
@@ -211,7 +199,6 @@ func TestStreamSnapshotTreeParsesMetadata(t *testing.T) {
 	}
 }
 
-// A symlink's type and linktarget must decode into the node.
 func TestStreamSnapshotTreeParsesSymlink(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeLink)}
 	c := &Client{Stream: fs}
@@ -228,8 +215,7 @@ func TestStreamSnapshotTreeParsesSymlink(t *testing.T) {
 	}
 }
 
-// A node that omits uid/gid must decode with OwnerKnown false (so the renderer
-// shows a missing-owner em-dash, never a spurious 0:0).
+// Missing ownership must remain unknown rather than appearing as root ownership.
 func TestStreamSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome)}
 	c := &Client{Stream: fs}
@@ -245,8 +231,7 @@ func TestStreamSnapshotTreeMissingOwnerNotKnown(t *testing.T) {
 	}
 }
 
-// A callback error (e.g. the store's disk limit) is surfaced verbatim so the
-// caller can classify it, and it cancels the restic process.
+// Callback errors remain classifiable and stop the restic process.
 func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
@@ -271,18 +256,15 @@ func TestStreamSnapshotTreeCallbackErrorCancels(t *testing.T) {
 	}
 }
 
-// A user leaving the browser cancels the parent context; the in-flight store write
-// (tx.Add on the cancelled ctx) then fails with the store's own interrupt error,
-// NOT context.Canceled. The boundary must still classify this as a cancel so the
-// caller can tell it apart from a genuine store failure — which leaves the parent
-// ctx live and is surfaced verbatim (see TestStreamSnapshotTreeCallbackErrorCancels).
+// A store interrupt caused by parent cancellation remains a user cancellation;
+// genuine store failures occur while the parent context is live.
 func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
 	c := &Client{Stream: fs}
 	storeInterrupt := errors.New("interrupted (SQLITE_INTERRUPT)")
 	onNode := func(model.BrowseNode) error {
-		cancel() // the user left mid-index
+		cancel() // Simulate the user leaving during indexing.
 		return storeInterrupt
 	}
 	sum, err := c.StreamSnapshotTree(ctx, testTarget, Creds{ResticPassword: "pw"}, "abcd", browseTimeout, onNode)
@@ -297,9 +279,8 @@ func TestStreamSnapshotTreeUserCancelBeatsCallbackError(t *testing.T) {
 	}
 }
 
-// A clean, complete restic exit must win even if the index deadline elapsed in the
-// gap between restic exiting 0 and the classification running; otherwise a fully
-// streamed tree is wrongly rolled back as a partial and re-indexed on the next browse.
+// A clean restic exit wins a race with the deadline so a fully streamed tree is
+// not discarded and indexed again.
 func TestStreamSnapshotTreeCleanExitBeatsExpiredDeadline(t *testing.T) {
 	c := &Client{Stream: cleanButExpiredStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}}
 	onNode, nodes := collect()
@@ -315,12 +296,8 @@ func TestStreamSnapshotTreeCleanExitBeatsExpiredDeadline(t *testing.T) {
 	}
 }
 
-// A genuine store error (e.g. the disk limit) that races the browse deadline after
-// ≥1 accepted node must surface verbatim, NOT be downgraded to an incomplete/partial
-// stream. The callback writes through the PARENT ctx (tx.Add(ctx, …)), which the
-// browse timeout never cancels, so a callback error with the parent ctx still live is
-// always a real failure — a non-retryable disk limit must not be masked as a
-// retryable timeout. Guards against st.cbErr being ordered after the deadline cases.
+// A callback uses the parent context, so an error racing the browse deadline is a
+// genuine store failure and must not be downgraded to a retryable partial stream.
 func TestStreamSnapshotTreeCallbackErrorBeatsDeadline(t *testing.T) {
 	timeout := 40 * time.Millisecond
 	fs := &fakeStream{data: ndjson(snapLine, nodeHome, nodeAlex, nodeFile)}
@@ -330,7 +307,7 @@ func TestStreamSnapshotTreeCallbackErrorBeatsDeadline(t *testing.T) {
 	onNode := func(model.BrowseNode) error {
 		calls++
 		if calls == 2 {
-			time.Sleep(timeout + 20*time.Millisecond) // let the browse deadline elapse first
+			time.Sleep(timeout + 20*time.Millisecond) // Let the browse deadline elapse first.
 			return diskFull
 		}
 		return nil
@@ -390,8 +367,6 @@ func TestStreamSnapshotTreeCancelBeatsDecodeError(t *testing.T) {
 }
 
 func TestStreamSnapshotTreeMalformedJSONIsParseError(t *testing.T) {
-	// A genuine JSON decode failure (not a clean EOF) must surface as KindParse,
-	// not a generically-classified run error.
 	fs := &fakeStream{data: snapLine + "\nnot json at all\n"}
 	c := &Client{Stream: fs}
 	onNode, _ := collect()

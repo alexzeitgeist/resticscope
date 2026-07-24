@@ -65,8 +65,7 @@ func TestCount(t *testing.T) {
 		}
 	}
 
-	// The generic signature carries uint64 counters at full precision — no
-	// narrowing through int on the way to the format verb.
+	// Exercise uint64 counters at full precision without narrowing through int.
 	if got, want := Count(uint64(math.MaxUint64), "file", "files"), "18446744073709551615 files"; got != want {
 		t.Errorf("Count(MaxUint64) = %q, want %q", got, want)
 	}

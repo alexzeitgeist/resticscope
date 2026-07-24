@@ -2,27 +2,21 @@ package tui
 
 import "charm.land/lipgloss/v2"
 
-// layout.go derives the list view's vertical budget from the captured terminal
-// size. The screen, top to bottom, is a one-row title, a blank gap, the repo
-// list, blank padding, and the footer pinned to the bottom row (frame); the
-// list scrolls a window (scrollWindow) so a long repo set never pushes the
-// footer off-screen. Everything here is a pure function of the size — nothing
-// reaches into app/model state.
+// Layout helpers derive responsive row budgets and scrolling windows from the
+// terminal size without consulting application state.
 
 const (
-	// defaultWidth/Height stand in before the first WindowSizeMsg (e.g. in
-	// tests): wide and tall enough that nothing truncates or scrolls.
+	// defaultWidth and defaultHeight apply before the first WindowSizeMsg.
 	defaultWidth, defaultHeight = 100, 30
 
-	headerRows         = 1 // the title row
-	gapRows            = 1 // the blank line below the title; the MINIMUM gap above the pinned footer
-	listHeaderRows     = 1 // the dim "Name Last Snaps Took Labels" header above the table rows
-	listScrollNoteRows = 1 // the "showing N–M of T" note reserved at the bottom
+	headerRows         = 1 // Title row.
+	gapRows            = 1 // Blank line below the title and above the footer.
+	listHeaderRows     = 1 // Table header.
+	listScrollNoteRows = 1 // Reserved "showing N-M of T" row.
 )
 
-// effSize is the terminal size the layout renders at: the captured size, with
-// defaults substituted before the first WindowSizeMsg and a one-cell floor so
-// width clipping still honors very small real panes.
+// effSize returns the captured terminal size, applying startup defaults and a
+// one-cell floor for small panes.
 func (m Model) effSize() (w, h int) {
 	w, h = m.width, m.height
 	if w <= 0 {
@@ -40,14 +34,12 @@ func (m Model) effSize() (w, h int) {
 	return w, h
 }
 
-// footerRows is the rendered footer height (1 normally, 2 while filtering or
-// showing a notice). It is measured, not assumed, so the list window shrinks to
-// keep the footer flush at the bottom.
+// footerRows measures the rendered footer so content leaves exactly enough
+// space to keep it pinned at the bottom.
 func (m Model) footerRows() int { return lipgloss.Height(m.footerView()) }
 
-// modalVisible is how many body rows a full-screen modal (help, info) can show
-// at once: the full height minus the header, both gaps, and the rendered
-// footer. Floored at 1.
+// modalVisible returns the modal body rows left after the header, gaps, and
+// footer, with a floor of one.
 func (m Model) modalVisible() int {
 	_, h := m.effSize()
 	if n := h - headerRows - 2*gapRows - m.footerRows(); n >= 1 {
@@ -69,8 +61,7 @@ func clampModalScroll(scroll, total, bodyRows int) int {
 	return scroll
 }
 
-// listHeight is the number of rows left for the repo list after the header, both
-// gaps, and the footer. Floored at 1.
+// listHeight returns the rows left after the header, gaps, and footer.
 func (m Model) listHeight() int {
 	_, h := m.effSize()
 	if n := h - headerRows - 2*gapRows - m.footerRows(); n > 1 {
@@ -79,11 +70,8 @@ func (m Model) listHeight() int {
 	return 1
 }
 
-// visibleRepos is how many repos the list shows at once. Each repo now occupies
-// one line, with the table header and the "showing N–M of T" note reserved off
-// the top and bottom of the budget. In grouped mode this is only a page-jump
-// approximation; the grouped renderer uses the full rendered-line budget.
-// Floored at 1.
+// visibleRepos returns the flat-list page size after reserving the table header
+// and scroll note. Grouped rendering uses the full line budget instead.
 func (m Model) visibleRepos() int {
 	if n := m.listHeight() - listHeaderRows - listScrollNoteRows; n >= 1 {
 		return n
@@ -91,10 +79,7 @@ func (m Model) visibleRepos() int {
 	return 1
 }
 
-// clampCursor bounds a (possibly out-of-range) cursor index to a list of total
-// rows: never below 0, never past the last row, and 0 for an empty list. It lets
-// the page-up/down handlers add or subtract a page without each repeating the
-// floor/ceiling guards.
+// clampCursor bounds a cursor to the list, returning zero for an empty list.
 func clampCursor(i, total int) int {
 	if i >= total {
 		i = total - 1
@@ -105,10 +90,8 @@ func clampCursor(i, total int) int {
 	return i
 }
 
-// scrollWindow returns the [start, end) bounds of a scrolling window of the
-// given visible size that keeps cursor on screen, centering it when possible.
-// Every scrolling list (repos, snapshots, browse rows, diff rows, versions)
-// windows through it.
+// scrollWindow returns a centered [start, end) window that keeps cursor visible.
+// All scrolling lists use it.
 func scrollWindow(cursor, total, visible int) (start, end int) {
 	if visible < 1 {
 		visible = 1
@@ -125,9 +108,8 @@ func scrollWindow(cursor, total, visible int) (start, end int) {
 	return start, end
 }
 
-// clip bounds styled or unstyled text to max visible cells on one line without
-// breaking ANSI escapes, collapsing any embedded newlines so callers can rely on
-// a fixed row budget. It is how every header/footer/list line keeps to its width.
+// clip bounds text to max visible cells without breaking ANSI escapes and
+// collapses embedded newlines to preserve fixed row budgets.
 func clip(s string, max int) string {
 	if max < 1 {
 		max = 1

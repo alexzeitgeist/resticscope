@@ -8,15 +8,12 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/app"
 )
 
-// applyShellExit surfaces a shell-out's outcome in the footer. A failed Cleanup
-// (a lingering 0600 temp password file) is the actionable item, so it wins over
-// the shell's own exit status; a clean exit leaves the footer untouched.
 func TestApplyShellExit(t *testing.T) {
 	tests := []struct {
 		name   string
 		msg    shellExitedMsg
-		want   string // expected statusMsg prefix; "" means no notice
-		substr string // additional substring the notice must contain
+		want   string
+		substr string
 	}{
 		{
 			name: "clean exit leaves no notice",
@@ -61,9 +58,6 @@ func TestApplyShellExit(t *testing.T) {
 	}
 }
 
-// shellExitCallback must run the session Cleanup and carry its error out rather
-// than swallow it — this is the guarantee that a temp password file removal
-// failure reaches the user instead of silently leaving the password on disk.
 func TestShellExitCallbackReportsCleanupError(t *testing.T) {
 	cleanupErr := errors.New("remove failed")
 	cleaned := false
@@ -81,8 +75,6 @@ func TestShellExitCallbackReportsCleanupError(t *testing.T) {
 	}
 }
 
-// A successful Cleanup leaves cleanupErr nil while still forwarding the shell's
-// own exit error.
 func TestShellExitCallbackForwardsShellError(t *testing.T) {
 	shellErr := errors.New("exit status 1")
 	sess := &app.ShellSession{Cleanup: func() error { return nil }}

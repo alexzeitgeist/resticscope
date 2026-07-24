@@ -31,8 +31,7 @@ func TestParseAndResolve(t *testing.T) {
 	}
 }
 
-// TestParseAndResolveEnvCredential covers the generic credential shape: env
-// vars reach Material verbatim, so any restic backend's secrets can ride.
+// Generic backend environment secrets reach Material unchanged.
 func TestParseAndResolveEnvCredential(t *testing.T) {
 	json := `{
 	  "credentials": {
@@ -58,11 +57,8 @@ func TestParseAndResolveEnvCredential(t *testing.T) {
 	}
 }
 
-// TestRestBackendEnvAllowed pins the reserved-name boundary: only the env vars
-// resticscope itself owns (RESTIC_REPOSITORY, the RESTIC_PASSWORD* family,
-// RESTIC_CACHE_DIR, ...) are reserved — NOT the whole RESTIC_ prefix. The rest
-// backend's documented credential shape is RESTIC_REST_USERNAME /
-// RESTIC_REST_PASSWORD, and it must validate and resolve.
+// Only application-owned RESTIC_* names are reserved. The REST backend's
+// RESTIC_REST_USERNAME and RESTIC_REST_PASSWORD credentials remain valid.
 func TestRestBackendEnvAllowed(t *testing.T) {
 	json := `{
 	  "credentials": {
@@ -88,8 +84,7 @@ func TestRestBackendEnvAllowed(t *testing.T) {
 	}
 }
 
-// TestResolveWithoutCredential covers credential-less repos (local/sftp
-// backends): the material is the password alone.
+// Credential-free backends resolve to a repository password alone.
 func TestResolveWithoutCredential(t *testing.T) {
 	store, err := Parse([]byte(validJSON))
 	if err != nil {
@@ -194,9 +189,7 @@ func TestValidateWarnsAndIgnoresExtras(t *testing.T) {
 	}
 }
 
-// TestValidateWarningsAreSorted guards against the map-iteration order leaking
-// into the (logged) warnings. With several extra entries the unsorted order is
-// random per run, so a sorted result is the only deterministic contract.
+// Warning order must not expose nondeterministic map iteration.
 func TestValidateWarningsAreSorted(t *testing.T) {
 	json := `{
 	  "credentials": {
@@ -227,7 +220,6 @@ func TestValidateWarningsAreSorted(t *testing.T) {
 }
 
 func TestErrorsNeverLeakSecretValues(t *testing.T) {
-	// A blob whose only complete value is a password we must never see echoed.
 	const password = "TОP-SECRET-PASSWORD"
 	json := `{"credentials":{"cred-a":{"access_key":"a"}},"repos":{"repo-a":{"restic_password":"` + password + `"}}}`
 	store, err := Parse([]byte(json))
@@ -271,8 +263,7 @@ func TestLoadNonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from non-zero exit")
 	}
-	// Neither stdout (the secret payload) nor stderr (which can carry secret
-	// fragments) may appear: no Redactor exists on this failure path.
+	// No Redactor exists yet, so neither command stream may reach the error.
 	if strings.Contains(err.Error(), secretStdout) {
 		t.Errorf("error leaked stdout (secret payload): %q", err.Error())
 	}
@@ -281,7 +272,6 @@ func TestLoadNonZeroExit(t *testing.T) {
 			t.Errorf("error leaked secrets_command stderr (%q): %q", leak, err.Error())
 		}
 	}
-	// The payload-free exit error must still be reported so the user can debug.
 	if !strings.Contains(err.Error(), "exit status 2") {
 		t.Errorf("error should report the exit failure, got %q", err.Error())
 	}
@@ -312,8 +302,7 @@ func TestTemplate(t *testing.T) {
 		t.Fatalf("Template: %v", err)
 	}
 
-	// The skeleton must be structurally valid input to Parse (incomplete, but the
-	// right shape) and round-trip to exactly the names it was given, all blank.
+	// The blank scaffold must round-trip through Parse with every requested name.
 	store, err := Parse(data)
 	if err != nil {
 		t.Fatalf("Parse(Template): %v", err)
@@ -330,9 +319,7 @@ func TestTemplate(t *testing.T) {
 		}
 	}
 
-	// Shape check: every name present, blank shorthand fields rendered as ""
-	// for the s3 credential, and an empty env map for the generic one, so the
-	// user sees exactly the blanks their backends need filled in.
+	// S3 uses blank shorthand fields; generic credentials use an empty env map.
 	s := string(data)
 	for _, name := range append([]string{"hetzner-home", "nas-b2"}, repos...) {
 		if !strings.Contains(s, name) {
@@ -347,8 +334,7 @@ func TestTemplate(t *testing.T) {
 }
 
 func TestTemplateEmptyConfig(t *testing.T) {
-	// No credentials or repos configured yet — the scaffold still emits a valid,
-	// parseable document with empty maps.
+	// An empty configuration still produces a parseable scaffold.
 	data, err := Template(nil, nil)
 	if err != nil {
 		t.Fatalf("Template: %v", err)

@@ -11,12 +11,9 @@ import (
 	"testing"
 )
 
-// TestExecRunnerDeliversPatternsOnFD4 is the real-process integration check for
-// the fd-4 pattern delivery: a PATH-shimmed fake "restic" echoes back what it
-// reads from /dev/fd/3 and /dev/fd/4, proving both payloads arrive on their
-// fixed slots. The pattern payload is deliberately larger than the default
-// 64 KiB kernel pipe buffer, so the test also proves the async writer cannot
-// deadlock the spawn (a synchronous pre-spawn write would hang here).
+// A PATH-shimmed restic verifies the fixed fd-3 and fd-4 payload slots. The
+// pattern exceeds the pipe buffer to detect synchronous writes that deadlock
+// process startup.
 func TestExecRunnerDeliversPatternsOnFD4(t *testing.T) {
 	dir := t.TempDir()
 	script := "#!/bin/sh\n" +

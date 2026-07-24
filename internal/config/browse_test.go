@@ -70,8 +70,7 @@ func TestBrowseValidationErrors(t *testing.T) {
 	}
 }
 
-// Invalid and negative byte strings are rejected at Decode, before Normalize can
-// turn a zero into a default — the parser refuses them outright.
+// Invalid and negative byte sizes fail during decoding, before defaults apply.
 func TestBrowseRejectsBadByteSizeAtDecode(t *testing.T) {
 	for _, bad := range []string{`"nonsense"`, `"-4MiB"`} {
 		_, err := Decode([]byte(minimalTOML + "\n[browse]\nmax_disk_bytes = " + bad + "\n"))
@@ -81,12 +80,8 @@ func TestBrowseRejectsBadByteSizeAtDecode(t *testing.T) {
 	}
 }
 
-// parseByteSize must reject a byte count that would overflow int64 rather than
-// silently wrapping. Go's float64→int64 conversion does not saturate, so before
-// the guard "9000000000G" became math.MinInt64 and "8589934592G" (exactly 2^63)
-// wrapped too. NaN/Inf inputs are out of range as well. The largest in-range
-// value — (2^33-1) GiB, just under 2^63 — must still round-trip exactly, and
-// ordinary sizes are unaffected. Regression test for the parseByteSize guard.
+// parseByteSize must reject values that overflow int64 rather than wrap; NaN and
+// infinity are also out of range.
 func TestParseByteSizeRange(t *testing.T) {
 	for _, bad := range []string{"9000000000G", "8589934592G", "nan", "inf"} {
 		if _, err := parseByteSize(bad); err == nil {
@@ -116,10 +111,7 @@ bogus = 5
 	}
 }
 
-// An explicit zero index_timeout is not treated like an omitted value: it is
-// seeded with the default before decode, so a configured `0` overwrites the
-// default and survives into validation, where it is rejected — letting a typo'd
-// or deliberately-zeroed timeout fail loudly instead of silently defaulting.
+// A configured zero timeout overrides the seeded default and must fail validation.
 func TestBrowseExplicitZeroTimeoutRejected(t *testing.T) {
 	_, err := load(t, minimalTOML+`
 [browse]

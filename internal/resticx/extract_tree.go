@@ -13,155 +13,79 @@ import (
 	json "github.com/goccy/go-json"
 )
 
-// extract_tree.go is the streaming restic boundary for `restic restore` — the
-// single restore driver for BOTH a whole-subtree extract (`restic restore
-// <snap>:<source> --target <dir>`) and a single-file extract (the same restore
-// plus `--include <pattern>` selecting one node). It is the read-only sibling of
-// browse/diff: it assembles a safe argv (every safety invariant in
-// 00-framework.md §5 is encoded in buildExtractTreeArgs and asserted by argv
-// tests), streams restic's --json progress to the caller, and classifies the
-// exit code into the package's existing *Error / ErrorKind shape.
-//
-// CRUCIAL: restic's --include is a glob *pattern*, not a literal path — a path
-// component carrying any of \ [ ] * ? is matched with filepath.Match, not by
-// equality (verified in upstream/restic internal/filter/filter.go). So a real
-// filename like a*.conf or backup[1].txt would over-match siblings or match the
-// wrong node. The IncludePaths field on ExtractTreeParams therefore carries
-// *literal* paths; literalIncludePattern backslash-escapes the metacharacter set
-// so restic matches exactly those paths. The raw paths are what get validated
-// and scrubbed from stderr; the escaped patterns never outlive the invocation.
-//
-// Delivery splits by shape. A single include (the canonical file / subtree
-// extract) keeps its historical argv form. A multi-include run (the diff
-// extract's changed-paths restore) delivers its patterns as a pattern file on
-// fd 4 (`--include-file /dev/fd/4`, restic >= 0.17), so the argv can never
-// outgrow ARG_MAX and the paths stay out of /proc/<pid>/cmdline — EXCEPT
-// paths a line-based pattern file cannot carry faithfully: restic
-// env-expands every line (verified live: a file named 'weird$NAME file' is
-// unmatchable through a pattern file) and treats newlines / surrounding
-// whitespace as structure, so those few stay on argv under a strict byte
-// budget (fileSafePattern is the split rule).
-//
-// This file is the ONLY place that knows restic's restore --json schema; if
-// restic 0.19 renames a field, only this file and its testdata fixtures change.
-// The schema below was pinned against restic 0.18.1 (internal/ui/restore/json.go
-// and cmd/restic/{cmd_restore,main}.go). Three points where reality diverges
-// from the original design sketch, verified against that source:
-//
-//   - restic restore exits 0/1/10/11/12 only. There is no exit code 3 for
-//     restore (exit 3 is backup's ErrInvalidSourceData). A partial restore —
-//     some items failed — returns errors.Fatal("There were N errors") → exit 1.
-//   - There is no error_count field in any restore message. Per-item errors are
-//     emitted as message_type "error" to STDERR, not stdout, so the stdout
-//     stream this parser reads never carries them under 0.18.1.
-//   - restore prints its final "summary" (progress.Finish) BEFORE returning the
-//     partial-error exit. So "exit 1 with a summary already seen" is the
-//     reliable partial-vs-total signal, and that is what ExtractTree uses.
-//
-// The ExtractTreeError event kind is still parsed (an "error" line on stdout)
-// for forward-compatibility with restic versions/configs that merge the streams.
+// ExtractTree drives subtree and single-file restores through one streaming
+// boundary. Includes are escaped because restic treats them as globs; multi-file
+// patterns safe for file parsing use fd 4 to avoid argv exposure, while the rest
+// stay on argv under a byte budget. The restore JSON schema follows restic
+// 0.18.1's internal/ui/restore and cmd/restic implementations.
 
-// extractTreeStreamBuffer sizes the decoder's reader. Restore progress streams
-// are small (a handful of lines), so the browse-sized 1 MiB buffer is overkill;
-// 64 KiB comfortably holds any single restic JSON line.
+// extractTreeStreamBuffer accommodates restore progress lines without the browse
+// stream's larger allocation.
 const extractTreeStreamBuffer = 1 << 16
 
-// extractPathMask replaces a source/target path fragment scrubbed out of restic
-// stderr before it can enter a returned *Error. It carries no '/', so it never
-// trips scrubExtractStderr's residual-path guard.
+// extractPathMask replaces scrubbed paths without triggering the residual-path
+// guard itself.
 const extractPathMask = "[path]"
 
-// snapshotIDHexLen is restic's full snapshot ID length: a SHA-256 digest in
-// lowercase hex. 00-framework.md §5 requires the verified long ID verbatim — a
-// short ID (an 8-char prefix) is display/target-name metadata only and must
-// never reach restic, which would otherwise resolve it as an ambiguous prefix.
+// snapshotIDHexLen requires a full lowercase SHA-256 ID so restic never performs
+// snapshot-prefix resolution for an extraction request.
 const snapshotIDHexLen = 64
 
-// extractPatternFilePath is how the restore argv references the fd-4 pattern
-// payload the runner wires up. /dev/fd/4 resolves to the pipe on both linux
-// (procfs) and darwin (fd dup), and the number is fixed: runStreamFDs always
-// fills the fd-3 password slot first, even for an empty password, so the
-// reference can never shift.
+// extractPatternFilePath references the pattern pipe on Linux and Darwin. fd 3
+// is always reserved first, so this descriptor cannot shift.
 const extractPatternFilePath = "/dev/fd/4"
 
-// maxArgvIncludeBytes bounds the argv bytes the spillover includes may add in
-// the multi-include shape. Only paths a pattern file cannot carry
-// ($/newline/whitespace-edged names) land there, so hitting this means a
-// pathological tree where hundreds of thousands of bytes of such names
-// changed. The accounting is the full per-flag execve cost — the "--include"
-// flag string, the escaped pattern, and one NUL terminator each — not just
-// pattern bytes, so many SHORT spillover names cannot slip a half-megabyte of
-// flag overhead past the budget. Refusing up front beats execve's E2BIG after
-// staging side effects; 512 KiB of accounted spillover plus the base args and
-// environment stays well under the tightest supported ARG_MAX (darwin: 1 MiB
-// including the environment).
+// maxArgvIncludeBytes budgets each argv-routed include's flag, pattern, and NUL
+// terminators. The 512 KiB cap reserves half of Darwin's 1 MiB ARG_MAX for base
+// arguments and the environment, reducing E2BIG risk after staging begins; those
+// inputs are not bounded here, so the cap is not a complete exec-size guarantee.
 const maxArgvIncludeBytes = 512 << 10
 
-// argvIncludeFlagOverhead is the per-spillover execve cost beyond the pattern
-// itself: the "--include" flag string and the two NUL terminators of the pair.
+// argvIncludeFlagOverhead accounts for the flag and both NUL terminators.
 const argvIncludeFlagOverhead = len("--include") + 2
 
-// Extract path-validation sentinels. They are path-free by construction (they
-// never echo the rejected value) so a rejection can be logged safely.
+// Extract validation sentinels never echo rejected paths and are safe to log.
 var (
-	// ErrExtractInvalidSnapshotID rejects a snapshot reference that is not a
-	// concrete lowercase-hex ID — in particular "latest", which would let restic
-	// pick a snapshot the user never confirmed.
+	// ErrExtractInvalidSnapshotID rejects references other than full lowercase-hex
+	// IDs, preventing restic from choosing an unconfirmed snapshot.
 	ErrExtractInvalidSnapshotID = errors.New("resticx: snapshot ID is not a concrete hex ID")
-	// ErrExtractInvalidSource rejects a source that is not already cleaned by
-	// model.CleanBrowsePath. This layer asserts the cleaned-path contract rather
-	// than silently repairing unclean input.
+	// ErrExtractInvalidSource rejects sources not already normalized by
+	// model.CleanBrowsePath; this layer never repairs them.
 	ErrExtractInvalidSource = errors.New("resticx: extract source is not a cleaned absolute path")
 	// ErrExtractInvalidTarget rejects an empty or non-absolute --target.
 	ErrExtractInvalidTarget = errors.New("resticx: extract target is not an absolute path")
-	// ErrExtractInvalidInclude rejects an include path that is not a cleaned,
-	// rooted, non-root file path. Unlike Source, "/" is rejected: an include of
-	// "/" is both too broad and contradicts the changed-paths-only invariant the
-	// include filter exists to enforce.
+	// ErrExtractInvalidInclude rejects paths that are unclean, unrooted, or root;
+	// root would violate the changed-paths-only selection.
 	ErrExtractInvalidInclude = errors.New("resticx: extract include path is not a cleaned non-root absolute path")
-	// ErrExtractArgvIncludeOverflow rejects a multi-include run whose
-	// argv-routed patterns (the few a pattern file cannot carry) exceed
-	// maxArgvIncludeBytes. Path-free like every validation sentinel.
+	// ErrExtractArgvIncludeOverflow rejects argv-routed patterns exceeding
+	// maxArgvIncludeBytes.
 	ErrExtractArgvIncludeOverflow = errors.New("resticx: too many include paths require command-line delivery; the argv would exceed the platform limit")
-	// ErrExtractPatternsUnsupported is returned when a run carries an fd-4
-	// pattern file but the wired stream runner is not a PatternStreamRunner.
-	// Production wiring (ExecRunner) always supports it; this guards a test or
-	// future wiring that forgot the capability.
+	// ErrExtractPatternsUnsupported indicates that the configured stream runner
+	// cannot carry the fd-4 pattern file.
 	ErrExtractPatternsUnsupported = errors.New("resticx: stream runner cannot deliver the fd-4 include pattern file")
 )
 
-// ExtractTreeParams are the inputs to a single restic restore invocation. The
-// caller (app.Extract) builds Source/Target/SnapshotID and creates the staging
-// Target with 0700 before calling.
+// ExtractTreeParams describes one restore. The caller creates the staging Target
+// with mode 0700 before invoking ExtractTree.
 type ExtractTreeParams struct {
 	// SnapshotID is the concrete lowercase-hex snapshot ID. Never "latest".
 	SnapshotID string
 
-	// Source is the cleaned, rooted subtree to extract ("/etc/nginx"). "" or "/"
-	// means the whole snapshot (a future detail-view case). Anything else is
-	// joined to SnapshotID with a literal ":" as restic's <snap>:<src> syntax.
-	// Must already equal model.CleanBrowsePath(Source); this layer asserts that
-	// and returns ErrExtractInvalidSource on violation — it does not re-clean.
+	// Source is a cleaned, rooted subtree; "" or "/" selects the whole snapshot.
+	// It must equal model.CleanBrowsePath(Source) and is joined to SnapshotID as
+	// restic's <snap>:<src>.
 	Source string
 
 	// Target is the absolute staging dir handed to restic --target.
 	Target string
 
-	// IncludePaths are the RAW (cleaned, rooted) snapshot paths to select with
-	// restic --include (one flag per path), or empty for "no include filter" (a
-	// whole-subtree extract). Each is rebased-relative to Source (e.g.
-	// "/vzdump.conf" under Source "/etc", or "/nginx/sub/x.conf" for a diff
-	// extract under Source "/etc"). They are LITERAL paths, NOT restic patterns:
-	// --include is a glob, so buildExtractTreeArgs escapes each via
-	// literalIncludePattern at argv build. Each must be a cleaned non-root rooted
-	// path (assertCleanIncludePath); this layer validates the raw values and
-	// never validates the escaped patterns.
+	// IncludePaths contains cleaned, rooted, non-root literal snapshot paths;
+	// empty selects the whole subtree. Paths are relative to Source for matching
+	// and escaped before use with restic's glob-based --include.
 	IncludePaths []string
 
-	// NoCache adds --no-cache, bypassing restic's local metadata cache entirely.
-	// The privileged (sudo) extract helper sets it so a root-run restic neither
-	// duplicates the user's multi-GB cache under /root nor poisons the user's
-	// cache dir with root-owned files.
+	// NoCache adds --no-cache, preventing privileged restores from creating a root
+	// cache or root-owned files in the user's cache.
 	NoCache bool
 }
 
@@ -173,23 +97,18 @@ const (
 	ExtractTreeStatus ExtractTreeEventKind = iota
 	// ExtractTreeSummary is the final tally (message_type "summary").
 	ExtractTreeSummary
-	// ExtractTreeError is a restic per-item error (message_type "error"). restic
-	// 0.18 routes these to stderr, so they are not seen on the stdout stream in
-	// practice; the kind exists for forward-compat.
+	// ExtractTreeError is a per-item error. Restic 0.18 sends these to stderr, but
+	// the kind preserves compatibility with future stdout schemas.
 	ExtractTreeError
 )
 
-// ExtractTreeEvent is the parsed union of restic's restore --json messages. One
-// is handed to onEvent per stdout line. Which fields are meaningful is decided
-// by Kind. Counts are restic uint64 widened to int64 (the values fit) for
-// ergonomic Go arithmetic. The field set tracks restic 0.18.1's actual schema;
-// fields the sketch invented for a backup-style summary (files_new, dirs_*,
-// data_blobs, error_count, seconds_remaining) do not exist for restore and are
-// intentionally absent.
+// ExtractTreeEvent represents one restic restore JSON message. Kind selects the
+// meaningful fields; counters follow the restic 0.18.1 restore schema and are
+// represented as int64 instead of restic's uint64.
 type ExtractTreeEvent struct {
 	Kind ExtractTreeEventKind
 
-	// Progress counters — populated for Status and Summary.
+	// Progress counters - populated for Status and Summary.
 	PercentDone    float64 // Status only; Summary omits percent_done
 	SecondsElapsed int64
 	TotalFiles     int64
@@ -200,17 +119,14 @@ type ExtractTreeEvent struct {
 	BytesRestored  int64
 	BytesSkipped   int64
 
-	// restic error event — populated for Error. Item carries the error's item
-	// path. These strings may carry paths; the caller decides what to do with
-	// them (the in-memory-only discipline is enforced by the app/TUI). They are
-	// NEVER written into a returned *Error by this layer.
+	// Error-event strings may contain paths. This layer never copies them into a
+	// returned Error; callers keep them in memory only.
 	Item         string
 	ErrorMessage string
 	During       string
 }
 
-// restoreMessage decodes one restic restore --json line. A single struct covers
-// every message type; message_type selects which fields are meaningful.
+// restoreMessage decodes the union selected by message_type.
 type restoreMessage struct {
 	MessageType    string  `json:"message_type"`
 	PercentDone    float64 `json:"percent_done"`
@@ -229,8 +145,7 @@ type restoreMessage struct {
 	During string `json:"during"`
 }
 
-// toEvent maps a decoded line to an ExtractTreeEvent. ok is false for an unknown
-// message_type, which the consumer skips (forward-compat with future restic).
+// toEvent rejects unknown message types for forward-compatible skipping.
 func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 	switch m.MessageType {
 	case "status":
@@ -253,20 +168,10 @@ func (m restoreMessage) toEvent() (ExtractTreeEvent, bool) {
 	}
 }
 
-// ExtractTree streams `restic restore <snap>[:<source>] --target <dir>
-// --overwrite never --json` plus the include selection (a single argv
-// `--include`, or for the multi-include diff shape an fd-4 pattern file with
-// argv spillover — see buildExtractTreeArgs) and hands each parsed progress
-// message to onEvent. With params.IncludePaths set, restic restores only the
-// matching nodes (and their reconstructed parent dirs) metadata-faithfully —
-// the single-file path and the diff extract's changed-paths-only restore.
-// onEvent returning a non-nil error cancels the run via the child context and
-// that error is surfaced verbatim (mirrors StreamSnapshotTree / StreamDiff).
-//
-// This layer does NOT impose a timeout: a real extract can run far longer than
-// resticx's 2-minute default, so the deadline is the caller's responsibility
-// (app.Extract bounds ctx with the configured extract_timeout). The child
-// context here exists only so an onEvent error can stop restic.
+// ExtractTree restores a snapshot subtree and passes JSON progress to onEvent.
+// IncludePaths limits restoration to matching nodes and their parent directories;
+// callback errors cancel the child and are returned unchanged. ExtractTree adds
+// no timeout because the caller owns the operation deadline.
 func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params ExtractTreeParams, onEvent func(ExtractTreeEvent) error) error {
 	args, patterns, err := buildExtractTreeArgs(params)
 	if err != nil {
@@ -287,8 +192,7 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 	var stderr []byte
 	var runErr error
 	if len(patterns) > 0 {
-		// The multi-include shape: the pattern payload rides fd 4, referenced in
-		// the argv as /dev/fd/4.
+		// Multi-include patterns travel on fd 4 rather than in argv.
 		pat, ok := runner.(PatternStreamRunner)
 		if !ok {
 			return ErrExtractPatternsUnsupported
@@ -300,50 +204,34 @@ func (c *Client) ExtractTree(ctx context.Context, t Target, creds Creds, params 
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
-		// A caller cancel beats every other classification.
+		// Caller cancellation takes precedence over secondary failures.
 		return context.Canceled
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return c.classify(ctx, "restore", runErr, c.sanitizeExtractStderr(stderr, params))
 	case st.cbErr != nil:
-		// onEvent asked to stop: surface its error verbatim so the caller can
-		// distinguish its own failure from a restic failure.
+		// Keep callback failures distinct from restic failures.
 		return st.cbErr
 	case st.decodeErr != nil:
 		return &Error{Kind: KindParse, Op: "restore", wrapped: st.decodeErr}
 	case runErr == nil:
 		if st.sawError {
-			// Forward-compat: an "error" line reached stdout though restic still
-			// exited 0 — treat as a partial restore.
+			// A future stdout error record makes an otherwise clean exit partial.
 			return &Error{Kind: KindPartial, Op: "restore"}
 		}
 		return nil
 	case st.sawSummary:
-		// restic emitted its final summary (RestoreTo completed and Finish ran)
-		// yet exited non-zero: a partial restore. The failed items' per-item
-		// errors went to stderr, which we deliberately do not surface. exit 1 is
-		// restic's generic code, so the seen summary is the disambiguator.
+		// A summary followed by nonzero exit identifies a partial restore without
+		// exposing item errors from stderr.
 		return &Error{Kind: KindPartial, Op: "restore", Code: exitCodeOf(runErr)}
 	default:
 		return c.classify(ctx, "restore", runErr, c.sanitizeExtractStderr(stderr, params))
 	}
 }
 
-// buildExtractTreeArgs assembles the restore argv and is the single assertion
-// surface for the safety invariants (00-framework.md §5). It emits, in order:
-// --no-lock (a lock would be a write), --no-cache when NoCache is set, restore,
-// the bare snapshot or <snap>:<source>, --target <abs>, --overwrite never
-// (never clobber existing files), --json, and the include selection. It never
-// emits --path, --delete, or "latest". Each include value is the RAW path run
-// through literalIncludePattern so restic matches it as a literal, not a glob —
-// the raw paths are what get validated.
-//
-// Include delivery: a single include keeps the historical `--include <pattern>`
-// argv form. A multi-include run splits per fileSafePattern — file-safe
-// patterns become the returned newline-joined pattern payload (delivered on
-// fd 4; the argv carries `--include-file /dev/fd/4`), the rest stay as argv
-// `--include` flags in caller order under the maxArgvIncludeBytes budget. The
-// backend -o options are prepended by ExtractTree, not here, so these argv
-// tests stay free of backend noise.
+// buildExtractTreeArgs validates restore safety invariants and assembles ordered
+// arguments without --path, --delete, or "latest". Includes are literal-escaped;
+// a single include uses argv, while multi-include runs put file-safe patterns on
+// fd 4 and budget the remaining argv patterns.
 func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, err error) {
 	if err := assertCleanSnapshotID(p.SnapshotID); err != nil {
 		return nil, nil, err
@@ -352,7 +240,7 @@ func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, 
 		return nil, nil, err
 	}
 	for _, inc := range p.IncludePaths {
-		if inc == "" { // a present entry must be a real path; "" is only valid as "no list"
+		if inc == "" { // Empty is valid only as the absence of an include list.
 			return nil, nil, ErrExtractInvalidInclude
 		}
 		if err := assertCleanIncludePath(inc); err != nil {
@@ -365,8 +253,7 @@ func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, 
 
 	snapArg := p.SnapshotID
 	if p.Source != "" && p.Source != "/" {
-		// A literal ":" join, no shell involved: restic reads <snap>:<source> as
-		// a single argv element, so metacharacters in source are inert bytes.
+		// One argv element keeps source metacharacters inert.
 		snapArg = p.SnapshotID + ":" + p.Source
 	}
 
@@ -382,7 +269,6 @@ func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, 
 		"--json",
 	)
 	if len(p.IncludePaths) == 1 {
-		// The canonical single-node extract: one literal-escaped argv include.
 		return append(args, "--include", literalIncludePattern(p.IncludePaths[0])), nil, nil
 	}
 	var file strings.Builder
@@ -407,26 +293,16 @@ func buildExtractTreeArgs(p ExtractTreeParams) (args []string, patterns []byte, 
 	return args, patterns, nil
 }
 
-// fileSafePattern reports whether a raw literal include path can ride the fd-4
-// pattern file. restic parses pattern files line-by-line, skips blank and
-// #-comment lines, trims surrounding whitespace, and expands environment
-// variables in every line (same rules as backup exclude files) — so
-// structure-bearing bytes must stay on argv, where the pattern is one exact
-// element: '$' (env-expanded; verified live — a file named 'weird$NAME file'
-// is unmatchable through a pattern file), newline / CR (line structure), and
-// leading/trailing whitespace (trimmed away). A leading '#' cannot occur:
-// validated include paths are rooted at '/'.
+// fileSafePattern reports whether an include can use the fd-4 pattern file.
+// Restic expands environment variables, splits lines, and trims whitespace in
+// pattern files, so paths affected by those transformations remain on argv.
 func fileSafePattern(p string) bool {
 	return !strings.ContainsAny(p, "$\n\r") && p == strings.TrimSpace(p)
 }
 
-// literalIncludePattern backslash-escapes restic's filepath.Match metacharacter
-// set (\ [ ] * ?) in path so each component becomes a literal match, leaving "/"
-// separators intact. With this, restic's --include matches exactly the supplied
-// path instead of treating a real filename like a*.conf or backup[1].txt as a
-// glob. NOT Windows-safe: Go's filepath.Match disables backslash escaping on
-// Windows (treats "\" as a separator), which is why the app layer refuses the
-// publish path on non-(linux|darwin) platforms before this ever runs.
+// literalIncludePattern escapes restic filepath.Match metacharacters while
+// retaining path separators. Backslash escaping is unsupported on Windows, so
+// the app permits this path only on Linux and Darwin.
 func literalIncludePattern(p string) string {
 	var b strings.Builder
 	b.Grow(len(p) + 4)
@@ -440,12 +316,8 @@ func literalIncludePattern(p string) string {
 	return b.String()
 }
 
-// assertCleanIncludePath asserts the IncludePath contract: "" is allowed (no
-// include filter); otherwise it must be NUL-free, rooted, equal to its
-// model.CleanBrowsePath form, and non-root. Unlike assertCleanSource, "/" is
-// rejected — an include of "/" is too broad and contradicts the one-file
-// invariant the include filter exists to enforce. It validates the RAW path,
-// never the escaped pattern.
+// assertCleanIncludePath accepts empty or a NUL-free, rooted, normalized,
+// non-root path.
 func assertCleanIncludePath(p string) error {
 	if p == "" {
 		return nil
@@ -459,11 +331,8 @@ func assertCleanIncludePath(p string) error {
 	return nil
 }
 
-// assertCleanSnapshotID rejects anything that is not restic's full, concrete
-// snapshot ID: exactly snapshotIDHexLen lowercase-hex chars. Requiring the full
-// length (not a prefix) is what keeps "latest", a short ID, and any other
-// non-hex reference out of the argv — per 00-framework.md §5, restic must
-// receive the verified long ID, never an ambiguous prefix it resolves itself.
+// assertCleanSnapshotID accepts only a full lowercase-hex ID, excluding latest,
+// short prefixes, and other references that restic could resolve itself.
 func assertCleanSnapshotID(id string) error {
 	if len(id) != snapshotIDHexLen {
 		return ErrExtractInvalidSnapshotID
@@ -477,10 +346,8 @@ func assertCleanSnapshotID(id string) error {
 	return nil
 }
 
-// assertCleanSource asserts the model.CleanBrowsePath contract instead of
-// re-applying it: source is "" or "/" (the whole-snapshot case), or it already
-// equals its cleaned form (rooted, no "."/".." segments, no double slashes) and
-// carries no NUL. Unclean input is refused, not repaired.
+// assertCleanSource accepts empty, root, or a NUL-free path already normalized by
+// model.CleanBrowsePath. It rejects rather than repairs other input.
 func assertCleanSource(src string) error {
 	if src == "" || src == "/" {
 		return nil
@@ -494,25 +361,16 @@ func assertCleanSource(src string) error {
 	return nil
 }
 
-// sanitizeExtractStderr prepares restic restore stderr to be safe inside a
-// returned *Error by scrubbing the source/target/include fragments. The shared
-// scrubExtractStderr does the redact/mask/residual-path work. IncludePaths are
-// scrubbed too because restic echoes the real selected paths (never the escaped
-// patterns); under the file mapping the selected file's basename lives only in
-// the include (Source is empty for nested), so without it a bare-basename
-// mention would slip past the residual-'/' guard.
+// sanitizeExtractStderr removes source, target, include, and basename fragments
+// before stderr can enter an Error. Includes cover leaf names absent from the
+// source mapping.
 func (c *Client) sanitizeExtractStderr(stderr []byte, p ExtractTreeParams) []byte {
 	return c.scrubExtractStderr(stderr, extractPathFragments(p.Source, p.Target, p.IncludePaths))
 }
 
-// scrubExtractStderr makes restic stderr safe to embed in a returned *Error. It
-// redacts secrets, masks the supplied path fragments the redactor does not know
-// about, then applies a conservative residual-path guard: any '/' surviving the
-// masking may be an un-enumerated path (a sibling item restic named, the repo
-// URL, /dev/fd/3), which we cannot prove path-free, so the whole stderr is
-// dropped. Only KindUnknown renders Stderr, so the lost detail is a deliberate
-// privacy trade. classify re-runs the redactor on the result, which is a no-op on
-// already-masked text.
+// scrubExtractStderr redacts secrets and known paths. Any remaining slash may
+// identify an unknown path or repository, so it drops the entire stderr payload;
+// only KindUnknown would otherwise render that payload.
 func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 	s := string(stderr)
 	if c.Redact != nil {
@@ -529,10 +387,8 @@ func (c *Client) scrubExtractStderr(stderr []byte, frags []string) []byte {
 	return []byte(s)
 }
 
-// extractPathFragments lists the path strings to scrub from stderr: the full
-// source, target, and include paths plus their basenames (restic often reports
-// just the leaf or the staging-dir name). The longer fragments are listed first
-// so a basename is only matched where the full path did not already cover it.
+// extractPathFragments orders full paths before basenames so shorter fragments
+// mask only remaining text.
 func extractPathFragments(source, target string, includePaths []string) []string {
 	frags := make([]string, 0, 4+2*len(includePaths))
 	if target != "" {
@@ -549,8 +405,7 @@ func extractPathFragments(source, target string, includePaths []string) []string
 	return frags
 }
 
-// exitCodeOf extracts restic's exit code from a run error, or 0 if the error is
-// not an exit error.
+// exitCodeOf returns a restic exit code, or zero for other errors.
 func exitCodeOf(err error) int {
 	var ec exitCoder
 	if errors.As(err, &ec) {
@@ -559,10 +414,8 @@ func exitCodeOf(err error) int {
 	return 0
 }
 
-// extractTreeStream decodes the restore NDJSON stream and forwards each event to
-// onEvent. It keeps no event data: only the first callback/decode error, and
-// whether a summary / error line was seen (the partial-restore signals
-// ExtractTree classifies on).
+// extractTreeStream forwards restore events while retaining only terminal errors
+// and partial-restore signals.
 type extractTreeStream struct {
 	onEvent func(ExtractTreeEvent) error
 	cancel  context.CancelFunc
@@ -573,10 +426,8 @@ type extractTreeStream struct {
 	sawError   bool
 }
 
-// consume reads the NDJSON stream and calls onEvent for each known message. An
-// onEvent error records cbErr, cancels restic so it stops producing, and
-// returns. Unknown message types are skipped; a clean EOF returns nil; a genuine
-// decode error is recorded and returned for ExtractTree to classify as KindParse.
+// consume forwards known NDJSON messages. Callback errors cancel restic, while
+// decode errors are retained for ExtractTree classification.
 func (s *extractTreeStream) consume(r io.Reader) error {
 	dec := json.NewDecoder(bufio.NewReaderSize(r, extractTreeStreamBuffer))
 	for {

@@ -2,21 +2,20 @@ package tui
 
 import "time"
 
-// rateWindow is the minimum sample span for a displayed recent-throughput rate.
-// Browse (entries/sec) and extract (bytes/sec) share it so both feel the same
-// to the user.
+// rateWindow is the minimum sample span for recent throughput. Browse and
+// extract share it for consistent progress displays.
 const rateWindow = 2 * time.Second
 
-// rateSampler computes a windowed recent rate from a monotonically growing
-// counter: the first sample seeds the window, and the rate advances only when
-// at least rateWindow has elapsed AND the counter actually grew. Shared by the
-// browse indexer's progress line and the extract running view.
+// rateSampler computes a windowed rate from a monotonic counter. A sample is
+// published only after rateWindow elapses and the counter grows.
 type rateSampler struct {
-	baseN  int64     // count at the start of the current rate window
-	baseAt time.Time // timestamp at the start of the current rate window
-	rate   float64   // most recent windowed rate, in units/sec
+	baseN  int64     // Counter at the start of the current window.
+	baseAt time.Time // Start of the current window.
+	rate   float64   // Latest rate in units per second.
 }
 
+// update records n at now and publishes a new rate only after rateWindow
+// elapses and the counter advances.
 func (r *rateSampler) update(n int64, now time.Time) {
 	if r.baseAt.IsZero() {
 		r.baseN = n

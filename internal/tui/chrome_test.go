@@ -10,24 +10,17 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// chrome_test.go locks the unified TUI chrome: the frame() contract (footer
-// pinned to the bottom terminal row in every view), the persistent `? help`
-// chip on the title row (and its deliberate input-state suppression), the
-// `view: context` title convention, and the contextual back chips that moved
-// from the per-view headers into the footer key bar.
+// These tests protect footer placement, title/help conventions, and contextual
+// navigation hints across TUI views.
 
-// chromeCase is one view state the frame tests sweep: a setup that drives the
-// model into the view, and a key-bar chip proving the bottom row is the footer.
+// chromeCase identifies a view and a footer chip expected on its final row.
 type chromeCase struct {
 	name     string
 	setup    func(t *testing.T) Model
 	wantLast string
 }
 
-// chromeViews drives the model into every view reachable in the TUI, including
-// two-row-footer list states (filter prompt, status notice). The diff fixture
-// mirrors TestSnapshotDiffViewRenders; browse/find/info reuse their suites'
-// fixtures.
+// chromeViews covers every reachable view, including two-row footer states.
 func chromeViews() []chromeCase {
 	diffModel := func(t *testing.T) Model {
 		t.Helper()
@@ -102,13 +95,10 @@ func chromeViews() []chromeCase {
 	}
 }
 
-// The frame pins the footer to the bottom terminal row in every view: at a
-// size where every body fits, the rendered view is exactly terminal-height
-// tall and the last line is the key bar. The two-row footer states (filter
-// prompt, status notice) guard against "pinned normally but drifts when a
-// prompt line appears"; extract review guards the shortest body (~7 lines).
+// Every fitting view remains terminal-height with its key bar on the final row,
+// including two-row footers and the short extraction view.
 func TestFooterPinnedToBottomRowAcrossViews(t *testing.T) {
-	const width, height = 192, 51 // the screenshot-baseline terminal size
+	const width, height = 192, 51
 	for _, tc := range chromeViews() {
 		t.Run(tc.name, func(t *testing.T) {
 			m := update(t, tc.setup(t), tea.WindowSizeMsg{Width: width, Height: height})
@@ -125,13 +115,11 @@ func TestFooterPinnedToBottomRowAcrossViews(t *testing.T) {
 	}
 }
 
-// The `? help` chip sits top-right in every non-input state — including the
-// help view itself, where ? is a toggle and the chip stays a truthful
-// affordance (a deliberate exception; do not "clean it up").
+// The help chip remains visible in every non-input state, including help itself.
 func TestHelpChipPresentInEveryNonInputState(t *testing.T) {
 	for _, tc := range chromeViews() {
 		if tc.name == "list filtering" {
-			continue // input state, asserted absent below
+			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
 			m := update(t, tc.setup(t), tea.WindowSizeMsg{Width: 192, Height: 51})
@@ -143,9 +131,7 @@ func TestHelpChipPresentInEveryNonInputState(t *testing.T) {
 	}
 }
 
-// While a text input owns the keyboard, ? is literal query text
-// (handleInputKey gives inputs first claim), so the chip would be a false
-// affordance and is suppressed — nothing in the whole frame advertises it.
+// Text inputs consume `?` literally, so they suppress the help affordance.
 func TestHelpChipSuppressedWhileTyping(t *testing.T) {
 	cases := []chromeCase{
 		{"list filtering", func(t *testing.T) Model {
@@ -180,15 +166,11 @@ func TestHelpChipSuppressedWhileTyping(t *testing.T) {
 	}
 }
 
-// A long title must not evict the chip: titleRow clips the title into the
-// remaining width so `? help` survives, and the composed line never exceeds
-// the terminal width. Only when the terminal is too narrow for the chip itself
-// does the title win.
+// Long titles preserve the help chip unless the chip itself cannot fit.
 func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 	m := newTestModel(t, detailApp(t))
 	m.view = findVersionsView
-	// The find title carries the repo name (the queried path lives in the
-	// body), so a long repo name is what stretches the title now.
+	// The repository name, not the body-only path, stretches this title.
 	m.findRepo = "repo-" + strings.Repeat("x", 150)
 	m.browseSnapshot = "id-newest"
 
@@ -204,7 +186,7 @@ func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 		t.Errorf("title row width = %d, want <= 80: %q", got, row)
 	}
 
-	m.width = 8 // narrower than the chip + gap: the title wins
+	m.width = 8
 	row = stripANSI(m.titleRow(m.findTitle()))
 	if strings.Contains(row, "? help") {
 		t.Errorf("chip should be dropped at width 8, got %q", row)
@@ -217,10 +199,7 @@ func TestTitleRowChipSurvivesLongTitle(t *testing.T) {
 	}
 }
 
-// After a diff search jump, q mirrors esc and reverses the jump instead of
-// leaving the view (routing.go), so the footer must advertise the combined
-// `esc/q previous` chip and drop the now-lying `q back` — and restore it once
-// the jump is reversed.
+// A diff-search jump replaces q-back with esc/q-previous until reversed.
 func TestDiffJumpedFooterAdvertisesPrevious(t *testing.T) {
 	var m Model
 	for _, c := range chromeViews() {
@@ -244,7 +223,7 @@ func TestDiffJumpedFooterAdvertisesPrevious(t *testing.T) {
 		t.Errorf("jumped diff footer must not claim 'q back' (q reverses the jump)\n---\n%s", footer)
 	}
 
-	m = update(t, m, press("esc")) // reverse the jump
+	m = update(t, m, press("esc"))
 	if m.diffSearchJumped {
 		t.Fatal("esc should reverse the jump")
 	}
@@ -257,11 +236,8 @@ func TestDiffJumpedFooterAdvertisesPrevious(t *testing.T) {
 	}
 }
 
-// Every key bar uses the condensed "↑/↓" movement chip — never the two-chip
-// "↑/k up • ↓/j down" form (j/k and ctrl+j/k stay documented in the ? overlay)
-// — and reused chips keep one relative order across views: move → enter → ⌫ →
-// / → view actions → sort/group → shell/refresh → back/quit. The list bar is
-// spot-checked chip by chip since it was the one that deviated.
+// Key bars share the condensed movement glyph and a consistent action order;
+// the help overlay retains the expanded bindings.
 func TestFooterMovementChipAndOrderUnified(t *testing.T) {
 	for _, tc := range chromeViews() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -294,12 +270,8 @@ func TestFooterMovementChipAndOrderUnified(t *testing.T) {
 	}
 }
 
-// Every view's key bar fits the ~100-column budget moveHelp documents
-// (keys.go): at an effectively unlimited terminal width the bubbles help model
-// renders the bar unclipped and footerView's clip is a no-op, so the assertion
-// measures the chips themselves rather than a truncation. Known outlier left
-// alone: the browse search-suspended bar (110 cells, transient state, not a
-// chromeViews fixture) — if it gets added here, it needs an exception or a trim.
+// At unlimited render width, each ordinary key bar stays within its 100-column
+// content budget. The transient suspended-search bar is intentionally excluded.
 func TestFooterBarsFitWidthBudget(t *testing.T) {
 	for _, tc := range chromeViews() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -331,8 +303,7 @@ func TestStatusWord(t *testing.T) {
 	}
 }
 
-// Title spot-checks for the `view: context` convention. The detail title's
-// status must read as a semantic word, never the literal color name.
+// Titles use `view: context`, with semantic status text instead of color names.
 func TestViewTitleConvention(t *testing.T) {
 	m := update(t, newTestModel(t, detailApp(t)), press("enter"))
 	wantDetail := "detail: repo-a · " + statusGlyph(model.StatusGreen) + " on schedule"
@@ -349,8 +320,7 @@ func TestViewTitleConvention(t *testing.T) {
 
 	a, _ := findApp(t, nil, bnode("/hostname", "hostname", false, 12))
 	fm := openFindVersions(t, newTestModel(t, a), "hostname")
-	// The queried path is deliberately absent from the title (browse-title
-	// shape); it renders once, in the body's Path row.
+	// The queried path appears only in the body Path row.
 	want := "versions: repo-a · " + shortID(fm.browseSnapshot)
 	if got := stripANSI(fm.findTitle()); got != want {
 		t.Errorf("versions title = %q, want %q", got, want)

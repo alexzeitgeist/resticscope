@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// mustTime parses an RFC3339 timestamp for table-test convenience; a malformed
-// literal is a test bug and panics.
+// mustTime panics when a test timestamp is malformed.
 func mustTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
@@ -16,7 +15,6 @@ func mustTime(s string) time.Time {
 	return t
 }
 
-// snapshotsByID is a small map builder for the join helper input.
 func snapshotsByID(snaps ...Snapshot) map[string]Snapshot {
 	m := make(map[string]Snapshot, len(snaps))
 	for _, s := range snaps {
@@ -47,7 +45,6 @@ func TestGroupFileVersions(t *testing.T) {
 		if len(got) != 1 || len(got[0].Occurrences) != 2 {
 			t.Fatalf("want one row with two occurrences, got %+v", got)
 		}
-		// Occurrences sorted newest-first.
 		if got[0].Occurrences[0].SnapshotID != "snap-2" || got[0].Occurrences[1].SnapshotID != "snap-1" {
 			t.Errorf("occurrences not newest-first: %+v", got[0].Occurrences)
 		}
@@ -67,9 +64,8 @@ func TestGroupFileVersions(t *testing.T) {
 	})
 
 	t.Run("out-of-range mtimes stay distinct", func(t *testing.T) {
-		// 2^64ns = 18446744073s + 709551616ns. A UnixNano-based key
-		// can wrap a pre-1678 time onto an otherwise distinct in-range
-		// timestamp; normalized time.Time keys do not.
+		// A UnixNano key can wrap this pre-1678 instant onto a distinct
+		// in-range timestamp; normalized time.Time keys cannot.
 		preUnixNanoRange := time.Unix(mtA.Unix()-18446744073, int64(mtA.Nanosecond())-709551616).UTC()
 		if !preUnixNanoRange.Before(time.Date(1678, 1, 1, 0, 0, 0, 0, time.UTC)) {
 			t.Fatalf("test setup expected pre-1678 time, got %v", preUnixNanoRange)
@@ -107,9 +103,6 @@ func TestGroupFileVersions(t *testing.T) {
 	})
 
 	t.Run("A then B then A non-adjacent rollback collapses A occurrences", func(t *testing.T) {
-		// Three snapshots in newest-first order: snap-3 carries A, snap-2 carries B, snap-1 carries A.
-		// Restic emits one entry per snapshot containing the path; same (size,mtime) anywhere
-		// must land in the same group, exercising "by key across the full set, not by adjacency".
 		results := []FindSnapshotResult{
 			{SnapshotID: "snap-3", Matches: []FindMatch{mkMatch(1500, mtA)}},
 			{SnapshotID: "snap-2", Matches: []FindMatch{mkMatch(1500, mtB)}},
@@ -119,7 +112,6 @@ func TestGroupFileVersions(t *testing.T) {
 		if len(got) != 2 {
 			t.Fatalf("want 2 rows (A and B), got %d: %+v", len(got), got)
 		}
-		// The A row carries both A occurrences in newest-first order.
 		var aRow, bRow *FileVersion
 		for i := range got {
 			if got[i].ModTime.Equal(mtA) {
@@ -137,9 +129,6 @@ func TestGroupFileVersions(t *testing.T) {
 		if aRow.Occurrences[0].SnapshotID != "snap-3" || aRow.Occurrences[1].SnapshotID != "snap-1" {
 			t.Errorf("A occurrences not newest-first: %+v", aRow.Occurrences)
 		}
-		// The A row sorts before the B row because A's newest occurrence (snap-3 @ 05-23) is
-		// newer than B's only occurrence (snap-2 @ 05-16). This exercises the
-		// across-groups "sorted by latest occurrence" rule on a non-trivial case.
 		if !got[0].ModTime.Equal(mtA) {
 			t.Errorf("expected A row first (newest occurrence newer than B), got %+v", got)
 		}
@@ -172,7 +161,6 @@ func TestGroupFileVersions(t *testing.T) {
 	})
 
 	t.Run("bracket-glob foreign match dropped", func(t *testing.T) {
-		// Asked for `a[1].txt`, restic returned a hit for `a1.txt` from a sibling.
 		askPath := "/data/a[1].txt"
 		foreign := "/data/a1.txt"
 		results := []FindSnapshotResult{
@@ -220,7 +208,7 @@ func TestGroupFileVersions(t *testing.T) {
 				{Path: "/data/other.txt", Size: 100, ModTime: mtA},
 			}},
 			{SnapshotID: "snap-2", Matches: []FindMatch{
-				{Path: "/data/other.txt", Size: 100, ModTime: mtA}, // all foreign in this snapshot
+				{Path: "/data/other.txt", Size: 100, ModTime: mtA},
 			}},
 		}
 		got := GroupFileVersions(results, askPath, snapshotsByID(snapOld, snapMid))
@@ -233,7 +221,7 @@ func TestGroupFileVersions(t *testing.T) {
 	})
 
 	t.Run("uid/gid plumbed through with OwnerKnown true", func(t *testing.T) {
-		uid, gid := uint32(0), uint32(0) // a real root-owned file; the OwnerKnown flag is what distinguishes it from missing
+		uid, gid := uint32(0), uint32(0)
 		results := []FindSnapshotResult{
 			{SnapshotID: "snap-1", Matches: []FindMatch{
 				{Path: path, Size: 1500, ModTime: mtA, Permissions: "-rw-r--r--", UID: &uid, GID: &gid},
@@ -277,9 +265,6 @@ func TestGroupFileVersions(t *testing.T) {
 	})
 }
 
-// Asserting reflect.DeepEqual equivalence on the simple cases to lock the
-// expected shape — separate from the table cases so a shape regression is
-// loud.
 func TestGroupFileVersionsShape(t *testing.T) {
 	path := "/etc/hostname"
 	mt := mustTime("2026-05-01T00:00:00Z")
@@ -303,18 +288,15 @@ func TestGroupFileVersionsShape(t *testing.T) {
 	}
 }
 
-// Matches restic affirmatively reports as non-file are dropped — the path may
-// have been a symlink or special node in older snapshots, and find-versions'
-// `e` extract attests a regular-file source for every surviving occurrence.
-// An empty Type (not emitted) is kept so a type-less restic cannot blank the
-// view.
+// Typed non-file matches cannot support extraction's regular-file attestation.
+// Empty types remain accepted but cannot attest a regular-file source.
 func TestGroupFileVersionsSkipsNonFileMatches(t *testing.T) {
 	mt := mustTime("2026-05-01T10:00:00Z")
 	results := []FindSnapshotResult{
 		{SnapshotID: "s1", Matches: []FindMatch{{Path: "/f", Type: "file", Size: 5, ModTime: mt}}},
 		{SnapshotID: "s2", Matches: []FindMatch{{Path: "/f", Type: "symlink", Size: 9, ModTime: mt}}},
 		{SnapshotID: "s3", Matches: []FindMatch{{Path: "/f", Type: "socket", Size: 5, ModTime: mt}}},
-		{SnapshotID: "s4", Matches: []FindMatch{{Path: "/f", Size: 5, ModTime: mt}}}, // type-less: kept
+		{SnapshotID: "s4", Matches: []FindMatch{{Path: "/f", Size: 5, ModTime: mt}}},
 	}
 	got := GroupFileVersions(results, "/f", nil)
 	if len(got) != 1 {

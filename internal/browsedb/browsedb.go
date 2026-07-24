@@ -1,19 +1,9 @@
-// Package browsedb owns the session-scoped, encrypted-at-rest SQLite store that
-// backs the in-app snapshot browser. The first time a snapshot is browsed its
-// whole namespace is streamed into the DB once; all later directory navigation
-// is served by SQL queries.
-//
-// Privacy contract: filenames and directory paths are persisted ONLY in this DB,
-// which is encrypted at rest by the adiantum VFS under a random 32-byte key that
-// lives only in memory (never derived from the repo password, never written
-// anywhere). The DB file is created lazily on first browse and removed on clean
-// exit; a crash leftover is unreadable because the key is gone, and conservative
-// startup cleanup scavenges demonstrably-stale leftovers. To uphold that contract
-// every error returned from this package is path-free: it wraps an operation name
-// and a sentinel/driver cause, never a node path, name, or directory string
-// (those only ever flow through bound query parameters, which SQLite never echoes
-// into error messages). The repo key is the validated configured repo name/ID
-// passed by the app, never a backend URL/bucket/credential-bearing target.
+// Package browsedb provides session-scoped, Adiantum-encrypted SQLite indexes for
+// snapshot browsing. Filenames and directory paths are persisted only in those
+// indexes. Each database uses a random 32-byte session key that is neither stored
+// nor derived from a repository password. Clean shutdown removes the database;
+// stale files are unreadable after key loss and scavenged at startup. Errors omit
+// node names and paths, and repository keys are names or IDs, not backend targets.
 package browsedb
 
 import (
@@ -37,17 +27,12 @@ var (
 	errReadDBDir        = errors.New("read browse database directory")
 )
 
-// ErrFilesystem is the path-free sentinel PathFreeFSError falls back to when a
-// filesystem error cannot be reduced to a bare *os.PathError.Err. Callers in any
-// layer can detect a browse filesystem failure without ever touching a string
-// that might contain a filename (privacy invariant: browse errors are path-free).
+// ErrFilesystem is the path-free fallback when an error cannot be reduced to a
+// bare *os.PathError.Err.
 var ErrFilesystem = errors.New("filesystem error")
 
-// schemaSnapshots folds the dictionary (sid ⇄ repo+snapshot) and the indexed
-// marker into one small table, one row per indexed snapshot. indexed_at_unix is
-// NULL while a sid is reserved by an in-flight tx (it rolls back with that tx) and
-// NOT NULL once committed — the latter is the IsIndexed gate. sid replaces the
-// 64-char snapshot hex stored on every node row.
+// schemaSnapshots maps repositories and snapshots to IDs. indexed_at_unix is
+// NULL while an ID is reserved and becomes the IsIndexed gate after commit.
 const schemaSnapshots = `CREATE TABLE IF NOT EXISTS snapshots (
   sid INTEGER PRIMARY KEY,
   repo TEXT NOT NULL,
@@ -57,10 +42,8 @@ const schemaSnapshots = `CREATE TABLE IF NOT EXISTS snapshots (
   UNIQUE (repo, snapshot)
 )`
 
-// schemaDirs interns directory paths once per snapshot. did is globally unique,
-// so nodes can key their browse lookup by parent_did alone. subtree_size carries
-// the recursive total of every file byte beneath the directory (folded bottom-up
-// at Commit); 0 for an empty directory.
+// schemaDirs interns paths per snapshot. Globally unique directory IDs support
+// parent-only node lookups; Commit computes recursive subtree sizes bottom-up.
 const schemaDirs = `CREATE TABLE IF NOT EXISTS dirs (
   did INTEGER PRIMARY KEY,
   sid INTEGER NOT NULL,
@@ -69,11 +52,8 @@ const schemaDirs = `CREATE TABLE IF NOT EXISTS dirs (
   UNIQUE (sid, path)
 )`
 
-// schemaNodes is an implicit-rowid table (no WITHOUT ROWID): sid replaces the
-// repo+snapshot TEXT, parent_did replaces repeated parent path text, and the
-// index locator is a ~5-byte rowid varint instead of the full composite PK.
-// name_ci is the precomputed lowercase fold (see "name_ci" in the plan) sorted
-// with native BINARY.
+// schemaNodes uses implicit row IDs as index locators. Snapshot and directory
+// IDs intern repeated text, and name_ci stores the lowercase BINARY sort key.
 const schemaNodes = `CREATE TABLE IF NOT EXISTS nodes (
   sid INTEGER NOT NULL, parent_did INTEGER NOT NULL, name TEXT NOT NULL,
   type TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER NOT NULL,
@@ -82,43 +62,32 @@ const schemaNodes = `CREATE TABLE IF NOT EXISTS nodes (
   owner_known INTEGER NOT NULL, link_target TEXT NOT NULL, name_ci TEXT NOT NULL
 )`
 
-// schemaIndex is created once at Open and maintained incrementally during the
-// bulk load (it is NOT dropped/rebuilt per run: a deferred CREATE INDEX would sort
-// all rows in the 256 MiB wasm heap and OOM on a multi-million-row snapshot).
-// No COLLATE clause: name_ci is precomputed lowercase, sorted BINARY, preserving
-// the pinned tie-break (see "name_ci" in the plan).
+// schemaIndex is maintained during bulk loading because a deferred index build
+// can exhaust the 256 MiB WASM heap. Precomputed name_ci avoids COLLATE while
+// preserving the name tie-break.
 const schemaIndex = `CREATE INDEX IF NOT EXISTS idx_nodes_dir ON nodes (parent_did, is_dir DESC, name_ci, name)`
 
-// DB is a handle to the session's encrypted browse store. One DB per app
-// session backs every repo/snapshot indexed during that run; each snapshot gets
-// an integer sid (see the snapshots table) and node rows reference interned
-// directories by did.
+// DB is the session's encrypted store for indexed repositories and snapshots.
 type DB struct {
 	pool         *sql.DB
 	dir          string
 	maxDiskBytes int64
 }
 
-// sqliteURIPath percent-encodes the three characters SQLite treats specially
-// while parsing a "file:" URI: '%' (its percent-decode marker), '?' (the query
-// separator) and '#' (the fragment separator). The DB path is rooted at the
-// operator-supplied [global].cache_dir; without this, a directory name
-// containing any of these would terminate the URI before "?vfs=adiantum",
-// silently dropping the encrypting VFS so the DB would open on the default
-// PLAINTEXT VFS — persisting filenames in the clear, a privacy-contract breach.
-// SQLite percent-decodes the path, so each escaped char round-trips to the real
-// filename. strings.NewReplacer scans the input once and never re-examines its
-// own output, so '%' (listed first only for readability) is not double-encoded.
+// sqliteURIPath escapes SQLite file-URI path metacharacters. An unescaped "?" or
+// "#" in the operator-supplied cache dir terminates the URI before "?vfs=adiantum",
+// so the DB would open on the default plaintext VFS and persist filenames in the
+// clear. Escaping "%" preserves literal paths through SQLite's percent-decoding;
+// NewReplacer scans the input once and never re-examines its own output, so "%"
+// is not double-encoded.
 func sqliteURIPath(p string) string {
 	return strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(p)
 }
 
-// Open opens (creating if absent) the encrypted browse DB at path, keyed by the
-// 32-byte key, and applies the schema. maxDiskBytes==0 means unlimited; a
-// positive value caps the total size of all regular files in the DB's directory,
-// enforced on a coarse cadence during indexing. The key is hex-encoded and set
-// via PRAGMA hexkey in a per-connection init callback so every (re)connection is
-// keyed without ever placing the key in the DSN/URI.
+// Open opens or creates the encrypted browse database using a 32-byte key.
+// A zero maxDiskBytes is unlimited; a positive value caps regular files in the
+// database directory and is checked periodically during indexing. Encryption is
+// configured for every connection without placing the key in the URI.
 func Open(path string, key []byte, maxDiskBytes int64) (*DB, error) {
 	return OpenContext(context.Background(), path, key, maxDiskBytes)
 }
@@ -138,32 +107,20 @@ func OpenContext(ctx context.Context, path string, key []byte, maxDiskBytes int6
 	hexkey := hex.EncodeToString(key)
 	dsn := "file:" + sqliteURIPath(path) + "?vfs=adiantum"
 	pool, err := driver.Open(dsn, func(c *sqlite3.Conn) error {
-		// hexkey must be the first PRAGMA so the key is in place before any page
-		// is read or written; the rest tune bulk ingest and keep temp B-trees off
-		// any plaintext file.
+		// Set the key before any page access; the remaining PRAGMAs tune bulk ingest.
 		if err := c.Exec("PRAGMA hexkey='" + hexkey + "'"); err != nil {
 			return fmt.Errorf("hexkey: %w", err)
 		}
 		for _, p := range []string{
-			// adiantum encrypts in fixed 4096-byte blocks keyed on file offset
-			// (vfs/adiantum/hbsh.go:72), so one page == one block — the most aligned
-			// choice and zero crypto saving from a larger page. Set explicitly to
-			// avoid relying on the default.
+			// Align SQLite pages with Adiantum's fixed 4096-byte blocks.
 			"PRAGMA page_size = 4096",
-			// temp_store=memory keeps any transient B-tree off a temp file to avoid a plaintext spill. Index
-			// maintenance is incremental (see schemaIndex), so no large sorter runs
-			// here — the heavy spill goes to the encrypted main DB via the page cache.
+			// Keep transient B-trees in memory to avoid encrypted temporary-file I/O.
 			"PRAGMA temp_store = memory",
-			// journal_mode=DELETE keeps the rollback journal on disk (encrypted by the
-			// adiantum VFS), NOT in the wasm heap. The driver's SQLite runs in a wasm
-			// module capped at 256 MiB (ncruces sqlite3_wrap.Memory{Max:4096}); a
-			// MEMORY journal for a multi-million-row index tx would exhaust that heap
-			// and the wrapper panics on the failed alloc (alloc.go OOMErr), so the
-			// journal must be kept off-heap.
+			// Keep the encrypted journal on disk; large in-memory journals can exhaust
+			// the driver's 256 MiB WASM heap.
 			"PRAGMA journal_mode = DELETE",
 			"PRAGMA synchronous = OFF",
-			// 64 MiB cache: dirty pages spill to the encrypted main DB file as the
-			// cache fills, bounding wasm-heap use during a huge bulk load.
+			// Bound WASM heap use with a 64 MiB cache backed by the encrypted database.
 			"PRAGMA cache_size = -65536",
 		} {
 			if err := c.Exec(p); err != nil {
@@ -175,8 +132,7 @@ func OpenContext(ctx context.Context, path string, key []byte, maxDiskBytes int6
 	if err != nil {
 		return nil, fmt.Errorf("browsedb open: %w", err)
 	}
-	// One connection serializes all access: there is a single writer (the index
-	// tx) and reads happen only after it commits, so no concurrency is needed.
+	// One connection is sufficient: reads begin only after the sole writer commits.
 	pool.SetMaxOpenConns(1)
 	pool.SetMaxIdleConns(1)
 
@@ -189,8 +145,7 @@ func OpenContext(ctx context.Context, path string, key []byte, maxDiskBytes int6
 }
 
 func (db *DB) applySchema(ctx context.Context) error {
-	// Index last (IF NOT EXISTS): created once here and then maintained
-	// incrementally as rows are inserted (never dropped/rebuilt — see schemaIndex).
+	// Index last; it is then maintained incrementally, never rebuilt (see schemaIndex).
 	for _, stmt := range []string{schemaSnapshots, schemaDirs, schemaNodes, schemaIndex} {
 		if _, err := db.pool.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("browsedb schema: %w", err)
@@ -199,11 +154,8 @@ func (db *DB) applySchema(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the connection pool. It deliberately does NOT remove db.sqlite or
-// its sidecars: the cmd-level session wrapper owns teardown and removes the whole
-// session directory with a single authoritative os.RemoveAll on shutdown, which
-// is strictly more thorough (it also takes the directory and the lock file) than
-// per-file removal here would be.
+// Close closes the connection pool. The session wrapper owns removal of the
+// database directory and lock file.
 func (db *DB) Close() error {
 	if err := db.pool.Close(); err != nil {
 		return fmt.Errorf("browsedb close: %w", err)
@@ -211,9 +163,7 @@ func (db *DB) Close() error {
 	return nil
 }
 
-// dirSize totals the size of every regular file in the DB's directory. This
-// intentionally counts db.sqlite, rollback journals, SQLite temp files, and the
-// negligible session lock file, giving a conservative over-count for the ceiling.
+// dirSize conservatively counts every regular file in the database directory.
 func (db *DB) dirSize() (int64, error) {
 	entries, err := os.ReadDir(db.dir)
 	if err != nil {
@@ -233,13 +183,8 @@ func (db *DB) dirSize() (int64, error) {
 	return total, nil
 }
 
-// PathFreeFSError reduces a filesystem error to a path-free form so a browse
-// failure never surfaces a filename. An *os.PathError is replaced by its bare
-// inner Err (a syscall errno such as "permission denied", which carries no path);
-// anything else — including a PathError whose inner Err is nil — collapses to
-// ErrFilesystem. A nil error returns nil. This is the single source of truth
-// shared by browsedb and the cmd-level session wrapper, both of which must honor
-// the path-free invariant.
+// PathFreeFSError strips paths from filesystem errors. It returns nil for nil,
+// the inner error for a non-empty *os.PathError, and ErrFilesystem otherwise.
 func PathFreeFSError(err error) error {
 	if err == nil {
 		return nil

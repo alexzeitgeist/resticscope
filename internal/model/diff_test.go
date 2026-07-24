@@ -17,9 +17,6 @@ func TestParseDiffNDJSONBasic(t *testing.T) {
 		`{"message_type":"change","path":"/a/added.txt","modifier":"+"}`,
 		`{"message_type":"change","path":"/a/removed.txt","modifier":"-"}`,
 		`{"message_type":"change","path":"/a/sub/","modifier":"+"}`,
-		// statistics line with nested DiffStat objects: must be ignored cleanly,
-		// no ParseErrors bump (the parser keys off message_type and never tries
-		// to model the statistics envelope).
 		`{"message_type":"statistics","added":{"files":1,"dirs":0,"bytes":42},"removed":{"files":1,"dirs":0,"bytes":17}}`,
 	)
 	out, err := ParseDiffNDJSON(in)
@@ -84,8 +81,8 @@ func TestParseDiffNDJSONMalformedTolerated(t *testing.T) {
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/a","modifier":"+"}`,
 		`{this is not json}`,
-		`{"message_type":"change","modifier":"+"}`, // missing path
-		`{"message_type":"change","path":"/c"}`,    // missing modifier
+		`{"message_type":"change","modifier":"+"}`,
+		`{"message_type":"change","path":"/c"}`,
 		`{"message_type":"change","path":"/b","modifier":"-"}`,
 	)
 	out, err := ParseDiffNDJSON(in)
@@ -239,7 +236,6 @@ func TestBuildDiffTreeSynthesizesAncestors(t *testing.T) {
 		t.Fatalf("ParseDiffNDJSON: %v", err)
 	}
 	tree := BuildDiffTree(out.Entries)
-	// Every ancestor on the way to root must have its row in its parent's listing.
 	expect := map[string]string{
 		"/":      "a",
 		"/a":     "b",
@@ -255,7 +251,6 @@ func TestBuildDiffTreeSynthesizesAncestors(t *testing.T) {
 			t.Errorf("parent %q first row = %q, want %q", parent, kids[0].Name, wantName)
 		}
 	}
-	// Root aggregate counts the single added file.
 	if got := tree.Aggregate[DiffRoot]; got.Added != 1 || got.Total() != 1 {
 		t.Errorf("root aggregate = %+v, want Added=1 only", got)
 	}
@@ -269,15 +264,12 @@ func TestBuildDiffTreeMultiKindAggregates(t *testing.T) {
 	out, _ := ParseDiffNDJSON(in)
 	tree := BuildDiffTree(out.Entries)
 	got := tree.Aggregate["/x"]
-	// MU contributes to Modified+MetadataOnly; ?M contributes to Modified+Bitrot.
 	if got.Modified != 2 || got.MetadataOnly != 1 || got.Bitrot != 1 {
 		t.Errorf("multi-kind aggregate = %+v, want Modified=2/Metadata=1/Bitrot=1", got)
 	}
 }
 
 func TestBuildDiffTreeUpgradesSyntheticRow(t *testing.T) {
-	// Restic might emit the leaf before the explicit directory entry; the dir
-	// row must be upgraded in place rather than duplicated.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/a/b/leaf","modifier":"+"}`,
 		`{"message_type":"change","path":"/a/b/","modifier":"+"}`,
@@ -307,10 +299,7 @@ func TestEnabledKindsFiltering(t *testing.T) {
 }
 
 func TestParseDiffNDJSONRelativePathRejected(t *testing.T) {
-	// restic always emits absolute paths; a relative one is either a malformed
-	// line or a parser bug upstream. Either way it must bump ParseErrors so the
-	// footer surfaces the count, not silently leak into entries where every
-	// later ancestor walk would diverge.
+	// Relative paths are malformed because restic emits absolute paths.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"foo/bar","modifier":"+"}`,
 		`{"message_type":"change","path":"/ok","modifier":"+"}`,
@@ -328,9 +317,6 @@ func TestParseDiffNDJSONRelativePathRejected(t *testing.T) {
 }
 
 func TestBuildDiffTreeDedupesDuplicatePaths(t *testing.T) {
-	// Two `change` lines for the same path (e.g. restic re-emitting a record
-	// across a chunk boundary) must contribute to ancestor aggregates only once;
-	// the OR-merge of their kinds is the merged set used for the single bump.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/x/a","modifier":"M"}`,
 		`{"message_type":"change","path":"/x/a","modifier":"M"}`,
@@ -346,12 +332,7 @@ func TestBuildDiffTreeDedupesDuplicatePaths(t *testing.T) {
 }
 
 func TestBuildDiffTreeCanonicalizesDuplicatePathMarker(t *testing.T) {
-	// Two `change` records for the same path with different modifiers (M then
-	// U) must produce a row whose Type / Modifier mirror the OR-merged Kinds.
-	// Without canonicalization the renderer trusts whichever record arrived
-	// last (Modifier="U", Type=ChangeMetadataOnly), so an M-only filter keeps
-	// the row visible (Kinds contains M) but the marker reads "U" with
-	// metadata styling — silent disagreement between filter and marker.
+	// Derive the marker and type from merged kinds so filtering and rendering agree.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/etc/passwd","modifier":"M"}`,
 		`{"message_type":"change","path":"/etc/passwd","modifier":"U"}`,
@@ -380,11 +361,7 @@ func TestBuildDiffTreeCanonicalizesDuplicatePathMarker(t *testing.T) {
 }
 
 func TestBuildDiffTreePreservesExplicitFileIsDir(t *testing.T) {
-	// An explicit file row at /foo (T = type-changed) must not flip to IsDir
-	// when a later /foo/bar entry walks its ancestors. The synthetic-ancestor
-	// pass uses typ=ChangeUnknown; the guard in ensure() keeps real file rows
-	// intact so they render with the file glyph instead of being promoted to
-	// a directory listing.
+	// Synthetic ancestor walks must not promote an explicit file to a directory.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/foo","modifier":"T"}`,
 		`{"message_type":"change","path":"/foo/bar","modifier":"+"}`,
@@ -411,9 +388,7 @@ func TestBuildDiffTreePreservesExplicitFileIsDir(t *testing.T) {
 }
 
 func TestBuildDiffTreeDemotesSyntheticDirOnExplicitFile(t *testing.T) {
-	// If a child appears before an explicit file entry for its parent path, the
-	// ancestor walk creates /foo as a synthetic directory. The later real file row
-	// must rewrite IsDir=false so /foo does not render as navigable.
+	// An explicit file must replace an earlier synthetic directory at the same path.
 	in := ndjsonLines(
 		`{"message_type":"change","path":"/foo/bar","modifier":"+"}`,
 		`{"message_type":"change","path":"/foo","modifier":"T"}`,
@@ -467,23 +442,6 @@ func TestParseModifierPrecedence(t *testing.T) {
 	}
 }
 
-// --- DiffExtractIncludes: side mapping, filter scope, pure-dir collapse ------
-
-// diffExtractFixture is a small two-sided tree:
-//
-//	/proj/readme       M    → both sides
-//	/proj/meta.txt     U    → both sides
-//	/proj/gone.txt     -    → first only
-//	/proj/fresh.txt    +    → second only
-//	/proj/new/         +    → pure-added dir (collapses its subtree on second)
-//	/proj/new/a.txt    +
-//	/proj/new/deep/    +
-//	/proj/new/deep/b   +
-//	/proj/old/         -    → pure-removed dir (collapses its subtree on first)
-//	/proj/old/x        -
-//	/proj/mixed/       M    → non-pure dir entry: never an include itself
-//	/proj/mixed/c.txt  M
-//	/other/skip.txt    M    → outside the /proj root
 func diffExtractFixture() []DiffEntry {
 	mk := func(p, mod string) DiffEntry {
 		e, _ := newDiffEntry(p, mod)
@@ -518,15 +476,13 @@ func TestDiffExtractIncludes(t *testing.T) {
 			name:   "all kinds under /proj",
 			root:   "/proj",
 			filter: AllDiffKinds,
-			// First side: removed + both-sides kinds. /proj/old collapses its
-			// subtree; /proj/mixed is a non-pure dir and never an include.
+			// Pure directories collapse descendants; non-pure directories do not.
 			wantFirst: []string{"/proj/gone.txt", "/proj/meta.txt", "/proj/mixed/c.txt", "/proj/old", "/proj/readme"},
-			// Second side: added + both-sides kinds. /proj/new collapses
-			// /proj/new/a.txt, /proj/new/deep, and /proj/new/deep/b.
+			// Both-sided changes appear in each snapshot's include list.
 			wantSecond: []string{"/proj/fresh.txt", "/proj/meta.txt", "/proj/mixed/c.txt", "/proj/new", "/proj/readme"},
-			// Counts are pre-collapse selections (dir entries included).
-			firstCount:  7, // readme meta gone old old/x mixed mixed/c
-			secondCount: 9, // readme meta fresh new new/a new/deep new/deep/b mixed mixed/c
+			// Counts precede include-list collapsing.
+			firstCount:  7,
+			secondCount: 9,
 		},
 		{
 			name:        "added only",
@@ -552,7 +508,7 @@ func TestDiffExtractIncludes(t *testing.T) {
 			filter:      KindModified,
 			wantFirst:   []string{"/proj/mixed/c.txt", "/proj/readme"},
 			wantSecond:  []string{"/proj/mixed/c.txt", "/proj/readme"},
-			firstCount:  3, // readme mixed mixed/c (the dir is selected but never included)
+			firstCount:  3,
 			secondCount: 3,
 		},
 		{
@@ -608,9 +564,6 @@ func TestDiffExtractIncludes(t *testing.T) {
 	}
 }
 
-// TestDiffExtractIncludesDuplicateMerge pins the OR-merge: a path reported
-// twice (M then U) selects once per side, and a dir reported as added twice
-// stays pure (still collapses).
 func TestDiffExtractIncludesDuplicateMerge(t *testing.T) {
 	mk := func(p, mod string) DiffEntry {
 		e, _ := newDiffEntry(p, mod)
@@ -635,8 +588,6 @@ func TestDiffExtractIncludesDuplicateMerge(t *testing.T) {
 	}
 }
 
-// slicesEqual avoids importing slices into a file that predates it; nil and
-// empty compare equal, matching the want-nil convention above.
 func slicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -10,10 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// snapshotdiffsearch.go is the in-memory fuzzy search over the currently loaded
-// diff. It deliberately searches only parsed change entries (not synthetic
-// ancestor dirs, and never repository contents) and uses the same model.FuzzyScore
-// / model.BetterFuzzy ordering as browse search.
+// Diff search ranks parsed change entries in memory, excluding synthetic
+// ancestors and repository contents, with the same ordering as browse search.
 
 const diffSearchResultLimit = browseSearchResultLimit
 
@@ -100,10 +98,8 @@ func (m Model) cancelDiffSearch() Model {
 	}
 	resolved := existingDiffDir(m.diffTree, origin)
 	m = m.rebuildDiffRows(resolved, "")
-	// Only restore the origin cursor when we actually landed in the origin dir.
-	// If existingDiffDir fell back to a parent (filter/swap removed origin),
-	// originCursor indexes the wrong list — let rebuildDiffRows' normal cursor
-	// restoration (selectPath / diffCache / 0) own the fallback dir's position.
+	// Restore originCursor only in its original directory. After fallback to a
+	// parent, normal rebuild restoration owns that different row list.
 	if resolved == origin {
 		m.diffCursor = clampCursor(originCursor, len(m.diffRows))
 	}
@@ -129,14 +125,14 @@ func (m Model) selectedDiffSearchRow() *model.DiffRow {
 	return &m.diffSearchRows[m.diffSearchCursor]
 }
 
+// rankDiffSearchRows merges paths before filtering and fuzzy ranking. It returns
+// at most limit rows and the total match count.
 func rankDiffSearchRows(entries []model.DiffEntry, query string, filter model.ModifierKind, limit int) ([]model.DiffRow, int) {
 	if strings.TrimSpace(query) == "" {
 		return nil, 0
 	}
-	// Pre-merge by path: a `M`+`U` pair for the same file must rank as one MU
-	// row to match BuildDiffTree's per-path OR-merge contract. Filtering or
-	// first-wins-deduping before the merge would let the active filter (or
-	// stream order) change which record's marker the row renders.
+	// Merge paths before filtering to match BuildDiffTree's OR-merge contract and
+	// keep record order from changing multi-kind markers.
 	type merged struct {
 		kinds    model.ModifierKind
 		modifier string
@@ -166,9 +162,7 @@ func rankDiffSearchRows(entries []model.DiffEntry, query string, filter model.Mo
 		if match, ok := model.FuzzyScore(p, query); ok {
 			modifier := mg.modifier
 			if mg.dup {
-				// A duplicate-path merge has no canonical "original" string;
-				// render from the OR-merged Kinds so the marker is the same
-				// regardless of which order restic emitted the records.
+				// Derive duplicate markers from merged kinds, independent of stream order.
 				modifier = model.ModifierString(mg.kinds)
 			}
 			row := model.DiffRow{

@@ -9,26 +9,12 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// diff.go is the streaming restic boundary for the snapshot-diff feature. It
-// runs `restic --no-lock diff --json <first> <second>` once and parses the
-// NDJSON output as it arrives, handing each decoded change to onEntry. The
-// boundary mirrors StreamSnapshotTree: callback errors abort the scan, user
-// cancel beats every other classification, and a clean exit returns the
-// summary verbatim.
+// Snapshot diffs use one no-lock JSON stream. Callback errors abort the scan,
+// while caller cancellation takes precedence over other outcomes.
 
-// StreamDiff streams the change records for the diff between two snapshots,
-// invoking onEntry for each parsed entry as it arrives and onProgress with a
-// coalesced count. Restic diff is directional: `+` means present in the second
-// argument and absent in the first, and `-` means the reverse. The TUI opens a
-// chronological diff by default, then its swap key can pass the reverse order
-// explicitly.
-//
-// Classification is ordered:
-//  1. caller cancelled the parent ctx → context.Canceled, even if the parser
-//     surfaced a cancel-equivalent error from the read.
-//  2. onEntry / parser returned a non-cancel error → that error verbatim.
-//  3. restic exited cleanly → the parsed SnapshotDiff, nil.
-//  4. anything else → classify the run failure.
+// StreamDiff sends each parsed change to onEntry and coalesced counts to
+// onProgress. The diff is directional: `+` means present only in the second
+// snapshot, while `-` means present only in the first.
 func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	if timeout <= 0 {
 		timeout = c.timeout()
@@ -49,8 +35,7 @@ func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID,
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
-		// A caller cancel beats every other classification — the parser may have
-		// surfaced ctx.Err() up through scanErr.
+		// The parser may also have surfaced the cancellation through scanErr.
 		return st.result, context.Canceled
 	case errors.Is(dctx.Err(), context.DeadlineExceeded):
 		return st.result, c.classify(dctx, "diff", runErr, stderr)
@@ -64,8 +49,7 @@ func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID,
 	}
 }
 
-// diffStream wires the consume callback to model.ScanDiffNDJSON and holds the
-// terminal result plus the first non-cancel parser error.
+// diffStream retains the terminal scan result and first non-cancellation error.
 type diffStream struct {
 	ctx        context.Context
 	onEntry    func(model.DiffEntry) error

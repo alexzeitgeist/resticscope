@@ -61,7 +61,7 @@ func TestCheckAllReachable(t *testing.T) {
 		Cache:   newFakeCache(),
 		Clock:   fixedClock{now},
 		Secrets: fakeSecrets{},
-		Restic:  fakeRestic{}, // CatConfig returns nil
+		Restic:  fakeRestic{},
 	}
 	checks, err := a.Check(t.Context())
 	if err != nil {

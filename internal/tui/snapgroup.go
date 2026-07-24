@@ -10,19 +10,12 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// snapgroup.go owns the detail view's optional snapshot grouping (by host,
-// tags, or paths) and the tree-ID collapse that folds consecutive same-tree
-// snapshots into one "ID (+N)" row. Both are transient per-detail-visit state
-// driven by `g` (cycle group) and `c` (toggle collapse). The pipeline is pure:
-// it consumes the already-sorted newest-first snapshot slice from
-// model.SortedSnapshotsNewestFirst and produces a snapDisplay the renderer
-// indexes into. snapCursor indexes the flat selectable nodes; collapsed peers
-// are unreachable by construction.
+// Snapshot grouping and tree-ID collapse form a pure display pipeline over the
+// newest-first snapshot list. snapCursor indexes its flattened selectable
+// nodes, excluding collapsed peers.
 
-// snapGroupMode is the section grouping cycle position. snapGroupOff renders
-// a single flat section; the other modes partition snapshots into per-key
-// sections, plus a "(no host)" / "(untagged)" / "(no paths)" fallback when a
-// snapshot lacks the key.
+// snapGroupMode selects flat display or grouping by host, tags, or paths.
+// Grouped displays include a fallback section for missing keys.
 type snapGroupMode int
 
 const (
@@ -30,7 +23,7 @@ const (
 	snapGroupHost
 	snapGroupTags
 	snapGroupPaths
-	snapGroupModeCount // sentinel: number of modes, for cycling
+	snapGroupModeCount // Number of modes; used for cycling.
 )
 
 // label is the short noun used in the heading suffix ("· group: host").
@@ -47,20 +40,16 @@ func (m snapGroupMode) label() string {
 	}
 }
 
-// snapNode is one selectable row in the detail view's snapshot table. count
-// is the number of folded peers (zero means no "(+N)" suffix); peers carries
-// those peer snapshots so the renderer can show their marks on the head row
-// and so mark normalization can map a peer ID back to its absorbing head.
+// snapNode is one selectable snapshot row. peers contains collapsed snapshots
+// so their marks and IDs can resolve to head; count controls the +N suffix.
 type snapNode struct {
 	head  model.Snapshot
 	count int
 	peers []model.Snapshot
 }
 
-// snapSection groups nodes under a heading when grouping is active. rawCount
-// is the snapshot count before collapse — used for the "(N)" badge on the
-// heading so the user sees "host-a (12)" even when the 12 collapsed into 3
-// rows. noKey marks the fallback bucket so the renderer can style it dim.
+// snapSection groups nodes under a heading. rawCount preserves the pre-collapse
+// count for its badge, while noKey identifies the dimmed fallback bucket.
 type snapSection struct {
 	key      string
 	title    string
@@ -69,22 +58,16 @@ type snapSection struct {
 	noKey    bool
 }
 
-// snapDisplay is the canonical render-and-action view of the snapshot list.
-// nodes is the flat selectable order the cursor indexes; sections is nil in
-// flat mode and non-nil under any non-off grouping mode. Every renderer,
-// cursor clamp, and mark check resolves through this single view so the
-// highlighted row, the acted-on snapshot, and the rendered marks can never
-// diverge.
+// snapDisplay is the canonical render and action order. nodes is the flattened
+// cursor order; sections is populated only when grouping, keeping selection,
+// actions, and rendered marks aligned.
 type snapDisplay struct {
 	nodes    []snapNode
 	sections []snapSection
 }
 
-// snapDisplay rebuilds the display from the detail repo's snapshots and the
-// current grouping/collapse toggles. It is invoked per render and per action;
-// the expected scale does not justify a cache. Pipeline order is fixed:
-// section first, then collapse within each section so the collapse rule
-// "consecutive same-tree" never crosses a section boundary.
+// snapDisplay rebuilds the inexpensive display for each render or action.
+// Grouping precedes collapse so runs cannot cross section boundaries.
 func (m Model) snapDisplay() snapDisplay {
 	return buildSnapDisplay(m.detailSnapshots(), m.snapGroupMode, m.snapCollapseTree)
 }
@@ -107,8 +90,7 @@ func buildSnapDisplay(snaps []model.Snapshot, mode snapGroupMode, collapse bool)
 	return snapDisplay{nodes: flat, sections: sections}
 }
 
-// snapNodes is the flat-mode node builder: either one node per snapshot
-// (collapse off) or a collapsed run.
+// snapNodes builds flat nodes with optional tree-run collapse.
 func snapNodes(snaps []model.Snapshot, collapse bool) []snapNode {
 	if !collapse {
 		out := make([]snapNode, len(snaps))
@@ -120,9 +102,8 @@ func snapNodes(snaps []model.Snapshot, collapse bool) []snapNode {
 	return collapseTreeRuns(snaps)
 }
 
-// sectionRawSnaps returns the raw snapshots backing a section before collapse.
-// snapSectionsBy seeds the section with one node per snapshot; this peels the
-// heads back out so the collapse pass can re-fold within the section.
+// sectionRawSnaps recovers the section snapshots so collapse can rebuild its
+// nodes within the section boundary.
 func sectionRawSnaps(s snapSection) []model.Snapshot {
 	out := make([]model.Snapshot, 0, len(s.nodes))
 	for _, n := range s.nodes {
@@ -131,12 +112,9 @@ func sectionRawSnaps(s snapSection) []model.Snapshot {
 	return out
 }
 
-// snapSectionsBy partitions snaps by the configured source key into sections
-// ordered case-insensitively by canonical key with a byte-order tie-break so
-// distinct keys with colliding titles stay deterministic. The noKey fallback
-// sorts last. Within each section the caller's newest-first order is
-// preserved (no re-sort). Each snapshot lands in exactly one section: tag
-// grouping buckets by the full sorted tag set, not by each individual tag.
+// snapSectionsBy partitions snapshots by source key, preserves newest-first row
+// order, and sorts sections case-insensitively with a byte-order tie-break.
+// Tag grouping uses the complete sorted tag set; the missing-key bucket is last.
 func snapSectionsBy(snaps []model.Snapshot, mode snapGroupMode) []snapSection {
 	type bucket struct {
 		title string
@@ -205,10 +183,8 @@ func snapSectionsBy(snaps []model.Snapshot, mode snapGroupMode) []snapSection {
 	return out
 }
 
-// sectionKeyTitle resolves the (canonical key, display title, missing) tuple
-// for a snapshot under the given mode. The key drives stable sorting; the
-// title drives rendering. For tag/path modes the key joins the sorted set on
-// NUL so distinct sets with the same comma-joined string sort apart.
+// sectionKeyTitle returns a stable sort key, display title, and missing flag.
+// NUL-delimited tag and path keys keep ambiguous display strings distinct.
 func sectionKeyTitle(s model.Snapshot, mode snapGroupMode) (key, title string, missing bool) {
 	switch mode {
 	case snapGroupHost:
@@ -238,11 +214,8 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
-// collapseTreeRuns folds consecutive same-tree-and-source snapshots into a
-// single node. Newest-first input means the head of a collapsed run is the
-// newest member; peers carry the older, hidden snapshots in the same order.
-// Two snapshots collapse iff both have non-empty Tree, share the same Tree,
-// and share the same source key (Hostname + sorted Tags + sorted Paths).
+// collapseTreeRuns folds consecutive snapshots with the same non-empty tree and
+// source. The newest member remains the head; older peers preserve input order.
 func collapseTreeRuns(snaps []model.Snapshot) []snapNode {
 	if len(snaps) == 0 {
 		return nil
@@ -273,20 +246,15 @@ func collapsible(a, b model.Snapshot) bool {
 	return sourceKey(a) == sourceKey(b)
 }
 
-// sourceKey is the cross-snapshot identity used by the collapse rule: same
-// host, same sorted tag set, same sorted path set. Tree equality alone is
-// not enough — restic can record identical trees across different hosts in
-// theory, and grouping them together would silently misrepresent origin.
+// sourceKey identifies a snapshot by host and sorted tag and path sets. Tree
+// equality alone cannot distinguish identical content from different origins.
 func sourceKey(s model.Snapshot) string {
 	tags := strings.Join(sortedCopy(s.Tags), "\x00")
 	paths := strings.Join(sortedCopy(s.Paths), "\x00")
 	return s.Hostname + "\x01" + tags + "\x01" + paths
 }
 
-// selectedNode returns the node under the detail cursor, or false when the
-// repo has no snapshots. The cursor is clamped on read so a refresh, a group
-// cycle, or a collapse toggle that shrinks the selectable set can never index
-// out of range.
+// selectedNode returns the clamped detail selection, or false when empty.
 func (m Model) selectedNode() (snapNode, bool) {
 	d := m.snapDisplay()
 	if len(d.nodes) == 0 {
@@ -295,12 +263,8 @@ func (m Model) selectedNode() (snapNode, bool) {
 	return d.nodes[clampCursor(m.snapCursor, len(d.nodes))], true
 }
 
-// indexOfSnap returns the cursor position of the node whose head or any peer
-// carries id, or 0 if id is not present. Mirrors arrange.go's indexOf
-// convention so the g/c anchor pattern can grab a pre-toggle head ID, rebuild
-// the display, and re-seat the cursor without special-casing missing IDs.
-// Searching peers makes a previously-selected peer map to its absorbing head
-// when collapse turns on.
+// indexOfSnap returns the node containing id, including collapsed peers. Peer
+// lookup reanchors a pre-collapse selection to its absorbing head.
 func (m Model) indexOfSnap(id string) int {
 	if id == "" {
 		return 0
@@ -318,9 +282,8 @@ func (m Model) indexOfSnap(id string) int {
 	return 0
 }
 
-// isNodeMarked reports whether the node (head or any peer) is in the detail
-// mark FIFO. Checking peers keeps a hidden peer's mark visible on its head
-// even before normalization folds it.
+// isNodeMarked reports whether the head or a peer is marked, keeping hidden
+// peer marks visible before normalization.
 func (m Model) isNodeMarked(n snapNode) bool {
 	if m.isMarked(n.head.ID) {
 		return true
@@ -333,16 +296,11 @@ func (m Model) isNodeMarked(n snapNode) bool {
 	return false
 }
 
-// normalizeDetailMarks remaps the mark FIFO against d. A mark on a peer that
-// becomes hidden maps to its absorbing head; duplicate marks that map to the
-// same head collapse to one mark, preserving FIFO order by keeping the first
-// occurrence. A mark whose ID is not present in d (head or peer) is dropped so
-// refreshes that remove snapshots cannot leave a stale restic diff target.
+// normalizeDetailMarks maps hidden peer marks to their head, preserves FIFO
+// order while removing duplicates, and drops snapshots absent after refresh.
 //
-// Normalization is monotonic: collapse-on can fold peer marks into a head
-// mark; collapse-off cannot reconstruct the original peer identities after
-// that fold. That is acceptable because folded snapshots share the same
-// collapsible tree/source identity by definition.
+// Normalization is monotonic: expanding cannot recover peer marks merged into
+// a head, which is safe because collapsed snapshots share tree and source.
 func (m Model) normalizeDetailMarks(d snapDisplay) Model {
 	if len(m.detailMarks) == 0 {
 		return m
@@ -375,11 +333,8 @@ func normalizedDetailMarks(marks []model.Snapshot, d snapDisplay) []model.Snapsh
 	return out
 }
 
-// cycleSnapGroup advances the detail-view grouping cycle (off → host → tags
-// → paths → off). Anchors the cursor on the selected node's head ID so the
-// same snapshot stays selected across the reorder, then normalizes marks
-// against the new display so a previously visible mark on a now-hidden peer
-// shows on the absorbing head.
+// cycleSnapGroup advances grouping, reanchors the selected snapshot by head ID,
+// and normalizes marks against the reordered display.
 func (m Model) cycleSnapGroup() Model {
 	var anchorID string
 	if n, ok := m.selectedNode(); ok {
@@ -392,10 +347,7 @@ func (m Model) cycleSnapGroup() Model {
 	return m
 }
 
-// cycleSnapCollapse toggles tree-ID collapse. Same anchor + normalize
-// discipline as cycleSnapGroup; collapse-on can merge marks (handled by
-// normalizeDetailMarks), collapse-off cannot un-merge them — that loss is
-// documented and accepted because folded peers share an identity.
+// cycleSnapCollapse toggles collapse, reanchors selection, and normalizes marks.
 func (m Model) cycleSnapCollapse() Model {
 	var anchorID string
 	if n, ok := m.selectedNode(); ok {
@@ -425,9 +377,8 @@ type snapTok struct {
 	data    int // flat-display index of the row; -1 for non-row tokens
 }
 
-// buildSnapTokens flattens a grouped display into a render-free token stream
-// and records each section heading's line index for the windowing math.
-// Blank separators precede every non-first section.
+// buildSnapTokens flattens a grouped display before rendering and records
+// heading positions for windowing. Non-first sections get a blank separator.
 func buildSnapTokens(d snapDisplay) ([]snapTok, []int) {
 	capLines := len(d.sections)
 	if len(d.sections) > 1 {
@@ -453,15 +404,9 @@ func buildSnapTokens(d snapDisplay) ([]snapTok, []int) {
 	return lines, headingPos
 }
 
-// idCell formats the short-id column's text for a node. snapCells left-pads
-// the result to l.idWidth, so:
-//
-//   - Uncollapsed: return the bare short-id; snapCells handles padding,
-//     including the blank suffix slot when collapse mode is on.
-//   - Collapsed head: return "shortid +N" with the "+N" right-aligned within
-//     snapCollapseSuffixWidth so the digit lands in the reserved slot. A
-//     count whose decimal width exceeds the slot widens that one row only
-//     (snapCells's %-*s never truncates), accepted as a rare case.
+// idCell formats a bare short ID or a collapsed "shortid +N" value. The suffix
+// is right-aligned within snapCollapseSuffixWidth; an unusually wide count may
+// widen only that row.
 func idCell(shortID string, count int) string {
 	if count <= 0 {
 		return shortID

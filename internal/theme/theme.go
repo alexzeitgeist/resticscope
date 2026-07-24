@@ -1,8 +1,5 @@
-// Package theme defines the TUI's color vocabulary: the ten semantic roles
-// every view draws from, and the built-in named palettes compiled into the
-// binary so theme selection ships no extra files. Like internal/model it is a
-// leaf — colors are plain strings here (hex or ANSI-256 codes), and only
-// internal/tui turns them into lipgloss colors.
+// Package theme defines the TUI's semantic color roles and built-in palettes.
+// Colors remain plain strings until internal/tui converts them for lipgloss.
 package theme
 
 import (
@@ -10,11 +7,9 @@ import (
 	"strconv"
 )
 
-// Palette is one theme's assignment of a color to each of the ten semantic
-// roles the TUI uses. Values are "#rgb" / "#rrggbb" hex, an ANSI-256 code
-// "0"–"255" (which inherits the terminal's own palette for that slot), or the
-// keyword "default" (the terminal's default fg/bg — no color drawn at all,
-// the conventional escape hatch tmux/lazygit/helix spell the same way).
+// Palette assigns colors to the TUI's semantic roles. Values are hex, ANSI-256
+// indexes inheriting terminal slots, or "default" for the terminal foreground or
+// background.
 type Palette struct {
 	Bg     string // terminal background the theme is designed on (painted via OSC 11 unless [theme] background = false)
 	Fg     string // primary text (names, values)
@@ -28,22 +23,14 @@ type Palette struct {
 	Orange string // the accent: cursor row, key chips, bitrot warnings
 }
 
-// DefaultName is the theme used when the config selects none — the Gruvbox
-// dark palette the TUI shipped with originally.
+// DefaultName retains the original Gruvbox Dark palette when configuration
+// selects none.
 const DefaultName = "gruvbox-dark"
 
-// builtin holds every compiled-in theme, keyed by its config name. Each value
-// is the upstream palette mapped onto the ten roles above (bg/fg = the canonical
-// background and body text, grey = comment color, dim = the surface/selection
-// tone, accents verbatim).
+// builtin maps upstream palettes onto the ten semantic roles.
 var builtin = map[string]Palette{
-	// terminal is the no-theming theme: every role defers to the terminal's
-	// own scheme. fg/bg are the terminal defaults (nothing painted, nothing
-	// styled) and the accents are the classic ANSI-16 slots, so the TUI looks
-	// like the rest of the user's terminal — the term16/TTY convention in
-	// helix, btop, and friends. Grey and dim share bright-black ("8"), the only
-	// muted slot ANSI-16 offers; orange falls to magenta ("5"), the customary
-	// stand-in for an accent ANSI-16 lacks.
+	// terminal uses terminal defaults and ANSI-16 accents. Bright black supplies
+	// both muted roles, while magenta substitutes for the missing orange slot.
 	"terminal": {
 		Bg: "default", Fg: "default",
 		Grey: "8", Dim: "8",
@@ -74,19 +61,16 @@ var builtin = map[string]Palette{
 		Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c",
 		Blue: "#bd93f9", Aqua: "#8be9fd", Orange: "#ffb86c",
 	},
-	// monokai is the TextMate original, except Aqua: the .tmTheme has no second
-	// cyan, so #a1efe4 follows the common terminal ports (base16) to keep the
-	// blue and aqua roles distinguishable rather than collapsing both onto
-	// #66d9ef.
+	// Monokai uses the TextMate palette and the base16 secondary cyan to keep Blue
+	// and Aqua distinct.
 	"monokai": {
 		Bg: "#272822",
 		Fg: "#f8f8f2", Grey: "#75715e", Dim: "#49483e",
 		Red: "#f92672", Green: "#a6e22e", Yellow: "#e6db74",
 		Blue: "#66d9ef", Aqua: "#a1efe4", Orange: "#fd971f",
 	},
-	// The four catppuccin flavors share one role mapping onto the official
-	// palette (github.com/catppuccin/palette): bg/fg = base/text, grey/dim =
-	// overlay0/surface2, and the accents are red/green/yellow/blue/teal/peach.
+	// Catppuccin flavors map base/text and overlay0/surface2 to structural roles,
+	// with official accent colors retained.
 	"catppuccin-mocha": {
 		Bg: "#1e1e2e",
 		Fg: "#cdd6f4", Grey: "#6c7086", Dim: "#585b70",
@@ -111,47 +95,34 @@ var builtin = map[string]Palette{
 		Red: "#d20f39", Green: "#40a02b", Yellow: "#df8e1d",
 		Blue: "#1e66f5", Aqua: "#179299", Orange: "#fe640b",
 	},
-	// ayu follows the upstream ayu-colors syntax roles (markup/string/func/
-	// entity/regexp), with orange = keyword rather than ayu's gold accent —
-	// the gold (#e6b450 dark, #f29718 light) sits too close to the func yellow
-	// already holding the yellow role to keep the two distinguishable.
+	// Ayu uses keyword orange because its gold accent is too close to function
+	// yellow for distinct roles.
 	"ayu-dark": {
 		Bg: "#10141c",
 		Fg: "#bfbdb6", Grey: "#5a6673", Dim: "#475266",
 		Red: "#f07178", Green: "#aad94c", Yellow: "#ffb454",
 		Blue: "#59c2ff", Aqua: "#95e6cb", Orange: "#ff8f40",
 	},
-	// ayu-light's official comment grey (#adaeb1) is too faint against the
-	// near-white bg for the grey role's metadata text, so grey takes the UI
-	// foreground and the comment grey slides down to dim. Yellow is the func
-	// gold #eba400 darkened to #bf8600: upstream's value reads at 2.1:1 on
-	// this bg (the yellow role carries titles, which need more) and ayu has
-	// no darker yellow, so this keeps the hue at 3.1:1 — gruvbox-light's
-	// yellow weight.
+	// Ayu Light promotes the UI foreground to Grey because comment grey is too faint
+	// for metadata. Yellow is darkened from function gold to improve title contrast.
 	"ayu-light": {
 		Bg: "#fcfcfc",
 		Fg: "#5c6166", Grey: "#828e9f", Dim: "#adaeb1",
 		Red: "#f07171", Green: "#86b300", Yellow: "#bf8600",
 		Blue: "#22a4e6", Aqua: "#4cbf99", Orange: "#fa8532",
 	},
-	// night-owl maps the VS Code theme's signature tokens: green = the
-	// variable chartreuse, yellow = the string tan (the theme's own ANSI
-	// yellow is greenish #c5e478, which would collide with green), orange =
-	// the number/constant slot. Its iconic keyword purple #c792ea has no role
-	// here — the palette carries six accents, Night Owl seven.
+	// Night Owl maps variable chartreuse, string tan, and number orange to avoid a
+	// collision between its greenish ANSI yellow and Green. Keyword purple has no
+	// semantic role.
 	"night-owl": {
 		Bg: "#011627",
 		Fg: "#d6deeb", Grey: "#637777", Dim: "#1d3b53",
 		Red: "#ef5350", Green: "#c5e478", Yellow: "#ecc48d",
 		Blue: "#82aaff", Aqua: "#7fdbca", Orange: "#f78c6c",
 	},
-	// night-owl-light (upstream "Light Owl") has no orange anywhere, so the
-	// orange role takes #aa0982 — the number/constant slot, i.e. the same
-	// token the dark variant's orange holds — keeping roles consistent when
-	// switching between the pair. Dim is the line-number foreground (the
-	// whitespace grey #d9d9d9 reads at 1.4:1, invisible as text), and yellow
-	// is the official #e0af02 darkened to #b58a00: upstream's only yellows
-	// sit at 2:1 on this bg, too faint for the titles the yellow role draws.
+	// Light Owl uses number/constant magenta for the missing orange role and the
+	// line-number foreground for readable Dim text. Yellow is darkened for title
+	// contrast.
 	"night-owl-light": {
 		Bg: "#fbfbfb",
 		Fg: "#403f53", Grey: "#989fb1", Dim: "#90a7b2",
@@ -195,8 +166,7 @@ func Default() Palette {
 	return builtin[DefaultName]
 }
 
-// Names lists every built-in theme name, sorted, for validation error messages
-// and documentation.
+// Names returns sorted built-in theme names.
 func Names() []string {
 	names := make([]string, 0, len(builtin))
 	for name := range builtin {
@@ -206,12 +176,8 @@ func Names() []string {
 	return names
 }
 
-// ValidColor reports whether s is a color value the TUI accepts: "#rgb" /
-// "#rrggbb" hex (case-insensitive), an ANSI-256 code 0–255, or the keyword
-// "default" (terminal default, rendered unstyled). Apart from the keyword this
-// is exactly the set lipgloss.Color parses without falling back to no-color,
-// so config validation can reject a typo instead of silently rendering it
-// black.
+// ValidColor reports whether s is a supported config color: hex, an ANSI-256
+// index, or "default". These forms are narrower than Lip Gloss's numeric parser.
 func ValidColor(s string) bool {
 	if s == "default" {
 		return true
@@ -230,9 +196,7 @@ func ValidColor(s string) bool {
 		}
 		return true
 	}
-	// Reject a leading '+' — strconv.Atoi accepts it, but lipgloss.Color
-	// falls back to no-color on "+15", so validation would pass a value
-	// that renders as black.
+	// Reject a leading plus even though strconv and Lip Gloss accept it.
 	if len(s) > 0 && s[0] == '+' {
 		return false
 	}

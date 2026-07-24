@@ -5,9 +5,8 @@ package browsedb
 import "os"
 
 // tryLock reports that advisory locking is unsupported on this platform.
-// Stale-session cleanup then skips every candidate rather than guess at lock
-// semantics, so old (unreadable) session dirs may accumulate — a documented
-// disk leak that is harmless to privacy because the encryption key is gone.
+// Cleanup cannot classify sessions with lock markers as stale, so abandoned
+// encrypted directories may accumulate after their in-memory keys are lost.
 func tryLock(*os.File) (ok, supported bool) {
 	return false, false
 }

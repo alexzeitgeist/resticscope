@@ -6,9 +6,8 @@ import (
 	"os/exec"
 )
 
-// ExecRunner is the production RunFunc: it executes `shell -c command`. The
-// secrets_command is given full shell power by design (plan §3, §12), so the
-// caller is responsible for resolving a trusted shell.
+// ExecRunner executes command through `shell -c`. The caller must supply a
+// trusted shell because secrets commands intentionally have full shell access.
 func ExecRunner(ctx context.Context, shell, command string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	var out, errBuf bytes.Buffer

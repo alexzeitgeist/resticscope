@@ -8,9 +8,8 @@ import (
 	"syscall"
 )
 
-// tryLock attempts a non-blocking exclusive advisory lock on f. ok reports
-// whether the lock was acquired (false when another process holds it). supported
-// is false when the host/filesystem reports flock as unavailable.
+// tryLock attempts a non-blocking exclusive advisory lock. supported is false
+// when the host or filesystem reports flock as unavailable.
 func tryLock(f *os.File) (ok, supported bool) {
 	err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err == nil {
@@ -22,8 +21,7 @@ func tryLock(f *os.File) (ok, supported bool) {
 	return false, true
 }
 
-// unlock releases an advisory lock held on f. Closing f releases it too; this is
-// used when cleanup briefly probes a lock it must not keep.
+// unlock releases a lock acquired only to probe whether a session is live.
 func unlock(f *os.File) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }

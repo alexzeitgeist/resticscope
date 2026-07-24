@@ -12,24 +12,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// snapshotdiff.go is the controller for snapshotDiffView: the tree-style diff
-// navigator launched from the detail view by marking two snapshots and pressing
-// `d`. It mirrors findversions.go's generation/cancel discipline and browse.go's
-// progress-channel pattern. The on-screen rows hold paths only for the lifetime
-// of the model — clearSnapshotDiff zeros every diff* field on leaving the view
-// (non-negotiable #1: no filenames linger). The stream itself goes through
-// app.SnapshotDiff which delegates to Restic.StreamDiff with the password on
-// fd 3, so no path or password ever touches a process arg.
+// The snapshot-diff controller uses generation checks and cancellation for its
+// streamed tree navigator. clearSnapshotDiff removes path state on exit, and
+// app.SnapshotDiff passes the password on fd 3 so paths and passwords never
+// enter process arguments.
 
-// diffProgressBuffer bounds the diff progress channel. Sends are non-blocking,
-// so the restic stdout consumer never stalls behind a full UI channel: a
-// dropped tick is harmless because a later tick (or the final count) carries a
-// fresher number. Mirrors browseProgressBuffer.
+// diffProgressBuffer bounds non-blocking progress delivery so UI backpressure
+// cannot stall restic output; later ticks replace any dropped count.
 const diffProgressBuffer = 64
 
-// toggleDetailMark applies the 2-slot FIFO toggle for the snapshot under the
-// detail-view cursor: re-marking an already-marked row clears it; otherwise the
-// row joins the FIFO, evicting the oldest mark when the slot count is full.
+// toggleDetailMark toggles the selected snapshot in a two-slot FIFO, evicting
+// the oldest mark when full.
 func (m Model) toggleDetailMark() Model {
 	snap := m.selectedSnapshot()
 	if snap == nil {
@@ -38,23 +31,19 @@ func (m Model) toggleDetailMark() Model {
 	id := snap.ID
 	for i, s := range m.detailMarks {
 		if s.ID == id {
-			// Re-mark clears in place; the surviving mark (if any) keeps its slot.
 			m.detailMarks = append(m.detailMarks[:i], m.detailMarks[i+1:]...)
 			return m
 		}
 	}
 	m.detailMarks = append(m.detailMarks, *snap)
 	if len(m.detailMarks) > 2 {
-		// FIFO eviction: drop the oldest entry once a third mark arrives.
 		m.detailMarks = m.detailMarks[len(m.detailMarks)-2:]
 	}
 	return m
 }
 
-// clearDetailMarks is the single chokepoint that zeroes the FIFO. Called from
-// goBack's detailView arm when leaving the detail context for the list, so
-// marks survive a round-trip into snapshotDiffView or browseView (sub-contexts
-// of detail) and only clear on the way home.
+// clearDetailMarks clears marks only when leaving detail for the list, allowing
+// them to survive browse and diff round trips.
 func (m Model) clearDetailMarks() Model {
 	m.detailMarks = nil
 	return m
@@ -70,16 +59,11 @@ func (m Model) isMarked(id string) bool {
 	return false
 }
 
-// diffPair resolves the (older, newer) pair to diff from the current detail
-// state. ok=false signals the caller to show a footer hint instead of opening
-// the view. The pair is always sorted chronologically (older.Time <= newer.Time)
-// so the renderer can show an unambiguous arrow and `+`/`-` mean "added/removed
-// in the newer".
+// diffPair resolves a chronological older/newer pair so +/- describe changes
+// in newer. False tells the caller to show a footer hint.
 //
-//   - 2 marks → diff those two (irrespective of cursor)
-//   - 1 mark  → diff that mark against the cursor row (anchor + cursor)
-//   - 0 marks → ok=false, footer hint
-//   - cursor identical to the only mark → ok=false, footer hint
+// Two marks form the pair; one mark pairs with the cursor. Zero marks or an
+// identical cursor and sole mark produce no pair.
 func (m Model) diffPair() (older, newer model.Snapshot, ok bool) {
 	marks := normalizedDetailMarks(m.detailMarks, m.snapDisplay())
 	switch len(marks) {
@@ -100,11 +84,8 @@ func (m Model) diffPair() (older, newer model.Snapshot, ok bool) {
 	return older, newer, true
 }
 
-// startSnapshotDiff enters snapshotDiffView for the (older, newer) pair. It
-// pins the pair on the model, resets the view to the diff root with all
-// filters on, and kicks off the streamed restic diff. clearSnapshotDiff is the
-// single source of truth for the zero state; supersede first so a prior
-// in-flight diff is cancelled before clear drops its cancel function.
+// startSnapshotDiff resets the view and starts a streamed diff. It supersedes
+// prior work before clearing its cancellation function.
 func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Model, tea.Cmd) {
 	m = m.supersedeSnapshotDiff()
 	m = m.clearSnapshotDiff()
@@ -119,11 +100,8 @@ func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Mode
 	return m.dispatchSnapshotDiff(m.diffOlder, m.diffNewer)
 }
 
-// dispatchSnapshotDiff opens a fresh cancel scope (a child of m.ctx so a
-// program-level quit still cascades, but back/esc can cancel just the diff),
-// kicks off the stream in a Cmd, and arms a paired Cmd that waits on the
-// progress channel. Both Cmds carry the generation so a late tick or terminal
-// message from a superseded run is dropped.
+// dispatchSnapshotDiff starts a child cancellation scope plus stream and
+// progress commands. Generation tags reject late messages from superseded runs.
 func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, tea.Cmd) {
 	dctx, dcancel := context.WithCancel(m.ctx)
 	m.diffCancel = dcancel
@@ -138,9 +116,7 @@ func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, t
 	a := m.app
 	streamCmd := func() tea.Msg {
 		defer close(progress) // ends the paired waitForDiffProgress Cmd
-		// entries live in this closure for the duration of the stream; the
-		// terminal msg hands them to applySnapshotDiffMsg which calls
-		// BuildDiffTree on the UI thread.
+		// Accumulate in the worker, then build the tree on the UI thread.
 		var entries []model.DiffEntry
 		res, err := a.SnapshotDiff(dctx, repo, olderID, newerID,
 			func(e model.DiffEntry) error {
@@ -158,10 +134,8 @@ func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, t
 	return m, tea.Batch(streamCmd, waitForDiffProgress(gen, progress))
 }
 
-// waitForDiffProgress blocks on the progress channel and turns the next tick
-// into a snapshotDiffProgressMsg, re-arming itself in Update so the count
-// climbs live. A closed channel (the stream Cmd finished) returns a nil msg,
-// which ends the loop.
+// waitForDiffProgress returns the next tick; Update rearms it until the stream
+// closes the channel.
 func waitForDiffProgress(gen int, progress <-chan int) tea.Cmd {
 	return func() tea.Msg {
 		n, ok := <-progress
@@ -172,11 +146,8 @@ func waitForDiffProgress(gen int, progress <-chan int) tea.Cmd {
 	}
 }
 
-// applySnapshotDiffProgressMsg records a progress tick and re-arms the wait
-// command. A tick whose generation no longer matches is from a superseded run
-// and is dropped without re-arming (the superseding run owns its own channel).
-// The count is clamped monotonic so out-of-order ticks never make it jump
-// backwards.
+// applySnapshotDiffProgressMsg records a monotonic tick and rearms its matching
+// generation. Stale generations are dropped without rearming.
 func (m Model) applySnapshotDiffProgressMsg(msg snapshotDiffProgressMsg) (Model, tea.Cmd) {
 	if msg.gen != m.diffGen {
 		return m, nil
@@ -187,38 +158,21 @@ func (m Model) applySnapshotDiffProgressMsg(msg snapshotDiffProgressMsg) (Model,
 	return m, waitForDiffProgress(msg.gen, m.diffProgress)
 }
 
-// applySnapshotDiffMsg installs the terminal result of a streamed diff. A
-// message whose generation no longer matches is from a superseded or
-// cancelled request and is dropped. On error with a previous tree on screen
-// (swap path) the previous tree is preserved and the error is surfaced in
-// statusMsg (transient, fine here — the user already had a complete tree).
-// On a first-time error with no parsed entries the view falls back to detail
-// so the user is not stranded. On a first-time error with partial entries
-// the partial tree is installed and diffErr carries a sticky "partial: …"
-// warning that rides on the summary line for the lifetime of the tree (and
-// is prefixed onto the search summary while search is open) — dropping
-// thousands of good entries because one late line was malformed would be
-// worse than showing them with a warning, but a transient statusMsg would
-// let the next navigation/filter/search key dismiss the warning and leave
-// an incomplete tree indistinguishable from a complete one.
-// On success BuildDiffTree turns the flat entry stream into the virtual
-// per-dir listing and the cursor lands on the requested diffDir (root for a
-// fresh open, the current dir for a swap).
+// applySnapshotDiffMsg rejects stale results, preserves an existing tree on
+// failure, returns to detail when nothing parsed, or installs a partial tree
+// with a persistent warning.
 func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	if msg.gen != m.diffGen {
 		return m
 	}
 	m = m.cancelSnapshotDiff()
 	if msg.err != nil {
-		// Swap error: keep the previous tree on screen. statusMsg's footer
-		// notice is fine here because the user already had a complete tree;
-		// the warning is about a *failed* swap, not the data on screen.
+		// A failed swap leaves the prior complete tree and a footer warning.
 		if m.diffTree.Children != nil {
 			m.statusMsg = "diff: " + firstLine(msg.err.Error())
 			m.diffSelectPath = ""
 			return m
 		}
-		// First-time error with no entries: nothing to show, bail to detail.
 		if len(msg.entries) == 0 {
 			m.statusMsg = "diff: " + firstLine(msg.err.Error())
 			m.diffSelectPath = ""
@@ -226,12 +180,8 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 			m.view = detailView
 			return m.clearSnapshotDiff()
 		}
-		// First-time error with partial entries: install what we got and
-		// pin the warning to diffErr so it rides on the summary line for
-		// the lifetime of this tree. Putting it in statusMsg would let the
-		// next j/filter/search key silently dismiss it (handleSnapshotDiffKey
-		// clears statusMsg), leaving an incomplete tree indistinguishable
-		// from a complete one.
+		// Keep partial-data warnings in diffErr; ordinary status messages disappear
+		// on the next key and could make an incomplete tree look complete.
 		m.diffErr = "partial: " + firstLine(msg.err.Error())
 	} else {
 		m.diffErr = ""
@@ -247,13 +197,8 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	return m.rebuildDiffRows(existingDiffDir(m.diffTree, m.diffDir), selectPath)
 }
 
-// handleSnapshotDiffKey routes keys in the snapshot-diff view. Back (esc or
-// the contextual q routed by handleKey's Quit branch) returns to detail with
-// the in-flight stream cancelled. Swap (`x`) flips the directional snapshot
-// pair and reruns restic diff. Filter toggles (+, -, M, U, T, b) flip the
-// corresponding bit in diffFilters and rebuild the visible rows. Extract (e)
-// opens the modal for the selected row's changed paths. Navigation is
-// paused while a stream is loading because the rows are about to be replaced.
+// handleSnapshotDiffKey routes diff actions and pauses navigation while loading
+// rows that will soon be replaced.
 func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.Back) {
 		if m.diffSearchJumped {
@@ -267,10 +212,7 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Filter toggles. Each binding maps one restic modifier character to its
-	// bit in the filter mask; the row predicate `row.Kinds & filter != 0`
-	// keeps multi-kind rows (e.g. `MU`) visible whenever any of their bits is
-	// enabled, so toggling `M` off does NOT hide a `MU` row.
+	// A multi-kind row remains visible while any of its modifier bits is enabled.
 	switch {
 	case key.Matches(msg, m.keys.DiffSwap):
 		return m.swapSnapshotDiff()
@@ -313,10 +255,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// swapSnapshotDiff flips the already-open directional pair and reruns the diff
-// with the same filter mask. The current diffDir is kept as the requested
-// landing path for the terminal result; applySnapshotDiffMsg falls back to the
-// nearest existing parent if the path is absent from the swapped result.
+// swapSnapshotDiff reverses the pair while preserving filters and the requested
+// landing path, falling back to its nearest existing parent.
 func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	if m.diffOlder.ID == "" || m.diffNewer.ID == "" {
 		return m, nil
@@ -337,10 +277,8 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	return m.dispatchSnapshotDiff(m.diffNewer, m.diffOlder)
 }
 
-// existingDiffDir returns requested when it exists in tree, otherwise the
-// nearest existing parent. This keeps directional swap in the same directory
-// for the normal case while still giving the view a navigable path if filters
-// or restic output shape remove the exact directory.
+// existingDiffDir returns requested or its nearest existing parent so a swapped
+// result remains navigable.
 func existingDiffDir(tree model.DiffTree, requested string) string {
 	if requested == "" {
 		requested = model.DiffRoot
@@ -366,18 +304,14 @@ func diffTreeHasDir(tree model.DiffTree, dir string) bool {
 	return false
 }
 
-// toggleDiffFilter flips the supplied bit in the filter mask and rebuilds the
-// visible rows for the current dir, clamping the cursor. Bookmarked dir
-// cursors in diffCache are kept — they index into the next filtered listing
-// when the user navigates back, and clampCursor handles the case where the
-// dir's row count shrank below the saved index.
+// toggleDiffFilter flips one mask bit and rebuilds visible rows. Cached cursor
+// positions survive and are clamped if filtering shrinks a directory.
 func (m Model) toggleDiffFilter(k model.ModifierKind) Model {
 	if m.diffSearchJumped {
 		m = m.exitDiffSearch()
 	}
 	m.diffFilters ^= k
-	// Remember where we were so the rebuild can restore the cursor onto the
-	// same row by path if it survives the new filter.
+	// Restore the selected path if it survives the new filter.
 	sel := ""
 	if r := m.selectedDiffRow(); r != nil {
 		sel = r.Path
@@ -385,10 +319,7 @@ func (m Model) toggleDiffFilter(k model.ModifierKind) Model {
 	return m.rebuildDiffRows(m.diffDir, sel)
 }
 
-// enterDiffDir steps into the selected dir row. Files have no action (the
-// per-file content drill-in is a deliberately separate follow-up surface).
-// The current cursor index is remembered in diffCache against the *current*
-// dir, keyed by name, so a back-nav lands on the row we came from.
+// enterDiffDir enters a directory and caches the current cursor for back-nav.
 func (m Model) enterDiffDir() Model {
 	r := m.selectedDiffRow()
 	if r == nil || !r.IsDir {
@@ -401,9 +332,8 @@ func (m Model) enterDiffDir() Model {
 	return m.rebuildDiffRows(r.Path, "")
 }
 
-// diffParentDir steps up one directory, restoring the cursor to the row we
-// came from when the parent's listing was last visited. Capped at the diff
-// root.
+// diffParentDir steps up one directory, restoring the cursor to the row it
+// came from when the parent was last visited. Capped at the diff root.
 func (m Model) diffParentDir() Model {
 	if m.diffDir == model.DiffRoot || m.diffDir == "" {
 		return m
@@ -416,10 +346,8 @@ func (m Model) diffParentDir() Model {
 	return m.rebuildDiffRows(parent, from)
 }
 
-// rebuildDiffRows replaces diffRows with the (filtered, sorted) children of
-// dir and positions the cursor. selectPath, when non-empty, asks the cursor
-// to land on that child by full path; otherwise the cursor lands on the
-// remembered index from diffCache, or 0.
+// rebuildDiffRows filters and sorts a directory, then selects selectPath or its
+// cached cursor position.
 func (m Model) rebuildDiffRows(dir, selectPath string) Model {
 	m.diffDir = dir
 	kids := m.diffTree.Children[dir]
@@ -429,8 +357,7 @@ func (m Model) rebuildDiffRows(dir, selectPath string) Model {
 			filtered = append(filtered, r)
 		}
 	}
-	// Sort: dirs first, then by name. Stable so the tree builder's pre-sort is
-	// the tie-breaker.
+	// Sort directories first, then names, preserving the builder's tie order.
 	sort.SliceStable(filtered, func(i, j int) bool {
 		if filtered[i].IsDir != filtered[j].IsDir {
 			return filtered[i].IsDir
@@ -453,9 +380,8 @@ func (m Model) rebuildDiffRows(dir, selectPath string) Model {
 	return m
 }
 
-// rowVisibleUnderFilter mirrors the documented filter predicate: a row is
-// visible when any of its set kinds is enabled. Dir rows fall back to their
-// aggregate (so a dir whose entire subtree is filtered out drops).
+// rowVisibleUnderFilter reports whether a row or directory aggregate has any
+// enabled kind.
 func rowVisibleUnderFilter(r model.DiffRow, filter model.ModifierKind) bool {
 	if r.Kinds&filter != 0 {
 		return true
@@ -466,8 +392,7 @@ func rowVisibleUnderFilter(r model.DiffRow, filter model.ModifierKind) bool {
 	return false
 }
 
-// selectedDiffRow returns the row under the cursor or nil when the cursor is
-// out of range (empty dir).
+// selectedDiffRow returns the cursor row or nil for an empty directory.
 func (m Model) selectedDiffRow() *model.DiffRow {
 	if m.diffCursor < 0 || m.diffCursor >= len(m.diffRows) {
 		return nil
@@ -475,14 +400,10 @@ func (m Model) selectedDiffRow() *model.DiffRow {
 	return &m.diffRows[m.diffCursor]
 }
 
-// openDiffExtract launches the extract modal for the selected diff row: a
-// changed-paths-only restore of the row's subtree from each side of the pair
-// into one diff container — two snapshot-id roots, ready for a local diff -r.
-// The include sets honor the live filter mask, so what extracts is exactly
-// what the view shows; a side with nothing selected is skipped outright. The
-// row's IsDir has no bearing on the restic shape (diff entries attest no node
-// type, so every diff request is a directory-tree restore with includes); it
-// only drives the review screen's dir marker.
+// openDiffExtract restores filtered changed paths from each side into separate
+// snapshot roots in one diff container. Empty sides are skipped. Every request
+// is a directory-tree restore with includes; IsDir affects only the review
+// marker.
 func (m Model) openDiffExtract() (Model, tea.Cmd) {
 	r := m.selectedDiffRow()
 	if r == nil {
@@ -494,8 +415,7 @@ func (m Model) openDiffExtract() (Model, tea.Cmd) {
 	}
 	set := model.DiffExtractIncludes(m.diffEntries, r.Path, m.diffFilters)
 	if len(set.First) == 0 && len(set.Second) == 0 {
-		// Either nothing under the row passes the filter, or the only passing
-		// changes are non-pure directory entries (which never become includes).
+		// Non-pure directory changes do not become include paths.
 		m.statusMsg = "extract: no extractable changes under the active filter"
 		return m, nil
 	}
@@ -549,9 +469,8 @@ func (m Model) openDiffExtract() (Model, tea.Cmd) {
 	return m, nil
 }
 
-// diffIncludesOverBudget pre-checks one side's include list against the same
-// caps PlanExtractPaths enforces, so an oversized selection is refused with a
-// friendly status-line hint instead of a request-validation error.
+// diffIncludesOverBudget mirrors PlanExtractPaths limits so oversized selections
+// receive a useful status hint.
 func diffIncludesOverBudget(incs []string) bool {
 	if len(incs) > app.MaxDiffExtractIncludes {
 		return true
@@ -563,12 +482,8 @@ func diffIncludesOverBudget(incs []string) bool {
 	return total > app.MaxDiffExtractIncludeBytes
 }
 
-// snapshotDiffBack leaves the diff view, shared by q (routed in handleKey's
-// Quit branch) and esc. Order matters: advance the generation first so any
-// racing snapshotDiffMsg is dropped on arrival, then cancel the in-flight
-// stream so it doesn't outlive the user's exit, only then switch the view and
-// clear the diff* fields. Marks are *not* cleared here: they belong to the
-// detail context and survive this round-trip.
+// snapshotDiffBack supersedes work before clearing state so racing messages are
+// rejected. Detail marks survive the round trip.
 func (m Model) snapshotDiffBack() Model {
 	m.statusMsg = ""
 	m = m.supersedeSnapshotDiff()
@@ -576,9 +491,8 @@ func (m Model) snapshotDiffBack() Model {
 	return m.clearSnapshotDiff()
 }
 
-// supersedeSnapshotDiff advances the diff generation and cancels any in-flight
-// diff. Mirrors supersedeBrowse / supersedeFind — used by every entry point
-// that starts or ends a diff so a late response cannot resurrect stale state.
+// supersedeSnapshotDiff advances the generation and cancels in-flight work so
+// late responses cannot restore stale state.
 func (m Model) supersedeSnapshotDiff() Model {
 	m.diffGen++
 	return m.cancelSnapshotDiff()
@@ -596,11 +510,8 @@ func (m Model) diffLoading() bool {
 	return m.diffCancel != nil
 }
 
-// clearSnapshotDiff zeroes every diff* field. Called on every exit from the
-// view so no repo, snapshot, path, or entry data lingers in the model past the
-// user's leave (non-negotiable #1: paths do not persist). Marks are deliberately
-// untouched — they belong to the detail context, cleared only by goBack on the
-// way to the list.
+// clearSnapshotDiff removes repository, snapshot, and path data when leaving
+// the view. Detail marks remain until goBack reaches the list.
 func (m Model) clearSnapshotDiff() Model {
 	m.diffRepo = ""
 	m.diffOlder = model.Snapshot{}
@@ -623,9 +534,8 @@ func (m Model) clearSnapshotDiff() Model {
 	return m
 }
 
-// diffVisible is the number of diff rows the table shows at once. Floored at 1.
-// The actual overhead is computed by the view; this controller-side helper
-// matches the view's calculation so PgUp/PgDn jump exactly one window.
+// diffVisible matches the view's row budget so page keys move exactly one
+// window, with a floor of one.
 func (m Model) diffVisible() int {
 	_, h := m.effSize()
 	overhead := headerRows + 2*gapRows + m.footerRows() + diffMetaRows + diffAuxRows

@@ -21,6 +21,8 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/version"
 )
 
+// cmdVersion prints the resticscope and restic versions, substitutes a
+// not-found message when restic is unavailable, and always returns 0.
 func cmdVersion(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "resticscope %s\n", version.String())
 	client := &resticx.Client{Runner: resticx.ExecRunner{}}
@@ -32,6 +34,9 @@ func cmdVersion(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return 0
 }
 
+// cmdStatus prints cached or refreshed repository status and returns the worst
+// row's exit code. Configuration, setup, and refresh-level failures return at
+// least 2.
 func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -83,8 +88,7 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return app.WorstExitCode(rows)
 }
 
-// cmdCache dispatches the `cache` subcommands. Only `prune` exists today; it is
-// kept as its own command group so future cache operations have a home.
+// cmdCache dispatches cache subcommands.
 func cmdCache(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: resticscope cache prune [--config PATH] [--all] [--dry-run]")
@@ -101,15 +105,10 @@ func cmdCache(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 }
 
-// cmdCachePrune reclaims disk space from restic's own per-repo caches under
-// <cache_dir>/restic-cache/ (plan §7, §11). By default it removes only orphaned
-// caches — those left behind by a repo that has been removed from the config, or
-// renamed (the cache is keyed on the config name, so a rename looks like a fresh
-// repo) — so the caches backing live repos survive. `--all` removes every cache
-// (restic rebuilds it on next access), and `--dry-run` reports what would go
-// without deleting it.
-// It reads no secrets and makes no network or restic calls. Exit codes: 0 on
-// success (including nothing to prune), 2 on a setup or filesystem failure.
+// cmdCachePrune removes restic caches under <cache_dir>/restic-cache. By default
+// it removes caches absent from the config; --all includes live caches and
+// --dry-run deletes nothing. It loads no secrets and calls neither restic nor the
+// network. Setup and filesystem failures return 2.
 func cmdCachePrune(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("cache prune", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -136,8 +135,7 @@ func cmdCachePrune(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return 0
 }
 
-// cmdSecrets dispatches the `secrets` subcommands. Only `template` exists today;
-// it is kept as its own command group so future secrets helpers have a home.
+// cmdSecrets dispatches secrets subcommands.
 func cmdSecrets(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "usage: resticscope secrets template [--config PATH]"
 	if len(args) == 0 {
@@ -155,16 +153,9 @@ func cmdSecrets(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 }
 
-// cmdSecretsTemplate prints a blank secrets JSON skeleton — the credentials and
-// repos maps pre-filled with the names from config, every value left empty — for
-// the user to fill in and store in their secrets backend (plan §3). It is the
-// onboarding scaffold: it only loads config, reads no secrets, and makes no
-// network or restic calls, so it works before any secret exists and is the first
-// step on a new machine or repo. It pairs with `check`, which verifies the
-// filled-in secrets resolve. The JSON goes to stdout so it can be piped (e.g.
-// `... > s.json` then `pass insert -m ... < s.json`); the guidance line goes to
-// stderr so stdout stays clean. Exit codes: 0 on success, 2 if config cannot be
-// loaded (consistent with the other commands).
+// cmdSecretsTemplate prints a config-derived blank secrets document to stdout
+// and guidance to stderr. It loads no secrets and calls neither restic nor the
+// network, so it works before secrets exist. Configuration failures return 2.
 func cmdSecretsTemplate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	const usage = "usage: resticscope secrets template [--config PATH]"
 	fs := flag.NewFlagSet("secrets template", flag.ContinueOnError)
@@ -195,12 +186,9 @@ func cmdSecretsTemplate(ctx context.Context, args []string, stdout, stderr io.Wr
 	return 0
 }
 
-// cmdTUI launches the Bubble Tea list view. It runs secrets_command and wires
-// restic up front — before tea.NewProgram — so any GPG passphrase prompt
-// happens at the normal terminal instead of fighting the alt-screen (plan §12).
-// If secrets cannot be resolved, the TUI cannot refresh, so we fail fast with a
-// clear message rather than launching a screen that can only show stale cache;
-// `resticscope status` covers the cache-only, no-secrets case.
+// cmdTUI resolves secrets before Bubble Tea starts so passphrase prompts use the
+// normal terminal. Resolution failures return 2 instead of launching a TUI that
+// can show only stale cache.
 func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -243,9 +231,8 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	// Privileged (sudo) extract support: re-execs this binary as root via the
-	// extract-helper subcommand. Wired only for the TUI; failure to resolve the
-	// running binary just leaves the feature unavailable.
+	// Privileged extraction re-execs this binary through sudo; failure to resolve
+	// it leaves the TUI feature unavailable.
 	if pr, err := app.NewSudoPrivilegedRunner(); err == nil {
 		a.Priv = pr
 	} else {
@@ -264,16 +251,9 @@ func cmdTUI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdCheck validates the wiring end to end: it loads and validates the config,
-// runs secrets_command and confirms every credential and repo resolves, checks
-// that restic meets the minimum supported version, then reaches each repo with
-// `restic cat config`. It is the one-shot "is everything set up correctly?"
-// command (plan §9, recommendation 3) and never reads or writes the cache.
-//
-// Exit codes: 0 everything passed; 1 the check ran but found problems (restic
-// too old or unparseable, or one or more repos unreachable); 2 the check could
-// not run or complete (bad config, secrets unavailable, no usable restic
-// binary, or the run was interrupted).
+// cmdCheck validates config, secrets, the restic version, and repository
+// reachability without using the cache. It returns 0 when all checks pass, 1
+// when completed checks find problems, and 2 when checking cannot complete.
 func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -294,8 +274,8 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	logger := newLogger(cfg)
 	store, client, err := refreshDeps(ctx, cfg, logger)
 	if err != nil {
-		// refreshDeps runs secrets_command and validates the resolved secrets
-		// against config; its error is already secret-free.
+		// Command failures suppress provider output, and validation errors omit
+		// values; malformed JSON errors may still quote one input byte.
 		checkLine(stdout, "secrets", "FAILED", err.Error())
 		return 2
 	}
@@ -313,17 +293,10 @@ func cmdCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return checkRestic(ctx, stdout, stderr, verClient.Version, a.Check)
 }
 
-// checkRestic runs the restic-version gate and the per-repo reachability stages
-// of `check`, printing each and returning the exit code. The version is a hard
-// gate: against an unsupported or unparseable restic, exit-code and JSON
-// behavior are unreliable (see resticx.MinVersion), so the probe results would
-// be untrustworthy — it prints the failed stage and returns without reaching
-// any repository. A non-nil probe error (e.g. the context was cancelled) means
-// the check could not complete, so the partial verdict is not trusted and the
-// stage fails with exit 2 rather than risk reporting success.
-//
-// version and probe are injected so the gating and cancellation paths are
-// testable without spawning a real restic.
+// checkRestic validates the restic version before probing repositories because
+// unsupported versions have unreliable exit-code and JSON behavior. Probe
+// errors invalidate partial results and return 2. Injected functions keep the
+// version-gating and cancellation paths hermetic.
 func checkRestic(
 	ctx context.Context,
 	stdout, stderr io.Writer,
@@ -351,9 +324,7 @@ func checkRestic(
 
 	checks, err := probe(ctx)
 	if err != nil {
-		// Cancelled or otherwise unable to finish: the per-repo rows are not a
-		// trustworthy verdict, so report the stage as unfinished rather than
-		// mistake incomplete probing for success.
+		// Probe errors invalidate partial repository results.
 		checkLine(stdout, "repositories", "FAILED", err.Error())
 		fmt.Fprintf(stderr, "check failed: %v\n", err)
 		return 2
@@ -381,11 +352,8 @@ func checkRestic(
 	return 0
 }
 
-// refreshExitCode maps the live rows plus any refresh-level failure to a process
-// exit code. A refresh failure (e.g. the cache could not be persisted) floors
-// the code at 2 even when every repo is green, honoring the documented
-// "...or a failure" contract: a successful-looking refresh whose result could
-// not be saved must not exit 0 and mislead cron/shell callers.
+// refreshExitCode returns the worst row code, floored at 2 by refresh failures
+// so callers cannot mistake unpersisted state for success.
 func refreshExitCode(rows []app.RepoStatus, refreshErr error) int {
 	code := app.WorstExitCode(rows)
 	if refreshErr != nil && code < 2 {
@@ -394,9 +362,8 @@ func refreshExitCode(rows []app.RepoStatus, refreshErr error) int {
 	return code
 }
 
-// refreshDeps runs the secrets_command, validates the resolved secrets against
-// config, and constructs a restic client wired with a redactor so no secret can
-// reach a log line or error string.
+// refreshDeps loads and validates secrets, then constructs a redacting restic
+// client so credentials cannot reach logs or errors.
 func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (app.Secrets, app.Restic, error) {
 	shell := cfg.Global.Shell
 	if shell == "" {
@@ -431,11 +398,8 @@ func refreshDeps(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	return store, client, nil
 }
 
-// templateCreds maps each credential the repos reference to the secrets-template
-// shape it should scaffold: the s3 access_key/secret_key shorthand when every
-// repo using it is the s3 shorthand form, the generic env map otherwise. The
-// names come from the repo references (config.CredentialNames), so each is used
-// by at least one repo by construction.
+// templateCreds selects S3 key fields only for credentials used exclusively by
+// shorthand S3 repositories; all others receive environment maps.
 func templateCreds(cfg *config.Config) []secrets.TemplateCred {
 	names := cfg.CredentialNames()
 	out := make([]secrets.TemplateCred, len(names))
@@ -470,9 +434,8 @@ func loadConfig(path string) (*config.Config, error) {
 	return config.Load(path)
 }
 
-// newLogger returns a JSONL file logger at cfg.Global.LogFile, falling back to a
-// no-op logger if the file cannot be opened. The TUI must never log to stderr
-// (it would corrupt the screen), so file logging is the default everywhere.
+// newLogger returns a JSONL file logger or a discard logger on setup failure.
+// It never logs to stderr, which would corrupt the TUI.
 func newLogger(cfg *config.Config) *slog.Logger {
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if cfg.Global.LogFile == "" {

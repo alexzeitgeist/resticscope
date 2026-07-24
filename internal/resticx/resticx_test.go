@@ -68,9 +68,8 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if last.Hostname != "homeserver" || last.ShortID != "c3d4e5f6" {
 		t.Errorf("unexpected last snapshot: %+v", last)
 	}
-	// restic 0.17+ embeds a per-snapshot summary; we parse its size for free. The
-	// last entry carries one, the earlier entries do not — a nil Summary must stay
-	// distinguishable from a zero-byte snapshot.
+	// Restic 0.17+ may omit a per-snapshot summary; nil must remain distinct from
+	// a zero-byte snapshot.
 	if last.Summary == nil {
 		t.Fatal("expected the summarized snapshot to carry a Summary")
 	}
@@ -83,7 +82,6 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if last.Summary.DataAddedPacked != nil {
 		t.Errorf("DataAddedPacked = %d, want nil when omitted", *last.Summary.DataAddedPacked)
 	}
-	// The richer summary fields restic records per backup must also parse.
 	if last.Summary.FilesNew == nil || *last.Summary.FilesNew != 12 ||
 		last.Summary.FilesChanged == nil || *last.Summary.FilesChanged != 34 ||
 		last.Summary.TotalFilesProcessed == nil || *last.Summary.TotalFilesProcessed != 4096 {
@@ -96,9 +94,7 @@ func TestSnapshotsParsesFixture(t *testing.T) {
 	if snaps[0].Summary != nil {
 		t.Errorf("expected nil Summary for the un-summarized snapshot, got %+v", snaps[0].Summary)
 	}
-	// The non-summary documented snapshot fields (parent, tree, paths, uid, gid,
-	// excludes) and the additional documented summary counters back the
-	// snapshot-info modal, so they must parse from the same fixture.
+	// Parse all snapshot-info fields from the same captured record.
 	if last.Parent == "" || last.Tree == "" {
 		t.Errorf("parent/tree not parsed: parent=%q tree=%q", last.Parent, last.Tree)
 	}
@@ -179,8 +175,7 @@ func TestSnapshotsUsesNoLock(t *testing.T) {
 	}
 }
 
-// A target with no backend env (a credential-less local/sftp repo) exports
-// only resticscope's own vars — no stray backend entries.
+// Credential-free repositories must not inherit unrelated backend variables.
 func TestEnvOmitsAbsentBackendVars(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
@@ -193,11 +188,8 @@ func TestEnvOmitsAbsentBackendVars(t *testing.T) {
 	}
 }
 
-// BackendEnviron is the single merge point for config and credential env: it
-// sorts for determinism, lets the secret value win a key collision, and drops
-// reserved or invalid names even though validation already rejects them — the
-// privileged extract helper replays this assembly on a payload that crossed a
-// process boundary, so the chokepoint must enforce the policy itself.
+// BackendEnviron sorts entries, gives credentials precedence, and rejects unsafe
+// names again at the privileged process boundary.
 func TestBackendEnvironMergesAndFilters(t *testing.T) {
 	tgt := Target{
 		Name: "r",
@@ -273,7 +265,6 @@ func TestBackendOptionsPrepended(t *testing.T) {
 	fr := &fakeRunner{stdout: []byte("[]")}
 	c := &Client{Runner: fr}
 	tgt := testTarget
-	// Two options prove the sorted, deterministic order.
 	tgt.Options = map[string]string{"s3.bucket-lookup": "dns", "s3.connections": "8"}
 	if _, err := c.Snapshots(t.Context(), tgt, Creds{ResticPassword: "pw"}); err != nil {
 		t.Fatalf("Snapshots: %v", err)
@@ -342,10 +333,7 @@ func TestExecRunnerTimeoutStopsRetryingRestic(t *testing.T) {
 }
 
 func TestClassifyCanceled(t *testing.T) {
-	// A cancelled call must classify as a typed *resticx.Error (Kind KindCanceled)
-	// that still unwraps to context.Canceled — not the bare sentinel, which would
-	// break the "classify always returns *Error" contract every other caller relies
-	// on (see TestClassifyExitCodes / TestClassifyTimeout).
+	// Cancellation stays typed while unwrapping to context.Canceled.
 	fr := &fakeRunner{block: true}
 	c := &Client{Runner: fr}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -399,8 +387,7 @@ func TestBufferedMethodsRequireRunner(t *testing.T) {
 	}
 }
 
-// The exported cache-layout helpers must agree with the RESTIC_CACHE_DIR that
-// real runs set, so `cache prune` maps configured repos to the right directory.
+// Cache layout helpers must match RESTIC_CACHE_DIR and cache-prune mapping.
 func TestCacheLayoutHelpers(t *testing.T) {
 	if got := CacheRoot(""); got != "" {
 		t.Errorf("CacheRoot(\"\") = %q, want empty", got)
@@ -409,19 +396,16 @@ func TestCacheLayoutHelpers(t *testing.T) {
 	if want := "/cache/restic-cache"; root != want {
 		t.Errorf("CacheRoot = %q, want %q", root, want)
 	}
-	// A name with path-unsafe characters is sanitized into one element.
 	if got := RepoCacheName("home/server:1"); got != "home_server_1" {
 		t.Errorf("RepoCacheName = %q, want home_server_1", got)
 	}
 
-	// The composed path must equal what buildEnv hands restic as RESTIC_CACHE_DIR.
 	c := &Client{CacheDir: "/cache"}
 	want := filepath.Join(root, RepoCacheName(testTarget.Name))
 	if got := c.repoCacheDir(testTarget); got != want {
 		t.Errorf("repoCacheDir = %q, want %q", got, want)
 	}
-	// The exported helper the shell uses must agree with the method, so refresh
-	// and the shell warm byte-identical paths.
+	// Shell and refresh paths must remain identical.
 	if got := RepoCacheDir("/cache", testTarget.Name); got != want {
 		t.Errorf("RepoCacheDir = %q, want %q", got, want)
 	}

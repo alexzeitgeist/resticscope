@@ -10,10 +10,9 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// Refresh refreshes a single repo by name, persists the result, and returns the
-// new state. A refresh that fails to reach restic is not an error of Refresh
-// itself: the failure is recorded in the returned state's LastError (and its
-// status becomes "error") and still cached, so the UI can show it.
+// Refresh updates and persists one repository. Restic failures are stored in the
+// returned state's LastError and error status rather than returned as operation
+// errors.
 func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error) {
 	r, ok := a.repo(name)
 	if !ok {
@@ -26,12 +25,9 @@ func (a *App) Refresh(ctx context.Context, name string) (model.RepoState, error)
 	return state, nil
 }
 
-// RefreshRow refreshes one repo (persisting the result) and returns its
-// evaluated status row, ready for the TUI to render. The returned error reports
-// only a cache-persistence failure; a restic/secrets failure is captured in the
-// row's State and Status, never returned as an error. The row is returned even
-// when the save fails, so the UI can show live data alongside the warning — the
-// same "refresh means live state" contract RefreshAll honors.
+// RefreshRow returns a live evaluated row after persisting one refresh. It returns
+// the row even when persistence fails; restic and secret failures remain in its
+// state rather than the returned error.
 func (a *App) RefreshRow(ctx context.Context, name string) (RepoStatus, error) {
 	r, ok := a.repo(name)
 	if !ok {
@@ -42,13 +38,10 @@ func (a *App) RefreshRow(ctx context.Context, name string) (RepoStatus, error) {
 	return row, err
 }
 
-// RefreshAll refreshes every configured repo concurrently, bounded by
-// global.parallelism, and persists each result. Results are returned in config
-// order and are always the live refresh outcome. Per-repo restic/secrets
-// failures are captured in their states, not returned as an error. The returned
-// error is non-nil if the context is cancelled or any result could not be
-// persisted — a save failure must be surfaced, never swallowed, so callers do
-// not mistake stale cache for a fresh refresh.
+// RefreshAll concurrently updates and persists every configured repository with
+// bounded parallelism, returning live results in config order. Repository
+// operation failures remain in their states; cancellation and persistence
+// failures are returned.
 func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 	results := make([]model.RepoState, len(a.Cfg.Repos))
 	sem := make(chan struct{}, a.parallelism())
@@ -84,32 +77,18 @@ func (a *App) RefreshAll(ctx context.Context) ([]model.RepoState, error) {
 	return results, errors.Join(append([]error{ctx.Err()}, saveErrs...)...)
 }
 
-// refreshOne does the actual work for a repo and returns its new state. It never
-// returns an error: any failure is recorded on the state so the caller can
-// cache and display it. Error strings stored here come from secrets.Resolve
-// (which never embeds secret values) and resticx (which redacts stderr), so the
-// cache stays free of credentials.
-//
-// A failed refresh preserves the last-known-good observation rather than blanking
-// the repo: a single transient restic failure (e.g. an intermittent "repository
-// does not exist") must not erase the snapshots and observed data we last saw.
-// The failing attempt is recorded in LastError — which makes EvaluateStatus
-// classify the repo as StatusError regardless of the carried-over data — so the
-// health verdict stays live while the detail data stays useful until the next
-// successful refresh replaces it.
+// refreshOne records failures in a credential-free state instead of returning them.
+// Failure preserves the last successful observation and timestamp while
+// LastError produces a live error verdict. A successful refresh replaces that
+// observation.
 func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 	now := a.Clock.Now()
 	params := a.statusParams(r)
 
-	// A load miss/corrupt prior means there is nothing to preserve; keep the zero
-	// value so fail() produces the cold empty-error state.
+	// A missing prior state naturally produces a cold failure state.
 	prior, _ := a.Cache.Load(ctx, r.Name)
 
-	// fail builds the state for an unsuccessful refresh. It keeps prior's observed
-	// data and its RefreshedAt — the time of the last *successful* observation,
-	// which stays zero when there was never one — and records the new failure in
-	// LastError. The remaining last-known-good observations (Snapshots,
-	// SnapshotCount, LastSnapshot, Hosts, Tags) carry over untouched.
+	// Preserve prior observations and the last successful RefreshedAt on failure.
 	fail := func(msg string) model.RepoState {
 		state := prior
 		state.Name = r.Name
@@ -118,7 +97,7 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 		return state
 	}
 
-	// credential is optional (local/sftp backends); when set it must resolve.
+	// Credential is optional for local and SFTP backends; when set, it must resolve.
 	material, err := a.Secrets.Resolve(r.Name, r.Credential)
 	if err != nil {
 		return fail(err.Error())
@@ -132,8 +111,7 @@ func (a *App) refreshOne(ctx context.Context, r config.Repo) model.RepoState {
 		return fail(err.Error())
 	}
 
-	// A successful snapshots call defines a fresh, fully live state: RefreshedAt
-	// advances to now and the prior LastError (if any) is gone.
+	// Successful snapshots replace prior state and clear its error.
 	state := model.RepoState{Name: r.Name, RefreshedAt: now}
 	state.Snapshots = snaps
 	state.SnapshotCount = len(snaps)

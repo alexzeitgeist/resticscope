@@ -9,14 +9,9 @@ import (
 	"testing"
 )
 
-// TestLinkNoFollowSemantics pins the two properties publishExtract's
-// non-directory branch depends on: (1) linking a symlink node links the
-// symlink ITSELF, never its target (darwin's plain link(2) would follow);
-// (2) an occupied newname fails EEXIST and never replaces — the property
-// os.Rename lacks for non-directory sources, which is the whole reason the
-// publish routes through this primitive. The app-level occupant tests cannot
-// falsify a stat-then-rename regression (their occupant exists before the
-// advisory Lstat, which also refuses), so this is the test that does.
+// TestLinkNoFollowSemantics pins non-following symlink links and EEXIST refusal.
+// App-level occupant tests cannot detect stat-then-rename because their early
+// Lstat also refuses, so the rename control below demonstrates that hazard.
 func TestLinkNoFollowSemantics(t *testing.T) {
 	dir := t.TempDir()
 	node := filepath.Join(dir, "node")
@@ -43,8 +38,7 @@ func TestLinkNoFollowSemantics(t *testing.T) {
 		t.Errorf("occupant must survive untouched, got %q (err %v)", got, err)
 	}
 
-	// Contrast pin: rename of a symlink WOULD silently replace the occupant —
-	// the verified hazard that rules stat-then-rename out for non-dir leaves.
+	// Renaming the symlink demonstrates the replacement hazard this avoids.
 	if err := os.Rename(node, occupied); err != nil {
 		t.Fatalf("os.Rename control: %v", err)
 	}

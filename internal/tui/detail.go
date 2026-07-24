@@ -13,18 +13,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// detailMetaRows is the number of fixed meta lines the detail body renders
-// (Backend/Repository/Snapshots/Hosts/Program/Tags/Last); detailSnapVisible
-// subtracts it from the height to size the scrolling snapshot window.
+// detailMetaRows counts fixed repository metadata lines above the snapshot table.
 const detailMetaRows = 7
 
-// snapIDWidth is the fixed width of the short-id column in the snapshot table;
-// restic short ids are 8 hex chars. snapHeader, snapCells, and snapshotLayout all
-// reserve exactly this width so the columns stay aligned.
+// snapIDWidth is restic's eight-character short-ID column width.
 const snapIDWidth = 8
 
-// repoConfig returns the config.Repo backing the named row. The bool is false
-// only if config and rows somehow disagree, which validation prevents.
+// repoConfig returns the repository config for name.
 func (m Model) repoConfig(name string) (config.Repo, bool) {
 	for _, r := range m.app.Cfg.Repos {
 		if r.Name == name {
@@ -34,10 +29,8 @@ func (m Model) repoConfig(name string) (config.Repo, bool) {
 	return config.Repo{}, false
 }
 
-// detailRow returns the repo the detail view is pinned to (by name, set on
-// enter). Resolving by name rather than cursor keeps the detail view stable
-// when an urgency sort or a grouping cycle reorders the list after a
-// background refresh.
+// detailRow resolves the pinned repository by name so list reordering cannot
+// change the open detail view.
 func (m Model) detailRow() (app.RepoStatus, bool) {
 	for _, r := range m.rows {
 		if r.Name == m.detailName {
@@ -47,9 +40,7 @@ func (m Model) detailRow() (app.RepoStatus, bool) {
 	return app.RepoStatus{}, false
 }
 
-// detailSnapshots returns the detail repo's snapshots ordered newest-first (the
-// order the detail view and snapCursor both use). It copies before sorting so
-// the cached state's slice order is left untouched.
+// detailSnapshots returns a newest-first copy without reordering cached state.
 func (m Model) detailSnapshots() []model.Snapshot {
 	row, ok := m.detailRow()
 	if !ok {
@@ -58,19 +49,13 @@ func (m Model) detailSnapshots() []model.Snapshot {
 	return model.SortedSnapshotsNewestFirst(row.State.Snapshots)
 }
 
-// snapCount is the number of selectable rows in the detail-view snapshot
-// table: nodes in the current snapDisplay, NOT raw snapshots. Collapse folds
-// peers into their head so the count shrinks; grouping never changes it. Both
-// detail_keys cursor bounds and the windowing math reach for this. The meta
-// "Snapshots: N" line wants the raw count and uses State.SnapshotCount
-// directly — do not route it through here.
+// snapCount returns selectable display nodes, which collapse may reduce but
+// grouping does not. Repository metadata uses the raw snapshot count instead.
 func (m Model) snapCount() int {
 	return len(m.snapDisplay().nodes)
 }
 
-// selectedSnapshot returns the snapshot under the detail cursor, or nil when the
-// repo has none. A shim over selectedNode that unwraps the head; callers that
-// also need the peer set or the collapse count use selectedNode directly.
+// selectedSnapshot returns the selected display node's head snapshot, or nil.
 func (m Model) selectedSnapshot() *model.Snapshot {
 	n, ok := m.selectedNode()
 	if !ok {
@@ -80,12 +65,8 @@ func (m Model) selectedSnapshot() *model.Snapshot {
 	return &head
 }
 
-// openExtractSnapshot launches the extract modal for the whole snapshot under
-// the detail cursor (Source "/") — the detail-view counterpart of browse's
-// openExtract. A nil selection or a request/setup error surfaces on the status
-// line and stays in detail; only a clean construction switches to extractView.
-// On a grouped or collapsed row the head snapshot is extracted, matching what
-// enter/browse, `s`, and `i` act on.
+// openExtractSnapshot opens whole-snapshot extraction for the selected display
+// head. Missing selections and setup errors remain in detail with a status.
 func (m Model) openExtractSnapshot() (Model, tea.Cmd) {
 	snap := m.selectedSnapshot()
 	if snap == nil {
@@ -101,16 +82,14 @@ func (m Model) openExtractSnapshot() (Model, tea.Cmd) {
 		m.statusMsg = "extract: " + firstLine(err.Error())
 		return m, nil
 	}
-	// Display-only size for the review screen's Type line. Nil for pre-0.17
-	// snapshots, where 0 renders without a size suffix.
+	// Pre-0.17 snapshots lack summary size and render without a suffix.
 	var srcSize int64
 	if snap.Summary != nil {
 		srcSize = snap.Summary.TotalBytesProcessed
 	}
 	sub, err := newExtractModel(m.app, m.ctx, m.seedTargetMemo(req), srcSize)
 	if err != nil {
-		// PlanExtractPaths returns a path-free ErrExtractInvalidRequest naming the
-		// offending field, so the notice carries no path either.
+		// Planning errors identify fields without including paths.
 		m.statusMsg = "extract: " + firstLine(err.Error())
 		return m, nil
 	}
@@ -118,8 +97,7 @@ func (m Model) openExtractSnapshot() (Model, tea.Cmd) {
 	m.extract = sub
 	m.extractReturn = detailView
 	m.view = extractView
-	// The whole-snapshot Contains lookup answers only when this snapshot was
-	// browsed (and so indexed) this session; otherwise the row stays absent.
+	// Contains is available only for snapshots indexed during this session.
 	return m, m.extract.countsCmd()
 }
 
@@ -146,9 +124,7 @@ func (m Model) detailBody() string {
 	return strings.Join(sections, "\n\n")
 }
 
-// detailMeta renders the fixed repo facts: where it lives and what was observed.
-// Each value is clipped to the width left after the indent and label so a long
-// repository string can't wrap and grow the block past detailMetaRows.
+// detailMeta clips fixed repository facts so metadata stays at detailMetaRows.
 func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) string {
 	st := row.State
 
@@ -170,14 +146,8 @@ func (m Model) detailMeta(repo config.Repo, row app.RepoStatus, width int) strin
 	return strings.Join(lines, "\n")
 }
 
-// snapshotDetail renders a compact sub-panel describing the snapshot under
-// the cursor — the per-backup data restic records that isn't already a table
-// column: full id, restic version, username, backup window, packed size, and
-// file counts, plus added bytes only while their column is off (snapshotLayout
-// decides, so columns and panel never duplicate or drop that fact). detailBody
-// calls it only when the repo has snapshots and the panel can fit. Every value
-// is clipped to one line. snapshotDetailLines is the single source of the row
-// set, so detailSnapDetailRows counts it and keeps the window above sized.
+// snapshotDetail renders selected-snapshot facts not already visible as table
+// columns. Its shared line builder keeps layout reservation equal to output.
 func (m Model) snapshotDetail(width int) string {
 	s := m.selectedSnapshot()
 	if s == nil {
@@ -186,9 +156,7 @@ func (m Model) snapshotDetail(width int) string {
 	return strings.Join(m.snapshotDetailLines(width, *s), "\n")
 }
 
-// snapshotDetailLines builds the selected-snapshot panel's rendered lines for s.
-// detailSnapDetailRows counts them, so the drawn height and the height the
-// layout reserves for the panel can never disagree.
+// snapshotDetailLines builds the exact rows counted by detailSnapDetailRows.
 func (m Model) snapshotDetailLines(width int, s model.Snapshot) []string {
 	l := snapshotLayout(width, m.snapCollapseTree)
 
@@ -199,9 +167,7 @@ func (m Model) snapshotDetailLines(width int, s model.Snapshot) []string {
 
 	window, duration, hasWindow := snapshotBackupWindow(s)
 
-	// Duration is owned by the Took column when visible; otherwise the backup
-	// window row carries it. The heading only ever notes a missing duration — a
-	// valid one always lands in the column or the window row.
+	// Duration appears in Took when promoted and in Backup otherwise.
 	heading := fmt.Sprintf("Selected · %s · %s", s.ShortID, ver)
 	if !l.showTook && !hasWindow {
 		heading += " · took —"
@@ -227,10 +193,8 @@ func (m Model) snapshotDetailLines(width int, s model.Snapshot) []string {
 	return append(lines, m.field("Churn", churn, width))
 }
 
-// snapshotBackupWindow formats the snapshot's start → end timestamps and its
-// humanized duration. ok is false when the snapshot has no summary or no valid
-// duration — the same condition SnapshotBackupDuration reports, so a true ok
-// guarantees Summary is set.
+// snapshotBackupWindow returns formatted endpoints and duration when the
+// snapshot summary contains a valid backup interval.
 func snapshotBackupWindow(s model.Snapshot) (window, duration string, ok bool) {
 	d, ok := model.SnapshotBackupDuration(s)
 	if !ok {
@@ -241,10 +205,8 @@ func snapshotBackupWindow(s model.Snapshot) (window, duration string, ok bool) {
 		humanize.Duration(d), true
 }
 
-// snapshotChurn renders the per-backup churn line for the bottom panel. When
-// includeAdded is true the panel owns the added bytes (no Added column), so it
-// leads with "+X added (Y packed)"; when false the Added column already shows
-// the added bytes, so it omits that piece and leads with bare "Y packed".
+// snapshotChurn reports added, packed, and file counts. includeAdded controls
+// whether bytes already owned by the Added column are repeated.
 func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 	if sum == nil {
 		return "no summary"
@@ -281,25 +243,17 @@ func snapshotChurn(sum *model.SnapshotSummary, includeAdded bool) string {
 	return strings.Join(parts, " · ")
 }
 
-// field renders one meta line: a two-space indent, the fixed-width label, then
-// the value clipped to whatever width is left. The whole line is clipped too, so
-// even a pane too narrow for the label itself can't wrap.
+// field clips a fixed-label metadata row so it cannot wrap.
 func (m Model) field(label, value string, width int) string {
 	avail := max(width-2-labelWidth, 1)
 	return clip("  "+m.styles.label.Render(label)+truncateWidth(value, avail), width)
 }
 
-// snapshotsHeadingText is the heading row above the snapshot table. The bare
-// label "Snapshots" gains a marks-status suffix while the diff-mark FIFO is
-// non-empty so the user sees their progress toward a valid pair without losing
-// a body row to a dedicated summary line. Transient group/collapse state is
-// surfaced as a "· group: host" / "· collapse on" suffix only when it differs
-// from the per-visit defaults (both off), keeping the heading clean for users
-// who never touch g or c.
+// snapshotsHeadingText adds mark progress and non-default grouping or collapse
+// state to the snapshot heading.
 func (m Model) snapshotsHeadingText() string {
 	head := "Snapshots"
 	if n := len(m.detailMarks); n > 0 {
-		// State only — the t/d key hints live in the footer key bar, not here.
 		head = fmt.Sprintf("Snapshots · %d/2 marked", n)
 	}
 	if lbl := m.snapGroupMode.label(); lbl != "" {
@@ -311,13 +265,8 @@ func (m Model) snapshotsHeadingText() string {
 	return head
 }
 
-// snapshotTable renders a column header and a scrolling window of snapshots,
-// newest first, marking the selected row with the accent gutter. The columns size
-// to the terminal width (snapshotLayout) and the window to its height
-// (detailSnapVisible) so the table fills the pane without wrapping. Enter on
-// the selection opens a shell scoped to it. The body is a thin dispatcher:
-// empty repos render the "no snapshots" placeholder; grouped displays go
-// through the section-aware path; everything else hits the flat path.
+// snapshotTable renders a responsive, windowed snapshot table and dispatches
+// empty, flat, or grouped display paths.
 func (m Model) snapshotTable() string {
 	w, _ := m.effSize()
 	l := snapshotLayout(w, m.snapCollapseTree)
@@ -333,12 +282,8 @@ func (m Model) snapshotTable() string {
 	return header + "\n" + m.snapshotTableGrouped(d, l, w)
 }
 
-// snapshotRowLine formats one node into a clipped table line with the 3-cell
-// cursor/mark gutter. The gutter carries the cursor accent (cell 1 = ▎ when
-// selected), the mark glyph (cell 2 = * when this node is in the diff FIFO),
-// and a spacer (cell 3) so the mark doesn't butt against the ID column. Both
-// indicators can show at once (▎*); marks live on the head row even when the
-// mark originally targeted a now-folded peer (isNodeMarked ORs head + peers).
+// snapshotRowLine renders a clipped node with a three-cell cursor/mark gutter.
+// Folded peer marks remain visible on their head row.
 func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected bool) string {
 	s := node.head
 	size := emDash
@@ -366,9 +311,7 @@ func (m Model) snapshotRowLine(node snapNode, l snapLayout, width int, selected 
 	return clip(left+right+" "+content, width)
 }
 
-// snapshotTableFlat renders the windowed flat path: the same simple scroll
-// behavior as before grouping existed, but iterating snapDisplay.nodes so
-// collapse can fold consecutive same-tree rows into "(+N)" heads.
+// snapshotTableFlat renders a window of display nodes, including collapsed heads.
 func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string {
 	cur := clampCursor(m.snapCursor, len(d.nodes))
 	start, end := scrollWindow(cur, len(d.nodes), m.detailSnapVisible())
@@ -383,22 +326,14 @@ func (m Model) snapshotTableFlat(d snapDisplay, l snapLayout, width int) string 
 	return strings.Join(lines, "\n")
 }
 
-// snapshotTableGrouped renders the section-aware path: a flattened token
-// stream (heading / blank / row) windowed by groupedWindow so the cursor's
-// heading is always anchored. The line budget excludes the table header and
-// the optional scroll note so the heading-anchored window can't push the
-// selected row off the bottom of the pane.
+// snapshotTableGrouped windows section tokens while keeping the selected row's
+// heading anchored and reserving header and scroll-note space.
 func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) string {
 	cur := clampCursor(m.snapCursor, len(d.nodes))
 	tokens, headingPos := buildSnapTokens(d)
 	showNote := m.detailWindowNoteVisible(m.detailSnapDetailVisible())
 
-	// detailSnapVisible already excludes the scroll-note row from the data-row
-	// budget (detailOverhead bakes the note in when it would be visible), so
-	// max here is the count of body lines we can emit before the optional note.
-	// Headings and blank separators count against this budget in grouped mode —
-	// the user sees fewer data rows when sections take up space, mirroring
-	// renderGroupedList's contract on the list view.
+	// Section headings and separators consume the data-row budget.
 	max := m.detailSnapVisible()
 	if max < 1 {
 		max = 1
@@ -423,9 +358,7 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 		}
 	}
 
-	// When only one content line fits, render the selected data row alone —
-	// mirrors renderGroupedList. groupedWindow can otherwise return a
-	// heading-only window and hide the selected row.
+	// With one line available, prefer the selected row over its heading.
 	if max == 1 {
 		out := []string{m.renderSnapToken(tokens[cursorPos], d, cur, l, width)}
 		if note := m.snapTableScrollNote(cur, cur+1, len(d.nodes), width, showNote); note != "" {
@@ -434,8 +367,7 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 		return strings.Join(out, "\n")
 	}
 
-	// Find the heading position for the cursor's section by walking sections
-	// in flat-cursor order — same logic as renderGroupedList.
+	// Resolve the selected section in flat-cursor order.
 	cursorSec, rowsBefore := 0, 0
 	for si, sec := range d.sections {
 		if cur < rowsBefore+len(sec.nodes) {
@@ -473,10 +405,8 @@ func (m Model) snapshotTableGrouped(d snapDisplay, l snapLayout, width int) stri
 	return strings.Join(out, "\n")
 }
 
-// renderSnapToken paints one token in the grouped stream: a blank separator,
-// a section heading with its raw snapshot count, or a data row. The heading
-// uses meta style for the noKey fallback section so a real label value that
-// matches the fallback title can't visually merge with it.
+// renderSnapToken paints separators, section headings, and data rows. Fallback
+// headings use a distinct style from matching real label values.
 func (m Model) renderSnapToken(t snapTok, d snapDisplay, cur int, l snapLayout, width int) string {
 	switch t.kind {
 	case snapTokBlank:
@@ -497,8 +427,7 @@ func (m Model) renderSnapToken(t snapTok, d snapDisplay, cur int, l snapLayout, 
 	}
 }
 
-// snapTableScrollNote is the snapshot-table variant of group.go's scrollNote:
-// "showing N–M of T" over node counts, or "" when the window covers all nodes.
+// snapTableScrollNote reports a partial node window.
 func (m Model) snapTableScrollNote(start, end, total, width int, visible bool) string {
 	if !visible {
 		return ""
@@ -509,49 +438,38 @@ func (m Model) snapTableScrollNote(start, end, total, width int, visible bool) s
 	return clip(m.styles.meta.Render(fmt.Sprintf("   showing %d–%d of %d", start+1, end, total)), width)
 }
 
-// snapLayout describes the snapshot table's variable geometry for a given width:
-// the host and tags column widths, the total ID column width (snapIDWidth in
-// the default case; widened to make room for a "+N" suffix slot when collapse
-// is on), and whether the optional Added/Took columns are promoted. snapshotTable
-// and snapshotDetail both derive it from snapshotLayout so the columns and the
-// bottom panel always agree on what's shown where.
+// snapLayout holds responsive snapshot columns, including collapse suffix space
+// and optional Added and Took promotion.
 type snapLayout struct {
-	idWidth             int // snapIDWidth, or snapIDWidth+1+snapCollapseSuffixWidth when collapse is on
+	idWidth             int
 	host, tags          int
 	showAdded, showTook bool
 }
 
 const (
-	snapAddedWidth          = 9  // "+1023 GiB" target width, right-aligned like Size
-	snapTookWidth           = 6  // "12h59m" target width; truncate longer durations to this
-	snapPromoFlexMin        = 37 // host+tags cells that must remain after promoting a column; absorbs the gutter's spacer cell so Added/Took still promote at 92/100
-	snapCollapseSuffixWidth = 3  // "+N" suffix slot reserved next to ID when collapse is on; fits +99 cleanly, wider counts widen that one row only
+	snapAddedWidth          = 9
+	snapTookWidth           = 6
+	snapPromoFlexMin        = 37
+	snapCollapseSuffixWidth = 3
 )
 
-// snapHeader is the dim column-label row for the snapshot table, built from the
-// same snapCells layout as the data rows (plus the three-cell gutter the rows
-// get from their indicator) so labels line up with their values at every width.
+// snapHeader uses data-row geometry plus the three-cell gutter.
 func snapHeader(l snapLayout) string {
 	return "   " + strings.Join(
 		snapCells(l, snapRow{id: "ID", tm: "Time", host: "Hostname", size: "Size", added: "Added", took: "Took", tags: "Tags"}), "  ")
 }
 
-// snapRow holds one row's raw column values for snapCells (header or data).
 type snapRow struct {
 	id, tm, host, size, added, took, tags string
 }
 
-// snapCells formats one row's worth of columns — header or data — into the
-// shared column order, so both are guaranteed to align: ID(l.idWidth,left) ·
-// Time(16,left) · Hostname(host,left) · Size(9,right) · [Added(9,right)] ·
-// [Took(6,right)] · Tags(flex,left). The ID column widens when collapse is on
-// to reserve a "+N" suffix slot — every row pads to the same width so columns
-// past ID stay aligned. Callers join the result with two spaces.
+// snapCells aligns headers and data, reserving collapse suffix space in the ID
+// column and conditionally including Added and Took.
 func snapCells(l snapLayout, r snapRow) []string {
 	cells := []string{
 		fmt.Sprintf("%-*s", l.idWidth, r.id),
 		fmt.Sprintf("%-16s", r.tm),
-		// Hostname can hold wide runes; pad by display width, not fmt's rune count.
+		// Hostnames require display-width padding for wide runes.
 		padRight(r.host, l.host),
 		fmt.Sprintf("%9s", r.size),
 	}
@@ -564,8 +482,7 @@ func snapCells(l snapLayout, r snapRow) []string {
 	return append(cells, r.tags)
 }
 
-// snapAdded is the right-aligned Added cell value: deduped bytes this run added,
-// or an em-dash when the summary (pre-0.17) or the field is absent.
+// snapAdded returns deduplicated bytes added, or an em dash when unavailable.
 func snapAdded(s model.Snapshot) string {
 	if s.Summary == nil || s.Summary.DataAdded == nil {
 		return emDash
@@ -573,9 +490,7 @@ func snapAdded(s model.Snapshot) string {
 	return "+" + humanize.Bytes(*s.Summary.DataAdded)
 }
 
-// snapTook is the right-aligned Took cell value: how long the backup ran,
-// truncated to snapTookWidth so a long duration (e.g. 1000h00m) can't widen the
-// column and shove Tags out of alignment. Em-dash when unavailable.
+// snapTook returns a width-limited backup duration, or an em dash when unavailable.
 func snapTook(s model.Snapshot) string {
 	d, ok := model.SnapshotBackupDuration(s)
 	if !ok {
@@ -584,26 +499,14 @@ func snapTook(s model.Snapshot) string {
 	return truncateWidth(humanize.Duration(d), snapTookWidth)
 }
 
-// snapshotLayout sizes the snapshot table's variable columns to the total width. A
-// three-cell indicator, the fixed-width short-id, 16-cell time, 9-cell size, and
-// their two-space gaps are always reserved. Added then Took are promoted in
-// priority order, each only while the host+tags flex area would stay usable
-// (snapPromoFlexMin) afterwards; promotion stops at the first that won't fit so
-// a lower-priority column never appears without a higher one. With the constants
-// here Added lands at width 92 and Took at 100. Whatever flex remains splits
-// into a host column clamped to 8–24 and tags taking the rest. Promotion is
-// shared with browseLayout via promoteColumns; only the host/tags split below is
-// snapshot-specific.
+// snapshotLayout reserves core columns, then promotes Added and Took while host
+// and tags retain snapPromoFlexMin cells. Remaining width splits between them.
 func snapshotLayout(width int, collapseOn bool) snapLayout {
 	const indicator, timeW, sizeW, gaps = 3, 16, 9, 8
 	var l snapLayout
 	l.idWidth = snapIDWidth
 	if collapseOn {
-		// Widen ID by one space + the "+N" slot so the cell can carry
-		// "shortid +N" on collapsed rows and "shortid   " (blank slot) on
-		// uncollapsed rows — every row pads to l.idWidth so subsequent
-		// columns align. The flex floor (snapPromoFlexMin) tightens
-		// accordingly, which may demote Added/Took on narrow terminals.
+		// Reserve a uniform "+N" suffix slot, which may demote optional columns.
 		l.idWidth = snapIDWidth + 1 + snapCollapseSuffixWidth
 	}
 	baseFixed := indicator + l.idWidth + timeW + sizeW + gaps
@@ -619,10 +522,8 @@ func snapshotLayout(width int, collapseOn bool) snapLayout {
 	return l
 }
 
-// detailSnapVisible is how many snapshot data rows the detail view shows at once.
-// It subtracts the view's fixed rows, including the selected-snapshot sub-panel
-// and scroll note only when they can fit. Floored at 1, which sets the detail
-// view's minimum usable height — below it the footer scrolls off.
+// detailSnapVisible returns snapshot capacity after visible fixed rows, floored
+// at one.
 func (m Model) detailSnapVisible() int {
 	_, h := m.effSize()
 	withSnapDetail := m.detailSnapDetailVisible()
@@ -633,6 +534,8 @@ func (m Model) detailSnapVisible() int {
 	return 1
 }
 
+// detailSnapDetailVisible reports whether the selected-snapshot panel and at
+// least one snapshot row fit.
 func (m Model) detailSnapDetailVisible() bool {
 	if m.snapCount() == 0 {
 		return false
@@ -641,6 +544,8 @@ func (m Model) detailSnapDetailVisible() bool {
 	return h >= m.detailOverhead(true, false)+1
 }
 
+// detailWindowNoteVisible reports whether a scroll note and at least one
+// snapshot row fit with the requested panel state.
 func (m Model) detailWindowNoteVisible(withSnapDetail bool) bool {
 	_, h := m.effSize()
 	return h >= m.detailOverhead(withSnapDetail, true)+1
@@ -655,18 +560,19 @@ func (m Model) detailSnapDetailRows() int {
 	return len(m.snapshotDetailLines(w, *s))
 }
 
+// detailOverhead returns the fixed row count for the requested optional elements.
 func (m Model) detailOverhead(withSnapDetail, withWindowNote bool) int {
 	overhead := headerRows + 2*gapRows + m.footerRows() +
-		detailMetaRows + // the seven meta lines
-		1 + // the blank line between the meta block and the heading
-		1 + // the "Snapshots" heading
-		1 // the table's column-header row
+		detailMetaRows +
+		1 +
+		1 +
+		1
 	if withWindowNote {
-		overhead++ // the "showing N–M of T" note
+		overhead++
 	}
 	if withSnapDetail {
-		overhead += 1 + // the blank line between the table and the snapshot sub-panel
-			m.detailSnapDetailRows() // the selected-snapshot sub-panel
+		overhead += 1 +
+			m.detailSnapDetailRows()
 	}
 	return overhead
 }

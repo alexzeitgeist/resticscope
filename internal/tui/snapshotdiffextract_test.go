@@ -10,25 +10,17 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// snapshotdiffextract_test.go covers the diff view's `e` extract: the opener
-// (per-side requests into one pair container, include sets honoring the live
-// filter), the modal's sequential side queue, and the diff flavors of the
-// review / done / terminal screens.
+// These tests cover filtered diff extraction, its sequential side queue, and
+// modal outcomes.
 
-// Two concrete 64-hex snapshot IDs whose shorts are visually distinct. The
-// fixture times make diffXFirstID the chronologically older snapshot, so it is
-// the left ("first") side of the arrow on a fresh open.
+// Fixture times place diffXFirstID on the older, first side of the pair.
 const (
 	diffXFirstID  = "aaaa1111000000000000000000000000000000000000000000000000000000ff"
 	diffXSecondID = "bbbb2222000000000000000000000000000000000000000000000000000000ff"
 )
 
-// diffExtractEntries is the streamed diff between the pair:
-//
-//	/data/keep.txt  M  → both sides
-//	/data/gone.txt  -  → first only
-//	/data/new/      +  → pure-added dir on the second side
-//	/data/new/img   +  →   …collapsed under it
+// diffExtractEntries covers both sides, first-only removal, and a collapsed
+// second-only directory.
 func diffExtractEntries() []model.DiffEntry {
 	return []model.DiffEntry{
 		{Path: "/data/keep.txt", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
@@ -38,8 +30,7 @@ func diffExtractEntries() []model.DiffEntry {
 	}
 }
 
-// diffExtractModel drives the full open: list → detail → mark both snapshots →
-// d → completed diff stream, cursor on the /data dir row.
+// diffExtractModel opens a completed diff with /data selected.
 func diffExtractModel(t *testing.T, entries []model.DiffEntry) Model {
 	t.Helper()
 	a := testApp(map[string]model.RepoState{
@@ -59,10 +50,10 @@ func diffExtractModel(t *testing.T, entries []model.DiffEntry) Model {
 		diffEntries: entries,
 	}
 	m := newTestModel(t, a)
-	m = update(t, m, press("enter")) // list → detail
-	m = update(t, m, press("t"))     // mark cursor row
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
 	m = update(t, m, press("j"))
-	m = update(t, m, press("t")) // mark second row
+	m = update(t, m, press("t"))
 	next, cmd := m.Update(press("d"))
 	m = drivePastDiff(t, next.(Model), cmd)
 	if m.view != snapshotDiffView {
@@ -99,7 +90,6 @@ func TestDiffExtractOpenBuildsPairRequests(t *testing.T) {
 	}
 
 	const container = "diff-aaaa1111-bbbb2222"
-	// Active request = first side, queue = second side.
 	if em.req.SnapshotID != diffXFirstID || em.req.SnapshotShort != "aaaa1111" {
 		t.Errorf("active side = %s, want the first snapshot", em.req.SnapshotShort)
 	}
@@ -116,7 +106,6 @@ func TestDiffExtractOpenBuildsPairRequests(t *testing.T) {
 	if q.SnapshotID != diffXSecondID || q.DiffContainer != container {
 		t.Errorf("queued side = %+v, want the second snapshot in the same container", q)
 	}
-	// The pure-added dir collapses its child.
 	if want := []string{"/data/keep.txt", "/data/new"}; !stringSlicesEqual(q.IncludePaths, want) {
 		t.Errorf("second-side includes = %q, want %q", q.IncludePaths, want)
 	}
@@ -131,7 +120,6 @@ func TestDiffExtractOpenBuildsPairRequests(t *testing.T) {
 
 func TestDiffExtractFilterScopesIncludes(t *testing.T) {
 	m := diffExtractModel(t, diffExtractEntries())
-	// Drop added and metadata-only entries from view: only M and - remain.
 	m = update(t, m, press("+"))
 	m = update(t, m, press("U"))
 	m = update(t, m, press("e"))
@@ -145,11 +133,9 @@ func TestDiffExtractFilterScopesIncludes(t *testing.T) {
 	if len(em.queue) != 1 {
 		t.Fatalf("queue length = %d, want 1", len(em.queue))
 	}
-	// With + off the second side keeps only the modified file.
 	if want := []string{"/data/keep.txt"}; !stringSlicesEqual(em.queue[0].IncludePaths, want) {
 		t.Errorf("second-side includes = %q, want %q", em.queue[0].IncludePaths, want)
 	}
-	// The review surfaces the narrowed mask.
 	body := stripANSI(m.extractBody())
 	if !strings.Contains(body, "filter: -M") {
 		t.Errorf("review body missing the filter mask\n---\n%s", body)
@@ -157,7 +143,6 @@ func TestDiffExtractFilterScopesIncludes(t *testing.T) {
 }
 
 func TestDiffExtractSkipsEmptySide(t *testing.T) {
-	// Everything under /data is added: the first side has nothing to extract.
 	m := diffExtractModel(t, []model.DiffEntry{
 		{Path: "/data/new", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded, IsDir: true},
 		{Path: "/data/new/img", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
@@ -210,10 +195,6 @@ func TestDiffExtractReviewBodyRows(t *testing.T) {
 	}
 }
 
-// TestDiffExtractRunsSidesSequentially drives both sides through the root
-// Update loop: enter starts the first side, its completion starts the second
-// (the Cmd returned through app.go routing), and the second completion lands
-// on success with both sides published.
 func TestDiffExtractRunsSidesSequentially(t *testing.T) {
 	m := diffExtractModel(t, diffExtractEntries())
 	m = update(t, m, press("e"))
@@ -279,9 +260,6 @@ func TestDiffExtractRunsSidesSequentially(t *testing.T) {
 	}
 }
 
-// TestDiffExtractSecondSideFailureNotesFirst pins the partial-failure story:
-// the first side stays published and the terminal body says so, alongside the
-// failing side's id.
 func TestDiffExtractSecondSideFailureNotesFirst(t *testing.T) {
 	m := diffExtractModel(t, diffExtractEntries())
 	m = update(t, m, press("e"))
@@ -309,8 +287,6 @@ func TestDiffExtractSecondSideFailureNotesFirst(t *testing.T) {
 	}
 }
 
-// TestDiffExtractBackReturnsToDiffView: leaving the modal lands back on the
-// still-populated diff view (the diff state was never cleared by the launch).
 func TestDiffExtractBackReturnsToDiffView(t *testing.T) {
 	m := diffExtractModel(t, diffExtractEntries())
 	rows := len(m.diffRows)

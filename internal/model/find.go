@@ -5,15 +5,8 @@ import (
 	"time"
 )
 
-// find.go holds the pure DTOs and grouping helper behind the "show me other
-// versions of this file across snapshots" view (see internal/tui/findversions.go).
-// Like the rest of model, it has no internal imports: it is the leaf the
-// resticx/app/tui chain decodes into and reads from.
-
-// FindMatch is one match restic emitted for the queried path, inside one
-// snapshot. Of these fields, only Size and ModTime are used as the dedup key;
-// the rest are kept for completeness so a future inline detail panel can
-// render them without a second restic call.
+// FindMatch is one path match emitted by restic for a snapshot. Size and
+// ModTime identify versions; the remaining fields provide display metadata.
 type FindMatch struct {
 	Path        string    `json:"path"`
 	Name        string    `json:"name,omitempty"`
@@ -25,18 +18,15 @@ type FindMatch struct {
 	GID         *uint32   `json:"gid,omitempty"`
 }
 
-// FindSnapshotResult is one snapshot's hits, as emitted by `restic find
-// --json --long`.
+// FindSnapshotResult contains one snapshot's `restic find --json --long` hits.
 type FindSnapshotResult struct {
 	SnapshotID string      `json:"snapshot"`
 	Hits       int         `json:"hits"`
 	Matches    []FindMatch `json:"matches"`
 }
 
-// FileVersionOccurrence is one snapshot that carried a given version of the
-// file. The snapshot fields (ShortID/SnapTime/Hostname) are joined in from
-// the cached snapshot list so the version view never calls `restic
-// snapshots` itself.
+// FileVersionOccurrence identifies a snapshot containing a file version. Its
+// display metadata comes from the cached snapshot list.
 type FileVersionOccurrence struct {
 	SnapshotID string
 	ShortID    string
@@ -44,14 +34,10 @@ type FileVersionOccurrence struct {
 	Hostname   string
 }
 
-// FileVersion is one distinct version of the file (collapsed by (Size,
-// ModTime)) plus the snapshots that contain it, newest-first. Permissions /
-// UID / GID are representative display metadata captured from any match in the
-// group that carries them; they never participate in dedup (a chmod or chown
-// that does not bump mtime keeps the file in the same version group, matching
-// restic's own content key). OwnerKnown distinguishes a match that carried
-// uid/gid (a real 0:0 root-owned file) from a match that did not, mirroring
-// model.BrowseEntry.OwnerKnown.
+// FileVersion groups matches by size and modification time, with occurrences
+// newest first. Permissions and ownership are representative display metadata,
+// not part of the version key. OwnerKnown distinguishes 0:0 from omitted
+// ownership.
 type FileVersion struct {
 	Size        int64
 	ModTime     time.Time
@@ -61,25 +47,16 @@ type FileVersion struct {
 	Occurrences []FileVersionOccurrence
 }
 
-// fileVersionKey is the dedup tuple over (Size, ModTime). ModTime is normalized
-// to UTC so equivalent instants with different time.Location pointers still
-// group together; using time.Time directly without normalization would split
-// them.
+// fileVersionKey uses UTC so equal instants from different locations group
+// together.
 type fileVersionKey struct {
 	size  int64
 	mtime time.Time
 }
 
-// GroupFileVersions collapses restic find's flat per-snapshot list into
-// distinct (Size, ModTime) versions. It first post-filters every match to
-// Path == literalPath so a glob hit from a sibling file (restic find treats
-// PATTERN as a filepath.Match glob — see resticx.resticFindLiteralPattern) is
-// dropped before grouping; this filter is the authoritative correctness gate,
-// the escape in resticx is just the cost-saver. snapByID supplies each
-// snapshot's ShortID/Time/Hostname; a missing entry yields an occurrence with
-// only the SnapshotID filled, never an error. Within a group occurrences are
-// sorted newest-first; across groups the result is sorted by the group's
-// latest occurrence newest-first, so the most recent version is on top.
+// GroupFileVersions groups exact regular-file and untyped matches by size and
+// modification time. Snapshot metadata is joined when available; occurrences
+// and groups are sorted newest first.
 func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByID map[string]Snapshot) []FileVersion {
 	if len(results) == 0 {
 		return nil
@@ -89,17 +66,13 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 	for _, r := range results {
 		snap, snapKnown := snapByID[r.SnapshotID]
 		for _, m := range r.Matches {
-			// to ensure foreign glob hits never inflate a version group: drop
-			// any match whose Path is not exactly the literal we asked for.
+			// Drop matches whose path is not the literal we asked for, so foreign
+			// glob hits never inflate a version group.
 			if m.Path != literalPath {
 				continue
 			}
-			// Versions are of the regular FILE at this path: drop any match
-			// restic affirmatively reports as another type (the path may have
-			// been a symlink or special node in older snapshots). An empty
-			// Type (not emitted) is kept so a type-less restic cannot blank
-			// the view. Load-bearing for find-versions' `e`: every surviving
-			// occurrence backs the regular-file attestation its extract makes.
+			// Reject matches identified as non-files before find-version extraction.
+			// Untyped matches remain accepted but cannot attest a regular-file source.
 			if m.Type != "" && m.Type != NodeTypeFile {
 				continue
 			}
@@ -116,10 +89,7 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 				groups[key] = g
 				order = append(order, key)
 			}
-			// Fill display metadata from any occurrence that carries it, not
-			// just the first: mixed-restic-version or mixed-filesystem repos
-			// can emit one match without uid/gid (or permissions) and another
-			// with them for the same (size,mtime) content.
+			// Fill missing display metadata from any occurrence in the group.
 			if g.Permissions == "" {
 				g.Permissions = m.Permissions
 			}
@@ -135,16 +105,14 @@ func GroupFileVersions(results []FindSnapshotResult, literalPath string, snapByI
 	out := make([]FileVersion, 0, len(order))
 	for _, k := range order {
 		g := groups[k]
-		// Sort occurrences newest-first inside the group; an unknown SnapTime
-		// (zero) sorts after known times so missing-metadata rows fall to the bottom.
+		// Stable sorting leaves unknown snapshot times at the bottom.
 		sort.SliceStable(g.Occurrences, func(i, j int) bool {
 			return g.Occurrences[i].SnapTime.After(g.Occurrences[j].SnapTime)
 		})
 		out = append(out, *g)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		// Sort groups by their latest occurrence's snapshot time newest-first;
-		// groups with no known snapshot times sort last but stably.
+		// Sort groups by their latest known occurrence.
 		return latestOccurrenceTime(out[i]).After(latestOccurrenceTime(out[j]))
 	})
 	return out

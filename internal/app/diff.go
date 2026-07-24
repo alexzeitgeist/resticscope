@@ -6,17 +6,13 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/model"
 )
 
-// diff.go is the headless orchestration behind the snapshot-diff view. One
-// streamed restic call per open: `restic --no-lock diff --json <first> <second>`.
-// The initial TUI open uses chronological order, and the diff view's swap key
-// can intentionally reverse it. No cache writes, no secrets in flight: filenames
-// live only in the active TUI session and are cleared on leaving the view.
+// Snapshot diffs use one streamed restic call in the requested order without
+// writing application cache state. Resticx keeps the password out of argv, and
+// the TUI clears streamed filenames when it leaves the diff context.
 
-// SnapshotDiff resolves the repo credentials and streams the diff between two
-// snapshots. onEntry receives each decoded change as restic emits it; onProgress
-// is a coalesced count tick. The terminal SnapshotDiff returned by resticx
-// carries the ParseErrors count (entries themselves are delivered through
-// onEntry, not in the returned slice).
+// SnapshotDiff streams changes between two snapshots to onEntry. onProgress
+// receives coalesced count updates; the returned summary contains parse errors,
+// not the streamed entries.
 func (a *App) SnapshotDiff(ctx context.Context, repoName, olderID, newerID string, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	r, ok := a.repo(repoName)
 	if !ok {

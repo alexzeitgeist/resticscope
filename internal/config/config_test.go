@@ -20,8 +20,7 @@ bucket             = "bucket-a"
 expected_frequency = "24h"
 `
 
-// load decodes, normalizes (with a fixed home), and validates in one step,
-// mirroring what Load does without touching the real $HOME.
+// load decodes, normalizes with a fixed home, and validates without using HOME.
 func load(t *testing.T, data string) (*Config, error) {
 	t.Helper()
 	cfg, err := Decode([]byte(data))
@@ -284,9 +283,8 @@ expected_frequency = "24h"
 	}
 }
 
-// Two `[repos.<name>]` tables with the same key are impossible in TOML, so the
-// duplicate-name invariant (it becomes a cache filename) can only be violated by
-// constructing repos directly — guard it at the Validate layer regardless.
+// TOML cannot contain duplicate repo tables, but constructed Config values can;
+// repo names also become cache filenames.
 func TestValidateRejectsDuplicateRepoName(t *testing.T) {
 	cfg := &Config{
 		Global: Global{SecretsCommand: "x", ShellPasswordMode: "file"},
@@ -302,8 +300,6 @@ func TestValidateRejectsDuplicateRepoName(t *testing.T) {
 	}
 }
 
-// CredentialNames is the derived set of credential names the repos reference:
-// distinct, in first-reference order, skipping repos that name no credential.
 func TestCredentialNamesDerivedFromRepos(t *testing.T) {
 	cfg, err := load(t, `
 [global]
@@ -370,7 +366,6 @@ labels = { location = "ch" }
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Only hetzner-home is referenced (test-local names no credential).
 	if got, want := cfg.CredentialNames(), []string{"hetzner-home"}; !slices.Equal(got, want) {
 		t.Fatalf("CredentialNames = %v, want %v", got, want)
 	}
@@ -401,8 +396,6 @@ labels = { location = "ch" }
 	}
 }
 
-// A repo's own non-empty fields override the profile's; the profile only fills
-// gaps the repo leaves.
 func TestRepoOverridesProfileFields(t *testing.T) {
 	cfg, err := load(t, `
 [global]
@@ -550,8 +543,7 @@ expected_frequency = "24h"
 			wantSub: "name is not allowed; a profile is named by its table key",
 		},
 		{
-			// A typo in a profile must fail even when no repo uses that profile
-			// yet — the profile is validated for its self-contained fields.
+			// Validate unused profiles independently so latent typos still fail.
 			name: "unused profile bad bucket_lookup",
 			toml: `
 [global]
@@ -619,8 +611,7 @@ expected_frequency = "24h"
 	}
 }
 
-// region is optional: the endpoint host usually implies it, so a repo that omits
-// it must load and validate cleanly (and refresh exports no AWS_DEFAULT_REGION).
+// Region is optional; when omitted, BackendEnv lets restic use its default.
 func TestOmittedRegionAccepted(t *testing.T) {
 	cfg, err := load(t, `
 [global]
@@ -639,8 +630,7 @@ expected_frequency = "24h"
 	}
 }
 
-// A url repo is the storage-agnostic form: any restic backend, an optional
-// credential, generic env/options. The s3 shorthand keeps working beside it.
+// URL repositories accept any backend, optional credentials, and generic env/options.
 func TestURLRepoForms(t *testing.T) {
 	cfg, err := load(t, `
 [global]
@@ -710,9 +700,8 @@ expected_frequency = "24h"
 	}
 }
 
-// The s3 shorthand lowers onto the same generic surface the url form uses:
-// RepositoryURL assembles the s3 URL, region becomes AWS_DEFAULT_REGION, and a
-// non-auto bucket_lookup becomes the s3.bucket-lookup option.
+// S3 shorthand lowers to RepositoryURL, AWS_DEFAULT_REGION, and
+// s3.bucket-lookup.
 func TestS3ShorthandLowering(t *testing.T) {
 	cfg, err := load(t, `
 [global]
@@ -744,11 +733,8 @@ expected_frequency = "24h"
 	}
 }
 
-// group_by is an optional [global] field listing the repo-label keys the list
-// view can cycle through. A present value must decode into Global.GroupBy as a
-// slice without tripping the unknown-keys gate, and omitted/explicit-empty
-// forms must both normalize to the same non-nil empty slice so runtime code can
-// rely on a single len-based check.
+// GroupBy preserves configured order and normalizes omitted or empty values to a
+// non-nil empty slice.
 func TestParsesGroupBy(t *testing.T) {
 	cfg, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = ["env", "region"]
 secrets_command`, 1))
@@ -759,7 +745,6 @@ secrets_command`, 1))
 		t.Errorf("group_by = %v, want %v", got, want)
 	}
 
-	// Omitting the key leaves Global.GroupBy as a non-nil empty slice.
 	cfg, err = load(t, minimalTOML)
 	if err != nil {
 		t.Fatalf("baseline decode failed: %v", err)
@@ -771,7 +756,6 @@ secrets_command`, 1))
 		t.Errorf("omitted group_by = %v, want empty slice", cfg.Global.GroupBy)
 	}
 
-	// Explicit empty list normalizes to the same non-nil empty slice.
 	cfg, err = load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = []
 secrets_command`, 1))
 	if err != nil {
@@ -785,8 +769,7 @@ secrets_command`, 1))
 	}
 }
 
-// The legacy single-string form must now fail decode so users see the schema
-// break loudly instead of silently dropping their configured grouping.
+// Legacy string values must fail loudly instead of silently dropping grouping.
 func TestRejectsLegacyGroupByString(t *testing.T) {
 	_, err := load(t, strings.Replace(minimalTOML, "secrets_command", `group_by = "category"
 secrets_command`, 1))
@@ -795,8 +778,7 @@ secrets_command`, 1))
 	}
 }
 
-// Validation must surface a global.group_by error for empty, whitespace-padded,
-// and duplicate entries so the user can fix the offending index without guessing.
+// GroupBy validation identifies the offending index for malformed or duplicate entries.
 func TestValidatesGroupByEntries(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -837,9 +819,8 @@ bogus_key = true
 	}
 }
 
-// The coverage feature was removed: a pre-cleanup config that still declares
-// expected_hosts/paths/tags must fail decode with an unknown-keys error so the
-// user deletes them, rather than silently ignoring stale expectations.
+// Removed coverage keys must fail decoding so stale expectations are not
+// silently ignored.
 func TestRejectsRemovedCoverageKeys(t *testing.T) {
 	for _, key := range []string{"expected_hosts", "expected_paths", "expected_tags"} {
 		t.Run(key, func(t *testing.T) {

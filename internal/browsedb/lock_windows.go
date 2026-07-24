@@ -14,9 +14,8 @@ const (
 	lockBytesHigh = 0
 )
 
-// tryLock attempts a non-blocking exclusive byte-range lock on f. ok reports
-// whether the lock was acquired (false when another process holds it). supported
-// is false when the host/filesystem reports byte-range locking as unavailable.
+// tryLock attempts a non-blocking exclusive byte-range lock. supported is false
+// when the host or filesystem reports locking as unavailable.
 func tryLock(f *os.File) (ok, supported bool) {
 	err := windows.LockFileEx(
 		windows.Handle(f.Fd()),
@@ -41,8 +40,7 @@ func tryLock(f *os.File) (ok, supported bool) {
 	return false, true
 }
 
-// unlock releases the byte-range lock held on f. Closing f releases it too; this
-// is used when cleanup briefly probes a lock it must not keep.
+// unlock releases a lock acquired only to probe whether a session is live.
 func unlock(f *os.File) {
 	_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, lockBytesLow, lockBytesHigh, &windows.Overlapped{})
 }

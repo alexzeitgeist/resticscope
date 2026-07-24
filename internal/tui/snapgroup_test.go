@@ -11,9 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// snap is a terse fixture builder for the pipeline tests. ID and ShortID are
-// derived from id so a test can name snapshots conversationally ("a", "b") and
-// still assert on a deterministic short id.
+// snap derives both IDs from id to keep fixtures terse and deterministic.
 func snap(id, host, tree string, minutesAgo int, tags, paths []string) model.Snapshot {
 	return model.Snapshot{
 		ID:       id,
@@ -34,12 +32,8 @@ func ids(nodes []snapNode) []string {
 	return out
 }
 
-// --- pipeline ---
-
 func TestCollapseTreeRunsFoldsConsecutivePeers(t *testing.T) {
-	// Newest-first: a3,a2,a1 all share tree T1 + (host, paths, tags), then b1 breaks
-	// the run on tree, then a4 (same tree as a-run) does NOT re-merge because b1
-	// sits between them.
+	// The non-contiguous a4 must not rejoin the newest-first a3/a2/a1 run.
 	snaps := []model.Snapshot{
 		snap("a3", "h", "T1", 1, nil, []string{"/data"}),
 		snap("a2", "h", "T1", 2, nil, []string{"/data"}),
@@ -66,8 +60,7 @@ func TestCollapseTreeRunsFoldsConsecutivePeers(t *testing.T) {
 }
 
 func TestCollapseTreeRunsRespectsSourceKey(t *testing.T) {
-	// Same tree, different hosts must not collapse — the collapse rule is
-	// tree + (host, sorted tags, sorted paths), not tree alone.
+	// Tree equality must not collapse snapshots from different hosts.
 	snaps := []model.Snapshot{
 		snap("x", "host-a", "T1", 1, nil, []string{"/data"}),
 		snap("y", "host-b", "T1", 2, nil, []string{"/data"}),
@@ -79,8 +72,7 @@ func TestCollapseTreeRunsRespectsSourceKey(t *testing.T) {
 }
 
 func TestCollapseTreeRunsEmptyTreeNeverMerges(t *testing.T) {
-	// An empty Tree (pre-tree fixture or unknown) must never collapse, even with
-	// itself — otherwise unrelated pre-0.18 snapshots would silently merge.
+	// Empty tree IDs cannot establish identity for collapse.
 	snaps := []model.Snapshot{
 		snap("e1", "h", "", 1, nil, []string{"/d"}),
 		snap("e2", "h", "", 2, nil, []string{"/d"}),
@@ -113,8 +105,7 @@ func TestSnapSectionsByHost(t *testing.T) {
 	if len(got) != 4 {
 		t.Fatalf("sections = %d, want 4 (Prod, alpha, prod, fallback)", len(got))
 	}
-	// Case-insensitive primary order with byte-order tie-break ("Prod" < "prod"
-	// because 'P' < 'p' bytewise); the noKey fallback always sorts last.
+	// Case-insensitive ordering uses a byte-order tie-break; fallback sorts last.
 	wantTitles := []string{"alpha", "Prod", "prod", "(no host)"}
 	for i, want := range wantTitles {
 		if got[i].title != want {
@@ -130,8 +121,7 @@ func TestSnapSectionsByHost(t *testing.T) {
 }
 
 func TestSnapSectionsByTagsBucketByFullSet(t *testing.T) {
-	// A snapshot tagged ["a","b"] must land in ONE "a, b" section, not in both
-	// "a" and "b". The empty-tags snapshot falls into the fallback bucket.
+	// The complete tag set forms one bucket; empty tags use the fallback.
 	snaps := []model.Snapshot{
 		snap("x", "h", "T1", 1, []string{"b", "a"}, nil),
 		snap("y", "h", "T2", 2, []string{"a"}, nil),
@@ -150,9 +140,7 @@ func TestSnapSectionsByTagsBucketByFullSet(t *testing.T) {
 }
 
 func TestSnapSectionsByPathsTitleIsSortedReadable(t *testing.T) {
-	// Paths key is the sorted set NUL-joined for stable bucketing; title shows
-	// the sorted set comma-joined for readability. "/etc, /var" and "/var, /etc"
-	// must collapse into the same section.
+	// Sorting must give equivalent path sets one readable section title.
 	snaps := []model.Snapshot{
 		snap("x", "h", "T1", 1, nil, []string{"/var", "/etc"}),
 		snap("y", "h", "T2", 2, nil, []string{"/etc", "/var"}),
@@ -174,8 +162,7 @@ func TestSnapSectionsByPathsTitleIsSortedReadable(t *testing.T) {
 }
 
 func TestSnapSectionsByPreservesNewestFirstWithinSection(t *testing.T) {
-	// Section construction must not re-sort within a bucket; the caller's
-	// newest-first order has to survive so collapse runs see consecutive peers.
+	// Preserve newest-first order within buckets for later collapse runs.
 	snaps := []model.Snapshot{
 		snap("h1-new", "h1", "T1", 1, nil, nil),
 		snap("h2-new", "h2", "T2", 2, nil, nil),
@@ -195,9 +182,7 @@ func TestSnapSectionsByPreservesNewestFirstWithinSection(t *testing.T) {
 }
 
 func TestSnapSectionsByDistinctKeysCollidingTitlesStaySeparate(t *testing.T) {
-	// One snapshot tagged with the literal "a, b" must not collide with one
-	// tagged ["a","b"] — they have distinct keys (NUL-joined sorted set) even
-	// though their rendered titles look identical.
+	// Distinct tag sets must not collide even when their titles match.
 	snaps := []model.Snapshot{
 		snap("p", "h", "T1", 1, []string{"a, b"}, nil),
 		snap("q", "h", "T2", 2, []string{"a", "b"}, nil),
@@ -209,8 +194,7 @@ func TestSnapSectionsByDistinctKeysCollidingTitlesStaySeparate(t *testing.T) {
 }
 
 func TestBuildSnapDisplayCollapseNeverCrossesSection(t *testing.T) {
-	// Same tree across two hosts must split into two sections AND not collapse
-	// across the section boundary — collapse runs strictly within a section.
+	// Collapse must not cross host section boundaries.
 	snaps := []model.Snapshot{
 		snap("a-new", "host-a", "T1", 1, nil, []string{"/d"}),
 		snap("b1", "host-b", "T1", 2, nil, []string{"/d"}),
@@ -221,8 +205,7 @@ func TestBuildSnapDisplayCollapseNeverCrossesSection(t *testing.T) {
 	if len(d.sections) != 2 {
 		t.Fatalf("sections = %d, want 2 (host-a, host-b)", len(d.sections))
 	}
-	// host-a's two snapshots are non-contiguous in the source slice (b1/b2 sit
-	// between them); after sectioning they're contiguous so collapse folds them.
+	// Sectioning makes host-a contiguous before its collapse pass.
 	hostA := d.sections[0]
 	if hostA.title != "host-a" {
 		t.Fatalf("section[0] = %q, want host-a", hostA.title)
@@ -265,11 +248,7 @@ func TestBuildSnapDisplayGroupOffCollapseOn(t *testing.T) {
 	}
 }
 
-// --- Model state & anchors ---
-
-// snapGroupApp seeds repo-a with two hosts × multiple snapshots, with shared
-// trees inside each host so collapse can fold and group can split. ID-time
-// is staggered so the newest-first ordering is deterministic.
+// snapGroupApp provides two collapsible host groups in deterministic order.
 func snapGroupApp(t *testing.T) *app.App {
 	t.Helper()
 	a := testApp(map[string]model.RepoState{
@@ -303,8 +282,7 @@ func TestDetailEntryDefaultsBothOff(t *testing.T) {
 	if m.snapCollapseTree {
 		t.Errorf("snapCollapseTree should be false on detail entry (collapse is opt-in)")
 	}
-	// With both off the display is the raw newest-first list — one node per
-	// snapshot, no sections.
+	// With both options off, display is the raw newest-first list.
 	d := m.snapDisplay()
 	if d.sections != nil {
 		t.Errorf("default display should have no sections, got %d", len(d.sections))
@@ -315,9 +293,7 @@ func TestDetailEntryDefaultsBothOff(t *testing.T) {
 }
 
 func TestCycleSnapGroupPreservesSelection(t *testing.T) {
-	// Default collapse OFF: raw flat order [a3,a2,a1,b2,b1]; b2 sits at
-	// index 3. After cycling group to host the same snapshot must stay
-	// selected even though the flat ordering changes.
+	// Grouping must preserve b2 despite changing its position in the flat order.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCursor = 3
 	got := m.selectedSnapshot()
@@ -335,9 +311,7 @@ func TestCycleSnapGroupPreservesSelection(t *testing.T) {
 }
 
 func TestCycleSnapCollapsePreservesSelection(t *testing.T) {
-	// Default collapse is OFF — the cursor sits on b2 in the raw flat order
-	// [a3,a2,a1,b2,b1]. Toggling collapse ON folds the a-run and the b-run;
-	// b2 is the b-section head so the same snapshot stays selected.
+	// Collapsing both tree runs must preserve the selected b2 head.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCursor = 3 // b2 in [a3,a2,a1,b2,b1]
 	m = m.cycleSnapCollapse()
@@ -351,9 +325,7 @@ func TestCycleSnapCollapsePreservesSelection(t *testing.T) {
 }
 
 func TestCycleSnapCollapsePreservesPeerSelection(t *testing.T) {
-	// Start with collapse OFF so every snapshot is its own node and a peer
-	// (a2) is directly selectable. Then toggle collapse on: the cursor must
-	// land on the absorbing head (a3) — indexOfSnap searches peers too.
+	// Collapsing must move a selected peer to its absorbing head.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = false
 	m.snapCursor = 1 // a2 in the uncollapsed flat order [a3,a2,a1,b2,b1]
@@ -369,9 +341,7 @@ func TestCycleSnapCollapsePreservesPeerSelection(t *testing.T) {
 }
 
 func TestSnapCursorClampedAfterGroupShrink(t *testing.T) {
-	// Start with group off + collapse off → 5 selectable nodes. Park the
-	// cursor at the last one. Collapse-on shrinks the set to 2 nodes; the
-	// cursor must clamp into bounds rather than index out of range.
+	// Collapse shrinks five nodes to two and must clamp the last cursor.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = false
 	m.snapCursor = 4 // last node in [a3,a2,a1,b2,b1]
@@ -385,16 +355,11 @@ func TestSnapCursorClampedAfterGroupShrink(t *testing.T) {
 	}
 }
 
-// --- marks ---
-
 func TestCollapseNormalizesPeerMarks(t *testing.T) {
-	// Start collapse-off, mark a peer (a2), then turn collapse on. The mark
-	// must map to the absorbing head (a3), and the FIFO must still hold one
-	// mark (no duplicate from the eventual re-mark cycle).
+	// Collapsing maps the peer mark to its head without duplicating it.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = false
-	// Mark a2 directly via the FIFO so the test doesn't depend on cursor
-	// position semantics.
+	// Set the FIFO directly to isolate mark normalization from cursor behavior.
 	m.detailMarks = []model.Snapshot{snap("a2", "host-a", "TA", 2, nil, []string{"/data"})}
 	m = m.cycleSnapCollapse() // collapse on; a2 folds into a3
 	if len(m.detailMarks) != 1 {
@@ -406,10 +371,7 @@ func TestCollapseNormalizesPeerMarks(t *testing.T) {
 }
 
 func TestCollapsedPeerMarkRendersOnHead(t *testing.T) {
-	// isNodeMarked checks head + peers, so a hidden peer mark stays visible on
-	// the head row even BEFORE normalize folds it (defensive: covers a render
-	// hop between cycle and normalize). Explicitly enable collapse since the
-	// new default is off.
+	// A hidden peer mark must remain visible before normalization runs.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = true
 	m.detailMarks = []model.Snapshot{snap("a1", "host-a", "TA", 3, nil, []string{"/data"})}
@@ -420,9 +382,7 @@ func TestCollapsedPeerMarkRendersOnHead(t *testing.T) {
 }
 
 func TestCollapsedHeadPeerMarksDeduplicateKeepsFirst(t *testing.T) {
-	// FIFO has [a2 (peer), a3 (head)] before collapse-on. After normalize,
-	// both map to a3 — they must dedupe to one entry, keeping the FIRST
-	// FIFO position (a2 came first; it folds into a3 at its original slot).
+	// Peer and head marks deduplicate at the peer's original FIFO position.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = false
 	m.detailMarks = []model.Snapshot{
@@ -439,9 +399,7 @@ func TestCollapsedHeadPeerMarksDeduplicateKeepsFirst(t *testing.T) {
 }
 
 func TestCollapseMarkNormalizationIsMonotonic(t *testing.T) {
-	// Collapse-on folds a2 into a3; toggling collapse off must NOT
-	// reconstruct the original a2 mark (folded peers share identity by
-	// construction, so the loss is intentional and documented).
+	// Expanding cannot reconstruct a peer mark already merged into its head.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = false
 	m.detailMarks = []model.Snapshot{snap("a2", "host-a", "TA", 2, nil, []string{"/data"})}
@@ -452,13 +410,8 @@ func TestCollapseMarkNormalizationIsMonotonic(t *testing.T) {
 	}
 }
 
-// --- render selection ---
-
 func TestSnapshotDetailTracksGroupedSelection(t *testing.T) {
-	// With grouping host + collapse on, the displayed nodes are [a3-head,
-	// b2-head]. Moving the cursor to index 1 must put b2 in the selected
-	// sub-panel — proving snapshotDetail goes through selectedSnapshot().
-	// Collapse is opt-in (off by default) so the test sets it explicitly.
+	// The selected grouped head must drive the detail sub-panel.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.width, m.height = 120, 40
 	m.snapCollapseTree = true
@@ -474,10 +427,7 @@ func TestSnapshotDetailTracksGroupedSelection(t *testing.T) {
 }
 
 func TestSnapshotDetailUsesSelectedSnapshotNoRawSnapsParam(t *testing.T) {
-	// snapshotDetail's new signature takes only width; calling it directly with
-	// the current model must produce the same panel content the integrated
-	// renderer does. Indirectly proves no raw snaps slice indexing remains.
-	// Collapse is opt-in (off by default) so the test sets it explicitly.
+	// Direct rendering must use model selection rather than a raw snapshot slice.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.width, m.height = 120, 40
 	m.snapCollapseTree = true
@@ -494,17 +444,12 @@ func TestSnapshotDetailUsesSelectedSnapshotNoRawSnapsParam(t *testing.T) {
 }
 
 func TestGroupedSnapshotMaxOneRendersSelectedRow(t *testing.T) {
-	// Squeeze the pane until detailSnapVisible == 1; the grouped renderer
-	// must show the SELECTED data row (not a heading-only window).
-	// Collapse is opt-in (off by default) so the test sets it explicitly
-	// to land cursor index 1 on b2 head in [a3-head, b2-head].
+	// A one-line window must show the selected row rather than only its heading.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = true
 	m = m.cycleSnapGroup()
 	m.snapCursor = 1 // b2 head
-	// detailOverhead at the default test height is large; pick a height that
-	// forces max=1. We bypass detailSnapVisible's floor by going as low as the
-	// overhead arithmetic allows.
+	// Set the height from measured overhead to force a one-line window.
 	m.width = 100
 	m.height = m.detailOverhead(false, false) + 1
 	out := m.snapshotTable()
@@ -517,15 +462,11 @@ func TestGroupedSnapshotMaxOneRendersSelectedRow(t *testing.T) {
 	}
 }
 
-// --- goBack reset ---
-
 func TestGoBackResetsSnapGroupState(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
 	m = m.cycleSnapGroup()    // group: off -> host
 	m = m.cycleSnapCollapse() // collapse: false -> true
-	// Setup precondition: both fields have moved off the per-visit defaults
-	// (group=off, collapse=false) so the goBack assertion below proves the
-	// reset, not the absence of any cycle.
+	// Move both fields off their defaults before testing the reset.
 	if m.snapGroupMode == snapGroupOff || !m.snapCollapseTree {
 		t.Fatalf("setup failed: group=%d collapse=%v", m.snapGroupMode, m.snapCollapseTree)
 	}
@@ -543,12 +484,8 @@ func TestGoBackResetsSnapGroupState(t *testing.T) {
 	}
 }
 
-// --- meta count is raw ---
-
 func TestSnapshotsMetaCountIsRaw(t *testing.T) {
-	// Collapse on folds 5 snapshots into 2 nodes, but the meta "Snapshots: N"
-	// row is sourced from row.State.SnapshotCount (raw), not snapCount().
-	// Enable collapse explicitly since the per-visit default is off.
+	// Metadata must report the raw count even when five snapshots fold to two.
 	m := openDetailWith(t, snapGroupApp(t))
 	m.snapCollapseTree = true
 	if got := m.snapCount(); got != 2 {
@@ -560,8 +497,6 @@ func TestSnapshotsMetaCountIsRaw(t *testing.T) {
 		t.Errorf("meta row should report raw count 5\n---\n%s", view)
 	}
 }
-
-// --- help overlay ---
 
 func TestHelpOverlayShowsSnapGroupingKeys(t *testing.T) {
 	m := newTestModel(t, snapGroupApp(t))
@@ -592,8 +527,6 @@ func TestHelpOverlayShowsSnapGroupingKeys(t *testing.T) {
 	}
 }
 
-// --- heading suffix surfacing transient state ---
-
 func TestSnapshotsHeadingShowsGroupAndCollapseState(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
 	// Defaults (group off + collapse off): no suffix at all.
@@ -610,8 +543,7 @@ func TestSnapshotsHeadingShowsGroupAndCollapseState(t *testing.T) {
 	}
 }
 
-// The marks suffix carries state only ("n/2 marked") — the t/d key hints live
-// in the footer key bar and must not be duplicated into the heading.
+// Keep key hints in the footer rather than duplicating them in the marks suffix.
 func TestSnapshotsHeadingMarksStateWithoutKeyHints(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
 	m = update(t, m, press("t"))
@@ -623,8 +555,6 @@ func TestSnapshotsHeadingMarksStateWithoutKeyHints(t *testing.T) {
 		t.Errorf("heading must not embed key hints, got %q", got)
 	}
 }
-
-// --- key wiring (g/c on detail) ---
 
 func TestDetailGKeyCyclesSnapGroup(t *testing.T) {
 	m := openDetailWith(t, snapGroupApp(t))
@@ -645,14 +575,8 @@ func TestDetailCKeyTogglesCollapse(t *testing.T) {
 	}
 }
 
-// --- collapse-mode column alignment ---
-
 func TestCollapsedRowAlignsWithUncollapsedRow(t *testing.T) {
-	// When collapse is on the ID column reserves a "+N" suffix slot. The
-	// uncollapsed row must pad blank space in that slot so every column past
-	// ID (Time, Hostname, Size, …) lines up across rows. Verify by comparing
-	// the byte offset of the Time value in two joined cell strings — they
-	// must match.
+	// Uncollapsed rows reserve the +N slot so later columns remain aligned.
 	l := snapshotLayout(120, true)
 	tm := "2024-01-01 12:00"
 	collapsed := strings.Join(snapCells(l, snapRow{
@@ -667,9 +591,7 @@ func TestCollapsedRowAlignsWithUncollapsedRow(t *testing.T) {
 	}
 }
 
-// Compile-time guard: signature drift on snapshotTable/snapshotDetail (e.g.
-// re-introducing a raw snaps slice param) fails the build here, not at the
-// first call site that breaks.
+// Catch snapshotTable or snapshotDetail signature drift at compile time.
 var (
 	_ = (Model).snapshotTable
 	_ = func(m Model, w int) string { return m.snapshotDetail(w) }

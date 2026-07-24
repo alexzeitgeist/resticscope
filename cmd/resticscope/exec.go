@@ -16,17 +16,11 @@ import (
 	"github.com/alexzeitgeist/resticscope/internal/cache"
 )
 
-// cmdExec resolves a repo's credentials and either drops the user into an
-// interactive shell scoped to it (with the orientation banner) or runs a single
-// command in that environment when one is given after `--`:
-//
-//	resticscope exec [--config PATH] <repo>
-//	resticscope exec [--config PATH] <repo> -- restic snapshots --json
-//
-// It shares the headless shell-out core with the TUI (app.ShellSession), so the
-// environment, password handling, and snapshot context are identical (plan §8,
-// §9). In command mode it returns the child's exit code so it composes in
-// scripts; the interactive shell returns 0 on a clean exit.
+// cmdExec resolves repository credentials and either opens an interactive shell
+// or runs the command following --. It shares app.ShellSession with the TUI, so
+// credential environment and password handling match. CLI sessions are always
+// repository-scoped; TUI sessions may also include a selected snapshot. Command
+// mode returns the child's exit code, while a clean interactive exit returns 0.
 func cmdExec(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfgPath, repoName, cmdArgs, ok := parseExecArgs(args, stderr)
 	if !ok {
@@ -42,8 +36,8 @@ func cmdExec(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logger := newLogger(cfg)
 	store, _, err := refreshDeps(ctx, cfg, logger)
 	if err != nil {
-		// refreshDeps runs secrets_command and validates the resolved secrets;
-		// its error is already secret-free.
+		// Command failures suppress provider output, and validation errors omit
+		// values; malformed JSON errors may still quote one input byte.
 		fmt.Fprintf(stderr, "exec: %v\n", err)
 		return 2
 	}
@@ -66,12 +60,8 @@ func cmdExec(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return runExec(ctx, sess, cmdArgs, stdout, stderr)
 }
 
-// parseExecArgs splits the exec arguments into flags, the repo name, and an
-// optional command following `--`. Everything after the first `--` is the
-// command to run verbatim; the rest is parsed for flags and the positional repo.
-// Exactly one positional repo may precede `--`: extra bare words are rejected
-// (almost always a forgotten `--`) rather than silently dropped, since opening a
-// shell for the first word and discarding the rest is hard to diagnose.
+// parseExecArgs separates flags and one repository name from the command after
+// the first --. It rejects extra positional arguments before the separator.
 func parseExecArgs(args []string, errOut io.Writer) (cfgPath, repo string, cmdArgs []string, ok bool) {
 	if i := slices.Index(args, "--"); i >= 0 {
 		cmdArgs = args[i+1:]
@@ -89,10 +79,8 @@ func parseExecArgs(args []string, errOut io.Writer) (cfgPath, repo string, cmdAr
 		fmt.Fprintln(errOut, "usage: resticscope exec [--config PATH] <repo> [-- command args...]")
 		return "", "", nil, false
 	case fs.NArg() > 1:
-		// Extra positional args almost always mean a forgotten `--`: the user
-		// typed `exec repo restic snapshots` meaning to run a command. Reject it
-		// and show exactly how to express that intent rather than discarding the
-		// tail and dropping into an interactive shell for the first word.
+		// Reject a likely missing -- instead of silently opening an interactive
+		// shell for the first positional argument.
 		extra := strings.Join(fs.Args()[1:], " ")
 		fmt.Fprintf(errOut, "exec: unexpected arguments after repo %q: %s\n", fs.Arg(0), extra)
 		fmt.Fprintf(errOut, "to run a command in the repo shell, separate it with --:\n  resticscope exec %s -- %s\n", fs.Arg(0), extra)
@@ -101,19 +89,16 @@ func parseExecArgs(args []string, errOut io.Writer) (cfgPath, repo string, cmdAr
 	return *cfg, fs.Arg(0), cmdArgs, true
 }
 
-// runExec launches the session. With no command it runs the interactive-shell
-// wrapper (banner + exec $SHELL); with a command it runs that command directly
-// in the session environment. The child is wired to the real terminal so an
-// interactive shell behaves normally.
+// runExec launches the interactive-shell wrapper or runs a command directly in
+// the session environment.
 func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdout, stderr io.Writer) int {
 	interactive := len(cmdArgs) == 0
 
 	var cmd *exec.Cmd
 	if interactive {
-		// No context cancellation here: the shell owns the foreground and exits
-		// on the user's command. Signals are handled below. The interactive env
-		// additionally carries the prompt-tag scaffolding (zsh ZDOTDIR); command
-		// mode below gets the plain credential env.
+		// The foreground shell owns termination, so context cancellation is not
+		// attached. Interactive mode also receives prompt scaffolding that command
+		// mode does not.
 		ia := sess.InteractiveArgs()
 		cmd = exec.Command(ia[0], ia[1:]...) //nolint:gosec // args are the internally-built shell invocation; exec.Command runs no shell, so there is no injection vector
 		cmd.Env = sess.InteractiveEnv()
@@ -126,8 +111,8 @@ func runExec(ctx context.Context, sess *app.ShellSession, cmdArgs []string, stdo
 	cmd.Stderr = stderr
 
 	if interactive {
-		// Drain SIGINT because the child shell should handle Ctrl-C while it owns
-		// the terminal; resticscope should wait for cmd.Run to return.
+		// Drain SIGINT while the child owns the terminal; cmd.Run determines when
+		// resticscope returns.
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt)
 		defer func() {

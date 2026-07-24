@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-// Observed extracts the de-duplicated, sorted hosts and tags seen across the
-// given snapshots. They are surfaced as informational detail-view lines. Each
-// return value is nil when nothing was seen, keeping JSON output and equality
-// checks clean.
+// Observed returns sorted, unique, non-empty hosts and tags. Each result is nil
+// when no values were observed.
 func Observed(snaps []Snapshot) (hosts, tags []string) {
 	hostSet := map[string]struct{}{}
 	tagSet := map[string]struct{}{}
@@ -27,9 +25,8 @@ func Observed(snaps []Snapshot) (hosts, tags []string) {
 	return sortedKeys(hostSet), sortedKeys(tagSet)
 }
 
-// ObservedVersions returns the de-duplicated, sorted restic program versions
-// seen across the given snapshots, so a detail view can reveal a fleet running
-// mixed or outdated clients. It mirrors Observed's nil-on-empty convention.
+// ObservedVersions returns sorted, unique, non-empty restic versions. It
+// returns nil when none were observed.
 func ObservedVersions(snaps []Snapshot) []string {
 	verSet := map[string]struct{}{}
 	for _, s := range snaps {
@@ -40,9 +37,8 @@ func ObservedVersions(snaps []Snapshot) []string {
 	return sortedKeys(verSet)
 }
 
-// LastBackupDuration returns how long the most recent backup took: BackupEnd-
-// BackupStart of the newest snapshot. The bool is false when there is no newest
-// snapshot, or when the newest snapshot has no complete, non-negative duration.
+// LastBackupDuration returns the newest snapshot's non-negative backup duration.
+// The result is unavailable when the snapshot or complete timestamps are absent.
 func LastBackupDuration(snaps []Snapshot) (time.Duration, bool) {
 	newest, ok := latestSnapshot(snaps)
 	if !ok {
@@ -51,9 +47,8 @@ func LastBackupDuration(snaps []Snapshot) (time.Duration, bool) {
 	return SnapshotBackupDuration(newest)
 }
 
-// SnapshotBackupDuration returns the duration recorded on a snapshot summary.
-// The bool is false when the snapshot has no summary, incomplete timestamps, or
-// an invalid negative duration.
+// SnapshotBackupDuration returns a snapshot's non-negative backup duration.
+// The result is unavailable when its summary or complete timestamps are absent.
 func SnapshotBackupDuration(s Snapshot) (time.Duration, bool) {
 	if s.Summary == nil || s.Summary.BackupStart.IsZero() || s.Summary.BackupEnd.IsZero() {
 		return 0, false
@@ -77,8 +72,8 @@ func latestSnapshot(snaps []Snapshot) (Snapshot, bool) {
 	return newest, ok
 }
 
-// SortedSnapshotsNewestFirst copies snapshots and orders them newest-first using
-// the same tie-breaks as LastBackupDuration.
+// SortedSnapshotsNewestFirst returns a newest-first copy using the package's
+// deterministic snapshot tie-breakers.
 func SortedSnapshotsNewestFirst(src []Snapshot) []Snapshot {
 	snaps := make([]Snapshot, len(src))
 	copy(snaps, src)
@@ -86,9 +81,8 @@ func SortedSnapshotsNewestFirst(src []Snapshot) []Snapshot {
 	return snaps
 }
 
-// SortSnapshotsNewestFirst orders snapshots newest-first in place. Exact
-// timestamp ties are broken by ID, then ShortID, so renderers do not fall back to
-// input slice order.
+// SortSnapshotsNewestFirst orders snapshots in place by descending time, ID,
+// then ShortID.
 func SortSnapshotsNewestFirst(snaps []Snapshot) {
 	sort.SliceStable(snaps, func(i, j int) bool { return snapshotBeforeNewest(snaps[i], snaps[j]) })
 }
@@ -103,8 +97,7 @@ func snapshotBeforeNewest(a, b Snapshot) bool {
 	return a.ShortID > b.ShortID
 }
 
-// LatestSnapshotTime returns the most recent snapshot time, or the zero time
-// when there are no snapshots.
+// LatestSnapshotTime returns the most recent snapshot time, or zero when empty.
 func LatestSnapshotTime(snaps []Snapshot) time.Time {
 	var latest time.Time
 	for _, s := range snaps {

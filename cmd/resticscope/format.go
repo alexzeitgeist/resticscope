@@ -13,7 +13,7 @@ import (
 )
 
 // formatStatusTable writes one plain-text line per repo, columns aligned. It
-// stays uncolored and scriptable on purpose (plan §9, recommendation 5).
+// stays uncolored and scriptable on purpose.
 func formatStatusTable(w io.Writer, rows []app.RepoStatus, now time.Time) {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	for _, r := range rows {
@@ -50,10 +50,8 @@ func lastBackupDuration(snaps []model.Snapshot) string {
 	return humanize.Duration(d)
 }
 
-// formatPruneResult writes the outcome of `resticscope cache prune`: the scanned
-// directory, one aligned line per per-repo cache (its size and whether it is
-// kept or pruned), and a closing summary. Wording shifts to the conditional for
-// a dry run. It stays plain text and uncolored, consistent with `status`.
+// formatPruneResult writes an uncolored cache directory, per-repository rows,
+// and summary. Dry runs use conditional wording.
 func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
 	if res.Root == "" {
 		fmt.Fprintln(w, "no cache directory configured; nothing to prune")
@@ -99,15 +97,11 @@ func formatPruneResult(w io.Writer, res app.PruneResult, dryRun bool) {
 	}
 }
 
-// caches renders a count with the correctly pluralized noun ("1 cache", "3 caches").
 func caches(n int) string {
 	return humanize.Count(n, "cache", "caches")
 }
 
-// checkLine writes one aligned stage line for `resticscope check`, e.g.
-//
-//	config   ok      3 repos, 2 credentials
-//	restic   FAILED  0.16.0 is older than the minimum supported 0.17.0
+// checkLine writes one aligned check-stage row.
 func checkLine(w io.Writer, stage, status, detail string) {
 	fmt.Fprintf(w, "%-9s%-8s%s\n", stage, status, detail)
 }

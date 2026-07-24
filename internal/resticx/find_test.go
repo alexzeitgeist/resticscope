@@ -58,8 +58,6 @@ func TestFindMatchesParses018WithUnknownFields(t *testing.T) {
 	if len(rs[2].Matches) != 0 || rs[2].Hits != 0 {
 		t.Errorf("zero-match snapshot result not preserved: %+v", rs[2])
 	}
-	// Newer fixture's extra fields (inode, device_id, links, etc.) must be
-	// ignored, not error.
 	if rs[0].Matches[0].Size != 12 {
 		t.Errorf("size mismatch on extended fixture: %+v", rs[0].Matches[0])
 	}
@@ -91,7 +89,6 @@ func TestFindMatchesArgsWithoutHost(t *testing.T) {
 	if got != want {
 		t.Errorf("args = %q, want %q", got, want)
 	}
-	// to ensure no stray --host slipped in when host is empty.
 	if strings.Contains(got, "--host") {
 		t.Errorf("--host should be absent when host is empty, got %q", got)
 	}
@@ -104,8 +101,7 @@ func TestFindMatchesEscapesGlobInArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindMatches: %v", err)
 	}
-	// to ensure restic receives the escaped pattern, not the raw literal that
-	// would over-match `a1.txt` from a sibling.
+	// The raw literal would overmatch a sibling named `a1.txt`.
 	last := fr.gotArgs[len(fr.gotArgs)-1]
 	want := `/data/a\[1\].txt`
 	if last != want {

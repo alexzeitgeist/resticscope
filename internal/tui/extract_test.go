@@ -19,46 +19,29 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// extract_test.go drives the extract sub-model through every state transition
-// described in step 05's test plan: directory + file happy paths, no-op keys
-// that must not start work, target-root override re-plan, cancel + keep/delete,
-// error path with and without staging, generation-token discards, and the
-// clear-on-leave non-negotiable.
+// These tests cover extraction state transitions, target safety, cancellation,
+// privilege flow, and path-clearing contracts.
 
-// --- fakes ---
-
-// extractCall records one Extract call so a test can assert request shape and
-// call order without races with the goroutine spawned by startRun.
+// extractCall records one extraction invocation.
 type extractCall struct {
 	targetRoot string
 	source     string
 	privileged bool
 }
 
-// fakeExtractDriver is the test double for extractDriver. result/err/onResult/
-// blockUntil let a test program the next response; calls/cancels record every
-// invocation for assertions. The driver lives entirely in the test goroutine —
-// no extra synchronization is needed because the sub-model invokes it on the
-// Cmd thread, and the tests reach a steady state by calling cmd() directly
-// rather than running the Bubble Tea program loop.
+// fakeExtractDriver queues responses and records calls from synchronously driven commands.
 type fakeExtractDriver struct {
 	mu       sync.Mutex
 	calls    []extractCall
 	queue    []extractResp
 	canceled int
 
-	// shellDir records the dir passed to the most recent LocalShellSession call;
-	// shellErr (when set) is what that call returns instead of a session.
 	shellDir string
 	shellErr error
 
-	// probeErr is returned by PrivilegedExtractProbe; probeCalls counts the
-	// sudo readiness probes a privileged commit triggers.
 	probeErr   error
 	probeCalls int
 
-	// subFiles/subDirs/subKnown program SubtreeCounts (the review Contains
-	// row); subErr (when set) is returned instead.
 	subFiles, subDirs int
 	subKnown          bool
 	subErr            error
@@ -68,7 +51,7 @@ type extractResp struct {
 	result   app.ExtractResult
 	err      error
 	progress []app.ExtractProgress
-	blockOn  <-chan struct{} // when set, Extract blocks until either this closes or ctx fires
+	blockOn  <-chan struct{}
 }
 
 func (f *fakeExtractDriver) push(r extractResp) {
@@ -123,8 +106,7 @@ func (f *fakeExtractDriver) PrivilegedExtractProbe(ctx context.Context) error {
 }
 
 func (f *fakeExtractDriver) PrivilegedAuthCommand() *exec.Cmd {
-	// Never run by the tests (it rides inside a tea.ExecProcess Cmd the tests
-	// must not execute); non-nil so applySudoProbe takes the interactive path.
+	// Non-nil selects the interactive branch; tests never execute it.
 	return exec.Command("true")
 }
 
@@ -145,18 +127,14 @@ func (f *fakeExtractDriver) callsSnapshot() []extractCall {
 	return out
 }
 
-// --- helpers ---
-
-// extractCfg returns an Extract config rooted at a per-test temp dir, so the
-// target_root override and PlanExtractPaths checks have a real absolute path to
-// work with.
+// extractCfg uses a real per-test absolute target root.
 func extractCfg(t *testing.T) (config.Extract, string) {
 	t.Helper()
 	root := t.TempDir()
 	return config.Extract{
 		TargetRoot:     root,
 		ExtractTimeout: config.Duration(5 * time.Minute),
-		RememberTarget: true, // the decode-time default
+		RememberTarget: true,
 	}, root
 }
 
@@ -168,7 +146,6 @@ func extractApp(t *testing.T) *app.App {
 	return a
 }
 
-// dirReq / fileReq build valid ExtractRequests against the seeded repo-a.
 func dirReq() app.ExtractRequest {
 	return app.ExtractRequest{
 		Repo:           "repo-a",
@@ -193,8 +170,7 @@ func fileReq() app.ExtractRequest {
 	}
 }
 
-// newExtractFixture installs a fake driver onto a freshly-built extractModel,
-// returning the model and the driver for assertions.
+// newExtractFixture builds a valid modal with its fake driver.
 func newExtractFixture(t *testing.T, req app.ExtractRequest) (extractModel, *fakeExtractDriver) {
 	t.Helper()
 	a := extractApp(t)
@@ -207,9 +183,7 @@ func newExtractFixture(t *testing.T, req app.ExtractRequest) (extractModel, *fak
 	return em, drv
 }
 
-// runCmd invokes a Bubble Tea Cmd synchronously and returns the produced Msg.
-// Returns nil for nil Cmd. Batches are flattened to their first leaf for the
-// shapes we test here (worker + progress pump come back as a Batch).
+// runCmd synchronously returns the first non-nil command result.
 func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	t.Helper()
 	if cmd == nil {
@@ -217,7 +191,6 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	}
 	msg := cmd()
 	if batch, ok := msg.(tea.BatchMsg); ok {
-		// Drive the first leaf — that's the worker Cmd in startRun.
 		for _, c := range batch {
 			if m := c(); m != nil {
 				return m
@@ -228,9 +201,7 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	return msg
 }
 
-// runBatchLeaves invokes every leaf in a (possibly batched) Cmd, returning the
-// produced Msgs in order. Skips nils. Used by tests that need both the worker
-// done msg and the first progress msg.
+// runBatchLeaves returns every non-nil result from a possibly batched command.
 func runBatchLeaves(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
 	if cmd == nil {
@@ -250,15 +221,11 @@ func runBatchLeaves(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	return out
 }
 
-// dispatchKey passes a key through handleKey, returns the new model, the Cmd,
-// and the "leave modal" flag.
 func dispatchKey(em extractModel, keys keyMap, k string) (extractModel, tea.Cmd, bool) {
 	return em.handleKey(keys, press(k))
 }
 
-// footHelp flattens the modal's per-state footer bindings into one plain "key
-// desc" line so tests can assert on advertised affordances without rendering
-// the styled bubbles help view.
+// footHelp flattens footer bindings for plain-text assertions.
 func footHelp(em extractModel, keys keyMap) string {
 	var parts []string
 	for _, b := range em.shortHelp(keys) {
@@ -267,10 +234,7 @@ func footHelp(em extractModel, keys keyMap) string {
 	return strings.Join(parts, " · ")
 }
 
-// --- tests ---
-
-// Directory source happy path: review → running → success. enter commits the
-// live extract directly — there is no dry-run preview step.
+// Directory extraction commits directly from review to a live run.
 func TestExtractDirectoryHappyPath(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -303,7 +267,6 @@ func TestExtractDirectoryHappyPath(t *testing.T) {
 	}
 }
 
-// File source happy path: review → running → success. enter commits directly.
 func TestExtractFileHappyPath(t *testing.T) {
 	em, drv := newExtractFixture(t, fileReq())
 	keys := defaultKeys()
@@ -330,8 +293,6 @@ func TestExtractFileHappyPath(t *testing.T) {
 	}
 }
 
-// `m` is not bound to anything in the extract sub-model — it must be a no-op
-// in review state.
 func TestExtractIgnoresUnknownKey(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -347,7 +308,6 @@ func TestExtractIgnoresUnknownKey(t *testing.T) {
 	}
 }
 
-// `t` opens the filepicker overlay; a selection re-plans staging/final.
 func TestExtractTargetKeyOpensFilePicker(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -360,9 +320,7 @@ func TestExtractTargetKeyOpensFilePicker(t *testing.T) {
 	}
 }
 
-// Regression for the async filepicker: its Init / navigation commands produce an
-// unexported readDirMsg, and the root Model must forward that message to the
-// picker (Update's default branch) or the directory list renders forever empty.
+// Root Update must forward the file picker's asynchronous directory message.
 func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	a := extractApp(t)
 	root := a.Cfg.Extract.TargetRoot
@@ -376,7 +334,6 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	em.drv = &fakeExtractDriver{}
 	em.height = 24
 
-	// `t` opens the picker and returns the Init command that reads the root dir.
 	em, cmd, _ := dispatchKey(em, defaultKeys(), "t")
 	if em.state != extractStateFilePicker {
 		t.Fatalf("t did not open the filepicker; state = %v", em.state)
@@ -386,7 +343,6 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 		t.Fatal("opening the filepicker produced no readDir command")
 	}
 
-	// Route the async dir message through the real Model.Update default branch.
 	m := newTestModel(t, a)
 	m.view = extractView
 	m.extract = em
@@ -397,11 +353,7 @@ func TestExtractFilePickerReceivesAsyncDirMsg(t *testing.T) {
 	}
 }
 
-// The picker's directory-wide mode-width scan is async (pickerModeWidthCmd —
-// filesystem work stays off the update loop): opening the picker batches it
-// with the picker's own readDir, the result applies while the picker is still
-// in that directory, and a stale result from a directory the picker already
-// left is dropped.
+// Mode-width scans run asynchronously and reject results from directories already left.
 func TestExtractPickerModeWidthAsync(t *testing.T) {
 	a := extractApp(t)
 	if err := os.Mkdir(filepath.Join(a.Cfg.Extract.TargetRoot, "subdir"), 0o700); err != nil {
@@ -428,7 +380,7 @@ func TestExtractPickerModeWidthAsync(t *testing.T) {
 	if wm.dir != em.filepicker.CurrentDirectory {
 		t.Fatalf("scan dir = %q, want %q", wm.dir, em.filepicker.CurrentDirectory)
 	}
-	if wm.w < 10 { // every real mode string is at least "-rw-r--r--"
+	if wm.w < 10 {
 		t.Fatalf("scanned width = %d, want >= 10", wm.w)
 	}
 	em, _ = em.updateFilePicker(wm)
@@ -441,33 +393,23 @@ func TestExtractPickerModeWidthAsync(t *testing.T) {
 	}
 }
 
-// alignFilePickerModes pads Go's variable-width mode strings ("-rw-r--r--" is
-// 10 cells, a sticky dir "dtrwxrwxrwx" is 11) to one column so the size and
-// name columns line up — including on the cursor row, where the picker embeds
-// the mode inside the selected style's span instead of rendering it through
-// Styles.Permission.
+// alignFilePickerModes aligns variable-width modes on plain and selected rows.
 func TestAlignFilePickerModes(t *testing.T) {
 	const (
 		accent = "\x1b[38;2;254;128;25m"
 		reset  = "\x1b[0m"
 	)
 	lines := []string{
-		// Cursor row: glyph styled separately, then one styled span for the rest.
 		accent + "▎" + reset + accent + " dtrwxrwxrwx     60B .ICE-unix" + reset,
-		// Plain row whose mode closes its style right after the token.
 		"  " + accent + "drwx------" + reset + "     60B claude-1000",
 		"  -rw-r--r--      0B config-err",
 		"",
 		"  empty directory",
 	}
 	want := []string{
-		// The 11-cell sticky-dir mode is the widest, so it stays put...
 		lines[0],
-		// ...10-cell modes gain one space right after the token (past any
-		// escape sequence that closes its style)...
 		"  " + accent + "drwx------" + reset + "      60B claude-1000",
 		"  -rw-r--r--       0B config-err",
-		// ...and filler / notice lines pass through untouched.
 		"",
 		"  empty directory",
 	}
@@ -479,9 +421,7 @@ func TestAlignFilePickerModes(t *testing.T) {
 	}
 }
 
-// With a directory-wide floor wider than anything on screen (the widest row —
-// e.g. a sticky dir — has scrolled out of the viewport), alignFilePickerModes
-// still pads to the floor so the columns don't shift during scrolling.
+// A directory-wide floor prevents column shifts when the widest row scrolls away.
 func TestAlignFilePickerModesFloor(t *testing.T) {
 	lines := []string{
 		"  drwx------     60B claude-1000",
@@ -499,10 +439,8 @@ func TestAlignFilePickerModesFloor(t *testing.T) {
 	}
 }
 
-// planExtractOverride rejects an existing target and accepts a fresh one.
 func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
-	// Pre-create the final directory under a fresh root so the re-plan refuses.
 	existing := t.TempDir()
 	repoDir := filepath.Join(existing, "repo-a")
 	if err := os.MkdirAll(repoDir, 0o700); err != nil {
@@ -511,7 +449,6 @@ func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 	if _, _, _, err := planExtractOverride(em.cfg, em.req, "not-absolute"); err == nil {
 		t.Error("planExtractOverride with non-absolute root should fail")
 	}
-	// A real fresh root: should succeed and the final must lie under it.
 	newReq, staging, final, err := planExtractOverride(em.cfg, em.req, existing)
 	if err != nil {
 		t.Fatalf("planExtractOverride: %v", err)
@@ -526,7 +463,6 @@ func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 		t.Errorf("staging = %q, want under %q", staging, existing)
 	}
 
-	// Pre-create the final dir and verify the override is now rejected.
 	if err := os.MkdirAll(final, 0o700); err != nil {
 		t.Fatalf("MkdirAll final: %v", err)
 	}
@@ -535,22 +471,17 @@ func TestExtractPlanOverrideRejectsExisting(t *testing.T) {
 	}
 }
 
-// planExtractOverride reuses a pre-existing ANCESTOR dir (the merge fills empty
-// space) but refuses when the exact leaf is occupied — the mirror-tree merge rule
-// on the `t` override path. Pairs with TestExtractPlanOverrideRejectsExisting,
-// which only covers a pre-existing repo dir + exact-final rejection.
+// Retargeting reuses ancestors but refuses an occupied output leaf.
 func TestExtractPlanOverrideAcceptsAncestorRejectsLeaf(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	root := t.TempDir()
 
-	// Derive the final under this root (no filesystem side effects yet).
 	_, _, final, err := planExtractOverride(em.cfg, em.req, root)
 	if err != nil {
 		t.Fatalf("planExtractOverride (clean root): %v", err)
 	}
 
-	// Pre-create only the ANCESTOR dir (the shared <short>/etc/), leaving the exact
-	// leaf free → the override still succeeds, since ancestors are reused.
+	// Shared ancestors are reusable while the output leaf remains free.
 	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
 		t.Fatalf("MkdirAll ancestor: %v", err)
 	}
@@ -558,7 +489,6 @@ func TestExtractPlanOverrideAcceptsAncestorRejectsLeaf(t *testing.T) {
 		t.Errorf("override should accept when only the ancestor exists: %v", err)
 	}
 
-	// Now occupy the exact leaf → rejected with the "target already exists" string.
 	if err := os.MkdirAll(final, 0o700); err != nil {
 		t.Fatalf("MkdirAll leaf: %v", err)
 	}
@@ -571,14 +501,11 @@ func TestExtractPlanOverrideAcceptsAncestorRejectsLeaf(t *testing.T) {
 	}
 }
 
-// Cancel during running: esc triggers the per-op cancel; the worker returns
-// context.Canceled; the sub-model lands on canceled state with the keep/delete
-// prompt only when StagingCreated=true.
+// Cancellation offers cleanup only for staging created by the current run.
 func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
 	block := make(chan struct{})
-	// Simulate the staging dir's existence so the keep/delete branch is taken.
 	stagingDir := em.staging
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll staging: %v", err)
@@ -591,13 +518,10 @@ func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 		blockOn: block,
 	})
 
-	// Jump straight into running with startRun.
 	cmd := em.startRun()
 	em.state = extractStateRunning
 
-	// Press esc → handleRunningKey calls cancel(); the worker observes ctx.Done.
 	em, _, _ = em.back()
-	// Drain the worker leaf (it returns context.Canceled now that ctx fired).
 	for _, msg := range runBatchLeaves(t, cmd) {
 		if done, ok := msg.(extractRunDoneMsg); ok {
 			em.applyRunDone(done)
@@ -608,7 +532,6 @@ func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 	if em.state != extractStateCanceled {
 		t.Fatalf("after cancel, state = %v, want canceled", em.state)
 	}
-	// `d` in canceled state requests deletion.
 	em, cmd, _ = dispatchKey(em, keys, "d")
 	if em.state != extractStateKeepDelete {
 		t.Fatalf("after d, state = %v, want keep-delete", em.state)
@@ -623,8 +546,7 @@ func TestExtractCancelOffersKeepOrDelete(t *testing.T) {
 	}
 }
 
-// `k` (keep) and esc both close the keep-or-delete prompt without removing
-// staging.
+// Keeping staging closes the modal without deleting it.
 func TestExtractKeepLeavesStagingOnDisk(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -652,15 +574,12 @@ func TestExtractKeepLeavesStagingOnDisk(t *testing.T) {
 	_ = em2
 }
 
-// Error path with StagingCreated=false must not show the keep-or-delete prompt;
-// esc returns to browse.
+// Errors without owned staging close directly.
 func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
 	drv.push(extractResp{err: app.ErrExtractFinalExists})
 
-	// The live run fails the fresh-target check before any staging is created, so
-	// the result reports StagingCreated=false.
 	cmd := em.startRun()
 	em.state = extractStateRunning
 	for _, msg := range runBatchLeaves(t, cmd) {
@@ -684,13 +603,10 @@ func TestExtractErrorWithoutStagingClosesDirectly(t *testing.T) {
 	}
 }
 
-// Enter is a no-op on the extract done/terminal screens: review's
-// `enter extract` muscle memory must not double-fire into a dismissal, so
-// leaving the success and no-staging error screens is q/esc only.
+// Enter cannot accidentally dismiss terminal screens.
 func TestExtractTerminalScreensIgnoreEnter(t *testing.T) {
 	keys := defaultKeys()
 
-	// Success screen.
 	em, _ := newExtractFixture(t, dirReq())
 	em.state = extractStateSuccess
 	em.result = app.ExtractResult{Files: 2, Dirs: 1, Bytes: 4096, FinalDir: em.final}
@@ -712,7 +628,6 @@ func TestExtractTerminalScreensIgnoreEnter(t *testing.T) {
 		t.Errorf("esc cmd returned %T, want extractBackToBrowseMsg", cmd())
 	}
 
-	// No-staging error screen (non-refusal, so the footer is just `q back`).
 	em, _ = newExtractFixture(t, dirReq())
 	em.state = extractStateError
 	em.err = errors.New("boom")
@@ -735,13 +650,10 @@ func TestExtractTerminalScreensIgnoreEnter(t *testing.T) {
 	}
 }
 
-// A no-staging "already exists" refusal makes `t` reopen the target picker, so the
-// actionable hint ("press t to choose another target") never points at a dead key;
-// the footer advertises the same affordance, and a non-refusal error does neither.
+// Occupied-target errors offer retargeting; unrelated errors do not.
 func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
 	keys := defaultKeys()
 
-	// Refusal, no staging created (a FreshTargetCheck refusal).
 	em, _ := newExtractFixture(t, dirReq())
 	em.state = extractStateError
 	em.err = app.ErrExtractFinalExists
@@ -757,13 +669,10 @@ func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
 	if next.state != extractStateFilePicker {
 		t.Fatalf("t did not reopen the filepicker; state = %v", next.state)
 	}
-	// The failed run's transient outcome is cleared so nothing stale renders in the
-	// picker/review it lands on.
 	if next.err != nil || next.result.FinalPath != "" {
 		t.Errorf("t did not clear the failed run's transient state: err=%v result=%+v", next.err, next.result)
 	}
 
-	// A non-refusal terminal error neither advertises nor honors t.
 	em2, _ := newExtractFixture(t, dirReq())
 	em2.state = extractStateError
 	em2.err = errors.New("extract: staging metadata normalization failed")
@@ -776,7 +685,6 @@ func TestExtractTerminalRefusalTargetReopensPicker(t *testing.T) {
 	}
 }
 
-// gen check: stale extractRunDoneMsg from a previous run is discarded.
 func TestExtractStaleRunDoneDropped(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	em.state = extractStateRunning
@@ -799,9 +707,7 @@ func TestExtractStaleRunDoneDropped(t *testing.T) {
 	}
 }
 
-// extractRequestFromBrowseEntry: directories produce ExtractDirectoryTree
-// requests, files produce ExtractFile (defaulting to the flattened layout),
-// unsupported types return the sentinel.
+// Browse entries map to directory/file modes and reject unsupported types.
 func TestExtractRequestFromBrowseEntry(t *testing.T) {
 	snap := "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
 
@@ -832,10 +738,7 @@ func TestExtractRequestFromBrowseEntry(t *testing.T) {
 	}
 }
 
-// Opening help over a live extract must not drop its completion: help is an
-// overlay that returns to extractView via prevView (not a real exit), so an
-// extractRunDoneMsg landing while help is open has to be honored, otherwise the
-// modal is stranded in extractStateRunning after a finished extract.
+// Help overlays continue accepting extraction completion messages.
 func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -850,17 +753,13 @@ func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	m.view = extractView
 	m.extract = em
 
-	// Open help over the running extract.
 	m = update(t, m, press("?"))
 	if m.view != helpView || m.prevView != extractView {
 		t.Fatalf("? did not open help over extract: view=%v prevView=%v", m.view, m.prevView)
 	}
 
-	// The worker completes while help is up.
 	m = update(t, m, extractRunDoneMsg{gen: 1, result: app.ExtractResult{Files: 2, FinalDir: "/ok"}})
 
-	// Close help; we must land back on extract in the success state, not stranded
-	// in running.
 	m = update(t, m, press("?"))
 	if m.view != extractView {
 		t.Fatalf("closing help did not return to extract: view=%v", m.view)
@@ -870,9 +769,7 @@ func TestExtractHelpOverlayKeepsRunDone(t *testing.T) {
 	}
 }
 
-// The success screen appends a count-only warning when the extracted tree
-// carried unsafe symlinks, phrased for the active policy — and leaks no path or
-// link name (only the count).
+// Unsafe-symlink warnings reveal counts and policy, never paths or names.
 func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -884,13 +781,13 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	em.result = app.ExtractResult{
 		Files:          2,
 		FinalDir:       "/extracted/here",
-		FinalPath:      "/extracted/here", // success view renders FinalPath
+		FinalPath:      "/extracted/here",
 		UnsafeSymlinks: 3,
 	}
 
 	m := newTestModel(t, a)
 	m.view = extractView
-	m.width = 240 // wide enough that the warning line is not clipped
+	m.width = 240
 	m.extract = em
 	body := m.extractBody()
 
@@ -905,10 +802,7 @@ func TestExtractSuccessShowsUnsafeSymlinkWarning(t *testing.T) {
 	}
 }
 
-// On a narrow pane the unsafe-symlink warning reflows across indented lines
-// instead of being clipped mid-sentence — the keep-policy text is far longer
-// than a typical split pane, and the "inspect before use" tail is the part
-// the user must not lose. Regression for the truncated done screen.
+// Narrow panes wrap unsafe-symlink warnings without losing their safety tail.
 func TestExtractSuccessUnsafeSymlinkWarningReflowsWhenNarrow(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -926,19 +820,17 @@ func TestExtractSuccessUnsafeSymlinkWarningReflowsWhenNarrow(t *testing.T) {
 
 	m := newTestModel(t, a)
 	m.view = extractView
-	m.width = 60 // narrower than the keep-policy warning sentence
+	m.width = 60
 	m.extract = em
 	body := m.extractBody()
 
-	// The sentence tail survives (on a continuation line), so nothing was clipped.
 	joined := strings.Join(strings.Fields(body), " ")
 	if !strings.Contains(joined, "inspect before use.") {
 		t.Errorf("narrow success view clipped the warning instead of wrapping it:\n%s", body)
 	}
 }
 
-// wrapWords reflows prose at spaces within the cell budget, hard-splits a
-// single over-long word, and leaves fitting (or unboundable) text untouched.
+// wrapWords preserves fitting text and hard-splits words that exceed the budget.
 func TestWrapWords(t *testing.T) {
 	for name, tc := range map[string]struct {
 		s     string
@@ -958,8 +850,7 @@ func TestWrapWords(t *testing.T) {
 	}
 }
 
-// Counts of one read grammatically: "extracted 1 file · 1 dir", never
-// "1 files". Regression for the phase-4 pluralization pass.
+// Singular extraction counts remain grammatical.
 func TestExtractSuccessSummarySingularCounts(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -984,8 +875,7 @@ func TestExtractSuccessSummarySingularCounts(t *testing.T) {
 	}
 }
 
-// Every unsafe-symlink policy message agrees in number with a count of one —
-// noun and clause both ("its target is", not "targets are").
+// Unsafe-symlink policy messages agree with singular counts.
 func TestExtractUnsafeSymlinkWarningNumberAgreement(t *testing.T) {
 	for policy, want := range map[string]string{
 		config.UnsafeSymlinksSkip:        "1 unsafe symlink removed from the output.",
@@ -1002,10 +892,7 @@ func TestExtractUnsafeSymlinkWarningNumberAgreement(t *testing.T) {
 	}
 }
 
-// The done screens carry no key hints in the body — the footer key bar is the
-// single source for affordances (`s shell here • q back`), so body and bar can
-// never drift apart. Regression for the duplicated "open a shell" / "q back"
-// body lines.
+// Done-screen affordances live only in the footer.
 func TestExtractDoneBodiesCarryNoKeyHints(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -1032,8 +919,6 @@ func TestExtractDoneBodiesCarryNoKeyHints(t *testing.T) {
 		}
 	}
 
-	// No-staging error screen: the body is the headline (plus an optional
-	// refusal hint); back lives only in the footer.
 	em.state = extractStateError
 	em.err = errors.New("boom")
 	em.result = app.ExtractResult{}
@@ -1047,8 +932,7 @@ func TestExtractDoneBodiesCarryNoKeyHints(t *testing.T) {
 	}
 }
 
-// The success-view `s` action opens a credential-free shell rooted at the
-// extracted directory via the driver's LocalShellSession.
+// Success opens a credential-free local shell at the extracted directory.
 func TestExtractSuccessShellHere(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	em.state = extractStateSuccess
@@ -1067,11 +951,9 @@ func TestExtractSuccessShellHere(t *testing.T) {
 	if drv.shellDir != "/extracted/here" {
 		t.Errorf("LocalShellSession dir = %q, want the final extracted dir", drv.shellDir)
 	}
-	// Do not run cmd: it is tea.ExecProcess wrapping a real shell exec.
 }
 
-// A LocalShellSession failure surfaces as a path-free shellExitedMsg rather than
-// being swallowed, and leaves the user on the success screen.
+// Local-shell setup errors remain path-free and leave success visible.
 func TestExtractSuccessShellHereError(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	em.state = extractStateSuccess
@@ -1097,23 +979,13 @@ func TestExtractSuccessShellHereError(t *testing.T) {
 	}
 }
 
-// End-to-end regression lock for the one behaviour step 06 exists for: pressing
-// `s` on the success screen must launch the shell *in the extracted directory*.
-// It drives the real *app.App through handleSuccessKey → LocalShellSession →
-// shellCmdFromSession → exec.Cmd.Dir → a fake shell that records its actual cwd,
-// mirroring TestDetailShellKeyRoutePassesSnapshot. A reflected exec.Cmd.Dir
-// assertion would couple to bubbletea's internal exec wrapper; running the shell
-// and reading its working directory proves the same contract via the public
-// ExecCommand.Run seam.
+// The real shell path must launch in the extracted directory.
 func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	finalDir := t.TempDir()
 	outPath := filepath.Join(t.TempDir(), "pwd")
 	shellPath := filepath.Join(t.TempDir(), "fakeshell")
-	// Pass the output path through a preserved env var and quote it in the script,
-	// so a TMPDIR containing a space or shell metacharacter can't break the
-	// redirection. TEST_PWD_OUT is a generic var (not a RESTIC_/AWS_/B2_/
-	// RESTICSCOPE_ family member), so it survives stripCredEnv and reaches the
-	// child — which also confirms the filter doesn't over-strip ordinary env.
+	// A generic quoted environment variable survives credential filtering and
+	// keeps metacharacters in temporary paths from breaking redirection.
 	t.Setenv("TEST_PWD_OUT", outPath)
 	script := "#!/bin/sh\npwd -P > \"$TEST_PWD_OUT\"\nexit 0\n"
 	if err := os.WriteFile(shellPath, []byte(script), 0o755); err != nil {
@@ -1121,7 +993,7 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	}
 
 	a := extractApp(t)
-	a.Cfg.Global.Shell = shellPath // LocalShellSession resolves this shell
+	a.Cfg.Global.Shell = shellPath
 
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
 	if err != nil {
@@ -1134,8 +1006,6 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("s produced no command")
 	}
-	// extractExecCommand (routing_test.go) unwraps the tea.ExecProcess wrapper so
-	// we can Run() the fake shell directly without driving a real tea.Program.
 	ec := extractExecCommand(t, cmd())
 	if err := ec.Run(); err != nil {
 		t.Fatalf("ExecCommand.Run: %v", err)
@@ -1145,8 +1015,7 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fake shell cwd: %v", err)
 	}
-	// Compare against the symlink-resolved target: t.TempDir paths can sit under a
-	// symlinked root on some platforms, and `pwd -P` reports the physical path.
+	// Compare physical paths because temporary roots may contain symlinks.
 	want, err := filepath.EvalSymlinks(finalDir)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
@@ -1156,8 +1025,7 @@ func TestExtractSuccessShellHereOpensInFinalDir(t *testing.T) {
 	}
 }
 
-// Privacy on render: the cancel/error screens must never echo the source path,
-// and the staging path appears only alongside the keep/delete prompt.
+// Terminal screens hide source/final paths and show staging only for cleanup.
 func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -1170,17 +1038,13 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(staging) })
 
-	// em.final / FinalPath now embed the source path (the mirror layout), so the
-	// terminal bodies must never render them. em.final for /etc/nginx contains the
-	// substring "/etc/nginx", so a leak of either trips the source-path assertion.
+	// The mirrored final embeds the source, making either leak detectable.
 	mirror := em.final
 	if !strings.Contains(mirror, dirReq().Source) {
 		t.Fatalf("test premise broken: mirror final %q does not embed the source path", mirror)
 	}
 
-	// Canceled with a staging dir this run created → prompt + staging path shown,
-	// source path / mirror final never shown. Routed through applyRunDone (the
-	// real transition) so the cached staging probe is computed as in production.
+	// Use the real transition to populate the cached staging probe.
 	em.applyRunDone(extractRunDoneMsg{
 		gen:    em.gen,
 		result: app.ExtractResult{StagingDir: staging, StagingCreated: true, FinalPath: mirror},
@@ -1190,8 +1054,6 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 
 	m := newTestModel(t, a)
 	m.view = extractView
-	// Wide enough that the staging path renders on one line (it wraps on narrow
-	// terminals per §14), so the assertion can match the unbroken path.
 	m.width = 240
 	m.extract = em
 	body := m.extractBody()
@@ -1205,8 +1067,6 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 		t.Errorf("cancel view with a created staging dir should show the staging path:\n%s", body)
 	}
 
-	// Error without staging → no keep/delete prompt, no staging path, no source,
-	// no mirror final. The refusal hint (path-free) may appear.
 	em.applyRunDone(extractRunDoneMsg{
 		gen:    em.gen,
 		result: app.ExtractResult{FinalPath: mirror},
@@ -1223,15 +1083,12 @@ func TestExtractTerminalViewHidesSourcePath(t *testing.T) {
 	if strings.Contains(body, "Staging output") {
 		t.Errorf("error without created staging must not show the keep/delete prompt:\n%s", body)
 	}
-	// The actionable refusal hint is shown (path-free) so the user knows how to
-	// resolve an "already exists" refusal.
 	if !strings.Contains(body, "choose another target") {
 		t.Errorf("error view missing the actionable refusal hint:\n%s", body)
 	}
 }
 
-// A pre-existing staging dir (StagingCreated=false) must not be offered for
-// deletion even though a matching path is on disk: this run does not own it.
+// Pre-existing staging is never offered for deletion because this run does not own it.
 func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -1240,8 +1097,6 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(em.staging) })
 
-	// App.Extract refuses with ErrExtractStagingExists before any mkdir, so the
-	// result reports StagingCreated=false and an empty StagingDir.
 	drv.push(extractResp{err: app.ErrExtractStagingExists})
 	cmd := em.startRun()
 	em.state = extractStateRunning
@@ -1265,9 +1120,7 @@ func TestExtractPreExistingStagingNotDeletable(t *testing.T) {
 	}
 }
 
-// esc from review leaves the modal and the root's clearTransient zeros every
-// transient field. This exercises the real key-routing path rather than calling
-// clearTransient directly.
+// The real review-exit route zeros every transient modal field.
 func TestExtractEscFromReviewClears(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -1280,7 +1133,6 @@ func TestExtractEscFromReviewClears(t *testing.T) {
 	m.view = extractView
 	m.extract = em
 
-	// esc on review leaves; run the returned back-to-browse cmd.
 	next, cmd := m.Update(press("esc"))
 	m = next.(Model)
 	if cmd == nil {
@@ -1296,9 +1148,7 @@ func TestExtractEscFromReviewClears(t *testing.T) {
 	}
 }
 
-// sanitizeSlug enforces the same rule as the app layer's sanitizeExtractSlug
-// (verified by routing through PlanExtractPaths under the cover, which would
-// otherwise reject SourceName).
+// TUI-produced slugs must satisfy the app layer's independent path planner.
 func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"nginx", "nginx"},
@@ -1320,17 +1170,13 @@ func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 		t.Error("app.SanitizeExtractSlug(\"\") should return an error")
 	}
 
-	// Genuine anti-drift cross-check: a SourceName produced by the TUI slug must
-	// be accepted by app.PlanExtractPaths, which independently re-derives the
-	// wanted slug from Source. If the two rules ever drift, the app layer rejects
-	// the request with a source_name error and this loop catches it — a guarantee
-	// the hardcoded table above cannot give on its own.
+	// Cross-check planner acceptance to detect slug-rule drift beyond the table.
 	cfg, _ := extractCfg(t)
 	const snap = "a1b2c3d4e5f67890aabbccddeeff00112233445566778899aabbccddeeff0011"
 	for _, base := range []string{"nginx", "my dir", "weird@!name", "a.b-c_d", "café", "...trim"} {
 		name, err := app.SanitizeExtractSlug(base)
 		if err != nil {
-			continue // unusable basenames are surfaced to the user, never extracted
+			continue
 		}
 		req := app.ExtractRequest{
 			Repo:          "repo-a",
@@ -1346,11 +1192,7 @@ func TestExtractSanitizeSlugMatchesAppLayer(t *testing.T) {
 	}
 }
 
-// --- privileged (sudo) flow ---
-
-// Toggling p and committing must first dispatch the sudo readiness probe —
-// never the run — and a clean probe then starts the run with Privileged set on
-// the request.
+// Privileged commits probe readiness before dispatching extraction.
 func TestPrivilegedCommitProbeOKStartsRun(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -1394,9 +1236,7 @@ func TestPrivilegedCommitProbeOKStartsRun(t *testing.T) {
 	}
 }
 
-// A failed probe routes through interactive sudo -v (an ExecProcess Cmd the
-// test must not run); auth failure lands back on review with a notice, auth
-// success starts the run.
+// Failed probes route through interactive authentication before success or review.
 func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	drv.probeErr = errors.New("sudo: a password is required")
@@ -1412,7 +1252,6 @@ func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 		t.Fatalf("state=%v isSudoBusy=%v, want review+busy during auth", em.state, em.isSudoBusy)
 	}
 
-	// Auth failure: back to review, path-free notice, no run.
 	if c := em.applySudoAuth(extractSudoAuthMsg{gen: em.gen, err: errors.New("exit 1")}); c != nil {
 		t.Fatal("auth failure must not start the run")
 	}
@@ -1423,7 +1262,6 @@ func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 		t.Fatal("Extract dispatched despite failed auth")
 	}
 
-	// Retry: probe fails again, auth succeeds, run starts.
 	em, cmd, _ = dispatchKey(em, keys, "enter")
 	probe = runCmd(t, cmd).(extractSudoProbeMsg)
 	_ = em.applySudoProbe(probe)
@@ -1442,11 +1280,7 @@ func TestPrivilegedCommitProbeFailSudoAuthPaths(t *testing.T) {
 	}
 }
 
-// A probe result that was already in flight when the user backed out of the
-// busy review screen must not start the run: back supersedes the generation at
-// keypress time, so the stale probe (and a stale interactive-auth outcome) is
-// dropped even when its message is delivered before the root processes
-// extractBackToBrowseMsg.
+// Leaving busy review supersedes in-flight probe and authentication results immediately.
 func TestPrivilegedProbeAfterBackDoesNotStartRun(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -1464,8 +1298,6 @@ func TestPrivilegedProbeAfterBackDoesNotStartRun(t *testing.T) {
 		t.Fatalf("esc on busy review: leave=%v cmd=%v, want back-to-browse", leave, backCmd)
 	}
 
-	// If the stale probe slipped past the gen guard it would dispatch this
-	// response as a root extract — calls below would catch it.
 	drv.push(extractResp{result: app.ExtractResult{}})
 	if c := em.applySudoProbe(probe); c != nil {
 		t.Fatal("stale probe after back still produced a command")
@@ -1481,8 +1313,7 @@ func TestPrivilegedProbeAfterBackDoesNotStartRun(t *testing.T) {
 	}
 }
 
-// ErrPrivilegedExtractUnavailable is terminal: no sudo -v round trip, just a
-// review notice.
+// Unavailable privilege returns directly to review without authentication.
 func TestPrivilegedCommitUnavailable(t *testing.T) {
 	em, drv := newExtractFixture(t, dirReq())
 	drv.probeErr = app.ErrPrivilegedExtractUnavailable
@@ -1502,9 +1333,7 @@ func TestPrivilegedCommitUnavailable(t *testing.T) {
 	}
 }
 
-// The single slot under the review rows: nothing when idle, the neutral
-// "checking sudo access" hint while the probe/auth is in flight, the red
-// notice after a failure.
+// The review status slot distinguishes idle, busy, and failed privilege checks.
 func TestExtractReviewBodySudoSlot(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	m := Model{styles: newStyles(theme.Default()), extract: em}
@@ -1525,9 +1354,7 @@ func TestExtractReviewBodySudoSlot(t *testing.T) {
 	}
 }
 
-// The review screen marks directory sources with the browse-style "▸ " on both
-// Source and Target; file sources carry no marker. The Output row is gone — the
-// privileged toggle's feedback is a dim line under the rows instead.
+// Review marks directory source/target rows and shows privilege state separately.
 func TestExtractReviewBodyDirMarkers(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	m := Model{styles: newStyles(theme.Default()), extract: em}
@@ -1557,9 +1384,7 @@ func TestExtractReviewBodyDirMarkers(t *testing.T) {
 	}
 }
 
-// extractTargetValue: a target that fits in avail renders on one line; one that
-// doesn't wraps across continuation lines like any other long path. The dir
-// marker's 2 cells count against the fit budget.
+// extractTargetValue includes the directory marker in its wrapping budget.
 func TestExtractTargetValueWrapsOnlyWhenNeeded(t *testing.T) {
 	const final = "/tmp/repo/a1b2c3d4/etc/nginx"
 	if got := extractTargetValue(final, len(final), false); got != final {
@@ -1576,7 +1401,6 @@ func TestExtractTargetValueWrapsOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
-// A stale probe/auth message (superseded gen or wrong state) is dropped.
 func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -1594,18 +1418,10 @@ func TestPrivilegedStaleSudoMsgsDropped(t *testing.T) {
 	}
 }
 
-// --- detail view → whole-snapshot extract wiring ---
-
-// extractTestSnapIDOlder is a second well-formed 64-hex snapshot id for the
-// detail fixture's older row.
+// extractTestSnapIDOlder is a second valid snapshot ID for detail fixtures.
 const extractTestSnapIDOlder = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
 
-// extractDetailModel parks a Model on repo-a's detail view with a valid
-// [extract] config and two well-formed 64-hex snapshot ids (the shape
-// PlanExtractPaths requires — the detail `e` dispatch passes the cached
-// snapshot id straight through). Newest-first ordering puts the
-// Summary-bearing snapshot under the starting cursor; the older row carries no
-// Summary (the pre-restic-0.17 shape).
+// extractDetailModel selects a summarized newest snapshot and a summary-less older one.
 func extractDetailModel(t *testing.T) Model {
 	t.Helper()
 	a := testApp(map[string]model.RepoState{
@@ -1633,9 +1449,7 @@ func extractDetailModel(t *testing.T) Model {
 	return m
 }
 
-// extractRequestFromSnapshot builds the whole-snapshot request shape: Source
-// "/", SourceName == SnapshotShort (the rule PlanExtractPaths re-asserts for
-// the root source), directory-tree mode.
+// Whole-snapshot requests use root source and the short ID as source name.
 func TestExtractRequestFromSnapshot(t *testing.T) {
 	req, err := extractRequestFromSnapshot("repo-a", &model.Snapshot{ID: extractTestSnapID})
 	if err != nil {
@@ -1669,9 +1483,7 @@ func TestExtractRequestFromSnapshot(t *testing.T) {
 	}
 }
 
-// A whole-snapshot request plans final as the snapshot dir itself
-// (<target_root>/<repo>/<short>) and staging as the hidden repo-level sibling,
-// per PlanExtractPaths' root-source collapse.
+// Whole-snapshot output is the short-ID directory with repo-level staging.
 func TestExtractRequestFromSnapshotPlansSnapshotDir(t *testing.T) {
 	cfg, root := extractCfg(t)
 	req, err := extractRequestFromSnapshot("repo-a", &model.Snapshot{ID: extractTestSnapID})
@@ -1693,9 +1505,7 @@ func TestExtractRequestFromSnapshotPlansSnapshotDir(t *testing.T) {
 	}
 }
 
-// e on the detail view opens the extract sub-model for the WHOLE selected
-// snapshot, with the return view pinned to detail and the review size carried
-// from the snapshot summary.
+// Detail extraction targets the selected whole snapshot and returns to detail.
 func TestDetailExtractKeyOpensSubModel(t *testing.T) {
 	m := extractDetailModel(t)
 
@@ -1728,11 +1538,10 @@ func TestDetailExtractKeyOpensSubModel(t *testing.T) {
 	}
 }
 
-// A snapshot without a Summary (pre-restic-0.17) still extracts; srcSize stays
-// 0, which the review Type line renders without a size suffix.
+// Summary-less legacy snapshots extract without a displayed source size.
 func TestDetailExtractWithoutSummary(t *testing.T) {
 	m := extractDetailModel(t)
-	m = update(t, m, press("j")) // cursor to the older, summary-less snapshot
+	m = update(t, m, press("j"))
 
 	m = update(t, m, press("e"))
 
@@ -1747,8 +1556,7 @@ func TestDetailExtractWithoutSummary(t *testing.T) {
 	}
 }
 
-// Leaving a detail-launched extract lands back on the detail view (not
-// browse), with the sub-model zeroed and the return view reset.
+// Detail-launched extraction returns to intact detail state with the modal zeroed.
 func TestDetailExtractReturnsToDetail(t *testing.T) {
 	m := extractDetailModel(t)
 	m = update(t, m, press("e"))
@@ -1777,8 +1585,7 @@ func TestDetailExtractReturnsToDetail(t *testing.T) {
 	}
 }
 
-// e on an empty repo surfaces the same kind of status hint the info arm uses
-// and builds no sub-model.
+// Empty repositories show a selection hint without opening extraction.
 func TestDetailExtractEmptyRepoStatusHint(t *testing.T) {
 	a := testApp(map[string]model.RepoState{
 		"repo-a": {Name: "repo-a", RefreshedAt: testNow},
@@ -1804,9 +1611,7 @@ func TestDetailExtractEmptyRepoStatusHint(t *testing.T) {
 	}
 }
 
-// A cached snapshot id that isn't 64-hex (e.g. written by an old cache shape)
-// is refused by PlanExtractPaths inside newExtractModel: a path-free status
-// notice, no view change. detailApp's ids ("id-newest") are exactly that shape.
+// Malformed cached snapshot IDs fail with a path-free notice in detail.
 func TestDetailExtractMalformedIDStaysInDetail(t *testing.T) {
 	a := detailApp(t)
 	cfg, _ := extractCfg(t)
@@ -1827,8 +1632,6 @@ func TestDetailExtractMalformedIDStaysInDetail(t *testing.T) {
 	}
 }
 
-// The detail footer advertises the extract action so it is discoverable in
-// context. Rendered wide so the full short-help line is visible.
 func TestDetailFooterAdvertisesExtract(t *testing.T) {
 	m := extractDetailModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
@@ -1838,9 +1641,7 @@ func TestDetailFooterAdvertisesExtract(t *testing.T) {
 	}
 }
 
-// The modal's exit affordance says plain "back": the modal launches from
-// browse and detail alike and the sub-model doesn't know its origin, so it
-// must never claim a destination.
+// The modal uses an origin-neutral back label.
 func TestExtractFooterBackLabelOriginNeutral(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	keys := defaultKeys()
@@ -1856,13 +1657,7 @@ func TestExtractFooterBackLabelOriginNeutral(t *testing.T) {
 	}
 }
 
-// --- find-versions view → per-version extract wiring ---
-
-// extractFindVersionsModel parks a Model in findVersionsView with a valid
-// [extract] config and two version rows whose newest occurrences point at
-// distinct well-formed snapshots — the exact state an `e` press needs. It
-// bypasses the full browse → v flow (covered by the find-versions tests) to
-// isolate the extract dispatch.
+// extractFindVersionsModel isolates extraction across two version rows.
 func extractFindVersionsModel(t *testing.T) Model {
 	t.Helper()
 	a := extractApp(t)
@@ -1882,10 +1677,7 @@ func extractFindVersionsModel(t *testing.T) Model {
 	return m
 }
 
-// e on a version row opens the extract sub-model in file mode against the
-// version's NEWEST occurrence — the snapshot the Latest column shows — with
-// the return view pinned to find-versions and the review size carried from
-// the version row.
+// Version extraction uses the selected row's newest occurrence and returns to versions.
 func TestFindVersionsExtractKeyOpensSubModel(t *testing.T) {
 	m := extractFindVersionsModel(t)
 
@@ -1918,8 +1710,7 @@ func TestFindVersionsExtractKeyOpensSubModel(t *testing.T) {
 	}
 }
 
-// enter mirrors e in find-versions: extracting the selected version is the
-// row's primary action, so the view's enter does the same dispatch.
+// Enter aliases extraction as the version row's primary action.
 func TestFindVersionsEnterOpensSubModel(t *testing.T) {
 	m := extractFindVersionsModel(t)
 
@@ -1936,7 +1727,6 @@ func TestFindVersionsEnterOpensSubModel(t *testing.T) {
 	}
 }
 
-// enter while a find is loading is swallowed by the loading guard, same as e.
 func TestFindVersionsEnterPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m.findCancel = func() {}
@@ -1951,8 +1741,7 @@ func TestFindVersionsEnterPausedWhileLoading(t *testing.T) {
 	}
 }
 
-// The cursor selects which version is extracted: the second row's newest
-// occurrence is the older snapshot.
+// The cursor chooses which version occurrence is extracted.
 func TestFindVersionsExtractUsesCursorRow(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m = update(t, m, press("j"))
@@ -1970,8 +1759,7 @@ func TestFindVersionsExtractUsesCursorRow(t *testing.T) {
 	}
 }
 
-// Leaving a find-versions-launched extract lands back on the find-versions
-// view with its result table intact, not on browse.
+// Version-launched extraction returns to the intact version table.
 func TestFindVersionsExtractReturnsToFindVersions(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m = update(t, m, press("e"))
@@ -2000,8 +1788,7 @@ func TestFindVersionsExtractReturnsToFindVersions(t *testing.T) {
 	}
 }
 
-// e with no result rows (loading just cleared them, or no matches) is a no-op:
-// no sub-model, no view change.
+// Extraction without result rows is a no-op.
 func TestFindVersionsExtractNoRowsIsNoop(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m.findRows = nil
@@ -2016,8 +1803,7 @@ func TestFindVersionsExtractNoRowsIsNoop(t *testing.T) {
 	}
 }
 
-// e while a find is loading is swallowed by the loading guard — the row set is
-// about to be replaced, so the selection is not actionable.
+// Loading suppresses extraction because rows are pending replacement.
 func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m.findCancel = func() {}
@@ -2032,8 +1818,6 @@ func TestFindVersionsExtractPausedWhileLoading(t *testing.T) {
 	}
 }
 
-// The find-versions footer advertises extract on its primary key (enter) so
-// the action is discoverable in context; e stays bound as an alias.
 func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
 	m := extractFindVersionsModel(t)
 	m = update(t, m, tea.WindowSizeMsg{Width: 200, Height: 40})
@@ -2043,9 +1827,7 @@ func TestFindVersionsFooterAdvertisesExtract(t *testing.T) {
 	}
 }
 
-// The review screen's Contains row reports a directory source's contained
-// file/dir counts from the browse index — and stays absent for unknown
-// lookups rather than showing a misleading zero.
+// Review shows known indexed descendant counts and hides unknown counts.
 func TestExtractReviewContainsRow(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -2074,9 +1856,7 @@ func TestExtractReviewContainsRow(t *testing.T) {
 	}
 }
 
-// File sources skip the lookup entirely (the count is trivially one); a late
-// message from a superseded generation and a known=false lookup are both
-// dropped without filling the row.
+// Files skip count lookup, while stale and unknown results are discarded.
 func TestExtractReviewContainsRowGuards(t *testing.T) {
 	a := extractApp(t)
 	fm, err := newExtractModel(a, t.Context(), fileReq(), 0)
@@ -2102,10 +1882,7 @@ func TestExtractReviewContainsRowGuards(t *testing.T) {
 	}
 }
 
-// The review screen surfaces an occupied target up front — the same
-// FreshTargetCheck enter will enforce — instead of leaving the collision to
-// the run-time refusal screen. State only: the retarget key lives in the
-// footer bar.
+// Review surfaces the same occupied-target state enforced at run time.
 func TestExtractReviewTargetExistsNote(t *testing.T) {
 	a := extractApp(t)
 	em, err := newExtractModel(a, t.Context(), dirReq(), 0)
@@ -2140,8 +1917,7 @@ func TestExtractReviewTargetExistsNote(t *testing.T) {
 	}
 }
 
-// Pressing e on the detail view returns the Contains-row lookup command for
-// the whole-snapshot directory source — the opener wires countsCmd through.
+// Detail extraction dispatches the whole-snapshot count lookup.
 func TestDetailExtractFiresCountsLookup(t *testing.T) {
 	m := extractDetailModel(t)
 	next, cmd := m.Update(press("e"))
@@ -2157,14 +1933,10 @@ func TestDetailExtractFiresCountsLookup(t *testing.T) {
 	}
 }
 
-// The review screen warns when the source's known size exceeds the target
-// filesystem's free space — and stays silent when the size is unknown
-// (srcSize 0) or the probe had no answer. Advisory: enter stays live, the run
-// fails with restic's own error if space truly runs out.
+// Free-space warnings are advisory and require both known size and probe result.
 func TestExtractReviewSpaceWarning(t *testing.T) {
 	a := extractApp(t)
-	// An impossibly large source: no real test filesystem holds 2^62 bytes,
-	// so the natural probe result trips the warning.
+	// An impossible source size reliably exceeds the test filesystem.
 	em, err := newExtractModel(a, t.Context(), dirReq(), 1<<62)
 	if err != nil {
 		t.Fatalf("newExtractModel: %v", err)
@@ -2182,14 +1954,12 @@ func TestExtractReviewSpaceWarning(t *testing.T) {
 		t.Errorf("review body missing the space warning:\n%s", body)
 	}
 
-	// Unknown source size: never warn (a pre-0.17 snapshot without a summary).
 	em.srcSize = 0
 	m.extract = em
 	if body := stripANSI(m.extractBody()); strings.Contains(body, "may not fit") {
 		t.Errorf("size-unknown review body carries the space warning:\n%s", body)
 	}
 
-	// Unanswered probe: stay silent rather than guess.
 	em.srcSize = 1 << 62
 	em.targetFreeKnown = false
 	m.extract = em
@@ -2198,10 +1968,7 @@ func TestExtractReviewSpaceWarning(t *testing.T) {
 	}
 }
 
-// startRun records the target root the run dispatched with (ranTargetRoot), so
-// the root model can remember a picker-chosen target once an extract actually
-// ran — outcome irrelevant, a cancelled run counts. A config-default run
-// records nothing.
+// startRun records explicit dispatched targets, including cancelled runs.
 func TestExtractStartRunRecordsTargetRoot(t *testing.T) {
 	keys := defaultKeys()
 	em, _ := newExtractFixture(t, dirReq())
@@ -2226,16 +1993,11 @@ func TestExtractStartRunRecordsTargetRoot(t *testing.T) {
 	}
 }
 
-// A target the user actually ran an extract against is remembered for the
-// session: the root model captures it when the modal closes and seeds the
-// next extract's request with it, so repeat extracts land there without
-// re-picking. A retarget the user backed out of without running is forgotten
-// with the sub-model.
+// Session target memory keeps dispatched roots and forgets picker-only choices.
 func TestExtractTargetMemoRemembersLastRunTarget(t *testing.T) {
 	m := extractDetailModel(t)
 	picked := t.TempDir()
 
-	// Retarget without a run: nothing is remembered.
 	m = update(t, m, press("e"))
 	if m.view != extractView {
 		t.Fatalf("precondition: e should open extractView, view = %d", m.view)
@@ -2251,9 +2013,7 @@ func TestExtractTargetMemoRemembersLastRunTarget(t *testing.T) {
 		t.Fatalf("extractTargetMemo = %q after a run-less retarget, want empty", m.extractTargetMemo)
 	}
 
-	// Retarget + dispatched run: the worker Cmd is deliberately never executed
-	// (dispatch alone qualifies the target), the run is then cancelled, and the
-	// close still lands the root in the memo.
+	// Dispatch qualifies the target even when the worker is not run and is cancelled.
 	m = update(t, m, press("e"))
 	m.extract.req.TargetRoot = picked
 	next, _ = m.Update(press("enter"))
@@ -2275,7 +2035,6 @@ func TestExtractTargetMemoRemembersLastRunTarget(t *testing.T) {
 		t.Fatalf("extractTargetMemo = %q, want the run target %q", m.extractTargetMemo, picked)
 	}
 
-	// The next extract opens already targeted at the remembered root.
 	m = update(t, m, press("e"))
 	if m.extract.req.TargetRoot != picked {
 		t.Errorf("reopened req.TargetRoot = %q, want the remembered %q", m.extract.req.TargetRoot, picked)
@@ -2285,8 +2044,7 @@ func TestExtractTargetMemoRemembersLastRunTarget(t *testing.T) {
 	}
 }
 
-// The filepicker opens at the request's effective target root, so a re-pick
-// starts where the session memo (or an earlier retarget) already points.
+// Target picking starts from the request's effective override.
 func TestExtractFilePickerStartsAtOverrideRoot(t *testing.T) {
 	em, _ := newExtractFixture(t, dirReq())
 	picked := t.TempDir()
@@ -2298,9 +2056,7 @@ func TestExtractFilePickerStartsAtOverrideRoot(t *testing.T) {
 	}
 }
 
-// remember_target = false disables the session memo entirely: even a
-// dispatched run leaves nothing behind on close, and the next extract starts
-// from the config default again.
+// remember_target=false disables memo capture and seeding.
 func TestExtractTargetMemoDisabled(t *testing.T) {
 	m := extractDetailModel(t)
 	m.app.Cfg.Extract.RememberTarget = false
