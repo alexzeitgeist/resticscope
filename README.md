@@ -96,6 +96,35 @@ restic version, and whether each repository is reachable.
 
 ## Keys
 
+`?` lists the keys for whatever screen you are on, plus the ones that work
+everywhere:
+
+```text
+help: keybindings                                                                         ? help
+
+Global
+  R                          refresh all repos
+  ?                          toggle this help
+  ctrl+c                     quit
+
+List
+  ↑/k ↓/j                    move repo cursor
+  pgup/ctrl+b pgdown/ctrl+f  page up/down
+  enter                      open repo detail
+  /                          filter by name/label
+  o                          cycle sort order
+  g                          cycle group key
+  s                          shell with repo env
+  r                          refresh this repo
+  q                          quit
+  showing lines 1–15 of 81
+
+↑/↓ scroll • q back
+```
+
+The list is per screen, so it never offers a key that would do nothing. Across
+all of them, these are the ones worth learning first:
+
 | Key | Action |
 | --- | --- |
 | `↑` `↓` or `k` `j` | move |

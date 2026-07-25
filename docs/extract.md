@@ -3,7 +3,21 @@
 Press `e` to copy something out of a backup: a file or directory in the browser,
 a changed path in a diff, or a whole snapshot from the snapshot list. A review
 screen shows the source and exactly where the output will land, and nothing
-happens until you confirm.
+happens until you confirm:
+
+```text
+extract: homeserver-system · d0e1f2a3                                                     ? help
+
+  Source       ▸ /etc/nginx (3.9 KiB)
+  Contains     2 files · 1 dir
+
+  Target       ▸ /home/alex/resticscope-extracts/homeserver-system/d0e1f2a3/etc/nginx
+
+enter extract • t target • p as root • q back
+```
+
+`Contains` appears for a snapshot you have already browsed, because the counts
+come from that index rather than another repository call.
 
 | Key | On the extract screen |
 | --- | --- |
@@ -87,8 +101,21 @@ normally, then resumes. It never reads, stores, or forwards your sudo password.
 Privileged extract is gated by your normal sudo policy; do not add a passwordless
 sudoers rule for `extract-helper`.
 
-On success the screen notes *extracted as root — snapshot file ownership
-preserved*.
+When the run finishes, the screen says whose ownership it restored, and `s` drops
+you into a shell in the output:
+
+```text
+extract: done                                                                             ? help
+
+  ✓ extracted 2 files · 2 dirs · 3.9 KiB · in 1s
+
+  Target
+    /home/alex/resticscope-extracts/homeserver-system/d0e1f2a3/etc/nginx
+
+  extracted as root — snapshot file ownership preserved
+
+s shell here • q back
+```
 
 ### Running the whole TUI as root instead
 

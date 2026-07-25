@@ -24,7 +24,7 @@ Prints one line per repository from the local cache. No secrets are loaded and
 no backend is contacted, so it is fast enough for a shell prompt or a monitoring
 script.
 
-```
+```text
 $ resticscope status
 homeserver-system  green  3h ago  214 snaps  12m41s
 laptop-restic      amber  1d ago  96 snaps   4m12s
@@ -52,17 +52,19 @@ long as your slowest backend.
 Validates the whole chain without starting the TUI. Run it after any config or
 secret change.
 
-```
+```text
 $ resticscope check
-config   ok      3 repos, 2 credentials
+config   ok      5 repos, 2 credentials
 secrets  ok      all credentials and repos resolved
 restic   ok      0.18.1
 repositories
   homeserver-system  ok
   laptop-restic      ok
-  vps-mail           FAILED: restic cat: repository does not exist (exit 10)
+  nas-offsite        ok
+  vps-mail           ok
+  usb-archive        FAILED: restic cat: repository does not exist (exit 10)
 
-check failed: 1 of 3 repositories unreachable
+check failed: 1 of 5 repositories unreachable
 ```
 
 It runs four stages in order and stops at the first failure that would make the
@@ -130,7 +132,22 @@ resticscope cache prune --dry-run   # show what would go, delete nothing
 resticscope cache prune --all       # remove every repository's cache
 ```
 
-Output lists each cache with its size and whether it is kept or removed. `--all`
+Every cache is listed with its size and what happens to it:
+
+```text
+$ resticscope cache prune --dry-run
+restic cache: /home/alex/.cache/resticscope/restic-cache
+
+  homeserver-system  412 MiB  keep
+  laptop-restic      96 MiB   keep
+  nas-offsite        1.2 GiB  keep
+  old-laptop         88 MiB   would prune (orphan)
+  vps-mail-old       37 MiB   would prune (orphan)
+
+would free 125 MiB across 2 of 5 caches
+```
+
+Without `--dry-run` the same run reports `pruned (orphan)` and `freed`. `--all`
 also drops caches still in use; restic rebuilds them on the next run, at the cost
 of some backend traffic. The command loads no secrets and calls neither restic
 nor the network.

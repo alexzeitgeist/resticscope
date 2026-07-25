@@ -193,7 +193,6 @@ home (4)
 vps (1)
   ×L vps-mail                      9h ago     61      51s  high
 
-
 ↑/↓ move • enter detail • / filter • o sort • g group • s shell • r refresh • q quit
 ```
 

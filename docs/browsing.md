@@ -19,14 +19,52 @@ Snapshots
    c7d8e9f0  2026-05-22 11:00  homeserver              413 GiB   +4.6 GiB  system,daily
    b4c5d6e7  2026-05-21 11:00  homeserver              412 GiB   +4.6 GiB  system,daily
    a1b2c3d4  2026-05-20 11:00  homeserver              411 GiB   +4.6 GiB  system,daily
+   showing 1–4 of 214
+
+Selected · d0e1f2a3 · restic 0.18.1
+  ID         d0e1f2a39f4c2d1e8b7a6053f1e2d3c4b5a69788cc17d2e34a5b6c7d8e9f0a1b
+  User       root
+  Backup     2026-05-23 11:00:00 → 2026-05-23 11:12:41 (12m41s)
+  Churn      4.1 GiB packed · 1204 new · 863 changed · 2841097 files
 
 ↑/↓ move • enter browse • t mark • d diff • i info • e extract • g group • s shell • q back
 ```
 
-`i` shows everything restic recorded for the selected snapshot. `g` groups the
-table by host, tags, or paths, and `c` collapses snapshots that share a tree. On
-a taller terminal, a panel below the table adds the selected snapshot's full ID,
-backup window, and what that run added.
+The table is a window onto all 214 snapshots; `↑`/`↓` scroll it. The panel below
+belongs to the selected snapshot, and it is the first thing to drop out as the
+terminal gets shorter. `g` groups the table by host, tags, or paths, and `c`
+collapses snapshots that share a tree.
+
+`i` opens the whole record restic kept for the selected snapshot:
+
+```text
+info: homeserver-system · d0e1f2a3                                                        ? help
+
+Identity
+  ID                 d0e1f2a39f4c2d1e8b7a6053f1e2d3c4b5a69788cc17d2e34a5b6c7d8e9f0a1b
+  Short ID           d0e1f2a3
+  Parent             c7d8e9f09f4c2d1e8b7a6053f1e2d3c4b5a69788cc17d2e34a5b6c7d8e9f0a1b
+  Tree               7ac1b2045d3e9a1c60b8742fe3d1a95c8b70642de1f3a08bc2d4e6f80a1b3c5d
+  Program            restic 0.18.1
+
+Source
+  Hostname           homeserver
+  Username           root
+  UID                0
+  GID                0
+  Tags               system, daily
+  Paths              /
+  Excludes           /var/cache
+                     /var/tmp
+                     **/.cache
+  showing lines 1–17 of 38
+
+↑/↓ scroll • q back
+```
+
+Below the fold are the backup window and restic's churn counters: bytes and
+blobs added, and how many files and directories were new, changed, or
+unmodified. Sections restic did not record are left out rather than shown empty.
 
 ## The file browser
 
@@ -38,12 +76,12 @@ browse: homeserver-system · d0e1f2a3                                           
 Path       /
   6 entries
   Name ↓                                         Size  Modified          Perms             Owner
-▎ ▸ boot/                                     486 MiB  2026-01-18 14:00  drwxr-xr-x          0:0
-  ▸ etc/                                       24 MiB  2026-05-21 11:00  drwxr-xr-x          0:0
-  ▸ home/                                      96 GiB  2026-04-16 02:00  drwxr-xr-x          0:0
-  ▸ root/                                     9.0 MiB  2026-05-22 11:00  drwx------          0:0
-  ▸ srv/                                      288 GiB  2026-04-03 14:00  drwxr-xr-x          0:0
-  ▸ var/                                       31 GiB  2026-05-23 10:00  drwxr-xr-x          0:0
+▎ ▸ boot/                                     323 MiB  2026-01-18 14:00  drwxr-xr-x          0:0
+  ▸ etc/                                      234 KiB  2026-05-21 11:00  drwxr-xr-x          0:0
+  ▸ home/                                      95 GiB  2026-04-16 02:00  drwxr-xr-x          0:0
+  ▸ root/                                     8.9 MiB  2026-05-22 11:00  drwx------          0:0
+  ▸ srv/                                      270 GiB  2026-04-03 14:00  drwxr-xr-x          0:0
+  ▸ var/                                       23 GiB  2026-05-23 10:00  drwxr-xr-x          0:0
 
 ↑/↓ move • enter open • ⌫ parent • / search • v versions • e extract • o sort • s shell • q back
 ```
@@ -85,16 +123,50 @@ complete one.
 ### Searching
 
 `/` searches filenames anywhere in the snapshot, not just the directory you are
-in. Matching is loose: your query's letters have to appear in a name in order, so
-`cfg` finds `config`, and the closest matches come first. `enter` opens the
-match, `esc` cancels, and `↑`/`↓` (or `ctrl+k`/`ctrl+j`) step through matches.
-The footer counts every match and says how many it shows: the list keeps the
-best 200.
+in:
 
-`v` on a file opens the versions view: one row per distinct version of that path
-(same size and modification time), with the snapshots holding it, so you can
-find the copy from before a change. It searches the host the snapshot came from;
-`a` widens that to every host. `enter` or `e` extracts the selected version.
+```text
+browse: homeserver-system · d0e1f2a3
+
+Path       /
+  4 matches
+  Path                                           Size  Modified          Perms             Owner
+▎   /etc/pam.d/passwd                            92 B  2025-11-19 06:44  -rw-r--r--          0:0
+    /etc/passwd                               2.8 KiB  2026-04-02 08:19  -rw-r--r--          0:0
+    /etc/passwd-                              2.7 KiB  2026-04-02 08:19  -rw-------          0:0
+    /var/backups/passwd.bak                   2.8 KiB  2026-04-02 08:19  -rw-r--r--          0:0
+
+/passwd▏  4 matches
+↑/↓ move • enter open • esc cancel
+```
+
+Results are full paths, and matching is loose: your query's letters have to
+appear in a name in order, so `cfg` finds `config`, and the closest matches come
+first. `enter` opens the match, `esc` cancels, and `↑`/`↓` (or `ctrl+k`/`ctrl+j`)
+step through matches. The footer counts every match and says how many it shows:
+the list keeps the best 200.
+
+### Versions of one file
+
+`v` on a file lists every version of it in the repository, so you can find the
+copy from before a change:
+
+```text
+versions: homeserver-system · d0e1f2a3                                                    ? help
+
+Path       /etc/passwd
+  2 versions across 51 snapshots · host: homeserver
+  Modified                Size  Snaps  Latest                      Perms             Owner
+▎ 2026-04-02 08:19     2.8 KiB      3  2026-05-23 11:00 d0e1f2a3   -rw-r--r--          0:0
+  2026-01-27 09:41     2.7 KiB     48  2026-05-20 11:00 a1b2c3d4   -rw-r--r--          0:0
+
+↑/↓ move • enter extract • a all hosts • q back
+```
+
+One row per distinct version — same size and modification time — with how many
+snapshots hold it and the newest one that does. The search covers the host the
+snapshot came from; `a` widens it to every host. `enter` or `e` extracts the
+selected version.
 
 ### What is stored on disk
 
@@ -120,8 +192,25 @@ In the snapshot list, mark one snapshot with `t` and press `d` on another one, o
 mark both and press `d`. A third mark replaces the oldest. resticscope starts by
 comparing them oldest to newest, running
 `restic --no-lock diff --json <older> <newer>`, and streams the changed paths into
-a navigator you can walk like the file browser.
+a navigator you can walk like the file browser:
 
+```text
+diff: homeserver-system · c7d8e9f0 2026-05-22 11:00 → d0e1f2a3 2026-05-23 11:00           ? help
+
+Path       /
+  +2 -1 M9 U2 T1 · + in second snapshot · - in first snapshot
+  Change          Name
+▎ +1 -1 M2 U1 T1  ▸ etc/
+  M1 U1           ▸ home/
+  M1              ▸ root/
+  M2              ▸ srv/
+  +1 M3           ▸ var/
+
+↑/↓ move • enter open • ⌫ parent • / search • e extract • x swap • +-MUTb filters • q back
+```
+
+A directory carries the totals for everything below it, so you can see where a
+day's changes landed without opening anything. Files carry their own marker.
 Markers describe the pair in the direction shown in the title:
 
 | Marker | Meaning |
@@ -135,7 +224,9 @@ Markers describe the pair in the direction shown in the title:
 
 Keys: `enter` or `→` opens a directory, `⌫` goes up, `/` searches the changed
 paths, `x` swaps the comparison direction, `e` extracts changed paths, and
-`+ - M U T b` toggle the corresponding change types.
+`+ - M U T b` toggle the corresponding change types. Every type starts visible,
+so the first press hides one and the summary gains a `filter:` mask of the types
+still shown; the totals keep counting everything, so what you hid stays visible.
 
 Comparing large trees can take minutes, so diff has its own timeout instead of
 the shorter `restic_command_timeout` used for quick probes:
