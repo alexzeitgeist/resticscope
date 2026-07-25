@@ -163,14 +163,14 @@ func TestSnapshotInfoFieldsRoundTrip(t *testing.T) {
 			GID:      &gid,
 			Summary: &model.SnapshotSummary{
 				TotalBytesProcessed: 4404019200,
-				FilesNew:            uint64Ptr(12),
-				FilesChanged:        uint64Ptr(34),
-				FilesUnmodified:     uint64Ptr(4050),
-				DirsNew:             uint64Ptr(1),
-				DirsChanged:         uint64Ptr(2),
-				DirsUnmodified:      uint64Ptr(7),
-				DataBlobs:           int64Ptr(11),
-				TreeBlobs:           int64Ptr(3),
+				FilesNew:            new(uint64(12)),
+				FilesChanged:        new(uint64(34)),
+				FilesUnmodified:     new(uint64(4050)),
+				DirsNew:             new(uint64(1)),
+				DirsChanged:         new(uint64(2)),
+				DirsUnmodified:      new(uint64(7)),
+				DataBlobs:           new(int64(11)),
+				TreeBlobs:           new(int64(3)),
 			},
 		}},
 	}
@@ -219,8 +219,6 @@ func TestSnapshotInfoFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-func uint64Ptr(n uint64) *uint64 { return &n }
-func int64Ptr(n int64) *int64    { return &n }
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

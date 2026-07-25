@@ -218,10 +218,6 @@ func (b blockingRestic) ExtractTree(ctx context.Context, _ resticx.Target, _ res
 
 var testNow = time.Date(2026, 5, 23, 14, 0, 0, 0, time.UTC)
 
-func int64p(n int64) *int64 { return &n }
-
-func uint64p(n uint64) *uint64 { return &n }
-
 func testApp(states map[string]model.RepoState) *app.App {
 	if states == nil {
 		states = map[string]model.RepoState{}
@@ -966,9 +962,9 @@ func detailApp(t *testing.T) *app.App {
 					ID: "id-newest", ShortID: "s3", Time: testNow.Add(-1 * time.Hour), Hostname: "homeserver",
 					Tags: []string{"daily"}, ProgramVersion: "restic 0.18.1",
 					Summary: &model.SnapshotSummary{
-						TotalBytesProcessed: 4404019200, DataAdded: int64p(5242880), DataAddedPacked: int64p(4194304),
+						TotalBytesProcessed: 4404019200, DataAdded: new(int64(5242880)), DataAddedPacked: new(int64(4194304)),
 						BackupStart: testNow.Add(-1 * time.Hour), BackupEnd: testNow.Add(-1*time.Hour + 28*time.Second),
-						FilesNew: uint64p(12), FilesChanged: uint64p(34), TotalFilesProcessed: uint64p(4096),
+						FilesNew: new(uint64(12)), FilesChanged: new(uint64(34)), TotalFilesProcessed: new(uint64(4096)),
 					},
 				},
 			},
@@ -1075,7 +1071,7 @@ func TestSnapshotDetailBackupWindowCrossesDate(t *testing.T) {
 }
 
 func TestSnapshotChurnOmitsMissingFields(t *testing.T) {
-	got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)}, true)
+	got := snapshotChurn(&model.SnapshotSummary{DataAdded: new(int64(5242880))}, true)
 	if got != "+5.0 MiB added" {
 		t.Errorf("snapshotChurn with missing packed/file fields = %q, want only added bytes", got)
 	}
@@ -1093,8 +1089,8 @@ func TestSnapshotChurnOmitsMissingFields(t *testing.T) {
 // wholly absent summary still reports "no summary".
 func TestSnapshotChurnDropsAddedWhenColumnShown(t *testing.T) {
 	sum := &model.SnapshotSummary{
-		DataAdded: int64p(5242880), DataAddedPacked: int64p(4194304),
-		FilesNew: uint64p(12), FilesChanged: uint64p(34), TotalFilesProcessed: uint64p(4096),
+		DataAdded: new(int64(5242880)), DataAddedPacked: new(int64(4194304)),
+		FilesNew: new(uint64(12)), FilesChanged: new(uint64(34)), TotalFilesProcessed: new(uint64(4096)),
 	}
 	got := snapshotChurn(sum, false)
 	if want := "4.0 MiB packed · 12 new · 34 changed · 4096 files"; got != want {
@@ -1104,7 +1100,7 @@ func TestSnapshotChurnDropsAddedWhenColumnShown(t *testing.T) {
 		t.Errorf("snapshotChurn(includeAdded=false) should drop the added piece and its parens: %q", got)
 	}
 	// Only added bytes present: nothing remains once Added owns it.
-	if got := snapshotChurn(&model.SnapshotSummary{DataAdded: int64p(5242880)}, false); got != "—" {
+	if got := snapshotChurn(&model.SnapshotSummary{DataAdded: new(int64(5242880))}, false); got != "—" {
 		t.Errorf("snapshotChurn(includeAdded=false, added-only) = %q, want em-dash", got)
 	}
 	if got := snapshotChurn(nil, false); got != "no summary" {
@@ -2044,11 +2040,11 @@ func TestListHeaderAlignsWithRows(t *testing.T) {
 	// because the status cell's glyph is multi-byte UTF-8; lipgloss.Width on
 	// the slice before substr gives the true column position.
 	visibleOffset := func(s, substr string) int {
-		i := strings.Index(s, substr)
-		if i < 0 {
+		before, _, ok := strings.Cut(s, substr)
+		if !ok {
 			return -1
 		}
-		return lipgloss.Width(s[:i])
+		return lipgloss.Width(before)
 	}
 
 	// The 5-cell prefix (gutter+status+gap) puts "Name" and "repo-a" both at
@@ -2831,8 +2827,6 @@ func TestHiddenRegionStillFilters(t *testing.T) {
 	}
 }
 
-func uint32p(n uint32) *uint32 { return &n }
-
 // snapshotInfoApp seeds repo-a with one richly-detailed snapshot and one
 // minimal pre-0.17 snapshot so the info modal can be exercised against both
 // shapes without leaning on detailApp's broader fixture.
@@ -2855,23 +2849,23 @@ func snapshotInfoApp(t *testing.T) *app.App {
 					Tree:     "tree-id-cafebabe",
 					Paths:    []string{"/etc", "/var/lib"},
 					Excludes: []string{"*.tmp", "/var/cache"},
-					UID:      uint32p(0),
-					GID:      uint32p(0),
+					UID:      new(uint32(0)),
+					GID:      new(uint32(0)),
 					Summary: &model.SnapshotSummary{
 						TotalBytesProcessed: 4404019200,
-						DataAdded:           int64p(5242880),
-						DataAddedPacked:     int64p(4194304),
+						DataAdded:           new(int64(5242880)),
+						DataAddedPacked:     new(int64(4194304)),
 						BackupStart:         testNow.Add(-time.Hour),
 						BackupEnd:           testNow.Add(-time.Hour + 28*time.Second),
-						FilesNew:            uint64p(12),
-						FilesChanged:        uint64p(34),
-						FilesUnmodified:     uint64p(4050),
-						TotalFilesProcessed: uint64p(4096),
-						DirsNew:             uint64p(1),
-						DirsChanged:         uint64p(2),
-						DirsUnmodified:      uint64p(7),
-						DataBlobs:           int64p(11),
-						TreeBlobs:           int64p(3),
+						FilesNew:            new(uint64(12)),
+						FilesChanged:        new(uint64(34)),
+						FilesUnmodified:     new(uint64(4050)),
+						TotalFilesProcessed: new(uint64(4096)),
+						DirsNew:             new(uint64(1)),
+						DirsChanged:         new(uint64(2)),
+						DirsUnmodified:      new(uint64(7)),
+						DataBlobs:           new(int64(11)),
+						TreeBlobs:           new(int64(3)),
 					},
 				},
 			},

@@ -57,9 +57,34 @@ resticscope · 5 repos · restic 0.18.1                                         
 
 - [restic](https://restic.net/) 0.17.0 or newer on your `PATH`.
 - Linux or macOS. Extracting files is refused on other platforms.
-- Go 1.25.9 or newer, to build from source.
+- Go 1.26.5 or newer, to build from source.
 
 ## Install
+
+**Prebuilt binary.** Every release ships Linux and macOS archives for amd64 and
+arm64, a `checksums.txt`, and signed build provenance. With the
+[GitHub CLI](https://cli.github.com/):
+
+```sh
+tag=v0.1.0
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+asset="resticscope_${tag#v}_${os}_${arch}.tar.gz"
+
+gh release download "$tag" --repo alexzeitgeist/resticscope \
+  --pattern "$asset" --pattern checksums.txt
+
+grep "$asset" checksums.txt | shasum -a 256 -c -   # GNU: sha256sum -c -
+gh attestation verify "$asset" --repo alexzeitgeist/resticscope
+
+tar -xzf "$asset" resticscope
+install -m 0755 resticscope ~/.local/bin/
+```
+
+`gh attestation verify` checks GitHub's signed provenance: that this exact
+archive was built by this repository's release workflow, from the tagged commit.
+
+**From source.**
 
 ```sh
 go install github.com/alexzeitgeist/resticscope/cmd/resticscope@latest
@@ -171,4 +196,6 @@ Every command that reads the config accepts `--config PATH` (default
 
 ## License
 
-[GPL-3.0](LICENSE).
+resticscope is available under [GPL-3.0](LICENSE). Binary distributions must
+also include the notices in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

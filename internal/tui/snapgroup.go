@@ -223,7 +223,7 @@ func collapseTreeRuns(snaps []model.Snapshot) []snapNode {
 	out := make([]snapNode, 0, len(snaps))
 	cur := snapNode{head: snaps[0]}
 	for i := 1; i < len(snaps); i++ {
-		next := snaps[i] //nolint:gosec // i is bounded by the loop condition i < len(snaps)
+		next := snaps[i]
 		if collapsible(cur.head, next) {
 			cur.peers = append(cur.peers, next)
 			cur.count++

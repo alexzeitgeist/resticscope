@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -273,9 +274,9 @@ func (itx *IndexTx) Count() int { return itx.count }
 // Descending IDs visit every child before its parent; parent ID zero terminates
 // the fold at the root.
 func (itx *IndexTx) foldSubtreeSizes() {
-	for i := len(itx.dirBuf) - 1; i >= 0; i-- {
-		did := itx.dirBuf[i].did
-		if pd := itx.dirBuf[i].parentDID; pd >= itx.firstDID {
+	for _, v := range slices.Backward(itx.dirBuf) {
+		did := v.did
+		if pd := v.parentDID; pd >= itx.firstDID {
 			itx.subtreeSizes[pd-itx.firstDID] += itx.subtreeSizes[did-itx.firstDID]
 		}
 	}

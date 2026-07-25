@@ -21,7 +21,7 @@ type ExecRunner struct{}
 // Run executes restic with env and args, delivering password over the fd-3
 // pipe, and returns its fully-buffered stdout, stderr, and exit error.
 func (ExecRunner) Run(ctx context.Context, env []string, password string, args ...string) (stdout, stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, "restic", args...)
+	cmd := exec.CommandContext(ctx, "restic", args...) //nolint:gosec // G204: the executable is the literal "restic"; running it with computed arguments is this package's purpose, and no shell is involved
 	cmd.Env = env
 
 	if password != "" {
@@ -63,7 +63,7 @@ func (ExecRunner) RunStreamPatterns(ctx context.Context, env []string, password 
 // deadlocks during startup; closing the read ends releases them if the child
 // exits without consuming a payload.
 func runStreamFDs(ctx context.Context, env []string, password string, patterns []byte, onStdout func(io.Reader) error, args ...string) (stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, "restic", args...)
+	cmd := exec.CommandContext(ctx, "restic", args...) //nolint:gosec // G204: see ExecRunner.Run; the executable is a literal and no shell is involved
 	cmd.Env = env
 
 	if password != "" || patterns != nil { //nolint:nestif // sequential out-of-band fd wiring: the outer block sets up the fd-3 password pipe, the inner branch only adds the optional fd-4 patterns pipe

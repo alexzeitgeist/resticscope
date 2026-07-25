@@ -78,8 +78,8 @@ func docSnapshots(s docSeries) []model.Snapshot {
 			Time:           start,
 			Hostname:       s.host,
 			Username:       "root",
-			UID:            uint32p(0),
-			GID:            uint32p(0),
+			UID:            new(uint32(0)),
+			GID:            new(uint32(0)),
 			Tags:           s.tags,
 			Paths:          []string{"/"},
 			Excludes:       []string{"/var/cache", "/var/tmp", "**/.cache"},
@@ -87,19 +87,19 @@ func docSnapshots(s docSeries) []model.Snapshot {
 			ProgramVersion: "restic 0.18.1",
 			Summary: &model.SnapshotSummary{
 				TotalBytesProcessed: s.size - int64(i)*gib,
-				DataAdded:           int64p(4939212390),
-				DataAddedPacked:     int64p(4402341478),
+				DataAdded:           new(int64(4939212390)),
+				DataAddedPacked:     new(int64(4402341478)),
 				BackupStart:         start,
 				BackupEnd:           start.Add(s.took),
-				FilesNew:            uint64p(1204),
-				FilesChanged:        uint64p(863),
-				FilesUnmodified:     uint64p(2839030),
-				TotalFilesProcessed: uint64p(2841097),
-				DirsNew:             uint64p(38),
-				DirsChanged:         uint64p(291),
-				DirsUnmodified:      uint64p(184622),
-				DataBlobs:           int64p(21486),
-				TreeBlobs:           int64p(329),
+				FilesNew:            new(uint64(1204)),
+				FilesChanged:        new(uint64(863)),
+				FilesUnmodified:     new(uint64(2839030)),
+				TotalFilesProcessed: new(uint64(2841097)),
+				DirsNew:             new(uint64(38)),
+				DirsChanged:         new(uint64(291)),
+				DirsUnmodified:      new(uint64(184622)),
+				DataBlobs:           new(int64(21486)),
+				TreeBlobs:           new(int64(329)),
 			},
 		}
 		if i+1 < s.count {
@@ -342,7 +342,7 @@ func docPasswdVersions() []model.FindSnapshotResult {
 		return model.FindMatch{
 			Path: "/etc/passwd", Name: "passwd", Type: model.NodeTypeFile,
 			Size: size, ModTime: mt, Permissions: "-rw-r--r--",
-			UID: uint32p(0), GID: uint32p(0),
+			UID: new(uint32(0)), GID: new(uint32(0)),
 		}
 	}
 

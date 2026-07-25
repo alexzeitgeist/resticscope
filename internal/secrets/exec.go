@@ -9,7 +9,7 @@ import (
 // ExecRunner executes command through `shell -c`. The caller must supply a
 // trusted shell because secrets commands intentionally have full shell access.
 func ExecRunner(ctx context.Context, shell, command string) (stdout, stderr []byte, err error) {
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	cmd := exec.CommandContext(ctx, shell, "-c", command) //nolint:gosec // G204: shell and command come from the user's own config; full shell access is the documented contract of a secrets command
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

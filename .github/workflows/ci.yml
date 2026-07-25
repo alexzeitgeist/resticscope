@@ -1,25 +1,45 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    name: Go ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.25'
-          check-latest: true
+          go-version-file: go.mod
+          cache: true
 
-      - name: gofmt
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Check module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Check formatting
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
@@ -28,24 +48,74 @@ jobs:
             exit 1
           fi
 
-      - name: go vet
+      - name: Vet
         run: go vet ./...
 
-      - name: golangci-lint
-        # Pinned to match the version developers run locally so CI and local
-        # results stay identical. Bump in lockstep with the local install.
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.7.2
-
-      - name: go mod tidy is clean
-        run: go mod tidy && git diff --exit-code
-
-      - name: test
-        run: go test ./...
-
-      - name: test -race
+      - name: Test
         run: go test -race ./...
 
-      - name: govulncheck
+      - name: Build
+        run: go build ./cmd/resticscope
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned to match the version developers run locally so CI and local
+      # results stay identical. Bump in lockstep with the local install.
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
+        with:
+          version: v2.12.2
+
+  vulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Deliberately unpinned: the point of this job is the current scanner and
+      # the current vulnerability database, not a reproducible result.
+      - name: Scan for known vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  package:
+    name: GoReleaser snapshot
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          args: release --snapshot --clean

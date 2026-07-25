@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -277,8 +278,8 @@ func mkdirAllOwned(dir string, uid, gid int) error {
 		return err
 	}
 	defer func() { _ = rt.Close() }()
-	for i := len(missing) - 1; i >= 0; i-- {
-		rel, rerr := filepath.Rel(cur, missing[i])
+	for _, v := range slices.Backward(missing) {
+		rel, rerr := filepath.Rel(cur, v)
 		if rerr != nil {
 			return rerr
 		}
@@ -322,7 +323,7 @@ func chownCacheForOwner(dir string, uid, gid int) {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort walk: skip the unreadable entry, keep going
 		}
-		_ = os.Lchown(p, uid, gid)
+		_ = os.Lchown(p, uid, gid) //nolint:gosec // G122 warns about symlink races in walk callbacks, but Lchown acts on the link itself and WalkDir does not descend through symlinks, so a swapped path cannot redirect the chown
 		return nil
 	})
 }

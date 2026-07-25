@@ -108,6 +108,19 @@ linters:
       - path: (_test\.go|internal/tui/extract\.go)
         linters: [revive]
         text: "^context-as-argument:"
+      # goconst 1.9 widened detection to literals inside composite literals and
+      # case clauses, which is exactly where this codebase keeps presentation
+      # and dispatch text: table headers and help rows (tui), command names in
+      # the dispatch switch (cmd), restic argv tokens and operation labels
+      # (resticx), and config enum values (config, theme). Every hit there is
+      # one member of a homogeneous group — {last: "Last", snaps: "Snaps",
+      # took: "Took"}, []string{"--no-lock", "find", "--json", "--long"} — so
+      # hoisting just the recurring member splits the group across a constant
+      # and its literal neighbours and reads worse than the repetition does.
+      # goconst stays ACTIVE everywhere else (app, browsedb, cache, secrets,
+      # model, humanize), where a repeated literal is still a real smell.
+      - path: (^cmd/|^internal/(tui|resticx|config|theme)/)
+        linters: [goconst]
 
   settings:
     errcheck:

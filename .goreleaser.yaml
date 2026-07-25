@@ -1,0 +1,55 @@
+version: 2
+
+project_name: resticscope
+
+builds:
+  - id: resticscope
+    main: ./cmd/resticscope
+    binary: resticscope
+
+    env:
+      - CGO_ENABLED=0
+
+    goos:
+      - linux
+      - darwin
+
+    goarch:
+      - amd64
+      - arm64
+
+    flags:
+      - -trimpath
+
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/alexzeitgeist/resticscope/internal/version.Version={{ .Version }}
+        -X github.com/alexzeitgeist/resticscope/internal/version.Commit={{ .ShortCommit }}
+        -X github.com/alexzeitgeist/resticscope/internal/version.Date={{ .Date }}
+
+archives:
+  - id: default
+
+    formats:
+      - tar.gz
+
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+    files:
+      - README.md
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - config.example.toml
+      - config.explained.toml
+      - docs/*.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native

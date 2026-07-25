@@ -58,12 +58,12 @@ func TestEvaluateStatus(t *testing.T) {
 		},
 		{
 			name:  "lock older than max age is red",
-			state: RepoState{RefreshedAt: now, LastSnapshot: ago(time.Hour), LockedSince: ptr(ago(45 * time.Minute))},
+			state: RepoState{RefreshedAt: now, LastSnapshot: ago(time.Hour), LockedSince: new(ago(45 * time.Minute))},
 			want:  StatusRed,
 		},
 		{
 			name:  "young lock does not force red",
-			state: RepoState{RefreshedAt: now, LastSnapshot: ago(time.Hour), LockedSince: ptr(ago(5 * time.Minute))},
+			state: RepoState{RefreshedAt: now, LastSnapshot: ago(time.Hour), LockedSince: new(ago(5 * time.Minute))},
 			want:  StatusGreen,
 		},
 		{
@@ -81,5 +81,3 @@ func TestEvaluateStatus(t *testing.T) {
 		})
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

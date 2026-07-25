@@ -1,6 +1,9 @@
 # Build output
 /resticscope
 
+# GoReleaser output
+/dist/
+
 # Vendored restic reference source (nested module)
 /upstream/
 

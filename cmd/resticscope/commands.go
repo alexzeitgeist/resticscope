@@ -441,10 +441,13 @@ func newLogger(cfg *config.Config) *slog.Logger {
 	if cfg.Global.LogFile == "" {
 		return discard
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.Global.LogFile), 0o700); err != nil {
+	// G703 taints log_file as attacker-controlled input. It is a path the user
+	// wrote in their own config, opened with their own privileges; there is no
+	// lower-privileged source to contain it to.
+	if err := os.MkdirAll(filepath.Dir(cfg.Global.LogFile), 0o700); err != nil { //nolint:gosec // G703: log_file is user-authored config, not untrusted input
 		return discard
 	}
-	f, err := os.OpenFile(cfg.Global.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(cfg.Global.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G703: log_file is user-authored config, not untrusted input
 	if err != nil {
 		return discard
 	}
