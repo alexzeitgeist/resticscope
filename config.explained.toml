@@ -1,7 +1,8 @@
 # resticscope configuration, with a comment on every setting.
 #
 # Copy this to ~/.config/resticscope/config.toml for a guided start, or use
-# config.example.toml for a shorter template. Full reference: docs/.
+# config.example.toml for a shorter template. Every setting, with defaults:
+# docs/configuration.md.
 #
 # resticscope watches restic repositories that already exist. It does not run
 # your backups; cron, systemd timers, Proxmox hooks, NAS tasks, and your own
@@ -107,10 +108,11 @@ shell = ""
 shell_password_mode = "file"
 
 # Label keys the main list can group by. `g` cycles them in this order and then
-# a flat list. Leave empty to disable grouping.
+# a flat list. Leave empty to disable grouping. Only label keys work here, and a
+# repository without the active key lands in a "(no <key>)" section.
 #
-#   group_by = ["env", "region", "criticality"]   # several machines
-#   group_by = ["category", "device"]             # one household
+#   group_by = ["env", "criticality"]   # several machines
+#   group_by = ["category", "device"]   # one household
 group_by = ["env", "category"]
 
 # --- browse -------------------------------------------------------------------

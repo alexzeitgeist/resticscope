@@ -43,6 +43,7 @@ secrets_command = "pass show resticscope/credentials"   # required
 [theme]
 # name       = "gruvbox-dark"   # or "terminal" to follow your terminal's colors
 # background = true
+# Per-role color overrides go in [theme.colors]; see docs/themes.md.
 
 # --- profiles -----------------------------------------------------------------
 # Settings shared by several repositories. Opt in with profile = "<name>".

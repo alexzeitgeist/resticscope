@@ -24,7 +24,9 @@ Snapshots
 ```
 
 `i` shows everything restic recorded for the selected snapshot. `g` groups the
-table by host, tags, or paths, and `c` collapses snapshots that share a tree.
+table by host, tags, or paths, and `c` collapses snapshots that share a tree. On
+a taller terminal, a panel below the table adds the selected snapshot's full ID,
+backup window, and what that run added.
 
 ## The file browser
 
@@ -57,7 +59,7 @@ Opening a repository is the expensive part of any restic call, and on object
 storage it costs seconds. Returning more data once it is open is cheap. So the
 browser opens a snapshot once and takes everything: the first time you browse a
 snapshot, a single
-`restic ls --json --recursive --no-lock <snapshot> /` streams its entire file
+`restic --no-lock ls --json --recursive <snapshot> /` streams its entire file
 list into a local index.
 
 Every move after that is a query against that index, so navigation is instant
@@ -82,12 +84,17 @@ complete one.
 
 ### Searching
 
-`/` searches filenames inside the current snapshot. `enter` opens the match,
-`esc` cancels, and `↑`/`↓` (or `ctrl+k`/`ctrl+j`) step through matches.
+`/` searches filenames anywhere in the snapshot, not just the directory you are
+in. Matching is loose: your query's letters have to appear in a name in order, so
+`cfg` finds `config`, and the closest matches come first. `enter` opens the
+match, `esc` cancels, and `↑`/`↓` (or `ctrl+k`/`ctrl+j`) step through matches.
+The footer counts every match and says how many it shows: the list keeps the
+best 200.
 
-`v` on a file opens the versions view: every snapshot in the repository that
-contains that path, so you can find the copy from before a change. `a` toggles
-the host filter, and `enter` or `e` extracts the selected version.
+`v` on a file opens the versions view: one row per distinct version of that path
+(same size and modification time), with the snapshots holding it, so you can
+find the copy from before a change. It searches the host the snapshot came from;
+`a` widens that to every host. `enter` or `e` extracts the selected version.
 
 ### What is stored on disk
 
@@ -96,8 +103,8 @@ that database is encrypted with a random 32-byte key that exists only in memory.
 The key is never derived from your repository password and never written to disk,
 the cache, or the log. The database is created on your first browse and deleted
 when the app exits cleanly. A file left behind by a crash cannot be read, because
-the key died with the process; resticscope also removes such leftovers at
-startup.
+the key died with the process; a later start deletes it, once it is old enough
+and provably not in use by another running resticscope.
 
 Leaving the browser keeps the database for the rest of the session, so returning
 to an indexed snapshot is instant.
@@ -109,9 +116,13 @@ status line so you can diagnose it. It is never written to disk.
 
 ## Comparing two snapshots
 
-In the snapshot list, mark two snapshots with `t` and press `d`. resticscope runs
-`restic diff --json <older> <newer>` and streams the changed paths into a
-navigator you can walk like the file browser.
+In the snapshot list, mark one snapshot with `t` and press `d` on another one, or
+mark both and press `d`. A third mark replaces the oldest. resticscope starts by
+comparing them oldest to newest, running
+`restic --no-lock diff --json <older> <newer>`, and streams the changed paths into
+a navigator you can walk like the file browser.
+
+Markers describe the pair in the direction shown in the title:
 
 | Marker | Meaning |
 | --- | --- |

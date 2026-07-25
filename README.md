@@ -42,10 +42,11 @@ resticscope · 5 repos · restic 0.18.1                                         
 
 ## Read-only, and no stored secrets
 
-- Every restic call resticscope makes is a read (`snapshots`, `cat config`,
-  `ls`, `find`, `diff`, `restore`), each with `--no-lock`. It never runs
-  `backup`, `forget`, `prune`, or `unlock`, and never takes a repository lock.
-  The repository shell is the one place you can run anything you like.
+- Every restic call resticscope makes against a repository is a read
+  (`snapshots`, `cat config`, `ls`, `find`, `diff`, `restore`), each with
+  `--no-lock`. It never runs `backup`, `forget`, `prune`, or `unlock`, and never
+  takes a repository lock. The repository shell is the one place you can run
+  anything you like.
 - The config file holds no passwords. Backend credentials and repository
   passwords come from a command you choose (`pass`, `gpg`, `age`, SOPS,
   1Password, a file) and stay in memory for the session.
@@ -56,7 +57,7 @@ resticscope · 5 repos · restic 0.18.1                                         
 
 - [restic](https://restic.net/) 0.17.0 or newer on your `PATH`.
 - Linux or macOS. Extracting files is refused on other platforms.
-- Go 1.25 or newer, to build from source.
+- Go 1.25.9 or newer, to build from source.
 
 ## Install
 
@@ -97,13 +98,13 @@ restic version, and whether each repository is reachable.
 
 | Key | Action |
 | --- | --- |
-| `↑` `↓` | move |
+| `↑` `↓` or `k` `j` | move |
 | `enter` | open: repository, then snapshot, then directory |
 | `esc` `q` | back |
 | `/` | filter the repo list, or search inside a snapshot |
 | `b` | browse a snapshot's files |
-| `v` | show every version of the selected file |
-| `t` then `d` | mark two snapshots, then diff them |
+| `v` | show the versions of the selected file |
+| `t` then `d` | mark one snapshot, then diff it against another |
 | `e` | extract the selected file or directory |
 | `s` | shell scoped to the repository |
 | `r` `R` | refresh this repository / all of them |
@@ -124,7 +125,7 @@ resticscope secrets template            print a blank secrets JSON skeleton
 resticscope version                     print resticscope and restic versions
 ```
 
-All commands accept `--config PATH` (default
+Every command that reads the config accepts `--config PATH` (default
 `~/.config/resticscope/config.toml`). Details and exit codes:
 [docs/cli.md](docs/cli.md).
 

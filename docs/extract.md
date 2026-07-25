@@ -12,7 +12,7 @@ happens until you confirm.
 | `p` | toggle "as root", to preserve the snapshot's owners and groups |
 | `s` | open a shell in the extracted directory |
 | `k` / `d` | keep or delete a leftover staging directory |
-| `esc` `q` | back |
+| `esc` `q` | back, or cancel an extract while it runs |
 
 Extracting never touches the repository. It runs one
 `restic --no-lock restore --overwrite never`, so no data is written and not even
@@ -52,6 +52,21 @@ or a dangling symlink, and never overwrites or merges into existing output:
 
 To resolve a refusal, delete the existing output or press `t` and pick another
 target directory.
+
+### From a diff
+
+Extracting inside a snapshot comparison restores both sides at once, each under
+its own snapshot directory in one pair directory:
+
+```
+<target_root>/<repo>/diff-<first>-<second>/<snapshot>/<original path>
+```
+
+`<first>` and `<second>` are the two short IDs in the order the diff shows them,
+so `x` renames the pair directory too. Only the changed paths below the directory
+you selected are restored, and only those whose change type the `+ - M U T b`
+filters leave visible. A side with nothing left to restore is skipped, and the
+pair directory keeps both sides side by side for comparison.
 
 ## Preserving owners and groups
 

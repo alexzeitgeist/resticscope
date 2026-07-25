@@ -40,8 +40,8 @@ repository.
   no credential.
 - The reserved names listed in [configuration.md](configuration.md#keys-every-repository-can-use)
   are rejected here too.
-- Entries that match nothing in your config are reported and ignored, so one
-  shared document can serve several machines.
+- Entries that match nothing in your config are ignored, and noted in the
+  operation log, so one shared document can serve several machines.
 
 Not sure of the variable names for your backend? See
 [restic's environment variables](https://restic.readthedocs.io/en/stable/040_backup.html#environment-variables).
@@ -113,10 +113,14 @@ resticscope check
 
 ## When it runs, and what happens to the values
 
-Commands that talk to your repositories run `secrets_command`: the TUI, `check`,
-`status --refresh`, `exec`, and any refresh you trigger with `r` or `R`.
-Cache-only commands never run it: plain `status`, `secrets template`, `cache
-prune`, and `version`.
+Commands that talk to your repositories run `secrets_command` once, at startup:
+the TUI, `check`, `status --refresh`, and `exec`. Cache-only commands never run
+it: plain `status`, `secrets template`, `cache prune`, and `version`.
+
+The TUI resolves everything before the interface appears, so a refresh you
+trigger later with `r` or `R`, a shell you open with `s`, and an extract all
+reuse what is already in memory. Editing your secret store therefore has no
+effect until you restart resticscope.
 
 Resolved secrets live in memory for the session only. They are never written to
 the status cache, the operation log, or error messages. A missing or incomplete

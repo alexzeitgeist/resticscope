@@ -35,7 +35,8 @@ usb-archive        grey   never refreshed
 
 Columns: name, status, age of the newest snapshot, snapshot count, how long the
 last backup took. `(stale cache)` means the cached data is older than
-`stale_after`.
+`stale_after`. A repository that has never been refreshed, or whose last refresh
+failed, replaces those columns with the reason.
 
 `--refresh` contacts every repository first, which loads secrets and takes as
 long as your slowest backend.
@@ -105,7 +106,11 @@ backend credential variables. A temporary password file is mode `0600` and is
 deleted when the session ends.
 
 Everything after `--` is executed directly, without shell interpretation. Leave
-it out for an interactive shell.
+it out for an interactive shell. An interactive session prints the repository
+and a few example commands, and in bash, zsh, and fish it also tags the prompt
+with `(resticscope·<repo>)`, so you can still tell whose shell you are in once
+the banner has scrolled away. Your own dotfiles are read first and never
+modified.
 
 | Exit code | Meaning |
 | --- | --- |

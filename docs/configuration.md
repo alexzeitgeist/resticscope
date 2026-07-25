@@ -56,8 +56,9 @@ expected_frequency = "24h"
 | `region` | no | Exported to restic as `AWS_DEFAULT_REGION`. |
 | `bucket_lookup` | no | `auto` (default), `dns`, or `path`. Passed as `-o s3.bucket-lookup`. |
 
-This shorthand is exactly equivalent to writing
-`url = "s3:<endpoint>/<bucket>[/<path>]"` yourself.
+The shorthand builds the repository string `s3:<endpoint>/<bucket>[/<path>]`.
+Writing that as `url` yourself works too, but then `region` and `bucket_lookup`
+have to move into `env` and `options`.
 
 ### Any other backend: `url`
 
@@ -158,6 +159,9 @@ Rules:
 - `labels`, `env`, and `options` are merged key by key, and the repository wins
   on duplicates.
 - Anything else is inherited as-is.
+- A profile that sets S3 shorthand fields cannot be inherited by a repository
+  that sets `url`: the merged repository would carry both forms, which is
+  rejected. Give such a repository its own profile, or none.
 
 Profiles are pure convenience. After loading, each repository behaves exactly as
 if the inherited settings had been written into its own table.
@@ -165,8 +169,8 @@ if the inherited settings had been written into its own table.
 ## Labels, filtering, and grouping
 
 Labels are your own key/value tags. `/` filters the list by repository name,
-label value, or region. `g` groups it by a label key, if `[global].group_by`
-lists one:
+label value, or region, case-insensitively. `g` groups it by a label key, if
+`[global].group_by` lists one:
 
 ```toml
 [global]
@@ -201,6 +205,9 @@ the bottom.
 With `group_by` empty or omitted, `g` reports `grouping not configured` and does
 nothing. Keys must be non-empty, free of surrounding whitespace, and unique.
 
+Sorting is independent of both: `o` cycles config order (the default), then most
+urgent first, then name. Neither the sort order nor the grouping is saved.
+
 ## When is a repository late?
 
 Status comes from the age of the newest snapshot, measured against that
@@ -233,7 +240,7 @@ directory.
 | `secrets_command` | *required* | Command printing the secrets JSON. See [secrets.md](secrets.md). |
 | `parallelism` | `4` | How many restic commands may run at once during a refresh. Keep it modest on slow links. |
 | `cache_dir` | `"~/.cache/resticscope"` | Holds the status cache, the log, restic's cache, and the browse index. No secrets. |
-| `log_file` | `<cache_dir>/log.jsonl` | Operation log. Set only to move it elsewhere. |
+| `log_file` | `<cache_dir>/log.jsonl` | Operation log, one JSON object per line. Set only to move it elsewhere. |
 | `refresh_on_open` | `true` | Show cached status at startup and refresh stale or unseen repositories in the background. |
 | `stale_after` | `"10m"` | Cached status older than this counts as stale (marked `*`). |
 | `stale_grace` | `"12h"` | Slack added to each repository's `expected_frequency` before it turns red. |

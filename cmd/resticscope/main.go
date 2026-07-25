@@ -64,6 +64,7 @@ Usage:
   resticscope exec [--config PATH] <repo> -- cmd   run cmd in that environment instead of a shell
   resticscope cache prune [--config PATH]          remove restic caches for repos no longer in config
   resticscope cache prune --all                    remove every repo's restic cache (restic rebuilds it)
+  resticscope cache prune --dry-run                report what would be removed, delete nothing
   resticscope secrets template [--config PATH]     print a blank secrets JSON skeleton for your config
   resticscope version                              print resticscope and restic versions
 
