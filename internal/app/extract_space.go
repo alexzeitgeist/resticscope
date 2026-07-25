@@ -15,6 +15,10 @@ func freeBytesAt(path string) (int64, bool) {
 	if err := unix.Statfs(path, &st); err != nil {
 		return 0, false
 	}
+	// No blocks at all is an automount trigger or pseudo filesystem, not a full disk.
+	if st.Blocks == 0 {
+		return 0, false
+	}
 	// Clamp overflow above roughly 8 EiB; the result is advisory to restic.
 	bs := int64(st.Bsize)                                       //nolint:unconvert // Bsize is uint32 on darwin; the cast is needed cross-platform
 	if bs > 0 && uint64(st.Bavail) > math.MaxInt64/uint64(bs) { //nolint:unconvert // normalizes Bavail across platforms where its type varies

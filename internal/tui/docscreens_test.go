@@ -598,6 +598,9 @@ func docOpenExtract(t *testing.T, m Model, name string) Model {
 			m = update(t, m, msg)
 		}
 	}
+	// The probe statfs'd the host under docExtractRoot; pin it so the screen
+	// does not vary with the machine running the tests.
+	m.extract.targetFreeKnown = false
 	return m
 }
 

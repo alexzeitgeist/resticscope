@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -844,6 +845,17 @@ func TestExtractFreeSpaceWalksUp(t *testing.T) {
 	}
 	if free <= 0 {
 		t.Errorf("free = %d, want > 0 for a writable temp dir", free)
+	}
+}
+
+// TestFreeBytesAtZeroBlockFS covers the automount trigger shape, where statfs
+// succeeds but reports no blocks.
+func TestFreeBytesAtZeroBlockFS(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no zero-block filesystem at a fixed path off linux")
+	}
+	if _, known := freeBytesAt("/proc"); known {
+		t.Error("freeBytesAt(/proc): known = true, want false")
 	}
 }
 
