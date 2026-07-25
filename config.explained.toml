@@ -1,264 +1,248 @@
-# resticscope configuration - annotated reference.
+# resticscope configuration, with a comment on every setting.
 #
-# Copy this file to ~/.config/resticscope/config.toml if you want a guided
-# starting point, or use config.example.toml if you prefer a shorter template.
+# Copy this to ~/.config/resticscope/config.toml for a guided start, or use
+# config.example.toml for a shorter template. Full reference: docs/.
 #
-# resticscope watches existing restic repositories. It does not schedule or run
-# your backup jobs; cron, systemd timers, Kubernetes jobs, Proxmox hooks, NAS
-# tasks, or your backup scripts still do that. This config tells resticscope:
+# resticscope watches restic repositories that already exist. It does not run
+# your backups; cron, systemd timers, Proxmox hooks, NAS tasks, and your own
+# scripts still do that. This file declares:
 #
-#   1. which restic repositories exist,
-#   2. how often each one should receive a new snapshot,
+#   1. which repositories exist,
+#   2. how often each should receive a new snapshot,
 #   3. how to obtain the secrets needed to read them,
-#   4. how the TUI should group, browse, diff, and extract from them.
+#   4. how the TUI groups, browses, diffs, and extracts.
 #
-# The config file itself should contain no passwords, access keys, or restic
-# repository passwords. Secrets are loaded at runtime by secrets_command.
+# It contains no passwords, access keys, or repository passwords. Those are
+# loaded at runtime by secrets_command.
 
-# --- important concepts -------------------------------------------------------
-# Repo:
-#   One restic repository you want to monitor. A repo can be local, sftp, S3,
-#   B2, REST server, rclone, or any other backend restic supports.
+# --- terms used below ---------------------------------------------------------
 #
-# expected_frequency:
-#   How often you expect that repo to get a fresh snapshot. If a homeserver
-#   backs up nightly, use "24h". If a USB disk is plugged in monthly, use
-#   something like "720h". This drives the green/amber/red status.
+# Repository
+#   One restic repository you want to watch: local, SFTP, S3-compatible, B2,
+#   Azure, GCS, Swift, REST, or rclone.
 #
-# Credential:
-#   A name for backend login secrets, not for the repo itself. For example,
-#   "hetzner-home" might mean one S3 access key pair, while "nas-b2" might mean
-#   one Backblaze B2 account id/key. The real values live in the secrets JSON.
-#   Local repos and sftp repos using your ssh config/agent often need no
-#   credential at all.
+# expected_frequency
+#   How often you expect that repository to get a fresh snapshot. Nightly
+#   backups use "24h"; a USB disk plugged in monthly uses "720h". This drives
+#   the green/amber/red status. Required for every repository.
 #
-# Restic password:
-#   Separate from the backend credential. Every repo still needs a
-#   restic_password in the secrets JSON under "repos.<repo-name>".
+# Credential
+#   A name for backend login secrets, not for the repository itself.
+#   "hetzner-home" might be one S3 access key pair, "nas-b2" one Backblaze B2
+#   account id and key. The values live in the secrets JSON. Local disks, and
+#   SFTP using your ssh config or agent, need no credential.
 #
-# Profile:
-#   Optional TOML convenience. Put repeated settings in [profiles.<name>] and
-#   let repos inherit them with profile = "...".
+# Repository password
+#   Separate from the backend credential. Every repository needs a
+#   restic_password under "repos.<name>" in the secrets JSON.
+#
+# Profile
+#   Optional. Repeated settings go in [profiles.<name>]; repositories inherit
+#   them with profile = "...".
+#
+# Label
+#   Your own key/value tag on a repository. Used for filtering (`/`) and
+#   grouping (`g`) in the TUI.
 
 # --- global -------------------------------------------------------------------
+
 [global]
-# REQUIRED. This command must print one JSON document to stdout. That JSON holds
-# backend credentials and each repo's restic password. It is run through your
-# shell, so examples such as pass, age, SOPS, 1Password, gpg, or a local cat
-# command all work.
+# Required. Must print one JSON document to standard output, holding the backend
+# credentials and each repository's password. It runs through your shell, so
+# pass, gpg, age, SOPS, 1Password, or a plain cat all work. Exact schema and
+# more examples: docs/secrets.md.
 #
-# Practical starting choices:
 #   pass show resticscope/credentials
-#   cat ~/.config/resticscope/secrets.json
+#   gpg -d ~/.config/resticscope/secrets.json.gpg
 #   op read 'op://Private/resticscope/credentials'
+#   cat ~/.config/resticscope/secrets.json
 secrets_command = "pass show resticscope/credentials"
 
-# How many restic commands resticscope may run at the same time when refreshing
-# multiple repos. Leave this modest for object storage or small home links; raise
-# it only if your backend and network can handle the extra parallel traffic.
+# How many restic commands may run at once while refreshing several
+# repositories. Raise it only if your backend and link can take the traffic.
 parallelism = 4
 
-# Local state directory. resticscope stores status cache, logs, restic's cache,
-# and temporary browse databases here. Secrets are not written here.
+# Local state: status cache, operation log, restic's own cache, and the
+# temporary browse index. No secrets are written here.
 cache_dir = "~/.cache/resticscope"
 
-# Operation log location. Omit this to keep the default under cache_dir. Set it
-# only when you intentionally want logs somewhere else.
+# Operation log. Omit to keep it under cache_dir.
 # log_file = "~/.cache/resticscope/log.jsonl"
 
-# When true, the TUI starts with cached status and refreshes stale or missing
-# repos in the background. Turn this off if you want the TUI to be cache-only
-# unless you explicitly refresh.
+# Start with cached status and refresh stale or never-seen repositories in the
+# background. Set false to refresh only when you press `r` or `R`.
 refresh_on_open = true
 
-# A repo status cache older than this is considered stale. It can still be shown
-# immediately, but refresh_on_open will queue a live refresh.
+# Cached status older than this counts as stale. It is still shown immediately,
+# marked with `*`, and refresh_on_open queues a live refresh for it.
 stale_after = "10m"
 
-# Extra slack after a repo's expected_frequency before resticscope marks it red.
-# Example: expected_frequency = "24h" and stale_grace = "12h" means:
-#   <= 24h since last snapshot: green
-#   > 24h and <= 36h: amber
-#   > 36h: red
+# Slack added to each repository's expected_frequency before it turns red. With
+# expected_frequency = "24h" and stale_grace = "12h":
+#
+#   last snapshot within 24h    green
+#   between 24h and 36h         amber
+#   beyond 36h                  red
 stale_grace = "12h"
 
-# If restic reports a repository lock older than this, the repo is red. That is
-# usually worth investigating because a backup, prune, or check may have died
-# while holding a lock.
+# A repository lock older than this turns the repository red: a backup, prune,
+# or check may have died while holding it.
 lock_max_age = "30m"
 
-# Timeout for secrets_command itself. Increase this only if your secret manager
-# is legitimately slow to unlock or fetch secrets.
+# Timeout for secrets_command. Raise it if your secret store is slow to unlock.
 secrets_command_timeout = "30s"
 
-# Timeout for short restic probes such as reading snapshots. Long operations
-# have their own settings: browse.index_timeout, diff.timeout, extract_timeout.
+# Timeout for short restic calls, such as reading the snapshot list. Long
+# operations have their own: browse.index_timeout, diff.timeout,
+# extract.extract_timeout.
 restic_command_timeout = "2m"
 
-# Interactive shell used when you press `s` in the TUI or run `resticscope exec`.
-# Empty means: use $SHELL, falling back to /bin/sh.
+# Shell used for secrets_command and for `s` in the TUI / `resticscope exec`.
+# Empty means $SHELL, falling back to /bin/sh.
 shell = ""
 
-# How resticscope gives the restic password to an interactive repo shell.
-# "file" writes a temporary 0600 RESTIC_PASSWORD_FILE and deletes it on exit.
-# "env" sets RESTIC_PASSWORD directly. Prefer "file" unless a shell workflow
-# specifically needs the password in the environment.
+# How the repository password reaches an interactive shell.
+#   "file"  a temporary 0600 RESTIC_PASSWORD_FILE, deleted when it ends
+#   "env"   RESTIC_PASSWORD in the environment
 shell_password_mode = "file"
 
-# Optional grouping for the TUI's main repo list. Values are label keys from the
-# repo labels below. Press `g` to cycle through the configured groupings and a
-# flat list. Leave empty if you do not care about grouping.
+# Label keys the main list can group by. `g` cycles them in this order and then
+# a flat list. Leave empty to disable grouping.
 #
-# Good ops examples:
-#   group_by = ["env", "region", "criticality"]
-# Good home-server examples:
-#   group_by = ["category", "device"]
+#   group_by = ["env", "region", "criticality"]   # several machines
+#   group_by = ["category", "device"]             # one household
 group_by = ["env", "category"]
 
 # --- browse -------------------------------------------------------------------
-# Press `b` on a snapshot to browse files inside the backup from the TUI.
-#
-# The first browse of a snapshot indexes that snapshot's full file list into a
-# temporary encrypted SQLite database under cache_dir. After that, navigation is
-# instant and complete. The file list is deleted on clean exit; a crash leftover
-# is unreadable because the encryption key exists only in memory.
+# `b` on a snapshot browses its files. The first browse indexes the snapshot's
+# whole file list into a temporary encrypted database under cache_dir; after
+# that, navigation is instant and complete. The index is deleted on a clean
+# exit, and a file left by a crash is unreadable because its key only ever
+# existed in memory. Details: docs/browsing.md.
+
 [browse]
-# Maximum time to spend building the one-time file index for one snapshot.
-# Large file servers or photo archives may need a higher value.
+# Time limit for indexing one snapshot. Large file servers and photo archives
+# may need more.
 index_timeout = "10m"
 
-# Session-wide disk limit for temporary encrypted browse indexes. "0" means
-# unlimited. If you browse very large snapshots on a small VPS or laptop, keep
-# this bounded.
+# Disk limit for the index across the whole session, not per snapshot. "0" means
+# unlimited. Keep it bounded on a small laptop or VPS.
 max_disk_bytes = "2GiB"
 
 # --- diff ---------------------------------------------------------------------
-# Press `d` after marking two snapshots to compare their changed paths.
+# Mark two snapshots with `t` and press `d` to compare them.
+
 [diff]
-# Large snapshots can take minutes to compare, so diff has its own timeout
-# instead of using the shorter global.restic_command_timeout.
+# Comparing large trees can take minutes, so diff does not use the shorter
+# global.restic_command_timeout.
 timeout = "10m"
 
 # --- extract ------------------------------------------------------------------
-# Press `e` on a browsed file or directory to copy it out of the backup.
+# `e` copies a file, a directory, or a whole snapshot out of a backup. The
+# repository is only ever read: restic restore runs with overwrite protection
+# and no lock, and output goes under target_root:
 #
-# Extract is read-only from the repository's point of view. resticscope uses
-# restic restore with overwrite protection and writes into a local target dir.
-# A file or directory lands under:
+#   <target_root>/<repository>/<snapshot>/<original path>
 #
-#   <target_root>/<repo-name>/<snapshot-short>/<original-path>
+# Extracting /etc/hosts from snapshot abc12345 of homeserver-system lands in
+# ~/resticscope-extracts/homeserver-system/abc12345/etc/hosts.
 #
-# Example: extracting /etc/hosts from homeserver-system snapshot abc12345 lands
-# at ~/resticscope-extracts/homeserver-system/abc12345/etc/hosts.
+# Press `p` on the review screen to extract as root, which preserves the
+# snapshot's own owners and groups. Details: docs/extract.md.
+
 [extract]
-# Base directory for restored files. Use a scratch area, not your live / or
-# home directory, so inspected files cannot collide with active data.
+# Base directory for extracted files. Use a scratch area, not your live home
+# directory, so restored copies cannot be mistaken for current data.
 target_root = "~/resticscope-extracts"
 
-# Maximum time for one extract operation. Increase for very large directories.
+# Time limit for one extract. Raise it for very large directories.
 extract_timeout = "30m"
 
 # What to do with a restored symlink whose target is absolute or points outside
-# the extracted tree. Such a link could point at your live filesystem when you
-# inspect the output.
+# the extracted tree, and would therefore alias your live filesystem:
 #
-#   "keep"        - leave it as restic restored it and warn
-#   "skip"        - remove the unsafe symlink from the extract
-#   "placeholder" - replace it with a text file recording the original target
+#   "keep"          leave it as restic restored it, and report the count
+#   "skip"          remove it from the output
+#   "placeholder"   replace it with a text file naming the original target
 #
-# Links that stay inside the extracted tree are always kept. resticscope never
-# follows unsafe links.
+# Links that stay inside the extracted tree are always kept, and resticscope
+# never follows an unsafe one.
 unsafe_symlinks = "keep"
 
-# Remember the last target directory you selected in the TUI for the lifetime of
-# the running app. Nothing is written to disk; a fresh start uses target_root.
+# Reuse the target directory of the last extract for the rest of the session.
+# Nothing is written to disk; the next start begins at target_root again.
 remember_target = true
 
 # --- theme --------------------------------------------------------------------
-# TUI colors. Themes are built into the binary; there are no external theme
-# files to install.
+# All themes are compiled into the binary; there are no files to install.
+# Details: docs/themes.md.
+
 [theme]
-# Built-in names:
+# One of:
 #   ayu-dark, ayu-light, catppuccin-frappe, catppuccin-latte,
 #   catppuccin-macchiato, catppuccin-mocha, dracula, gruvbox-dark,
 #   gruvbox-light, monokai, night-owl, night-owl-light, nord, one-dark,
-#   solarized-dark, solarized-light, terminal, tokyo-night.
+#   solarized-dark, solarized-light, terminal, tokyo-night
 #
-# Use "terminal" if you want resticscope to follow your terminal's own colors.
+# Use "terminal" to follow your terminal's own colors.
 name = "gruvbox-dark"
 
-# true paints the terminal background with the selected theme while the TUI runs.
-# false keeps your terminal background, which is useful for transparency or an
-# already-matching terminal color scheme.
+# Paint the terminal background with the theme while the TUI runs. Set false to
+# keep your own background, for transparency or an already-matching scheme.
 background = true
 
-# Optional per-role color overrides. Delete this block if the named theme is
-# fine. Values can be "#rgb", "#rrggbb", an ANSI-256 color number "0".."255",
-# or "default".
+# Optional per-role overrides on top of the chosen theme. Values are "#rgb",
+# "#rrggbb", an ANSI-256 number "0".."255", or "default".
 #
-# Roles:
-#   bg      terminal background
-#   fg      normal text
-#   grey    metadata
-#   dim     separators and disabled text
-#   red     errors, removed paths, overdue repos
-#   green   ok states and added paths
-#   yellow  titles, modified paths, grace-period repos
-#   blue    headings and directories
-#   aqua    labels, symlinks, spinner
-#   orange  cursor, key hints, bitrot marker
+#   bg      terminal background        green   ok states, added paths
+#   fg      normal text                yellow  titles, modified paths
+#   grey    metadata                   blue    headings, directories
+#   dim     separators, disabled text  aqua    labels, symlinks, spinner
+#   red     errors, removed paths      orange  cursor, key hints, bitrot
 #
 # [theme.colors]
 # orange = "#d65d0e"
 # grey   = "245"
 
-# --- repository profiles ------------------------------------------------------
-# Profiles remove repetition. The two profiles below describe two Hetzner object
-# storage regions that share the same credential name but use different
-# endpoints and labels. A repo can inherit one with profile = "hetzner-fsn1" and
-# then override individual fields.
+# --- profiles -----------------------------------------------------------------
+# Settings shared by several repositories. The two below are two Hetzner object
+# storage regions: same credential, different endpoints and labels.
 #
-# labels, env, and options are merged; the repo's values win on duplicate keys.
-# Other fields are inherited unless the repo sets its own value.
+# A repository's own value replaces the profile's, but cannot clear it. labels,
+# env, and options are merged key by key, with the repository winning.
 
 [profiles.hetzner-fsn1]
-credential = "hetzner-home"
-endpoint = "https://fsn1.your-objectstorage.com"
-region = "fsn1"
+credential         = "hetzner-home"
+endpoint           = "https://fsn1.your-objectstorage.com"
+region             = "fsn1"
 expected_frequency = "24h"
-labels = { env = "home", category = "personal" }
+labels             = { env = "home", category = "personal" }
 
 [profiles.hetzner-hel1]
-credential = "hetzner-home"
-endpoint = "https://hel1.your-objectstorage.com"
-region = "hel1"
+credential         = "hetzner-home"
+endpoint           = "https://hel1.your-objectstorage.com"
+region             = "hel1"
 expected_frequency = "24h"
-labels = { env = "home", category = "work" }
+labels             = { env = "home", category = "work" }
 
 # --- repositories -------------------------------------------------------------
-# Each [repos.<name>] table is one restic repository. The name in the table
-# header is resticscope's local identity for that repo:
+# Each [repos.<name>] table is one repository, and the table name is how
+# resticscope identifies it. So [repos.homeserver-system] is the repository
+# "homeserver-system". The name must:
 #
-#   [repos.homeserver-system] gives the repo name "homeserver-system".
-#
-# The name must:
 #   - be unique,
-#   - contain only letters, digits, ".", "_", and "-",
+#   - use only letters, digits, ".", "_", and "-",
 #   - match a key under "repos" in the secrets JSON,
-#   - stay stable if you want to keep the same local cache/history.
+#   - stay stable to keep that repository's local cache and history.
 #
-# If the name contains a dot as part of the name, quote it:
+# Quote the header if the name itself contains a dot: [repos."host.daily"]
 #
-#   [repos."host.daily"]
+# Give the location in exactly one of two ways:
 #
-# Describe the repository location in exactly one of these two ways:
+#   1. endpoint + bucket, with optional region, path, and bucket_lookup.
+#      Convenient for Hetzner, MinIO, AWS S3, and similar stores.
 #
-#   1. S3 shorthand:
-#        endpoint + bucket, with optional region, path, bucket_lookup.
-#      This is convenient for Hetzner, MinIO, AWS S3, and similar object stores.
-#
-#   2. url:
-#        the restic repository string verbatim, for any backend restic supports:
+#   2. url, the restic repository string verbatim, for any other backend:
 #        /srv/restic-repo
 #        sftp:user@host:/srv/restic-repo
 #        rest:https://host:8000/repo
@@ -269,49 +253,48 @@ labels = { env = "home", category = "work" }
 #        swift:container:/
 #        rclone:remote:path
 #
-# Common optional repo fields:
-#   credential - backend secret name from the secrets JSON
-#   env        - non-secret backend environment variables
-#   options    - restic -o backend options
-#   labels     - free-form tags used for grouping and scanning the TUI
+# Optional for any repository:
+#   credential   backend secret name from the secrets JSON
+#   env          non-secret backend environment variables
+#   options      restic backend options, passed as -o key=value
+#   labels       free-form tags for filtering and grouping
 #
-# Put backend secrets in credentials, not in env. resticscope rejects env names
-# that it owns itself, such as RESTIC_PASSWORD and RESTIC_REPOSITORY.
+# Backend secrets belong in the credential, not in env: resticscope rejects env
+# names it manages itself, such as RESTIC_REPOSITORY and RESTIC_PASSWORD.
 
-# A homeserver system backup in S3-compatible storage. Most settings come from
-# the profile; this repo only chooses the bucket and adds a criticality label.
+# A homeserver in S3-compatible storage. Everything but the bucket and the extra
+# label comes from the profile.
 [repos.homeserver-system]
 profile = "hetzner-fsn1"
-bucket = "homeserver-backups"
-# path = "restic" # optional sub-prefix inside the bucket; omitted = bucket root
-labels = { criticality = "high", device = "homeserver" }
+bucket  = "homeserver-backups"
+# path  = "restic"   # optional prefix inside the bucket; omitted = bucket root
+labels  = { criticality = "high", device = "homeserver" }
 
-# A laptop backup using the second region profile.
+# A laptop, in the second region.
 [repos.laptop-restic]
 profile = "hetzner-hel1"
-bucket = "laptop-backups"
-labels = { criticality = "medium", device = "laptop" }
+bucket  = "laptop-backups"
+labels  = { criticality = "medium", device = "laptop" }
 
-# A Backblaze B2 repo using restic's normal repository URL form. The credential
-# named "nas-b2" must exist in the secrets JSON and usually contains:
-#   B2_ACCOUNT_ID and B2_ACCOUNT_KEY
+# Backblaze B2, written as a restic URL. The "nas-b2" credential must exist in
+# the secrets JSON, and usually holds B2_ACCOUNT_ID and B2_ACCOUNT_KEY.
 [repos.nas-offsite]
-credential = "nas-b2"
-url = "b2:nas-backups:repo"
+url                = "b2:nas-backups:repo"
+credential         = "nas-b2"
 expected_frequency = "168h"
-labels = { env = "home", criticality = "high", category = "offsite", device = "nas" }
+labels             = { env = "home", criticality = "high", category = "offsite", device = "nas" }
 
-# An sftp repo. No credential is named here because ssh authentication comes
-# from ssh config, keys, or agent. options are passed to restic as -o values.
+# SFTP. No credential, because ssh authenticates through your config, keys, or
+# agent. options are passed to restic as -o values.
 [repos.nas-sftp]
-url = "sftp:backup@nas:/srv/restic-repo"
-options = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
+url                = "sftp:backup@nas:/srv/restic-repo"
+options            = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
 expected_frequency = "24h"
-labels = { env = "home", criticality = "medium", category = "personal", device = "nas" }
+labels             = { env = "home", criticality = "medium", category = "personal", device = "nas" }
 
-# A local repo on a mounted USB disk. Because the disk may only be connected
-# occasionally, the expected frequency is much longer than for nightly backups.
+# A local disk that is only connected occasionally, so it is not late until a
+# month has passed.
 [repos.usb-archive]
-url = "/mnt/archive/restic-repo"
+url                = "/mnt/archive/restic-repo"
 expected_frequency = "720h"
-labels = { env = "home", criticality = "low", category = "archive", device = "usb" }
+labels             = { env = "home", criticality = "low", category = "archive", device = "usb" }

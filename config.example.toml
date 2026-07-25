@@ -1,83 +1,101 @@
-# resticscope configuration — copy to ~/.config/resticscope/config.toml and edit.
+# resticscope configuration. Copy to ~/.config/resticscope/config.toml and edit.
 #
-# Declares which repos exist and what's expected of each. Holds NO secrets:
-# backend credentials and restic passwords come from secrets_command at runtime
-# (see [global].secrets_command below).
-# Commented entries show defaults.
+# Lists the restic repositories to watch and what you expect of each. Holds no
+# secrets: backend credentials and repository passwords come from
+# secrets_command at runtime (see docs/secrets.md).
+#
+# Commented-out lines show the default. Every setting: docs/configuration.md.
+# The same settings with a comment on each: config.explained.toml.
 
 # --- global -------------------------------------------------------------------
+
 [global]
-secrets_command = "pass show resticscope/credentials"
+secrets_command = "pass show resticscope/credentials"   # required
 
-# parallelism = 4
-# cache_dir = "~/.cache/resticscope"
-# refresh_on_open = true
-# stale_after = "10m"
-# stale_grace = "12h"
-# shell = ""
-# shell_password_mode = "file" # file | env
-# group_by = []
+# parallelism             = 4
+# cache_dir               = "~/.cache/resticscope"
+# log_file                = "~/.cache/resticscope/log.jsonl"
+# refresh_on_open         = true
+# stale_after             = "10m"
+# stale_grace             = "12h"
+# lock_max_age            = "30m"
+# secrets_command_timeout = "30s"
+# restic_command_timeout  = "2m"
+# shell                   = ""       # empty: $SHELL, then /bin/sh
+# shell_password_mode     = "file"   # file | env
+# group_by                = []       # label keys the `g` key cycles through
 
-# --- browse -------------------------------------------------------------------
+# --- browse, diff, extract, theme ---------------------------------------------
+
 [browse]
-# index_timeout = "10m"
-# max_disk_bytes = "2GiB" # "0" = unlimited
+# index_timeout  = "10m"
+# max_disk_bytes = "2GiB"   # "0" = unlimited
 
-# --- extract ------------------------------------------------------------------
+[diff]
+# timeout = "10m"
+
 [extract]
-# target_root = "~/resticscope-extracts"
+# target_root     = "~/resticscope-extracts"
 # extract_timeout = "30m"
-# unsafe_symlinks = "keep" # keep | skip | placeholder
+# unsafe_symlinks = "keep"   # keep | skip | placeholder
 # remember_target = true
 
-# --- theme --------------------------------------------------------------------
 [theme]
-# name = "gruvbox-dark"
+# name       = "gruvbox-dark"   # or "terminal" to follow your terminal's colors
 # background = true
 
-# --- repository profiles ------------------------------------------------------
-# Shared repo settings; repos opt in e.g. with `profile = "hetzner-fsn1"`.
+# --- profiles -----------------------------------------------------------------
+# Settings shared by several repositories. Opt in with profile = "<name>".
 
 [profiles.hetzner-fsn1]
-credential = "hetzner-home"
-endpoint = "https://fsn1.your-objectstorage.com"
-region = "fsn1"
+credential         = "hetzner-home"
+endpoint           = "https://fsn1.your-objectstorage.com"
+region             = "fsn1"
 expected_frequency = "24h"
-labels = { env = "home", category = "personal" }
+labels             = { env = "home", category = "personal" }
 
 [profiles.hetzner-hel1]
-credential = "hetzner-home"
-endpoint = "https://hel1.your-objectstorage.com"
-region = "hel1"
+credential         = "hetzner-home"
+endpoint           = "https://hel1.your-objectstorage.com"
+region             = "hel1"
 expected_frequency = "24h"
-labels = { env = "home", category = "work" }
+labels             = { env = "home", category = "work" }
 
 # --- repositories -------------------------------------------------------------
-# The table suffix is the repo name and must match a "repos" key in secrets JSON.
-# Use either `url` or S3 shorthand (`endpoint` + `bucket`, with optional `path`).
+# One table per repository. The table name is the repository's name, and it must
+# match a key under "repos" in the secrets JSON.
+#
+# Give the location either as endpoint + bucket (S3-compatible, with optional
+# region, path, bucket_lookup) or as url (any other restic backend). Never both.
 
+# S3-compatible storage; everything but the bucket comes from the profile.
 [repos.homeserver-system]
 profile = "hetzner-fsn1"
-bucket = "homeserver-backups"
-labels = { criticality = "high" }
+bucket  = "homeserver-backups"
+labels  = { criticality = "high" }
 
+# The same, in the second region.
 [repos.laptop-restic]
 profile = "hetzner-hel1"
-bucket = "laptop-backups"
-labels = { criticality = "medium" }
+bucket  = "laptop-backups"
+labels  = { criticality = "medium" }
 
+# Backblaze B2. The "nas-b2" credential holds B2_ACCOUNT_ID and B2_ACCOUNT_KEY.
 [repos.nas-offsite]
-credential = "nas-b2"
-url = "b2:nas-backups:repo"
+url                = "b2:nas-backups:repo"
+credential         = "nas-b2"
 expected_frequency = "168h"
-labels = { env = "home", criticality = "high", category = "offsite" }
+labels             = { env = "home", criticality = "high", category = "offsite" }
 
+# SFTP. No credential: ssh authenticates via your config, keys, or agent.
 [repos.nas-sftp]
-url = "sftp:backup@nas:/srv/restic-repo"
-options = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
+url                = "sftp:backup@nas:/srv/restic-repo"
+options            = { "sftp.command" = "ssh backup@nas -i /home/me/.ssh/backup_ed25519 -s sftp" }
 expected_frequency = "24h"
-labels = { env = "home", criticality = "medium", category = "personal" }
+labels             = { env = "home", criticality = "medium", category = "personal" }
 
+# A local disk, plugged in about once a month.
 [repos.usb-archive]
-url = "/mnt/archive/restic-repo"
+url                = "/mnt/archive/restic-repo"
 expected_frequency = "720h"
+labels             = { env = "home", criticality = "low", category = "archive" }

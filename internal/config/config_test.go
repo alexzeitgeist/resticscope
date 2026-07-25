@@ -44,20 +44,26 @@ func TestParsesMinimalConfig(t *testing.T) {
 	}
 }
 
-func TestExampleConfigLoads(t *testing.T) {
-	data, err := os.ReadFile("../../config.example.toml")
-	if err != nil {
-		t.Fatalf("read config.example.toml: %v", err)
-	}
-	cfg, err := load(t, string(data))
-	if err != nil {
-		t.Fatalf("example config should load: %v", err)
-	}
-	if got := cfg.CredentialNames(); len(got) != 2 {
-		t.Fatalf("example credentials = %v, want 2", got)
-	}
-	if len(cfg.Repos) != 5 {
-		t.Fatalf("example repos = %d, want 5", len(cfg.Repos))
+// Both shipped templates are documented as copyable starting points, so they
+// must decode and validate exactly like a user's own config.
+func TestShippedConfigTemplatesLoad(t *testing.T) {
+	for _, name := range []string{"config.example.toml", "config.explained.toml"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile("../../" + name)
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			cfg, err := load(t, string(data))
+			if err != nil {
+				t.Fatalf("%s should load: %v", name, err)
+			}
+			if got := cfg.CredentialNames(); len(got) != 2 {
+				t.Fatalf("%s credentials = %v, want 2", name, got)
+			}
+			if len(cfg.Repos) != 5 {
+				t.Fatalf("%s repos = %d, want 5", name, len(cfg.Repos))
+			}
+		})
 	}
 }
 
