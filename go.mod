@@ -9,7 +9,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/goccy/go-json v0.10.6
-	github.com/mattn/go-runewidth v0.0.27
+	github.com/mattn/go-runewidth v0.0.28
 	github.com/ncruces/go-sqlite3 v0.35.2
 	golang.org/x/sys v0.47.0
 )
