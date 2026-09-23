@@ -343,7 +343,10 @@ restic 0.19.1
 A binary built without those flags falls back to the metadata the Go toolchain
 embeds, so `go install` and local builds still identify themselves.
 
-GitHub-native release notes provide the changelog.
+GoReleaser writes the release notes from the subject lines of the commits
+since the previous tag, grouped by their `feat:`, `fix:`, and `build:`
+prefixes; `docs:` and `test:` commits are left out. Commit bodies do not
+appear, so write subjects that read well on their own.
 
 ## Verify the published release
 
