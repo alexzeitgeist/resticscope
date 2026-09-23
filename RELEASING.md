@@ -91,7 +91,7 @@ any job fails.
 
 ## Dependencies and the Go version
 
-`go.mod` pins an exact patch release, for example `go 1.26.5`, rather than a
+`go.mod` pins an exact patch release, for example `go 1.26.8`, rather than a
 minor version. Both CI and the release workflow install the Go version from
 `go.mod`, so that line decides which toolchain builds the published binaries.
 Raising it is how a standard-library fix reaches a release.
@@ -102,7 +102,7 @@ CI and again at tag time precisely to catch this. When it reports a standard
 library vulnerability, raise the Go version:
 
 ```console
-go get go@1.26.5
+go get go@1.26.8
 go mod tidy
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```

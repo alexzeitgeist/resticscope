@@ -10,7 +10,7 @@ Module versions correspond to `go.mod` and `go.sum`. Regenerate this
 file with `./scripts/third-party-notices.sh` after changing
 dependencies.
 
-## The Go standard library — go1.26.5
+## The Go standard library — go1.26.8
 
 ```text
 Copyright 2009 The Go Authors.
@@ -647,7 +647,7 @@ SOFTWARE.
 
 ```
 
-## golang.org/x/crypto v0.54.0 — LICENSE
+## golang.org/x/crypto v0.56.0 — LICENSE
 
 ```text
 Copyright 2009 The Go Authors.

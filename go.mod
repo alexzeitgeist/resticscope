@@ -1,6 +1,6 @@
 module github.com/alexzeitgeist/resticscope
 
-go 1.26.5
+go 1.26.8
 
 require (
 	charm.land/bubbles/v2 v2.2.1
@@ -29,7 +29,7 @@ require (
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	lukechampine.com/adiantum v1.1.1 // indirect
 )

@@ -57,7 +57,7 @@ resticscope · 5 repos · restic 0.18.1                                         
 
 - [restic](https://restic.net/) 0.17.0 or newer on your `PATH`.
 - Linux or macOS. Extracting files is refused on other platforms.
-- Go 1.26.5 or newer, to build from source.
+- Go 1.26.8 or newer, to build from source.
 
 ## Install
 
