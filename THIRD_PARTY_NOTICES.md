@@ -43,7 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## charm.land/bubbles/v2 v2.1.1 — LICENSE
+## charm.land/bubbles/v2 v2.2.1 — LICENSE
 
 ```text
 MIT License
@@ -70,7 +70,7 @@ SOFTWARE.
 
 ```
 
-## charm.land/bubbletea/v2 v2.0.8 — LICENSE
+## charm.land/bubbletea/v2 v2.0.9 — LICENSE
 
 ```text
 MIT License
@@ -97,7 +97,7 @@ SOFTWARE.
 
 ```
 
-## charm.land/lipgloss/v2 v2.0.5 — LICENSE
+## charm.land/lipgloss/v2 v2.0.6 — LICENSE
 
 ```text
 MIT License
@@ -178,7 +178,7 @@ SOFTWARE.
 
 ```
 
-## github.com/charmbracelet/ultraviolet v0.0.0-20260720091822-7cc6674724ac — LICENSE
+## github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 — LICENSE
 
 ```text
 MIT License
@@ -205,7 +205,7 @@ SOFTWARE.
 
 ```
 
-## github.com/charmbracelet/x/ansi v0.11.7 — LICENSE
+## github.com/charmbracelet/x/ansi v0.11.8 — LICENSE
 
 ```text
 MIT License
@@ -421,7 +421,7 @@ SOFTWARE.
 
 ```
 
-## github.com/lucasb-eyer/go-colorful v1.4.0 — LICENSE
+## github.com/lucasb-eyer/go-colorful v1.4.1 — LICENSE
 
 ```text
 Copyright (c) 2013 Lucas Beyer
@@ -434,7 +434,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ```
 
-## github.com/mattn/go-runewidth v0.0.27 — LICENSE
+## github.com/mattn/go-runewidth v0.0.28 — LICENSE
 
 ```text
 The MIT License (MIT)
@@ -488,7 +488,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3 v0.35.2 — LICENSE
+## github.com/ncruces/go-sqlite3 v0.35.3 — LICENSE
 
 ```text
 MIT License
@@ -515,7 +515,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 — LICENSE
+## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 — LICENSE
 
 ```text
 MIT No Attribution License
@@ -539,7 +539,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 — parser/LICENSE
+## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 — parser/LICENSE
 
 ```text
 The MIT License (MIT)
