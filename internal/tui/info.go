@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -56,27 +55,7 @@ func (m Model) infoBody() string {
 		return clip(m.styles.meta.Render("no snapshot selected"), w)
 	}
 	w, _ := m.effSize()
-	lines := m.infoBodyLines(*s, w)
-	visible := m.modalVisible()
-	if len(lines) <= visible {
-		return strings.Join(lines, "\n")
-	}
-	// Reserve the last row for the scroll hint, but omit it when only one row fits.
-	// clampModalScroll keeps rendering consistent with the key handler.
-	bodyRows := visible - 1
-	showHint := bodyRows >= 1
-	if !showHint {
-		bodyRows = visible
-	}
-	start := clampModalScroll(m.infoScroll, len(lines), bodyRows)
-	end := min(start+bodyRows, len(lines))
-	out := make([]string, 0, end-start+1)
-	out = append(out, lines[start:end]...)
-	if showHint {
-		hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
-		out = append(out, clip(m.styles.meta.Render(hint), w))
-	}
-	return strings.Join(out, "\n")
+	return m.modalWindow(m.infoBodyLines(*s, w), m.infoScroll, w)
 }
 
 // infoBodyLines builds a flat, windowable body, separating non-empty sections
@@ -104,9 +83,7 @@ func (m Model) infoBodyLines(s model.Snapshot, width int) []string {
 	return lines
 }
 
-// infoScrollable reports whether the info body overflows the pane. It avoids
-// m.footerRows because that builds viewHelp and calls this method; an async
-// status message adds a second footer row.
+// infoScrollable reports whether the info body overflows the pane.
 func (m Model) infoScrollable() bool {
 	if m.view != infoView {
 		return false
@@ -115,13 +92,8 @@ func (m Model) infoScrollable() bool {
 	if s == nil {
 		return false
 	}
-	w, h := m.effSize()
-	footer := 1
-	if m.statusMsg != "" {
-		footer = 2
-	}
-	available := max(h-headerRows-2*gapRows-footer, 1)
-	return len(m.infoBodyLines(*s, w)) > available
+	w, _ := m.effSize()
+	return m.modalOverflows(len(m.infoBodyLines(*s, w)))
 }
 
 // scrollInfo adjusts and clamps the modal scroll offset. It resets the offset
@@ -133,14 +105,7 @@ func (m Model) scrollInfo(delta int) Model {
 		return m
 	}
 	w, _ := m.effSize()
-	lines := m.infoBodyLines(*s, w)
-	visible := m.modalVisible()
-	if len(lines) <= visible {
-		m.infoScroll = 0
-		return m
-	}
-	bodyRows := max(visible-1, 1)
-	m.infoScroll = clampModalScroll(m.infoScroll+delta, len(lines), bodyRows)
+	m.infoScroll = modalScrollBy(m.infoScroll, delta, len(m.infoBodyLines(*s, w)), m.modalVisible())
 	return m
 }
 

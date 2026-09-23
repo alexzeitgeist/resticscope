@@ -80,6 +80,8 @@ func (m Model) handleQuitKey() (tea.Model, tea.Cmd) {
 			return m.cancelDiffSearch(), nil
 		}
 		return m.snapshotDiffBack(), nil
+	case diffInfoView:
+		return m.closeDiffInfo(), nil
 	case listView:
 		return m.quitModel(), tea.Quit
 	default:
@@ -93,6 +95,8 @@ func (m Model) handleModalViewKey(msg tea.KeyPressMsg) (Model, bool) {
 		return m.handleHelpViewKey(msg), true
 	case infoView:
 		return m.handleInfoViewKey(msg), true
+	case diffInfoView:
+		return m.handleDiffInfoKey(msg), true
 	}
 	return m, false
 }

@@ -28,7 +28,7 @@ type keyMap struct {
 	HostToggle key.Binding // Find versions: toggle the host filter.
 	Mark       key.Binding // Detail: toggle the snapshot in the two-slot diff FIFO.
 	Diff       key.Binding // Detail: open the resolved older-to-newer diff.
-	Info       key.Binding // Detail: open snapshot information.
+	Info       key.Binding // Detail: snapshot information. Diff: details of the selected change.
 	DiffSwap   key.Binding // Diff: reverse the snapshot pair and rerun.
 	DiffMeta   key.Binding // Diff: rerun with or without metadata-only changes.
 	Extract    key.Binding // Extract the selection appropriate to the current view.
@@ -116,14 +116,15 @@ func defaultKeys() keyMap {
 //
 // ShortHelp preserves one relative action order across views.
 type viewHelp struct {
-	keys            keyMap
-	view            view
-	filtering       bool
-	searching       bool // Browse filename-search input is open.
-	infoScrollable  bool // Info body overflows; show scroll bindings.
-	helpScrollable  bool // Help body overflows; show scroll bindings.
-	searchSuspended bool // Browse results are parked; esc restores them.
-	diffJumped      bool // A diff search jump is armed; esc or q reverses it.
+	keys               keyMap
+	view               view
+	filtering          bool
+	searching          bool // Browse filename-search input is open.
+	infoScrollable     bool // Info body overflows; show scroll bindings.
+	diffInfoScrollable bool // Diff info body overflows; show scroll bindings.
+	helpScrollable     bool // Help body overflows; show scroll bindings.
+	searchSuspended    bool // Browse results are parked; esc restores them.
+	diffJumped         bool // A diff search jump is armed; esc or q reverses it.
 
 	// extractBindings come from extractModel.shortHelp, which owns the modal's
 	// state machine.
@@ -151,15 +152,20 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case findVersionsView:
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "extract"), k.HostToggle, k.Back}
 	case snapshotDiffView:
-		// Parent stays in the help overlay so the bar fits its width budget.
+		// Parent and swap stay in the help overlay so the bar fits its width budget.
 		if h.diffJumped {
 			// After a search jump, q and esc reverse the jump instead of leaving.
 			return []key.Binding{
-				moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Extract, k.DiffSwap, k.DiffMeta, diffFiltersHelp(),
+				moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Info, k.Extract, k.DiffMeta, diffFiltersHelp(),
 				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous")),
 			}
 		}
-		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Extract, k.DiffSwap, k.DiffMeta, diffFiltersHelp(), k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Info, k.Extract, k.DiffMeta, diffFiltersHelp(), k.Back}
+	case diffInfoView:
+		if h.diffInfoScrollable {
+			return []key.Binding{helpAs(moveHelp(), "scroll"), k.Back}
+		}
+		return []key.Binding{k.Back}
 	case extractView:
 		// Preserve a back affordance if the extract model supplied no bindings.
 		if len(h.extractBindings) > 0 {
@@ -252,7 +258,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, k.DiffMeta},
+			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Info, k.Extract, k.DiffSwap, k.DiffMeta},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}
@@ -278,6 +284,15 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 		}
 		return [][]key.Binding{
 			{k.Back},
+		}
+	case diffInfoView:
+		if h.diffInfoScrollable {
+			return [][]key.Binding{
+				{k.Up, k.Down, k.PageUp, k.PageDown, k.Info, k.Back},
+			}
+		}
+		return [][]key.Binding{
+			{k.Info, k.Back},
 		}
 	default: // listView
 		return [][]key.Binding{

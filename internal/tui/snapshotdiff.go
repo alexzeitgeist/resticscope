@@ -219,6 +219,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.swapSnapshotDiff()
 	case key.Matches(msg, m.keys.DiffMeta):
 		return m.toggleDiffMetadata()
+	case key.Matches(msg, m.keys.Info):
+		return m.openDiffInfo()
 	case key.Matches(msg, m.keys.Search):
 		return m.openDiffSearch(), nil
 	case key.Matches(msg, m.keys.DiffFilterAdded):
@@ -552,7 +554,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffLoadCount = 0
 	m.diffCancel = nil
 	m.diffProgress = nil
-	return m
+	return m.dropDiffInfo()
 }
 
 // diffVisible matches the view's row budget so page keys move exactly one

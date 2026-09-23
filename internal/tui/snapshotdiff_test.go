@@ -775,16 +775,6 @@ func TestSnapshotDiffFooterHelpIncludesMetadata(t *testing.T) {
 	t.Fatalf("snapshot diff footer help should include m metadata, got %+v", short)
 }
 
-func TestSnapshotDiffFooterHelpIncludesSwap(t *testing.T) {
-	short := viewHelp{keys: defaultKeys(), view: snapshotDiffView}.ShortHelp()
-	for _, b := range short {
-		if h := b.Help(); h.Key == "x" && h.Desc == "swap" {
-			return
-		}
-	}
-	t.Fatalf("snapshot diff footer help should include x swap, got %+v", short)
-}
-
 func TestSnapshotDiffSearchTypeShowsChangedPaths(t *testing.T) {
 	a := detailApp(t)
 	a.Restic = stubRestic{

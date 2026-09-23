@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +63,25 @@ type stubRestic struct {
 	diffParseErrors int               // surfaced in the returned SnapshotDiff
 	diffErr         error             // returned after streaming (e.g. a restic failure)
 	diffCap         *stubDiffCapture  // captures StreamDiff args (older/newer, calls)
+
+	treeNodes map[string]model.TreeNode // returned by TreeNode, keyed by treeKey
+	treeErr   error                     // returned by TreeNode instead of a record
+	treeCap   *stubTreeCapture          // captures TreeNode lookups across goroutines
+}
+
+// treeKey addresses one path's record in one snapshot for stubRestic.treeNodes.
+func treeKey(snapshotID, p string) string { return snapshotID + ":" + p }
+
+// stubTreeCapture records TreeNode lookups, which DiffNodes runs concurrently.
+type stubTreeCapture struct {
+	mu      sync.Mutex
+	lookups []string // treeKey of each lookup
+}
+
+func (c *stubTreeCapture) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lookups)
 }
 
 // stubDiffCapture records the args passed to StreamDiff across goroutines so a
@@ -173,6 +194,21 @@ func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Cr
 	return model.SnapshotDiff{ParseErrors: s.diffParseErrors}, nil
 }
 
+// TreeNode returns the treeNodes record for the looked-up path, or treeErr.
+func (s stubRestic) TreeNode(_ context.Context, _ resticx.Target, _ resticx.Creds, snapshotID, dir, name string, _ time.Duration) (model.TreeNode, bool, error) {
+	key := treeKey(snapshotID, path.Join(dir, name))
+	if s.treeCap != nil {
+		s.treeCap.mu.Lock()
+		s.treeCap.lookups = append(s.treeCap.lookups, key)
+		s.treeCap.mu.Unlock()
+	}
+	if s.treeErr != nil {
+		return model.TreeNode{}, false, s.treeErr
+	}
+	n, ok := s.treeNodes[key]
+	return n, ok, nil
+}
+
 // ExtractTree satisfies app.Restic; the tui tests don't exercise the extract
 // orchestrator directly, so the stub is a no-op success.
 func (s stubRestic) ExtractTree(_ context.Context, _ resticx.Target, _ resticx.Creds, _ resticx.ExtractTreeParams, _ func(resticx.ExtractTreeEvent) error) error {
@@ -214,6 +250,13 @@ func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ rest
 	close(b.started)
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()
+}
+
+// TreeNode blocks until cancelled. It leaves started alone because DiffNodes
+// runs two lookups at once.
+func (blockingRestic) TreeNode(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _, _ string, _ time.Duration) (model.TreeNode, bool, error) {
+	<-ctx.Done()
+	return model.TreeNode{}, false, ctx.Err()
 }
 
 // ExtractTree blocks until cancelled, mirroring the other blocking flows, so a

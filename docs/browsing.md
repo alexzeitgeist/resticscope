@@ -206,7 +206,7 @@ Path       /
   U M2 U2           ▸ srv/
   U +1 M3 U5        ▸ var/
 
-↑/↓ move • enter open • / search • e extract • x swap • m metadata • +-MUTb filters • q back
+↑/↓ move • enter open • / search • i info • e extract • m metadata • +-MUTb filters • q back
 ```
 
 A directory carries the totals for everything below it, so you can see where a
@@ -223,11 +223,11 @@ Markers describe the pair in the direction shown in the title:
 | `?` | bitrot reported by restic |
 
 Keys: `enter` or `→` opens a directory, `⌫` goes up, `/` searches the changed
-paths, `x` swaps the comparison direction, `m` includes metadata-only changes,
-`e` extracts changed paths, and `+ - M U T b` toggle the corresponding change
-types. Every type starts visible, so the first press hides one and the summary
-gains a `filter:` mask of the types still shown; the totals keep counting
-everything, so what you hid stays visible.
+paths, `i` shows what changed on the selected path, `x` swaps the comparison
+direction, `m` includes metadata-only changes, `e` extracts changed paths, and
+`+ - M U T b` toggle the corresponding change types. Every type starts visible,
+so the first press hides one and the summary gains a `filter:` mask of the types
+still shown; the totals keep counting everything, so what you hid stays visible.
 
 restic leaves metadata-only changes out of a diff unless asked, so a file whose
 owner or mode changed while its contents stayed the same does not appear at
@@ -235,12 +235,15 @@ first. `m` reruns the comparison with `restic diff --metadata` and the summary
 reads `with metadata`; press it again to go back. The setting stays on for later
 comparisons until you turn it off or quit.
 
-- restic does not say which field changed, so a file that was only read, and got
-  a new access time, shows the same `U` as one whose owner changed.
+- restic does not say which field changed, so a file rewritten with identical
+  contents, which gets new timestamps and a new inode, shows the same `U` as one
+  whose owner changed. `i` tells them apart.
+- A symlink pointed somewhere else is a `U` too, so without `m` it does not
+  appear at all.
 - restic also marks directories above changed paths as `U`. The marker can mean
-  that the directory's own metadata changed, its contents changed, or both.
-  The summary counts these directory markers, and each row shows its own `U`
-  beside the totals for changes below it.
+  that the directory's own metadata changed, its contents changed, or both, and
+  `i` says which. The summary counts these directory markers, and each row
+  shows its own `U` beside the totals for changes below it.
 
 Comparing large trees can take minutes, so diff has its own timeout instead of
 the shorter `restic_command_timeout` used for quick probes:
@@ -249,3 +252,51 @@ the shorter `restic_command_timeout` used for quick probes:
 [diff]
 timeout = "10m"
 ```
+
+### What changed on a path
+
+`i` reads the selected path's record from both snapshots and lays them side by
+side, marking each field that differs with `≠`:
+
+```text
+info: homeserver-system · c7d8e9f0 2026-05-22 11:00 → d0e1f2a3 2026-05-23 11:00           ? help
+
+Path       /etc/passwd
+  U metadata only · differs in mtime, ctime, and inode
+
+  Field        c7d8e9f0             d0e1f2a3
+  Type         file                 file
+  Size         2.8 KiB              2.8 KiB
+  Mode         -rw-r--r--           -rw-r--r--
+  Owner        root (0)             root (0)
+  Group        root (0)             root (0)
+≠ mtime        2026-04-02 09:14:07  2026-05-22 18:40:51
+≠ ctime        2026-04-02 09:14:07  2026-05-22 18:40:51
+≠ Inode        1311                 1874
+  Links        1                    1
+  Contents     identical
+
+q back
+```
+
+Here the contents are identical but the file has a new inode and new times, so
+something rewrote it unchanged, as `vipw` or a package script might. The first
+line always restates restic's marker and, when both records exist, lists the
+fields that differ. That works for every marker, not just `U`: an `M` file also
+shows whether its owner or mode changed along with its contents, which restic's
+marker hides; a `+` or `-` path shows its one record; and a directory says
+whether its own metadata changed or only something below it.
+
+A `ctime` that differs on its own is common: the kernel updates it whenever the
+file's inode is touched, so a `chmod` or `chown` that sets the values the file
+already had, as permission-fixing scripts do on every run, is enough to make the
+file a `U`. The screen notes when that is the only change.
+
+An `atime` row appears only for backups made with `restic backup --with-atime`;
+otherwise restic stores a copy of the modification time. Extended attributes,
+and the Windows attributes restic records, are listed by name and never by value;
+when only a value changed, a note names the attribute.
+
+Each `i` runs `restic --no-lock cat tree <snapshot>:<directory>` once for each
+snapshot that has the path, both at once and under the diff timeout above, and
+`esc` cancels them. The records stay in memory only while the screen is open.

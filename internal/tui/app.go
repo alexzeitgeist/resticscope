@@ -28,6 +28,7 @@ const (
 	helpView
 	infoView
 	extractView
+	diffInfoView
 )
 
 // Model is the root Bubble Tea model coordinating all application views and
@@ -166,6 +167,15 @@ type Model struct {
 	diffGen       int                // generation token; stale diff msgs are discarded
 	diffCancel    context.CancelFunc // cancels just the in-flight diff (child of m.ctx)
 	diffProgress  chan int           // coalesced count-of-entries-seen ticks; re-armed by waitForDiffProgress
+
+	// Diff info holds one changed path's records from each snapshot while its
+	// screen is open. dropDiffInfo clears them and cancels a pending lookup.
+	diffInfoRow    model.DiffRow      // the row the screen describes
+	diffInfoFirst  diffInfoSide       // record from diffOlder
+	diffInfoSecond diffInfoSide       // record from diffNewer
+	diffInfoScroll int                // modal scroll offset, clamped on render
+	diffInfoGen    int                // generation token; stale lookups are discarded
+	diffInfoCancel context.CancelFunc // cancels the in-flight lookup; nil once it lands
 
 	// The extract sub-model owns its state machine, cancellation, file picker,
 	// and transient clearing. Model routes its input and restores the prior view
@@ -307,6 +317,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,funle
 		return m.applySnapshotDiffProgressMsg(msg)
 	case snapshotDiffMsg:
 		return m.applySnapshotDiffMsg(msg), nil
+	case diffInfoMsg:
+		return m.applyDiffInfoMsg(msg), nil
 	case shellExitedMsg:
 		return m.applyShellExit(msg), nil
 	case extractRunDoneMsg:

@@ -86,6 +86,8 @@ func (m Model) View() tea.View {
 		title, body = m.findTitle(), m.findBody()
 	case m.view == snapshotDiffView:
 		title, body = m.diffTitle(), m.snapshotDiffBody()
+	case m.view == diffInfoView:
+		title, body = m.diffInfoTitle(), m.diffInfoBody()
 	case m.view == extractView:
 		title, body = m.styles.title.Render(extractTitle(m.extract)), m.extractBody()
 	case m.view == detailView && hasDetail:
@@ -121,7 +123,7 @@ func (m Model) windowTitleRepo(v view) string {
 		return m.browseRepo
 	case findVersionsView:
 		return m.findRepo
-	case snapshotDiffView:
+	case snapshotDiffView, diffInfoView:
 		return m.diffRepo
 	case extractView:
 		return m.extract.req.Repo
@@ -432,14 +434,15 @@ func (m Model) footerView() string {
 	}
 	searching := m.browseSearching || m.diffSearching
 	help := clip(m.help.View(viewHelp{
-		keys:            m.keys,
-		view:            m.view,
-		filtering:       m.filtering,
-		searching:       searching,
-		infoScrollable:  m.infoScrollable(),
-		helpScrollable:  m.helpScrollable(),
-		searchSuspended: m.browseSearchSuspended,
-		diffJumped:      m.diffSearchJumped,
+		keys:               m.keys,
+		view:               m.view,
+		filtering:          m.filtering,
+		searching:          searching,
+		infoScrollable:     m.infoScrollable(),
+		diffInfoScrollable: m.diffInfoScrollable(),
+		helpScrollable:     m.helpScrollable(),
+		searchSuspended:    m.browseSearchSuspended,
+		diffJumped:         m.diffSearchJumped,
 	}), w)
 	switch {
 	case m.filtering:

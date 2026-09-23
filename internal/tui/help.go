@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/alexzeitgeist/resticscope/internal/model"
@@ -109,6 +108,7 @@ func (m Model) helpSections() []helpSection {
 			{keyLabel(k.Enter) + "/" + keyLabel(k.Open), "open directory"},
 			{keyLabel(k.Parent), "parent directory"},
 			{keyLabel(k.Search), "search changed paths"},
+			{keyLabel(k.Info), "what changed on the selected path"},
 			{keyLabel(k.Extract), "extract changed paths"},
 			{keyLabel(k.DiffSwap), "swap snapshot direction"},
 			{keyLabel(k.DiffMeta), "include metadata-only changes"},
@@ -156,25 +156,7 @@ func (m Model) helpTitle() string {
 // Overflowing content gets the same line-range hint as the info modal.
 func (m Model) helpBody() string {
 	w, _ := m.effSize()
-	lines := m.helpBodyLines(w)
-	visible := m.modalVisible()
-	if len(lines) <= visible {
-		return strings.Join(lines, "\n")
-	}
-	bodyRows := visible - 1
-	showHint := bodyRows >= 1
-	if !showHint {
-		bodyRows = visible
-	}
-	start := clampModalScroll(m.helpScroll, len(lines), bodyRows)
-	end := min(start+bodyRows, len(lines))
-	out := make([]string, 0, end-start+1)
-	out = append(out, lines[start:end]...)
-	if showHint {
-		hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
-		out = append(out, clip(m.styles.meta.Render(hint), w))
-	}
-	return strings.Join(out, "\n")
+	return m.modalWindow(m.helpBodyLines(w), m.helpScroll, w)
 }
 
 // helpBodyLines builds a flat, windowable body. It uses two columns when they
@@ -223,31 +205,17 @@ func (m Model) helpBodyLines(width int) []string {
 // when the body fits on screen.
 func (m Model) scrollHelp(delta int) Model {
 	w, _ := m.effSize()
-	lines := m.helpBodyLines(w)
-	visible := m.modalVisible()
-	if len(lines) <= visible {
-		m.helpScroll = 0
-		return m
-	}
-	bodyRows := max(visible-1, 1)
-	m.helpScroll = clampModalScroll(m.helpScroll+delta, len(lines), bodyRows)
+	m.helpScroll = modalScrollBy(m.helpScroll, delta, len(m.helpBodyLines(w)), m.modalVisible())
 	return m
 }
 
-// helpScrollable reports whether the help body overflows the pane. It avoids
-// m.footerRows because that builds viewHelp and calls this method; an async
-// status message adds a second footer row.
+// helpScrollable reports whether the help body overflows the pane.
 func (m Model) helpScrollable() bool {
 	if m.view != helpView {
 		return false
 	}
-	w, h := m.effSize()
-	footer := 1
-	if m.statusMsg != "" {
-		footer = 2
-	}
-	available := max(h-headerRows-2*gapRows-footer, 1)
-	return len(m.helpBodyLines(w)) > available
+	w, _ := m.effSize()
+	return m.modalOverflows(len(m.helpBodyLines(w)))
 }
 
 func helpKeyWidth(secs []helpSection) int {

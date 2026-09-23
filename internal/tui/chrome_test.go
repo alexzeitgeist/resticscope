@@ -74,6 +74,20 @@ func chromeViews() []chromeCase {
 			return openFindVersions(t, newTestModel(t, a), "hostname")
 		}, "q back"},
 		{"snapshot diff", diffModel, "q back"},
+		{"snapshot diff after search jump", func(t *testing.T) Model {
+			t.Helper()
+			m := typeDiffSearch(t, openDiffSearch(t, diffModel(t)), "passwd")
+			m = update(t, m, press("enter"))
+			if !m.diffSearchJumped {
+				t.Fatal("precondition: enter should jump to the match")
+			}
+			return m
+		}, "esc/q previous"},
+		{"diff info", func(t *testing.T) Model {
+			t.Helper()
+			m := openInfoDiff(t, infoApp(t, stubRestic{treeNodes: infoNodes()}), "/etc/passwd")
+			return pressInfo(t, m)
+		}, "q back"},
 		{"info", func(t *testing.T) Model {
 			t.Helper()
 			m := newTestModel(t, snapshotInfoApp(t))

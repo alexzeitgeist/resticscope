@@ -1,6 +1,11 @@
 package tui
 
-import "charm.land/lipgloss/v2"
+import (
+	"fmt"
+	"strings"
+
+	"charm.land/lipgloss/v2"
+)
 
 // Layout helpers derive responsive row budgets and scrolling windows from the
 // terminal size without consulting application state.
@@ -59,6 +64,50 @@ func clampModalScroll(scroll, total, bodyRows int) int {
 		scroll = 0
 	}
 	return scroll
+}
+
+// modalWindow renders a scrollable modal body from scroll on. An overflowing
+// body gives its last row to a line-range hint, unless only one row fits.
+func (m Model) modalWindow(lines []string, scroll, width int) string {
+	visible := m.modalVisible()
+	if len(lines) <= visible {
+		return strings.Join(lines, "\n")
+	}
+	bodyRows := visible - 1
+	showHint := bodyRows >= 1
+	if !showHint {
+		bodyRows = visible
+	}
+	start := clampModalScroll(scroll, len(lines), bodyRows)
+	end := min(start+bodyRows, len(lines))
+	out := make([]string, 0, end-start+1)
+	out = append(out, lines[start:end]...)
+	if showHint {
+		hint := fmt.Sprintf("  showing lines %d–%d of %d", start+1, end, len(lines))
+		out = append(out, clip(m.styles.meta.Render(hint), width))
+	}
+	return strings.Join(out, "\n")
+}
+
+// modalScrollBy moves a modal scroll offset by delta within the rows
+// modalWindow shows. A body that fits returns to the top.
+func modalScrollBy(scroll, delta, total, visible int) int {
+	if total <= visible {
+		return 0
+	}
+	return clampModalScroll(scroll+delta, total, max(visible-1, 1))
+}
+
+// modalOverflows reports whether a modal body of total lines needs scrolling.
+// Footer help calls it, so it counts footer rows directly instead of rendering
+// the footer; an async status message adds a second row.
+func (m Model) modalOverflows(total int) bool {
+	_, h := m.effSize()
+	footer := 1
+	if m.statusMsg != "" {
+		footer = 2
+	}
+	return total > max(h-headerRows-2*gapRows-footer, 1)
 }
 
 // listHeight returns the rows left after the header, gaps, and footer.

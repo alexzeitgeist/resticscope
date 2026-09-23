@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -84,6 +85,10 @@ type fakeRestic struct {
 	diffErr         error             // returned instead of a clean diff
 	diffCap         *diffCapture      // optional; records what StreamDiff was asked
 
+	treeNodes map[string]model.TreeNode // returned by TreeNode, keyed by snapshot ID
+	treeErrs  map[string]error          // returned by TreeNode instead, keyed by snapshot ID
+	treeCap   *treeCapture              // optional; records what TreeNode was asked
+
 	extractCap        *extractCapture            // optional; records the extract params/call counts
 	extractTreeEvents []resticx.ExtractTreeEvent // events fed to onEvent in order
 	extractTreeErr    error                      // returned instead of a clean tree run
@@ -106,6 +111,13 @@ type diffCapture struct {
 	newerID  string
 	metadata bool
 	timeout  time.Duration
+}
+
+// treeCapture records TreeNode lookups, which DiffNodes runs concurrently.
+type treeCapture struct {
+	mu      sync.Mutex
+	lookups []string // "snapshotID dir name"
+	timeout time.Duration
 }
 
 // findCapture records FindMatches calls through the value-receiver fake.
@@ -145,6 +157,20 @@ func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx
 		return nil, f.findErr
 	}
 	return f.findResults, nil
+}
+
+func (f fakeRestic) TreeNode(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID, dir, name string, timeout time.Duration) (model.TreeNode, bool, error) {
+	if f.treeCap != nil {
+		f.treeCap.mu.Lock()
+		f.treeCap.lookups = append(f.treeCap.lookups, snapshotID+" "+dir+" "+name)
+		f.treeCap.timeout = timeout
+		f.treeCap.mu.Unlock()
+	}
+	if err := f.treeErrs[snapshotID]; err != nil {
+		return model.TreeNode{}, false, err
+	}
+	n, ok := f.treeNodes[snapshotID]
+	return n, ok, nil
 }
 
 func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
@@ -247,6 +273,11 @@ func (r blockingBrowseRestic) StreamSnapshotTree(ctx context.Context, t resticx.
 
 func (blockingBrowseRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error) {
 	return nil, nil
+}
+
+func (blockingBrowseRestic) TreeNode(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID, dir, name string, timeout time.Duration) (model.TreeNode, bool, error) {
+	<-ctx.Done()
+	return model.TreeNode{}, false, ctx.Err()
 }
 
 func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
@@ -804,6 +835,75 @@ func TestSnapshotDiffUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
 	if _, err := a.SnapshotDiff(t.Context(), "nope", "old", "new", false, nil, nil); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
+	}
+}
+
+func TestDiffNodesLooksUpBothSides(t *testing.T) {
+	cap := &treeCapture{}
+	a := &App{Cfg: testConfig(), Secrets: fakeSecrets{}, Restic: fakeRestic{
+		treeCap: cap,
+		treeNodes: map[string]model.TreeNode{
+			"first":  {Name: "passwd", Mode: 0o644},
+			"second": {Name: "passwd", Mode: 0o600},
+		},
+	}}
+	first, second := a.DiffNodes(t.Context(), "repo-a", "/etc/passwd", "first", "second")
+	if first.Err != nil || second.Err != nil || !first.Found || !second.Found {
+		t.Fatalf("sides = %+v / %+v, want both found", first, second)
+	}
+	if first.Node.Mode != 0o644 || second.Node.Mode != 0o600 {
+		t.Errorf("modes = %v / %v, want each snapshot's own record", first.Node.Mode, second.Node.Mode)
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	slices.Sort(cap.lookups)
+	if want := []string{"first /etc passwd", "second /etc passwd"}; !slices.Equal(cap.lookups, want) {
+		t.Errorf("lookups = %q, want %q", cap.lookups, want)
+	}
+	if cap.timeout != 15*time.Minute {
+		t.Errorf("timeout = %v, want cfg.Diff.Timeout 15m", cap.timeout)
+	}
+}
+
+// An added path has no record in the first snapshot, so only one side runs.
+func TestDiffNodesSkipsUnrequestedSide(t *testing.T) {
+	cap := &treeCapture{}
+	a := &App{Cfg: testConfig(), Secrets: fakeSecrets{}, Restic: fakeRestic{
+		treeCap:   cap,
+		treeNodes: map[string]model.TreeNode{"second": {Name: "wiki"}},
+	}}
+	first, second := a.DiffNodes(t.Context(), "repo-a", "/wiki", "", "second")
+	if first.Found || first.Err != nil || !second.Found {
+		t.Errorf("sides = %+v / %+v, want an untouched first side", first, second)
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if want := []string{"second / wiki"}; !slices.Equal(cap.lookups, want) {
+		t.Errorf("lookups = %q, want %q", cap.lookups, want)
+	}
+}
+
+func TestDiffNodesReportsEachSidesFailure(t *testing.T) {
+	boom := errors.New("restic cat failed")
+	a := &App{Cfg: testConfig(), Secrets: fakeSecrets{}, Restic: fakeRestic{
+		treeNodes: map[string]model.TreeNode{"second": {Name: "passwd"}},
+		treeErrs:  map[string]error{"first": boom},
+	}}
+	first, second := a.DiffNodes(t.Context(), "repo-a", "/etc/passwd", "first", "second")
+	if !errors.Is(first.Err, boom) || second.Err != nil || !second.Found {
+		t.Errorf("sides = %+v / %+v, want only the first to fail", first, second)
+	}
+}
+
+func TestDiffNodesRejectsUnknownRepoAndRoot(t *testing.T) {
+	a := &App{Cfg: testConfig(), Secrets: fakeSecrets{}, Restic: fakeRestic{}}
+	first, second := a.DiffNodes(t.Context(), "nope", "/etc/passwd", "first", "")
+	if !errors.Is(first.Err, ErrUnknownRepo) || second.Err != nil {
+		t.Errorf("unknown repo sides = %+v / %+v, want an error on the requested side only", first, second)
+	}
+	first, second = a.DiffNodes(t.Context(), "repo-a", "/", "first", "second")
+	if !errors.Is(first.Err, errDiffNodeRoot) || !errors.Is(second.Err, errDiffNodeRoot) {
+		t.Errorf("root sides = %+v / %+v, want errDiffNodeRoot", first, second)
 	}
 }
 

@@ -412,8 +412,27 @@ func docDiffApp(t *testing.T) *app.App {
 	t.Helper()
 	a := docApp(t)
 	a.Cfg.Diff = config.Diff{Timeout: config.Duration(10 * time.Minute)}
-	a.Restic = stubRestic{diffEntries: docDiffEntries(t)}
+	a.Restic = stubRestic{diffEntries: docDiffEntries(t), treeNodes: docPasswdRecords()}
 	return a
+}
+
+// docPasswdRecords has /etc/passwd rewritten with identical contents between the
+// compared snapshots, the usual source of a bare U: new times and a new inode.
+func docPasswdRecords() map[string]model.TreeNode {
+	written := time.Date(2026, 4, 2, 9, 14, 7, 0, time.UTC)
+	rewritten := time.Date(2026, 5, 22, 18, 40, 51, 0, time.UTC)
+	before := model.TreeNode{
+		Name: "passwd", Type: model.NodeTypeFile, Mode: 0o644, User: "root", Group: "root",
+		ModTime: written, AccessTime: written, ChangeTime: written,
+		Inode: 1311, Size: 2873, Links: 1, Content: []string{"3f1c9a"},
+	}
+	after := before
+	after.ModTime, after.AccessTime, after.ChangeTime = rewritten, rewritten, rewritten
+	after.Inode = 1874
+	return map[string]model.TreeNode{
+		treeKey(docSnapshotID(1), "/etc/passwd"): before,
+		treeKey(docSnapshotID(0), "/etc/passwd"): after,
+	}
 }
 
 // docOpenDiff opens the newest pair with metadata enabled.
@@ -553,6 +572,13 @@ func docScreens() []docScreen {
 			t.Helper()
 			return docOpenDiff(t, docModel(t, docDiffApp(t), h))
 		}},
+		{"diff info", "docs/browsing.md", 19, func(t *testing.T, h int) Model {
+			t.Helper()
+			m := docOpenDiff(t, docModel(t, docDiffApp(t), h))
+			m = docSelectDiffRow(t, update(t, m, press("enter")), "passwd")
+			next, cmd := m.Update(press("i"))
+			return update(t, next.(Model), cmd())
+		}},
 		{"extract review", "docs/extract.md", 14, func(t *testing.T, h int) Model {
 			t.Helper()
 			m := docOpenEtc(t, docModel(t, docBrowseApp(t), h))
@@ -635,6 +661,19 @@ func docOpenEtc(t *testing.T, m Model) Model {
 	t.Helper()
 	m = docSelectBrowseRow(t, openBrowse(t, m), "etc")
 	return pressBrowse(t, m, "enter")
+}
+
+// docSelectDiffRow puts the diff cursor on a named entry.
+func docSelectDiffRow(t *testing.T, m Model, name string) Model {
+	t.Helper()
+	for i, r := range m.diffRows {
+		if r.Name == name {
+			m.diffCursor = i
+			return m
+		}
+	}
+	t.Fatalf("no %q in the current diff listing", name)
+	return m
 }
 
 // docSelectBrowseRow puts the browse cursor on a named entry.

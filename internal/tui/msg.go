@@ -70,6 +70,12 @@ type snapshotDiffMsg struct {
 	err      error
 }
 
+// diffInfoMsg carries both snapshots' records for the open diff info screen.
+type diffInfoMsg struct {
+	gen           int
+	first, second app.DiffNodeSide
+}
+
 // repoRefreshedMsg carries a completed repository refresh. A cache-save error
 // does not invalidate its live row; the UI displays both the row and a warning.
 type repoRefreshedMsg struct {

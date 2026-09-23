@@ -142,7 +142,7 @@ List
   s                          shell with repo env
   r                          refresh this repo
   q                          quit
-  showing lines 1–15 of 82
+  showing lines 1–15 of 83
 
 ↑/↓ scroll • q back
 ```
@@ -163,7 +163,7 @@ all of them, these are the ones worth learning first:
 | `s` | shell scoped to the repository |
 | `r` `R` | refresh this repository / all of them |
 | `o` `g` | cycle sort order / grouping |
-| `i` | snapshot info |
+| `i` | snapshot info, or what changed on a diffed path |
 | `?` | full keybinding list |
 
 ## Commands

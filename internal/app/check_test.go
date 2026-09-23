@@ -44,6 +44,10 @@ func (r *recordingRestic) StreamDiff(ctx context.Context, t resticx.Target, c re
 	return model.SnapshotDiff{}, nil
 }
 
+func (r *recordingRestic) TreeNode(ctx context.Context, t resticx.Target, c resticx.Creds, snapshotID, dir, name string, timeout time.Duration) (model.TreeNode, bool, error) {
+	return model.TreeNode{}, false, nil
+}
+
 func (r *recordingRestic) ExtractTree(ctx context.Context, t resticx.Target, c resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error {
 	return nil
 }
