@@ -434,7 +434,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ```
 
-## github.com/mattn/go-runewidth v0.0.28 — LICENSE
+## github.com/mattn/go-runewidth v0.0.30 — LICENSE
 
 ```text
 The MIT License (MIT)
@@ -488,7 +488,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3 v0.35.3 — LICENSE
+## github.com/ncruces/go-sqlite3 v0.35.5 — LICENSE
 
 ```text
 MIT License
@@ -515,7 +515,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 — LICENSE
+## github.com/ncruces/go-sqlite3-wasm/v6 v6.2.35304 — LICENSE
 
 ```text
 MIT No Attribution License
@@ -539,7 +539,7 @@ SOFTWARE.
 
 ```
 
-## github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 — parser/LICENSE
+## github.com/ncruces/go-sqlite3-wasm/v6 v6.2.35304 — parser/LICENSE
 
 ```text
 The MIT License (MIT)
@@ -647,7 +647,7 @@ SOFTWARE.
 
 ```
 
-## golang.org/x/crypto v0.56.0 — LICENSE
+## golang.org/x/crypto v0.57.0 — LICENSE
 
 ```text
 Copyright 2009 The Go Authors.
@@ -680,7 +680,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## golang.org/x/sync v0.22.0 — LICENSE
+## golang.org/x/sync v0.23.0 — LICENSE
 
 ```text
 Copyright 2009 The Go Authors.
@@ -713,7 +713,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## golang.org/x/sys v0.47.0 — LICENSE
+## golang.org/x/sys v0.48.0 — LICENSE
 
 ```text
 Copyright 2009 The Go Authors.
