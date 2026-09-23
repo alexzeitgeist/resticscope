@@ -27,8 +27,8 @@ The release system has five relevant files:
 - `.github/workflows/release.yml` validates and publishes version tags.
 - `.goreleaser.yaml` defines release targets, archive contents, checksums, and
   version metadata.
-- `.github/dependabot.yml` proposes updates to pinned GitHub Actions and Go
-  modules.
+- `.github/dependabot.yml` proposes weekly updates to pinned GitHub Actions and
+  Go modules, grouped into one pull request per ecosystem.
 - `scripts/third-party-notices.sh` regenerates `THIRD_PARTY_NOTICES.md`.
 
 GitHub Actions are pinned to full commit SHAs. The comments beside those SHAs,
@@ -114,6 +114,8 @@ After changing dependencies, refresh the notices that ship in every archive:
 ```
 
 The script is deterministic; if it produces no diff, nothing needs committing.
+Dependabot pull requests do not run it and CI does not check the notices, so
+run it on a Dependabot branch before merging.
 
 ## When to run GoReleaser locally
 
