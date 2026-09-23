@@ -427,9 +427,8 @@ func BuildDiffTree(entries []DiffEntry) DiffTree {
 	return out
 }
 
-// DiffExtractSet holds restic include lists and selected-path counts for each
-// snapshot. Removed paths use First, added paths use Second, and other kinds
-// use both. An empty side has a nil list and zero count.
+// DiffExtractSet holds include lists and extractable-path counts for each side.
+// Counts precede added/removed directory collapsing.
 type DiffExtractSet struct {
 	First, Second           []string
 	FirstCount, SecondCount int
@@ -503,15 +502,18 @@ func DiffExtractIncludes(entries []DiffEntry, root string, filter ModifierKind) 
 		}
 		// Non-pure directories must not recursively include unchanged contents.
 		dirNonPure := isDir[p] && merged[p] != KindAdded && merged[p] != KindRemoved
+		if dirNonPure {
+			continue
+		}
 		if eff&diffFirstSideKinds != 0 {
 			out.FirstCount++
-			if !dirNonPure && !covered(p, pureFirst) {
+			if !covered(p, pureFirst) {
 				out.First = append(out.First, p)
 			}
 		}
 		if eff&diffSecondSideKinds != 0 {
 			out.SecondCount++
-			if !dirNonPure && !covered(p, pureSecond) {
+			if !covered(p, pureSecond) {
 				out.Second = append(out.Second, p)
 			}
 		}

@@ -198,15 +198,15 @@ a navigator you can walk like the file browser:
 diff: homeserver-system · c7d8e9f0 2026-05-22 11:00 → d0e1f2a3 2026-05-23 11:00           ? help
 
 Path       /
-  +2 -1 M9 U2 T1 · + in second snapshot · - in first snapshot
-  Change          Name
-▎ +1 -1 M2 U1 T1  ▸ etc/
-  M1 U1           ▸ home/
-  M1              ▸ root/
-  M2              ▸ srv/
-  +1 M3           ▸ var/
+  +2 -1 M9 U21 T1 · + in second snapshot · - in first snapshot · with metadata
+  Change            Name
+▎ U +1 -1 M2 U5 T1  ▸ etc/
+  U M1 U4           ▸ home/
+  U M1              ▸ root/
+  U M2 U2           ▸ srv/
+  U +1 M3 U5        ▸ var/
 
-↑/↓ move • enter open • ⌫ parent • / search • e extract • x swap • +-MUTb filters • q back
+↑/↓ move • enter open • / search • e extract • x swap • m metadata • +-MUTb filters • q back
 ```
 
 A directory carries the totals for everything below it, so you can see where a
@@ -218,15 +218,29 @@ Markers describe the pair in the direction shown in the title:
 | `+` | only in the second snapshot |
 | `-` | only in the first snapshot |
 | `M` | contents modified |
-| `U` | metadata only (owner, mode, timestamps) |
+| `U` | metadata only (owner, mode, timestamps); shown after `m` |
 | `T` | type changed, e.g. file became a symlink |
 | `?` | bitrot reported by restic |
 
 Keys: `enter` or `→` opens a directory, `⌫` goes up, `/` searches the changed
-paths, `x` swaps the comparison direction, `e` extracts changed paths, and
-`+ - M U T b` toggle the corresponding change types. Every type starts visible,
-so the first press hides one and the summary gains a `filter:` mask of the types
-still shown; the totals keep counting everything, so what you hid stays visible.
+paths, `x` swaps the comparison direction, `m` includes metadata-only changes,
+`e` extracts changed paths, and `+ - M U T b` toggle the corresponding change
+types. Every type starts visible, so the first press hides one and the summary
+gains a `filter:` mask of the types still shown; the totals keep counting
+everything, so what you hid stays visible.
+
+restic leaves metadata-only changes out of a diff unless asked, so a file whose
+owner or mode changed while its contents stayed the same does not appear at
+first. `m` reruns the comparison with `restic diff --metadata` and the summary
+reads `with metadata`; press it again to go back. The setting stays on for later
+comparisons until you turn it off or quit.
+
+- restic does not say which field changed, so a file that was only read, and got
+  a new access time, shows the same `U` as one whose owner changed.
+- restic also marks directories above changed paths as `U`. The marker can mean
+  that the directory's own metadata changed, its contents changed, or both.
+  The summary counts these directory markers, and each row shows its own `U`
+  beside the totals for changes below it.
 
 Comparing large trees can take minutes, so diff has its own timeout instead of
 the shorter `restic_command_timeout` used for quick probes:

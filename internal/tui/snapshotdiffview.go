@@ -20,8 +20,9 @@ const (
 	// diffAuxRows reserves the table header and optional scroll note.
 	diffAuxRows = 2
 
-	diffMarkerWidth = 14 // Fits "+999 -999 M999" before truncation.
-	diffNameMin     = 16 // Minimum readable name width.
+	// diffMarkerMinWidth fits "+999 -999 M999"; wider markers grow the column.
+	diffMarkerMinWidth = 14
+	diffNameMin        = 16 // Minimum readable name width.
 )
 
 // diffTitle renders the repository and directional pair with compact snapshot
@@ -82,9 +83,9 @@ func diffSearchSummaryBody(query string, total, shown int) string {
 	return humanize.Count(total, "match", "matches")
 }
 
-// diffSummaryLine reports progress or statistics, direction, and filters. The
-// filter stays last, while a partial warning is prepended without replacing
-// useful statistics.
+// diffSummaryLine reports progress or statistics, direction, metadata mode, and
+// filters. The filter stays last, while a partial warning is prepended without
+// replacing useful statistics.
 func (m Model) diffSummaryLine() string {
 	if m.diffLoading() {
 		return fmt.Sprintf("loading… %s seen · esc/back cancels", humanize.Count(m.diffLoadCount, "change", "changes"))
@@ -95,6 +96,9 @@ func (m Model) diffSummaryLine() string {
 	}
 	parts = append(parts, diffStatsLabel(m.diffStats, m.diffFilters, m.styles))
 	parts = append(parts, diffDirectionLegend()...)
+	if m.diffMetadata {
+		parts = append(parts, "with metadata")
+	}
 	if m.diffParseErrs > 0 {
 		parts = append(parts, diffParseErrorLabel(m.diffParseErrs))
 	}
@@ -178,7 +182,7 @@ func diffParseErrorLabel(n int) string {
 // diffList renders the current directory's windowed table.
 func (m Model) diffList(w int) string {
 	tw := browseTableWidth(w)
-	l := diffLayout(tw)
+	l := diffLayout(tw, m.diffMarkerCols)
 	header := clip(m.styles.dim.Render(diffHeaderRow(l)), tw)
 	total := len(m.diffRows)
 	if total == 0 {
@@ -197,17 +201,31 @@ func (m Model) diffList(w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// diffColLayout keeps the marker fixed while the name column flexes.
+// diffColLayout sizes the marker column to its content while the name flexes.
 type diffColLayout struct {
 	marker int
 	name   int
 }
 
-func diffLayout(width int) diffColLayout {
+// diffLayout fits the marker column to markerWidth within diffMarkerMinWidth
+// and the space left after the minimum name width.
+func diffLayout(width, markerWidth int) diffColLayout {
 	const indicator, gap = 2, 2
-	baseFixed := indicator + diffMarkerWidth + gap
-	name := max(width-baseFixed, diffNameMin)
-	return diffColLayout{marker: diffMarkerWidth, name: name}
+	marker := min(max(markerWidth, diffMarkerMinWidth), max(diffMarkerMinWidth, width-indicator-gap-diffNameMin))
+	name := max(width-indicator-marker-gap, diffNameMin)
+	return diffColLayout{marker: marker, name: name}
+}
+
+// widestDiffMarker measures every row, not just the visible window, so the
+// column stays put while scrolling. Directory listings cache the result in
+// diffMarkerCols because a directory can hold any number of changed entries.
+func (m Model) widestDiffMarker(rows []model.DiffRow) int {
+	widest := 0
+	for i := range rows {
+		own, _, totals := diffRowMarker(&rows[i], m.diffFilters, m.styles)
+		widest = max(widest, lipgloss.Width(diffMarkerText(own, totals)))
+	}
+	return widest
 }
 
 func diffHeaderRow(l diffColLayout) string {
@@ -220,7 +238,9 @@ func diffSearchHeaderRow(l diffColLayout) string {
 
 func (m Model) diffSearchList(w int) string {
 	tw := browseTableWidth(w)
-	l := diffLayout(tw)
+	// Search results are capped at diffSearchResultLimit, so measuring them per
+	// render stays cheap.
+	l := diffLayout(tw, m.widestDiffMarker(m.diffSearchRows))
 	header := clip(m.styles.dim.Render(diffSearchHeaderRow(l)), tw)
 	total := len(m.diffSearchRows)
 	if total == 0 {
@@ -249,8 +269,7 @@ func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw 
 	}
 	nameCell := padRight(truncatePathWidth(name, l.name), l.name)
 
-	marker, mstyle := diffRowMarker(r, m.styles)
-	markerCell := mstyle.Render(padRight(truncateWidth(marker, l.marker), l.marker))
+	markerCell := m.diffMarkerCell(r, l.marker)
 
 	indicator := "  "
 	content := markerCell + "  " + nameCell
@@ -261,17 +280,42 @@ func (m Model) diffRowView(r *model.DiffRow, selected bool, l diffColLayout, tw 
 	return clip(indicator+content, tw)
 }
 
-// diffRowMarker uses raw modifiers for explicit changes and aggregate rollups
-// for synthetic ancestor directories.
-func diffRowMarker(r *model.DiffRow, st styles) (string, lipgloss.Style) {
-	style := diffTypeStyle(r.Type, st)
+// diffMarkerCell truncates and pads the whole marker, then colors only the
+// row's own marker so directory totals stay dim.
+func (m Model) diffMarkerCell(r *model.DiffRow, width int) string {
+	own, ownStyle, totals := diffRowMarker(r, m.diffFilters, m.styles)
+	text := padRight(truncateWidth(diffMarkerText(own, totals), width), width)
+	if own == "" {
+		return m.styles.dim.Render(text)
+	}
+	// own is a few ASCII markers, well inside diffMarkerMinWidth, so truncation
+	// never reaches it.
+	return ownStyle.Render(text[:len(own)]) + m.styles.dim.Render(text[len(own):])
+}
+
+// diffRowMarker splits a row's marker into its own change marker and style,
+// and subtree totals for directories. A directory's own `U` follows the filter
+// and sits beside its totals; synthetic ancestors show totals only.
+func diffRowMarker(r *model.DiffRow, filter model.ModifierKind, st styles) (own string, ownStyle lipgloss.Style, totals string) {
+	if r.IsDir && r.Kinds&model.KindMetadata != 0 && !r.Aggregate.Empty() {
+		kinds := r.Kinds & filter
+		return model.ModifierString(kinds), diffTypeStyle(model.PrimaryChangeType(kinds), st), diffRollup(r.Aggregate)
+	}
 	if r.Modifier != "" {
-		return r.Modifier, style
+		return r.Modifier, diffTypeStyle(r.Type, st), ""
 	}
 	if r.IsDir {
-		return diffRollup(r.Aggregate), st.dim
+		return "", st.dim, diffRollup(r.Aggregate)
 	}
-	return "?", st.dim
+	return "?", st.dim, ""
+}
+
+// diffMarkerText joins a row's own marker and totals with one space.
+func diffMarkerText(own, totals string) string {
+	if own == "" || totals == "" {
+		return own + totals
+	}
+	return own + " " + totals
 }
 
 // diffRollup renders non-zero aggregate counts with the same canonical markers

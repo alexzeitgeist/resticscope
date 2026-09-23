@@ -82,6 +82,13 @@ you selected are restored, and only those whose change type the `+ - M U T b`
 filters leave visible. A side with nothing left to restore is skipped, and the
 pair directory keeps both sides side by side for comparison.
 
+Diff extraction skips directories marked `U` or `T`, such as a directory whose
+owner changed or a symlink replaced by a directory: restoring one could also pull
+in contents that did not change. They count toward neither the review's changed-path
+total nor the restore list, although that total still includes descendants
+covered by a collapsed added or removed directory. When only such directories
+changed, restore each one whole from the snapshot browser instead.
+
 ## Preserving owners and groups
 
 A normal extract runs as you, so restored files end up owned by you. To land the

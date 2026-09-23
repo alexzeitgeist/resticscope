@@ -100,11 +100,12 @@ type extractCapture struct {
 
 // diffCapture records StreamDiff's arguments across goroutines.
 type diffCapture struct {
-	mu      sync.Mutex
-	calls   int
-	olderID string
-	newerID string
-	timeout time.Duration
+	mu       sync.Mutex
+	calls    int
+	olderID  string
+	newerID  string
+	metadata bool
+	timeout  time.Duration
 }
 
 // findCapture records FindMatches calls through the value-receiver fake.
@@ -146,12 +147,13 @@ func (f fakeRestic) FindMatches(ctx context.Context, t resticx.Target, c resticx
 	return f.findResults, nil
 }
 
-func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+func (f fakeRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	if f.diffCap != nil {
 		f.diffCap.mu.Lock()
 		f.diffCap.calls++
 		f.diffCap.olderID = olderID
 		f.diffCap.newerID = newerID
+		f.diffCap.metadata = metadata
 		f.diffCap.timeout = timeout
 		f.diffCap.mu.Unlock()
 	}
@@ -247,7 +249,7 @@ func (blockingBrowseRestic) FindMatches(ctx context.Context, t resticx.Target, c
 	return nil, nil
 }
 
-func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+func (blockingBrowseRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()
 }
@@ -778,7 +780,7 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 	}
 
 	var entries []model.DiffEntry
-	if _, err := a.SnapshotDiff(t.Context(), "repo-a", "old", "new",
+	if _, err := a.SnapshotDiff(t.Context(), "repo-a", "old", "new", true,
 		func(e model.DiffEntry) error { entries = append(entries, e); return nil }, nil); err != nil {
 		t.Fatalf("SnapshotDiff: %v", err)
 	}
@@ -786,6 +788,9 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 	defer cap.mu.Unlock()
 	if cap.calls != 1 || cap.olderID != "old" || cap.newerID != "new" {
 		t.Fatalf("StreamDiff call = %d (%q, %q), want 1 (old, new)", cap.calls, cap.olderID, cap.newerID)
+	}
+	if !cap.metadata {
+		t.Error("StreamDiff metadata = false, want the caller's true")
 	}
 	if cap.timeout != 15*time.Minute {
 		t.Errorf("StreamDiff timeout = %v, want cfg.Diff.Timeout 15m", cap.timeout)
@@ -797,7 +802,7 @@ func TestSnapshotDiffUsesConfiguredTimeout(t *testing.T) {
 
 func TestSnapshotDiffUnknownRepo(t *testing.T) {
 	a := &App{Cfg: testConfig(), Cache: newFakeCache(), Clock: fixedClock{now}, Secrets: fakeSecrets{}, Restic: fakeRestic{}}
-	if _, err := a.SnapshotDiff(t.Context(), "nope", "old", "new", nil, nil); !errors.Is(err, ErrUnknownRepo) {
+	if _, err := a.SnapshotDiff(t.Context(), "nope", "old", "new", false, nil, nil); !errors.Is(err, ErrUnknownRepo) {
 		t.Fatalf("err = %v, want ErrUnknownRepo", err)
 	}
 }

@@ -14,15 +14,20 @@ import (
 
 // StreamDiff sends each parsed change to onEntry and coalesced counts to
 // onProgress. The diff is directional: `+` means present only in the second
-// snapshot, while `-` means present only in the first.
-func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+// snapshot, while `-` means present only in the first. restic reports `U`
+// (metadata-only) changes only when metadata is true.
+func (c *Client) StreamDiff(ctx context.Context, t Target, creds Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	if timeout <= 0 {
 		timeout = c.timeout()
 	}
 	dctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	full := prependBackendOpts(t, "--no-lock", "diff", "--json", olderID, newerID)
+	args := []string{"--no-lock", "diff", "--json"}
+	if metadata {
+		args = append(args, "--metadata")
+	}
+	full := prependBackendOpts(t, append(args, olderID, newerID)...)
 
 	runner, err := c.streamRunner()
 	if err != nil {

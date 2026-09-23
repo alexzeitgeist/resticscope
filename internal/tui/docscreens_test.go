@@ -357,23 +357,40 @@ func docPasswdVersions() []model.FindSnapshotResult {
 	return out
 }
 
-// docDiffNDJSON is what `restic diff --json` reports between the 22 May and
-// 23 May snapshots. Keeping it on the wire format means the guides' markers come
-// from the same parser that reads restic.
+// docDiffNDJSON includes restic's ancestor directory markers.
 const docDiffNDJSON = `
+{"message_type":"change","path":"/etc/","modifier":"U"}
+{"message_type":"change","path":"/etc/nginx/","modifier":"U"}
+{"message_type":"change","path":"/etc/nginx/sites-enabled/","modifier":"U"}
 {"message_type":"change","path":"/etc/nginx/nginx.conf","modifier":"M"}
 {"message_type":"change","path":"/etc/nginx/sites-enabled/old-blog","modifier":"-"}
 {"message_type":"change","path":"/etc/nginx/sites-enabled/wiki","modifier":"+"}
 {"message_type":"change","path":"/etc/passwd","modifier":"U"}
 {"message_type":"change","path":"/etc/resolv.conf","modifier":"T"}
+{"message_type":"change","path":"/etc/ssl/","modifier":"U"}
+{"message_type":"change","path":"/etc/ssl/certs/","modifier":"U"}
 {"message_type":"change","path":"/etc/ssl/certs/ca-certificates.crt","modifier":"M"}
+{"message_type":"change","path":"/home/","modifier":"U"}
+{"message_type":"change","path":"/home/alex/","modifier":"U"}
+{"message_type":"change","path":"/home/alex/.ssh/","modifier":"U"}
 {"message_type":"change","path":"/home/alex/.ssh/config","modifier":"U"}
+{"message_type":"change","path":"/home/alex/vm/","modifier":"U"}
 {"message_type":"change","path":"/home/alex/vm/debian-13.qcow2","modifier":"M"}
+{"message_type":"change","path":"/root/","modifier":"U"}
 {"message_type":"change","path":"/root/backup-report.log","modifier":"M"}
+{"message_type":"change","path":"/srv/","modifier":"U"}
+{"message_type":"change","path":"/srv/nextcloud/","modifier":"U"}
+{"message_type":"change","path":"/srv/nextcloud/data/","modifier":"U"}
 {"message_type":"change","path":"/srv/nextcloud/data/files.tar","modifier":"M"}
 {"message_type":"change","path":"/srv/nextcloud/data/nextcloud.db","modifier":"M"}
+{"message_type":"change","path":"/var/","modifier":"U"}
+{"message_type":"change","path":"/var/backups/","modifier":"U"}
 {"message_type":"change","path":"/var/backups/passwd.bak","modifier":"+"}
+{"message_type":"change","path":"/var/lib/","modifier":"U"}
+{"message_type":"change","path":"/var/lib/docker/","modifier":"U"}
 {"message_type":"change","path":"/var/lib/docker/overlay2.tar","modifier":"M"}
+{"message_type":"change","path":"/var/log/","modifier":"U"}
+{"message_type":"change","path":"/var/log/journal/","modifier":"U"}
 {"message_type":"change","path":"/var/log/journal/system.journal","modifier":"M"}
 {"message_type":"change","path":"/var/log/syslog","modifier":"M"}
 `
@@ -399,7 +416,7 @@ func docDiffApp(t *testing.T) *app.App {
 	return a
 }
 
-// docOpenDiff marks the newest two snapshots and opens their comparison.
+// docOpenDiff opens the newest pair with metadata enabled.
 func docOpenDiff(t *testing.T, m Model) Model {
 	t.Helper()
 	m = update(t, m, press("enter"))
@@ -407,6 +424,8 @@ func docOpenDiff(t *testing.T, m Model) Model {
 	m = update(t, m, press("j"))
 	m = update(t, m, press("t"))
 	next, cmd := m.Update(press("d"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	next, cmd = m.Update(press("m"))
 	return drivePastDiff(t, next.(Model), cmd)
 }
 

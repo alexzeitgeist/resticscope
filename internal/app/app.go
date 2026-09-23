@@ -42,7 +42,7 @@ type Restic interface {
 	// FindMatches returns path matches, optionally restricted to host.
 	FindMatches(ctx context.Context, t resticx.Target, creds resticx.Creds, host, pattern string) ([]model.FindSnapshotResult, error)
 	// StreamDiff streams snapshot changes and progress to their callbacks.
-	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
+	StreamDiff(ctx context.Context, t resticx.Target, creds resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error)
 	// ExtractTree restores a tree and sends progress and summary events to onEvent.
 	ExtractTree(ctx context.Context, t resticx.Target, creds resticx.Creds, params resticx.ExtractTreeParams, onEvent func(resticx.ExtractTreeEvent) error) error
 }

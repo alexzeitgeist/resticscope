@@ -66,10 +66,17 @@ type stubRestic struct {
 // stubDiffCapture records the args passed to StreamDiff across goroutines so a
 // test can assert the chronological older/newer ordering without a race.
 type stubDiffCapture struct {
-	mu      sync.Mutex
-	calls   int
-	olderID string
-	newerID string
+	mu       sync.Mutex
+	calls    int
+	olderID  string
+	newerID  string
+	metadata bool
+}
+
+func (c *stubDiffCapture) lastMetadata() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.metadata
 }
 
 func (c *stubDiffCapture) snapshot() (calls int, olderID, newerID string) {
@@ -144,12 +151,13 @@ func (s stubRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx.C
 // argument order so a test can prove the chronological sort happens before the
 // restic call. Most tui tests don't exercise diff at all; the zero stubRestic
 // returns a zero SnapshotDiff without emitting any entries.
-func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Creds, olderID, newerID string, _ time.Duration, onEntry func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+func (s stubRestic) StreamDiff(_ context.Context, _ resticx.Target, _ resticx.Creds, olderID, newerID string, metadata bool, _ time.Duration, onEntry func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
 	if s.diffCap != nil {
 		s.diffCap.mu.Lock()
 		s.diffCap.calls++
 		s.diffCap.olderID = olderID
 		s.diffCap.newerID = newerID
+		s.diffCap.metadata = metadata
 		s.diffCap.mu.Unlock()
 	}
 	for _, e := range s.diffEntries {
@@ -202,7 +210,7 @@ func (blockingRestic) FindMatches(_ context.Context, _ resticx.Target, _ resticx
 // StreamDiff blocks until cancelled, mirroring Snapshots/StreamSnapshotTree, so
 // a test can prove that q/esc while a diff is streaming cancels the running
 // restic call.
-func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _ string, _ time.Duration, _ func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
+func (b blockingRestic) StreamDiff(ctx context.Context, _ resticx.Target, _ resticx.Creds, _, _ string, _ bool, _ time.Duration, _ func(model.DiffEntry) error, _ func(seen int)) (model.SnapshotDiff, error) {
 	close(b.started)
 	<-ctx.Done()
 	return model.SnapshotDiff{}, ctx.Err()

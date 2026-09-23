@@ -167,6 +167,26 @@ func TestDiffExtractSkipsEmptySide(t *testing.T) {
 	}
 }
 
+// The hint covers the selected directory and, as with /srv, a changed
+// directory below it.
+func TestDiffExtractMetadataOnlyDirectoryNeedsFullRestore(t *testing.T) {
+	for _, entries := range [][]model.DiffEntry{
+		{{Path: "/data", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true}},
+		{
+			{Path: "/srv", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true},
+			{Path: "/srv/x", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true},
+		},
+	} {
+		m := diffExtractModel(t, entries)
+		next, cmd := m.Update(press("m"))
+		m = drivePastDiff(t, next.(Model), cmd)
+		m = update(t, m, press("e"))
+		if m.view != snapshotDiffView || !strings.Contains(m.statusMsg, "only directories changed here; restore them from the snapshot browser") {
+			t.Errorf("%s: view=%v status=%q, want full-restore guidance", entries[0].Path, m.view, m.statusMsg)
+		}
+	}
+}
+
 func TestDiffExtractReviewBodyRows(t *testing.T) {
 	m := diffExtractModel(t, diffExtractEntries())
 	m = update(t, m, press("e"))

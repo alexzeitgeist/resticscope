@@ -111,6 +111,7 @@ func (m Model) helpSections() []helpSection {
 			{keyLabel(k.Search), "search changed paths"},
 			{keyLabel(k.Extract), "extract changed paths"},
 			{keyLabel(k.DiffSwap), "swap snapshot direction"},
+			{keyLabel(k.DiffMeta), "include metadata-only changes"},
 			{diffFilters, "toggle change filters"},
 			{keyLabel(k.Back) + "/" + keyLabel(k.Quit), "back to detail"},
 		}},

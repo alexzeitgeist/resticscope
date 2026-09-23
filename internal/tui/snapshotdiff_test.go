@@ -613,6 +613,168 @@ func TestSnapshotDiffSwapErrorKeepsPreviousDiff(t *testing.T) {
 	}
 }
 
+func openMetadataDiff(t *testing.T, entries []model.DiffEntry) (Model, *app.App, *stubDiffCapture) {
+	t.Helper()
+	a := detailApp(t)
+	cap := &stubDiffCapture{}
+	a.Restic = stubRestic{snaps: []model.Snapshot{{Hostname: "h"}}, diffEntries: entries, diffCap: cap}
+	m := newTestModel(t, a)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("t"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("j"))
+	m = update(t, m, press("t"))
+	next, cmd := m.Update(press("d"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	m = update(t, m, press("enter"))
+	m = update(t, m, press("j"))
+	if r := m.selectedDiffRow(); m.diffDir != "/etc" || r == nil || r.Path != "/etc/passwd" {
+		t.Fatalf("precondition: dir %q selected %+v, want /etc/passwd in /etc", m.diffDir, r)
+	}
+	return m, a, cap
+}
+
+func TestSnapshotDiffMetadataToggleReruns(t *testing.T) {
+	m, _, cap := openMetadataDiff(t, []model.DiffEntry{
+		{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/etc/passwd", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata},
+	})
+	if calls, _, _ := cap.snapshot(); calls != 1 || cap.lastMetadata() {
+		t.Fatalf("initial diff: calls=%d metadata=%v, want 1 without metadata", calls, cap.lastMetadata())
+	}
+	older, newer := m.diffOlder.ID, m.diffNewer.ID
+	if strings.Contains(stripANSI(m.diffSummaryLine()), "with metadata") {
+		t.Fatal("summary should not claim metadata before m is pressed")
+	}
+
+	next, cmd := m.Update(press("m"))
+	m = next.(Model)
+	if !m.diffLoading() || m.diffMetadata {
+		t.Fatalf("m should rerun while the loaded mode stays off: loading=%v metadata=%v", m.diffLoading(), m.diffMetadata)
+	}
+	m = drivePastDiff(t, m, cmd)
+	if calls, o, n := cap.snapshot(); calls != 2 || !cap.lastMetadata() || o != older || n != newer {
+		t.Fatalf("metadata rerun: calls=%d metadata=%v pair=(%q, %q), want 2 with metadata on (%q, %q)",
+			calls, cap.lastMetadata(), o, n, older, newer)
+	}
+	if !m.diffMetadata || !strings.Contains(stripANSI(m.diffSummaryLine()), "with metadata") {
+		t.Errorf("metadata mode = %v, summary %q, want on and labeled", m.diffMetadata, stripANSI(m.diffSummaryLine()))
+	}
+	if r := m.selectedDiffRow(); m.diffDir != "/etc" || r == nil || r.Path != "/etc/passwd" {
+		t.Errorf("rerun should keep /etc and /etc/passwd, got dir %q selected %+v", m.diffDir, r)
+	}
+
+	next, cmd = m.Update(press("x"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	if calls, _, _ := cap.snapshot(); calls != 3 || !cap.lastMetadata() || !m.diffMetadata {
+		t.Errorf("swap: calls=%d metadata=%v loaded=%v, want 3 with metadata kept", calls, cap.lastMetadata(), m.diffMetadata)
+	}
+
+	next, cmd = m.Update(press("m"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	if calls, _, _ := cap.snapshot(); calls != 4 || cap.lastMetadata() || m.diffMetadata {
+		t.Errorf("second m: calls=%d metadata=%v loaded=%v, want 4 with metadata off", calls, cap.lastMetadata(), m.diffMetadata)
+	}
+}
+
+func TestSnapshotDiffMetadataModeCarriesOver(t *testing.T) {
+	m, _, cap := openMetadataDiff(t, []model.DiffEntry{
+		{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+	})
+	next, cmd := m.Update(press("m"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	m = update(t, m, press("esc")) // back to detail; marks survive
+	if m.view != detailView {
+		t.Fatalf("esc should return to detail, view = %d", m.view)
+	}
+	next, cmd = m.Update(press("d"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	if calls, _, _ := cap.snapshot(); calls != 3 || !cap.lastMetadata() || !m.diffMetadata {
+		t.Errorf("next diff: calls=%d metadata=%v loaded=%v, want 3 with metadata on", calls, cap.lastMetadata(), m.diffMetadata)
+	}
+}
+
+func TestSnapshotDiffMetadataToggleErrorKeepsMode(t *testing.T) {
+	m, a, _ := openMetadataDiff(t, []model.DiffEntry{
+		{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/etc/passwd", Modifier: "M", Type: model.ChangeModified, Kinds: model.KindModified},
+	})
+	a.Restic = stubRestic{diffErr: errors.New("context deadline exceeded")}
+	next, cmd := m.Update(press("m"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	if m.diffMetadata || strings.Contains(stripANSI(m.diffSummaryLine()), "with metadata") {
+		t.Error("a failed metadata rerun must leave the loaded tree labeled without metadata")
+	}
+	if len(m.diffRows) != 2 || !strings.Contains(m.statusMsg, "context deadline exceeded") {
+		t.Errorf("failed rerun rows=%d status=%q, want previous rows and a notice", len(m.diffRows), m.statusMsg)
+	}
+}
+
+func TestSnapshotDiffMetadataKeepsDirectoryMarkers(t *testing.T) {
+	m, _, _ := openMetadataDiff(t, []model.DiffEntry{
+		{Path: "/etc", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true},
+		{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/etc/passwd", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata},
+		{Path: "/srv", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true},
+	})
+	next, cmd := m.Update(press("m"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	if got := m.diffStats.MetadataOnly; got != 3 {
+		t.Errorf("root U count = %d, want 3", got)
+	}
+	for _, r := range m.diffTree.Children[model.DiffRoot] {
+		if r.Path == "/etc" && r.Kinds != model.KindMetadata {
+			t.Errorf("/etc kinds = %v, want U", r.Kinds)
+		}
+		if r.Path == "/srv" && r.Kinds != model.KindMetadata {
+			t.Errorf("/srv kinds = %v, want U", r.Kinds)
+		}
+	}
+	m = m.rebuildDiffRows(model.DiffRoot, "")
+	if body := stripANSI(m.snapshotDiffBody()); !strings.Contains(body, "U +1 U1") {
+		t.Errorf("directory marker lost descendant totals:\n%s", body)
+	}
+}
+
+// The listing's marker width is measured when rows are rebuilt, not on every
+// render, so it must follow navigation, filters, and exit.
+func TestSnapshotDiffMarkerWidthFollowsListing(t *testing.T) {
+	m, _, _ := openMetadataDiff(t, []model.DiffEntry{
+		{Path: "/etc", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata, IsDir: true},
+		{Path: "/etc/group", Modifier: "+", Type: model.ChangeAdded, Kinds: model.KindAdded},
+		{Path: "/etc/passwd", Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata},
+	})
+	next, cmd := m.Update(press("m"))
+	m = drivePastDiff(t, next.(Model), cmd)
+	for _, step := range []struct {
+		key, want string
+	}{
+		{"", "+"},        // /etc lists group and passwd
+		{"h", "U +1 U1"}, // root lists etc/
+		{"U", "+1 U1"},   // hiding U drops the directory's own marker
+		{"U", "U +1 U1"}, // and showing it restores the marker
+		{"esc", ""},      // leaving the diff clears the width
+	} {
+		if step.key != "" {
+			m = update(t, m, press(step.key))
+		}
+		if m.diffMarkerCols != len(step.want) {
+			t.Errorf("after %q: diffMarkerCols = %d, want %d (%q)", step.key, m.diffMarkerCols, len(step.want), step.want)
+		}
+	}
+}
+
+func TestSnapshotDiffFooterHelpIncludesMetadata(t *testing.T) {
+	short := viewHelp{keys: defaultKeys(), view: snapshotDiffView}.ShortHelp()
+	for _, b := range short {
+		if h := b.Help(); h.Key == "m" && h.Desc == "metadata" {
+			return
+		}
+	}
+	t.Fatalf("snapshot diff footer help should include m metadata, got %+v", short)
+}
+
 func TestSnapshotDiffFooterHelpIncludesSwap(t *testing.T) {
 	short := viewHelp{keys: defaultKeys(), view: snapshotDiffView}.ShortHelp()
 	for _, b := range short {
@@ -1315,5 +1477,66 @@ func TestDiffRollupUsesSummaryGlyphs(t *testing.T) {
 	}, got)
 	if mask := diffFilterLabel(model.AllDiffKinds); glyphs != mask {
 		t.Errorf("rollup glyphs %q diverge from the filter-mask vocabulary %q", glyphs, mask)
+	}
+}
+
+func TestDiffRowMarkerKeepsDirectoryTotals(t *testing.T) {
+	r := model.DiffRow{
+		IsDir: true, Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata,
+		Aggregate: model.DiffStats{Added: 1, Removed: 1, Modified: 2, MetadataOnly: 1, TypeChanged: 1},
+	}
+	marker := func(filter model.ModifierKind) string {
+		own, _, totals := diffRowMarker(&r, filter, styles{})
+		return diffMarkerText(own, totals)
+	}
+	if got, want := marker(model.AllDiffKinds), "U +1 -1 M2 U1 T1"; got != want {
+		t.Errorf("marker = %q, want %q", got, want)
+	}
+	if got, want := marker(model.AllDiffKinds&^model.KindMetadata), "+1 -1 M2 U1 T1"; got != want {
+		t.Errorf("marker with U filtered = %q, want %q", got, want)
+	}
+
+	r.Modifier, r.Type, r.Kinds = "+", model.ChangeAdded, model.KindAdded
+	if got := marker(model.AllDiffKinds); got != "+" {
+		t.Errorf("added directory marker = %q, want +", got)
+	}
+}
+
+// The Change column fits its widest marker and keeps a 14-column floor, giving
+// up width before the name drops below diffNameMin. Under 34 columns both floors
+// hold, the row overflows, and diffRowView clips it.
+func TestDiffLayoutFitsWidestMarker(t *testing.T) {
+	for _, tc := range []struct {
+		width, widest, marker, name int
+	}{
+		{96, 2, 14, 78},
+		{96, 23, 23, 69},
+		{40, 23, 20, 16},
+		{30, 23, 14, 16}, // 34 columns of layout, clipped to 30
+	} {
+		if l := diffLayout(tc.width, tc.widest); l.marker != tc.marker || l.name != tc.name {
+			t.Errorf("diffLayout(%d, %d) = marker %d name %d, want %d and %d",
+				tc.width, tc.widest, l.marker, l.name, tc.marker, tc.name)
+		}
+	}
+}
+
+// Busy directories keep every count in view, and only the directory's own `U`
+// takes the metadata color.
+func TestDiffRowViewShowsWideMarkerWithDimTotals(t *testing.T) {
+	m := newTestModel(t, detailApp(t))
+	m.diffFilters = model.AllDiffKinds
+	r := model.DiffRow{
+		Name: "var", Path: "/var", IsDir: true, Modifier: "U", Type: model.ChangeMetadataOnly, Kinds: model.KindMetadata,
+		Aggregate: model.DiffStats{Added: 118, Removed: 259, Modified: 523, MetadataOnly: 45, TypeChanged: 3},
+	}
+	const want = "U +118 -259 M523 U45 T3"
+	l := diffLayout(96, m.widestDiffMarker([]model.DiffRow{r}))
+	if row := stripANSI(m.diffRowView(&r, false, l, 96)); !strings.Contains(row, want+"  ▸ var/") {
+		t.Errorf("row = %q, want the full marker %q", row, want)
+	}
+	cell := m.diffMarkerCell(&r, len(want))
+	if wantCell := m.styles.chgMetadata.Render("U") + m.styles.dim.Render(want[1:]); cell != wantCell {
+		t.Errorf("marker cell = %q, want U in the metadata style and dim totals %q", cell, wantCell)
 	}
 }

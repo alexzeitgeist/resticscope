@@ -481,8 +481,8 @@ func TestDiffExtractIncludes(t *testing.T) {
 			// Both-sided changes appear in each snapshot's include list.
 			wantSecond: []string{"/proj/fresh.txt", "/proj/meta.txt", "/proj/mixed/c.txt", "/proj/new", "/proj/readme"},
 			// Counts precede include-list collapsing.
-			firstCount:  7,
-			secondCount: 9,
+			firstCount:  6,
+			secondCount: 8,
 		},
 		{
 			name:        "added only",
@@ -508,8 +508,8 @@ func TestDiffExtractIncludes(t *testing.T) {
 			filter:      KindModified,
 			wantFirst:   []string{"/proj/mixed/c.txt", "/proj/readme"},
 			wantSecond:  []string{"/proj/mixed/c.txt", "/proj/readme"},
-			firstCount:  3,
-			secondCount: 3,
+			firstCount:  2,
+			secondCount: 2,
 		},
 		{
 			name:        "root is a single changed file",
@@ -585,6 +585,22 @@ func TestDiffExtractIncludesDuplicateMerge(t *testing.T) {
 	}
 	if got.FirstCount != 1 || got.SecondCount != 3 {
 		t.Errorf("counts = (%d,%d), want (1,3)", got.FirstCount, got.SecondCount)
+	}
+}
+
+func TestDiffExtractIncludesSkipsMetadataDirectories(t *testing.T) {
+	entries := []DiffEntry{
+		{Path: "/var", IsDir: true, Kinds: KindMetadata},
+		{Path: "/var/lib", IsDir: true, Kinds: KindMetadata},
+		{Path: "/var/lib/file", Kinds: KindModified},
+		{Path: "/var/log", IsDir: true, Kinds: KindMetadata},
+	}
+	got := DiffExtractIncludes(entries, "/var", AllDiffKinds)
+	if want := []string{"/var/lib/file"}; !slicesEqual(got.First, want) || !slicesEqual(got.Second, want) {
+		t.Errorf("includes = (%q, %q), want %q on both sides", got.First, got.Second, want)
+	}
+	if got.FirstCount != 1 || got.SecondCount != 1 {
+		t.Errorf("counts = (%d, %d), want (1, 1)", got.FirstCount, got.SecondCount)
 	}
 }
 

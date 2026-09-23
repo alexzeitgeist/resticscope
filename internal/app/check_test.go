@@ -40,7 +40,7 @@ func (r *recordingRestic) FindMatches(ctx context.Context, t resticx.Target, c r
 	return nil, nil
 }
 
-func (r *recordingRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
+func (r *recordingRestic) StreamDiff(ctx context.Context, t resticx.Target, c resticx.Creds, olderID, newerID string, metadata bool, timeout time.Duration, onEntry func(model.DiffEntry) error, onProgress func(seen int)) (model.SnapshotDiff, error) {
 	return model.SnapshotDiff{}, nil
 }
 

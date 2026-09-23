@@ -30,6 +30,7 @@ type keyMap struct {
 	Diff       key.Binding // Detail: open the resolved older-to-newer diff.
 	Info       key.Binding // Detail: open snapshot information.
 	DiffSwap   key.Binding // Diff: reverse the snapshot pair and rerun.
+	DiffMeta   key.Binding // Diff: rerun with or without metadata-only changes.
 	Extract    key.Binding // Extract the selection appropriate to the current view.
 	Target     key.Binding // Extract: choose the target root.
 	Priv       key.Binding // Extract: toggle privileged restore.
@@ -84,6 +85,7 @@ func defaultKeys() keyMap {
 		Diff:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 		Info:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "info")),
 		DiffSwap:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "swap")),
+		DiffMeta:   key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "metadata")),
 		Extract:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "extract")),
 		Target:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "target")),
 		Priv:       key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "as root")),
@@ -149,14 +151,15 @@ func (h viewHelp) ShortHelp() []key.Binding {
 	case findVersionsView:
 		return []key.Binding{moveHelp(), helpAs(k.Enter, "extract"), k.HostToggle, k.Back}
 	case snapshotDiffView:
+		// Parent stays in the help overlay so the bar fits its width budget.
 		if h.diffJumped {
 			// After a search jump, q and esc reverse the jump instead of leaving.
 			return []key.Binding{
-				moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(),
+				moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Extract, k.DiffSwap, k.DiffMeta, diffFiltersHelp(),
 				key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc/q", "previous")),
 			}
 		}
-		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, diffFiltersHelp(), k.Back}
+		return []key.Binding{moveHelp(), helpAs(k.Enter, "open"), k.Search, k.Extract, k.DiffSwap, k.DiffMeta, diffFiltersHelp(), k.Back}
 	case extractView:
 		// Preserve a back affordance if the extract model supplied no bindings.
 		if len(h.extractBindings) > 0 {
@@ -249,7 +252,7 @@ func (h viewHelp) FullHelp() [][]key.Binding {
 	case snapshotDiffView:
 		return [][]key.Binding{
 			{k.Up, k.Down, k.PageUp, k.PageDown},
-			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap},
+			{helpAs(k.Enter, "open"), k.Parent, k.Search, k.Extract, k.DiffSwap, k.DiffMeta},
 			{k.DiffFilterAdded, k.DiffFilterRemoved, k.DiffFilterModified, k.DiffFilterMetadata, k.DiffFilterTypeChanged, k.DiffFilterBitrot},
 			{k.Back},
 		}

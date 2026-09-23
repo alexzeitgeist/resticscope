@@ -140,6 +140,7 @@ type Model struct {
 	diffTree       model.DiffTree    // virtual tree built once from diffEntries on terminal msg
 	diffDir        string            // path of the directory currently listed (defaults to DiffRoot)
 	diffRows       []model.DiffRow   // current dir's children, filtered + sorted (rebuilt on nav/filter)
+	diffMarkerCols int               // widest Change marker in diffRows, measured when they are rebuilt
 	diffCursor     int               // cursor within diffRows
 	diffCache      map[string]int    // visited dir -> remembered cursor index (back-nav restore)
 	diffSelectPath string            // row path to reselect after an async diff rerun
@@ -157,6 +158,7 @@ type Model struct {
 	diffSearchJumped  bool
 
 	diffFilters   model.ModifierKind // bitset of enabled change types; all on by default
+	diffMetadata  bool               // loaded diff includes metadata-only changes; kept across diffs
 	diffStats     model.DiffStats    // top-level totals (a copy of diffTree.Aggregate[DiffRoot])
 	diffErr       string             // sticky partial-diff warning rendered with the loaded tree
 	diffParseErrs int                // tolerated malformed diff lines in the completed stream

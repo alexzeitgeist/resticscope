@@ -97,12 +97,12 @@ func (m Model) startSnapshotDiff(repo string, older, newer model.Snapshot) (Mode
 	m.diffCache = make(map[string]int)
 	m.statusMsg = ""
 	m.view = snapshotDiffView
-	return m.dispatchSnapshotDiff(m.diffOlder, m.diffNewer)
+	return m.dispatchSnapshotDiff(m.diffOlder, m.diffNewer, m.diffMetadata)
 }
 
 // dispatchSnapshotDiff starts a child cancellation scope plus stream and
 // progress commands. Generation tags reject late messages from superseded runs.
-func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, tea.Cmd) {
+func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot, metadata bool) (Model, tea.Cmd) {
 	dctx, dcancel := context.WithCancel(m.ctx)
 	m.diffCancel = dcancel
 	m.diffLoadCount = 0
@@ -118,7 +118,7 @@ func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, t
 		defer close(progress) // ends the paired waitForDiffProgress Cmd
 		// Accumulate in the worker, then build the tree on the UI thread.
 		var entries []model.DiffEntry
-		res, err := a.SnapshotDiff(dctx, repo, olderID, newerID,
+		res, err := a.SnapshotDiff(dctx, repo, olderID, newerID, metadata,
 			func(e model.DiffEntry) error {
 				entries = append(entries, e)
 				return nil
@@ -129,7 +129,7 @@ func (m Model) dispatchSnapshotDiff(runOlder, runNewer model.Snapshot) (Model, t
 				default:
 				}
 			})
-		return snapshotDiffMsg{gen: gen, older: runOlder, newer: runNewer, result: res, entries: entries, err: err}
+		return snapshotDiffMsg{gen: gen, older: runOlder, newer: runNewer, metadata: metadata, result: res, entries: entries, err: err}
 	}
 	return m, tea.Batch(streamCmd, waitForDiffProgress(gen, progress))
 }
@@ -188,6 +188,7 @@ func (m Model) applySnapshotDiffMsg(msg snapshotDiffMsg) Model {
 	}
 	m.diffOlder = msg.older
 	m.diffNewer = msg.newer
+	m.diffMetadata = msg.metadata
 	m.diffEntries = msg.entries
 	m.diffTree = model.BuildDiffTree(msg.entries)
 	m.diffStats = m.diffTree.Aggregate[model.DiffRoot]
@@ -216,6 +217,8 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.DiffSwap):
 		return m.swapSnapshotDiff()
+	case key.Matches(msg, m.keys.DiffMeta):
+		return m.toggleDiffMetadata()
 	case key.Matches(msg, m.keys.Search):
 		return m.openDiffSearch(), nil
 	case key.Matches(msg, m.keys.DiffFilterAdded):
@@ -255,10 +258,20 @@ func (m Model) handleSnapshotDiffKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// swapSnapshotDiff reverses the pair while preserving filters and the requested
-// landing path, falling back to its nearest existing parent.
+// swapSnapshotDiff reverses the pair and reruns it.
 func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
-	if m.diffOlder.ID == "" || m.diffNewer.ID == "" {
+	return m.rerunSnapshotDiff(m.diffNewer, m.diffOlder, m.diffMetadata)
+}
+
+// toggleDiffMetadata keeps the loaded mode until the rerun succeeds.
+func (m Model) toggleDiffMetadata() (Model, tea.Cmd) {
+	return m.rerunSnapshotDiff(m.diffOlder, m.diffNewer, !m.diffMetadata)
+}
+
+// rerunSnapshotDiff keeps filters, directory, and selection. Missing directories
+// fall back to the nearest parent.
+func (m Model) rerunSnapshotDiff(runOlder, runNewer model.Snapshot, metadata bool) (Model, tea.Cmd) {
+	if runOlder.ID == "" || runNewer.ID == "" {
 		return m, nil
 	}
 	dir := m.diffDir
@@ -274,10 +287,10 @@ func (m Model) swapSnapshotDiff() (Model, tea.Cmd) {
 	m.diffDir = dir
 	m.diffSelectPath = selectPath
 	m.statusMsg = ""
-	return m.dispatchSnapshotDiff(m.diffNewer, m.diffOlder)
+	return m.dispatchSnapshotDiff(runOlder, runNewer, metadata)
 }
 
-// existingDiffDir returns requested or its nearest existing parent so a swapped
+// existingDiffDir returns requested or its nearest existing parent so a rerun
 // result remains navigable.
 func existingDiffDir(tree model.DiffTree, requested string) string {
 	if requested == "" {
@@ -365,6 +378,7 @@ func (m Model) rebuildDiffRows(dir, selectPath string) Model {
 		return filtered[i].Name < filtered[j].Name
 	})
 	m.diffRows = filtered
+	m.diffMarkerCols = m.widestDiffMarker(filtered)
 	cursor := 0
 	if selectPath != "" {
 		for i, r := range filtered {
@@ -415,8 +429,14 @@ func (m Model) openDiffExtract() (Model, tea.Cmd) {
 	}
 	set := model.DiffExtractIncludes(m.diffEntries, r.Path, m.diffFilters)
 	if len(set.First) == 0 && len(set.Second) == 0 {
-		// Non-pure directory changes do not become include paths.
-		m.statusMsg = "extract: no extractable changes under the active filter"
+		// Only directories that are neither purely added nor removed matched,
+		// here or below (restic marks them `U` or `T`); they may not be the
+		// selected one.
+		if r.IsDir {
+			m.statusMsg = "extract: only directories changed here; restore them from the snapshot browser"
+		} else {
+			m.statusMsg = "extract: no extractable changes under the active filter"
+		}
 		return m, nil
 	}
 	if diffIncludesOverBudget(set.First) || diffIncludesOverBudget(set.Second) {
@@ -510,8 +530,8 @@ func (m Model) diffLoading() bool {
 	return m.diffCancel != nil
 }
 
-// clearSnapshotDiff removes repository, snapshot, and path data when leaving
-// the view. Detail marks remain until goBack reaches the list.
+// clearSnapshotDiff drops repository, snapshot, and path data on exit. Metadata
+// mode persists for the next diff.
 func (m Model) clearSnapshotDiff() Model {
 	m.diffRepo = ""
 	m.diffOlder = model.Snapshot{}
@@ -520,6 +540,7 @@ func (m Model) clearSnapshotDiff() Model {
 	m.diffTree = model.DiffTree{}
 	m.diffDir = ""
 	m.diffRows = nil
+	m.diffMarkerCols = 0
 	m.diffCursor = 0
 	m.diffCache = nil
 	m.diffSelectPath = ""

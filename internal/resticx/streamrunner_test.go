@@ -77,7 +77,7 @@ func TestStreamingMethodsRequireStreamRunner(t *testing.T) {
 
 	t.Run("StreamDiff", func(t *testing.T) {
 		_, err := c.StreamDiff(t.Context(), testTarget, creds,
-			"aa11bb22", "cc33dd44", time.Minute,
+			"aa11bb22", "cc33dd44", false, time.Minute,
 			func(model.DiffEntry) error { return nil }, nil)
 		if !errors.Is(err, ErrNoStreamRunner) {
 			t.Fatalf("want ErrNoStreamRunner, got %v", err)

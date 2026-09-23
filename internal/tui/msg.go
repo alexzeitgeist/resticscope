@@ -61,12 +61,13 @@ type snapshotDiffProgressMsg struct {
 // snapshotDiffMsg carries a completed streamed diff. Update builds its tree on
 // the UI thread from entries, while result contains the terminal summary.
 type snapshotDiffMsg struct {
-	gen     int
-	older   model.Snapshot
-	newer   model.Snapshot
-	result  model.SnapshotDiff
-	entries []model.DiffEntry
-	err     error
+	gen      int
+	older    model.Snapshot
+	newer    model.Snapshot
+	metadata bool
+	result   model.SnapshotDiff
+	entries  []model.DiffEntry
+	err      error
 }
 
 // repoRefreshedMsg carries a completed repository refresh. A cache-save error

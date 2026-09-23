@@ -142,7 +142,7 @@ List
   s                          shell with repo env
   r                          refresh this repo
   q                          quit
-  showing lines 1–15 of 81
+  showing lines 1–15 of 82
 
 ↑/↓ scroll • q back
 ```
